@@ -1,0 +1,12 @@
+-- Run this only after creating your own auth user in Supabase Auth.
+-- The auth trigger will auto-create:
+--   - profiles row
+--   - main bot row
+--   - initial bot_state row
+--   - initial engine_leases row
+--
+-- Optional sanity checks:
+-- select * from public.profiles;
+-- select * from public.bots;
+-- select * from public.bot_state;
+-- select * from public.engine_leases;

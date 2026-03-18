@@ -1,0 +1,142 @@
+package com.kibot.shared.models
+
+import kotlinx.datetime.Instant
+import kotlinx.datetime.LocalDate
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class MarketOpportunitySnapshot(
+    val regime: MarketRegime,
+    val marketOpportunityScore: Double,
+    val botHealthScore: Double,
+    val performanceMomentumScore: Double,
+    val edgeConfidence: EdgeConfidence,
+    val tacticalBiasScore: Double,
+    val swingBiasScore: Double,
+    val opportunityAvailabilityScore: Double,
+    val microstructureHealthScore: Double,
+    val rationale: List<String> = emptyList(),
+)
+
+@Serializable
+data class BotModeSnapshot(
+    val mode: BotMode,
+    val edgeConfidence: EdgeConfidence,
+    val aggressionScore: Double,
+    val riskLadderLevel: RiskLadderLevel,
+    val profitProtectionStatus: ProfitProtectionStatus,
+    val tacticalBiasScore: Double,
+    val swingBiasScore: Double,
+    val tradingAllowed: Boolean,
+    val rationale: List<String> = emptyList(),
+)
+
+@Serializable
+data class ProfitProtectionSnapshot(
+    val status: ProfitProtectionStatus,
+    val highWatermarkEquityIdr: DecimalValue,
+    val givebackPct: Double,
+    val weeklyProfitPct: Double,
+    val aggressionMultiplier: Double,
+    val sizeMultiplier: Double,
+    val rationale: List<String> = emptyList(),
+)
+
+@Serializable
+data class CandidateOpportunity(
+    val pairId: PairId,
+    val tier: PairTier,
+    val preferredHorizon: TradingHorizon,
+    val rankingScore: Double,
+    val marketOpportunityScore: Double,
+    val expectedNetProfitabilityPct: Double,
+    val holdabilityScore: Double,
+    val rationale: List<String> = emptyList(),
+)
+
+@Serializable
+data class CapitalDeploymentPlan(
+    val allowNewEntries: Boolean,
+    val allowRotation: Boolean,
+    val maxActivePositions: Int,
+    val suggestedPerPositionBudgetIdr: Double,
+    val targetCashReservePct: Double,
+    val capitalUtilizationTargetPct: Double,
+    val preferredHorizon: TradingHorizon?,
+    val candidates: List<CandidateOpportunity>,
+    val rationale: List<String> = emptyList(),
+)
+
+@Serializable
+data class LearningObservation(
+    val observedAt: Instant,
+    val pairId: PairId? = null,
+    val setupType: SetupType = SetupType.NO_TRADE,
+    val horizon: TradingHorizon = TradingHorizon.TACTICAL,
+    val tradeTaken: Boolean,
+    val realizedPnlPct: Double = 0.0,
+    val expectedNetEdgePct: Double = 0.0,
+    val slippagePct: Double = 0.0,
+    val fillQualityScore: Double = 0.5,
+    val avoidedBadTrade: Boolean = false,
+    val missedQualifiedOpportunity: Boolean = false,
+    val falseEntry: Boolean = false,
+    val capitalUtilizationPct: Double = 0.0,
+    val productiveUtilizationPct: Double = 0.0,
+)
+
+@Serializable
+data class WeeklyAdaptationPlan(
+    val whitelistPairs: List<PairId> = emptyList(),
+    val temporaryBlacklistPairs: List<PairId> = emptyList(),
+    val setupBias: Map<String, Double> = emptyMap(),
+    val activeHours: List<Int> = emptyList(),
+    val aggressionMultiplierDelta: Double = 0.0,
+    val sizeMultiplierDelta: Double = 0.0,
+    val tacticalBiasDelta: Double = 0.0,
+    val swingBiasDelta: Double = 0.0,
+    val notes: List<String> = emptyList(),
+)
+
+@Serializable
+data class WeeklyLearningSummary(
+    val botId: BotId,
+    val periodStart: LocalDate,
+    val periodEnd: LocalDate,
+    val bestPairs: List<PairId> = emptyList(),
+    val worstPairs: List<PairId> = emptyList(),
+    val bestSetups: List<SetupType> = emptyList(),
+    val worstSetups: List<SetupType> = emptyList(),
+    val bestHours: List<Int> = emptyList(),
+    val worstHours: List<Int> = emptyList(),
+    val falseEntryRate: Double,
+    val noTradeQualityScore: Double,
+    val avoidedBadTradesIndicator: Double,
+    val capitalUtilizationPct: Double,
+    val productiveUtilizationPct: Double,
+    val missedOpportunityRate: Double,
+    val tacticalExpectancy: Double,
+    val swingExpectancy: Double,
+    val adaptationPlan: WeeklyAdaptationPlan,
+    val notes: List<String> = emptyList(),
+)
+
+@Serializable
+data class RuntimeIntelligenceUpdate(
+    val botId: BotId,
+    val deviceId: DeviceId,
+    val term: LeaseTerm,
+    val currentPair: PairId? = null,
+    val operatingMode: BotMode,
+    val edgeConfidence: EdgeConfidence,
+    val aggressionScore: Double,
+    val riskLadderLevel: RiskLadderLevel,
+    val profitProtectionStatus: ProfitProtectionStatus,
+    val marketRegime: MarketRegime,
+    val distrustLabels: List<DistrustLabel> = emptyList(),
+    val activeCandidatePairs: List<PairId> = emptyList(),
+    val marketOpportunityScore: Double,
+    val botHealthScore: Double,
+    val performanceMomentumScore: Double,
+    val safeModeReason: String? = null,
+)

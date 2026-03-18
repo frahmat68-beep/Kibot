@@ -1,0 +1,4 @@
+# Copy this file to `local.properties` on your laptop.
+# Do not commit the real `local.properties`.
+
+sdk.dir=/Users/your-username/Library/Android/sdk

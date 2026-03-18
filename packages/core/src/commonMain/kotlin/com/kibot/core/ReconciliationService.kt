@@ -1,0 +1,57 @@
+package com.kibot.core
+
+import com.kibot.shared.models.ClientOrderId
+import com.kibot.shared.models.FillSnapshot
+import com.kibot.shared.models.OrderSnapshot
+import com.kibot.shared.models.OrderStatus
+import com.kibot.shared.models.PortfolioSnapshot
+import com.kibot.shared.models.ReconciliationReport
+import com.kibot.shared.models.ReconciliationState
+
+class ReconciliationService {
+    fun reconcile(
+        portfolio: PortfolioSnapshot,
+        recentFills: List<FillSnapshot>,
+        persistedOrders: List<OrderSnapshot>,
+    ): ReconciliationReport {
+        val staleOpenOrders = portfolio.openOrders
+            .filter { openOrder ->
+                persistedOrders.none { persisted ->
+                    persisted.clientOrderId == openOrder.clientOrderId &&
+                        persisted.status == openOrder.status
+                }
+            }
+            .map(OrderSnapshot::clientOrderId)
+
+        val unmatchedFills = recentFills.filter { fill ->
+            persistedOrders.none { it.orderId == fill.orderId }
+        }.map(FillSnapshot::fillId)
+
+        val warnings = buildList {
+            if (portfolio.totalEquityIdr.toDoubleOrZero() <= 0.0) {
+                add("Current equity is zero or negative.")
+            }
+            if (portfolio.balances.isEmpty()) {
+                add("No balances available during reconciliation.")
+            }
+        }
+
+        val state = when {
+            staleOpenOrders.isNotEmpty() || unmatchedFills.isNotEmpty() -> ReconciliationState.BLOCKED
+            warnings.isNotEmpty() -> ReconciliationState.NEEDS_REVIEW
+            else -> ReconciliationState.CLEAN
+        }
+
+        return ReconciliationReport(
+            state = state,
+            staleOpenOrders = staleOpenOrders,
+            unmatchedFills = unmatchedFills,
+            balanceWarnings = warnings,
+            notes = buildList {
+                if (portfolio.openOrders.any { it.status == OrderStatus.PARTIALLY_FILLED }) {
+                    add("Partial fills detected, new entries should wait for order-state convergence.")
+                }
+            },
+        )
+    }
+}

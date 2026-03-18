@@ -1,0 +1,148 @@
+do $$
+begin
+    if not exists (select 1 from pg_type where typname = 'bot_mode') then
+        create type public.bot_mode as enum ('SAFE', 'DEFENSIVE', 'GROWTH', 'ATTACK');
+    end if;
+    if not exists (select 1 from pg_type where typname = 'market_regime') then
+        create type public.market_regime as enum (
+            'HEALTHY_UPTREND',
+            'HEALTHY_SIDEWAYS',
+            'HIGH_VOLATILITY_UNCLEAR',
+            'BREAKDOWN_PANIC'
+        );
+    end if;
+    if not exists (select 1 from pg_type where typname = 'edge_confidence') then
+        create type public.edge_confidence as enum ('LOW', 'MEDIUM', 'HIGH');
+    end if;
+    if not exists (select 1 from pg_type where typname = 'risk_ladder_level') then
+        create type public.risk_ladder_level as enum (
+            'NORMAL',
+            'WARNING',
+            'REDUCE_SIZE',
+            'DEFENSIVE_MODE',
+            'RESTRICTED_NEW_ENTRIES',
+            'STOP_NEW_ENTRIES',
+            'HARD_STOP'
+        );
+    end if;
+    if not exists (select 1 from pg_type where typname = 'profit_protection_status') then
+        create type public.profit_protection_status as enum (
+            'INACTIVE',
+            'GUARDING_WEEKLY_PROFIT',
+            'TRAILING_HIGH_WATERMARK',
+            'COOLING_AGGRESSION'
+        );
+    end if;
+    if not exists (select 1 from pg_type where typname = 'trading_horizon') then
+        create type public.trading_horizon as enum ('TACTICAL', 'SWING');
+    end if;
+    if not exists (select 1 from pg_type where typname = 'pair_tier') then
+        create type public.pair_tier as enum ('TIER_A', 'TIER_B', 'TIER_C');
+    end if;
+end $$;
+
+alter table public.bot_state
+    add column if not exists operating_mode public.bot_mode not null default 'GROWTH',
+    add column if not exists edge_confidence public.edge_confidence not null default 'MEDIUM',
+    add column if not exists aggression_score numeric(12, 6) not null default 0.50,
+    add column if not exists risk_ladder_level public.risk_ladder_level not null default 'NORMAL',
+    add column if not exists profit_protection_status public.profit_protection_status not null default 'INACTIVE',
+    add column if not exists market_regime public.market_regime not null default 'HIGH_VOLATILITY_UNCLEAR',
+    add column if not exists distrust_labels jsonb not null default '[]'::jsonb,
+    add column if not exists active_candidate_pairs jsonb not null default '[]'::jsonb;
+
+alter table public.daily_equity
+    add column if not exists risk_ladder_level public.risk_ladder_level not null default 'NORMAL',
+    add column if not exists weekly_drawdown_pct numeric(12, 6) not null default 0,
+    add column if not exists loss_streak_count integer not null default 0,
+    add column if not exists performance_decay_detected boolean not null default false,
+    add column if not exists high_watermark_equity_idr numeric(38, 18) not null default 0,
+    add column if not exists giveback_pct numeric(12, 6) not null default 0,
+    add column if not exists profit_protection_status public.profit_protection_status not null default 'INACTIVE';
+
+update public.daily_equity
+set high_watermark_equity_idr = greatest(high_watermark_equity_idr, current_equity_idr, opening_equity_idr)
+where high_watermark_equity_idr = 0;
+
+alter table public.strategy_metrics
+    add column if not exists volume_consistency_score numeric(12, 6) not null default 0,
+    add column if not exists volatility_quality_score numeric(12, 6) not null default 0,
+    add column if not exists trend_quality_score numeric(12, 6) not null default 0,
+    add column if not exists historical_expectancy_score numeric(12, 6) not null default 0,
+    add column if not exists recent_health_score numeric(12, 6) not null default 0,
+    add column if not exists fill_quality_score numeric(12, 6) not null default 0,
+    add column if not exists holdability_score numeric(12, 6) not null default 0,
+    add column if not exists market_opportunity_score numeric(12, 6) not null default 0,
+    add column if not exists ranking_score numeric(12, 6) not null default 0,
+    add column if not exists pair_tier public.pair_tier not null default 'TIER_C',
+    add column if not exists preferred_horizon public.trading_horizon not null default 'TACTICAL';
+
+create table if not exists public.parameter_versions (
+    version_id uuid primary key default gen_random_uuid(),
+    bot_id text not null references public.bots(bot_id) on delete cascade,
+    scope text not null,
+    version_tag text not null,
+    is_active boolean not null default false,
+    created_by_device_id text references public.devices(device_id),
+    parameters jsonb not null default '{}'::jsonb,
+    change_summary jsonb not null default '{}'::jsonb,
+    created_at timestamptz not null default timezone('utc', now()),
+    activated_at timestamptz
+);
+
+create table if not exists public.mode_metrics (
+    mode_metric_id bigint generated by default as identity primary key,
+    bot_id text not null references public.bots(bot_id) on delete cascade,
+    device_id text references public.devices(device_id),
+    operating_mode public.bot_mode not null,
+    market_regime public.market_regime not null,
+    edge_confidence public.edge_confidence not null,
+    risk_ladder_level public.risk_ladder_level not null,
+    profit_protection_status public.profit_protection_status not null,
+    market_opportunity_score numeric(12, 6) not null,
+    bot_health_score numeric(12, 6) not null,
+    performance_momentum_score numeric(12, 6) not null,
+    aggression_score numeric(12, 6) not null,
+    created_at timestamptz not null default timezone('utc', now())
+);
+
+create table if not exists public.weekly_learning_reviews (
+    review_id uuid primary key default gen_random_uuid(),
+    bot_id text not null references public.bots(bot_id) on delete cascade,
+    period_start date not null,
+    period_end date not null,
+    best_pairs jsonb not null default '[]'::jsonb,
+    worst_pairs jsonb not null default '[]'::jsonb,
+    best_setups jsonb not null default '[]'::jsonb,
+    worst_setups jsonb not null default '[]'::jsonb,
+    best_hours jsonb not null default '[]'::jsonb,
+    worst_hours jsonb not null default '[]'::jsonb,
+    false_entry_rate numeric(12, 6) not null default 0,
+    no_trade_quality_score numeric(12, 6) not null default 0,
+    avoided_bad_trades_indicator numeric(12, 6) not null default 0,
+    capital_utilization_pct numeric(12, 6) not null default 0,
+    productive_utilization_pct numeric(12, 6) not null default 0,
+    missed_opportunity_rate numeric(12, 6) not null default 0,
+    tactical_expectancy numeric(12, 6) not null default 0,
+    swing_expectancy numeric(12, 6) not null default 0,
+    adaptation_plan jsonb not null default '{}'::jsonb,
+    notes jsonb not null default '[]'::jsonb,
+    created_at timestamptz not null default timezone('utc', now()),
+    unique (bot_id, period_start, period_end)
+);
+
+create table if not exists public.no_trade_reviews (
+    review_id uuid primary key default gen_random_uuid(),
+    bot_id text not null references public.bots(bot_id) on delete cascade,
+    pair_id text,
+    market_regime public.market_regime not null,
+    decision_label text not null check (decision_label in ('NO_TRADE', 'TRADE_TAKEN', 'AVOIDED_BAD_TRADE', 'MISSED_GOOD_TRADE')),
+    quality_score numeric(12, 6) not null default 0,
+    details jsonb not null default '{}'::jsonb,
+    created_at timestamptz not null default timezone('utc', now())
+);
+
+create index if not exists idx_parameter_versions_bot_scope_created on public.parameter_versions(bot_id, scope, created_at desc);
+create index if not exists idx_mode_metrics_bot_created on public.mode_metrics(bot_id, created_at desc);
+create index if not exists idx_weekly_reviews_bot_period on public.weekly_learning_reviews(bot_id, period_end desc);
+create index if not exists idx_no_trade_reviews_bot_created on public.no_trade_reviews(bot_id, created_at desc);
