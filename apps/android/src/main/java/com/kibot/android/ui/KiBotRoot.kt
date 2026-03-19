@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Notes
+import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Wifi
@@ -63,6 +64,7 @@ import kotlin.math.absoluteValue
 
 private enum class RootTab(val title: String) {
     Dashboard("Dashboard"),
+    Portfolio("Portfolio"),
     Control("Control"),
     Logs("Logs"),
 }
@@ -93,6 +95,7 @@ fun KiBotRoot(
                             Icon(
                                 imageVector = when (tab) {
                                     RootTab.Dashboard -> Icons.Outlined.Dashboard
+                                    RootTab.Portfolio -> Icons.Outlined.AccountBalanceWallet
                                     RootTab.Control -> Icons.Outlined.Sync
                                     RootTab.Logs -> Icons.AutoMirrored.Outlined.Notes
                                 },
@@ -113,6 +116,7 @@ fun KiBotRoot(
         ) {
             when (currentTab) {
                 RootTab.Dashboard -> DashboardScreen(state = state, onToggleBot = onToggleBot)
+                RootTab.Portfolio -> PortfolioScreen(state = state)
                 RootTab.Control -> EngineControlScreen(state = state, onCommand = onCommand)
                 RootTab.Logs -> LogsScreen(state = state)
             }
@@ -131,15 +135,26 @@ private fun DashboardScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item { HeroCard(state = state, onToggleBot = onToggleBot) }
-        item { PortfolioSectionCard(modifier = Modifier.fillMaxWidth(), state = state) }
+        item { PairRadarCard(modifier = Modifier.fillMaxWidth(), state = state) }
         item {
-            HoldingsPreviewCard(
+            LiveActivityCard(
                 modifier = Modifier.fillMaxWidth(),
                 state = state,
             )
         }
+    }
+}
+
+@Composable
+private fun PortfolioScreen(state: KiBotUiState) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item { PortfolioSectionCard(modifier = Modifier.fillMaxWidth(), state = state) }
         item {
-            LiveActivityCard(
+            HoldingsPreviewCard(
                 modifier = Modifier.fillMaxWidth(),
                 state = state,
             )
@@ -479,47 +494,18 @@ private fun HeroCard(
                     )
                 }
             }
-            Surface(
+            FilledTonalButton(
+                onClick = onToggleBot,
                 modifier = Modifier.fillMaxWidth(),
-                color = Color.White.copy(alpha = 0.06f),
-                shape = RoundedCornerShape(22.dp),
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = if (state.isBotRunning) Color(0xFF2B3557) else Color(0xFF1E40AF),
+                    contentColor = Color(0xFFF8FAFC),
+                ),
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        AssetBadge(symbol = visiblePairLabel(state).substringBefore('_').uppercase())
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                visiblePairLabel(state),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                RadarChip(label = scanCountLabel(state))
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    radarPairs(state).forEach { radar ->
-                                        RadarChip(label = radar)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    FilledTonalButton(onClick = onToggleBot) {
-                        Text(if (state.isBotRunning) "Turn OFF" else "Turn ON")
-                    }
-                }
+                Text(
+                    if (state.isBotRunning) "Matikan Bot" else "Nyalakan Bot",
+                    fontWeight = FontWeight.Bold,
+                )
             }
         }
     }
@@ -543,6 +529,75 @@ private fun AssetBadge(
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
             )
+        }
+    }
+}
+
+@Composable
+private fun PairRadarCard(
+    modifier: Modifier = Modifier,
+    state: KiBotUiState,
+) {
+    SurfaceCard(modifier = modifier) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AssetBadge(symbol = visiblePairLabel(state).substringBefore('_').uppercase())
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        visiblePairLabel(state),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        if (state.isBotRunning) "Pair aktif bot" else "Radar pair teratas",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            StatusChip(
+                label = if (state.isBotRunning) "LIVE" else "OFF",
+                tint = if (state.isBotRunning) Color(0xFF2DD881) else Color(0xFF94A3B8),
+            )
+        }
+        Surface(
+            color = Color.White.copy(alpha = 0.04f),
+            shape = RoundedCornerShape(18.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    RadarChip(label = scanCountLabel(state))
+                    RadarChip(label = "${radarPairs(state).size} kandidat")
+                }
+                if (radarPairs(state).isNotEmpty()) {
+                    Text(
+                        radarPairs(state).joinToString(" • "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    state.syncPathLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }

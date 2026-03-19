@@ -44,9 +44,14 @@ class KiBotWidgetProvider : AppWidgetProvider() {
             }
             appWidgetIds.forEach { widgetId ->
                 val views = RemoteViews(context.packageName, R.layout.widget_kibot_status).apply {
+                    val hasActivePair = snapshot.activePair.isNotBlank() && snapshot.activePair != "-"
                     setTextViewText(R.id.widget_title, "KiBot")
                     setTextViewText(R.id.widget_pair, snapshot.activePair.uppercase())
-                    setTextViewText(R.id.widget_meta, "Live • ${formatUpdated(snapshot.updatedAtEpochMs)}")
+                    setTextViewText(R.id.widget_pair_label, if (hasActivePair) "BOT ON" else "RADAR")
+                    setTextViewText(
+                        R.id.widget_meta,
+                        if (hasActivePair) "Pair aktif • ${formatUpdated(snapshot.updatedAtEpochMs)}" else "Radar • ${formatUpdated(snapshot.updatedAtEpochMs)}",
+                    )
                     setTextViewText(R.id.widget_equity, snapshot.totalEquityIdr)
                     setTextViewText(R.id.widget_pnl, "${snapshot.pnlTodayIdr} ${derivePnlPct(snapshot)}".trim())
                     setTextViewText(R.id.widget_positions_count, "${visibleHoldings.size} aset")

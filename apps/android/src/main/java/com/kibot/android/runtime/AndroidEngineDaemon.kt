@@ -157,7 +157,7 @@ class AndroidEngineDaemon(
         val localHealth = buildLocalHealth(
             exchangeReachable = exchangeReachable,
             warnings = warnings,
-            feedLatencyMs = exchangePingMs,
+            feedLatencyMs = displayPingMs ?: exchangePingMs,
             marketFeedHealthy = exchangeReachable,
         )
         val masterBeforeTakeover = leaseAfterCommands.isHeldBy(config.device.deviceId, now)
@@ -198,7 +198,7 @@ class AndroidEngineDaemon(
         val finalHealth = buildLocalHealth(
             exchangeReachable = exchangeReachable,
             warnings = warnings,
-            feedLatencyMs = exchangePingMs,
+            feedLatencyMs = displayPingMs ?: exchangePingMs,
             marketFeedHealthy = exchangeReachable && resolvedMarketQuotes.isNotEmpty(),
         )
         val healthDecision = healthAdvisor.evaluate(finalHealth)
@@ -1597,9 +1597,9 @@ class AndroidEngineDaemon(
         private const val staleExitOrderMaxAgeMinutes = 4.5
         private const val staleExitOrderMaxDriftPct = 0.55
         private const val staleExitRepriceLossFloorPct = -0.35
-        private const val makerFirstMaxLatencyMs = 260L
-        private const val aggressiveLimitFallbackLatencyMs = 650L
-        private const val entryBlockLatencyMs = 900L
+        private const val makerFirstMaxLatencyMs = 320L
+        private const val aggressiveLimitFallbackLatencyMs = 820L
+        private const val entryBlockLatencyMs = 1100L
         private const val executionPolicyLogCooldownMinutes = 2L
         private const val trialExitMaxNotionalIdr = 60_000.0
         private val activeOrderStatuses = setOf(

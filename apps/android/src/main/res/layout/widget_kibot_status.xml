@@ -10,7 +10,7 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="center_vertical"
+        android:gravity="top|center_vertical"
         android:orientation="horizontal">
 
         <TextView
@@ -23,19 +23,36 @@
             android:textSize="16sp"
             android:textStyle="bold" />
 
-        <TextView
-            android:id="@+id/widget_pair"
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:background="#26344E"
+            android:background="@drawable/widget_pair_container"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
             android:paddingLeft="10dp"
-            android:paddingTop="5dp"
+            android:paddingTop="6dp"
             android:paddingRight="10dp"
-            android:paddingBottom="5dp"
-            android:text="-"
-            android:textColor="#9EC5FF"
-            android:textSize="12sp"
-            android:textStyle="bold" />
+            android:paddingBottom="6dp">
+
+            <TextView
+                android:id="@+id/widget_pair_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="BOT ON"
+                android:textColor="#7F95BF"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_pair"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="-"
+                android:textColor="#9EC5FF"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
     </LinearLayout>
 
     <TextView
@@ -43,7 +60,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
-        android:text="Update --:--"
+        android:text="Pair aktif • --:--"
         android:textColor="#A8B7D7"
         android:textSize="12sp" />
 
