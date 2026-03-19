@@ -46,7 +46,8 @@ This repository currently contains the expanded Phase 2 foundation plus the firs
 9. If you already have the Supabase DB password locally, run `scripts/apply_supabase_migrations.sh`.
 10. Run `./gradlew :packages:control-plane:jvmTest :packages:indodax-client:jvmTest :packages:test-kit:test :apps:mac-engine:test`.
 11. Open the project in Android Studio / IntelliJ.
-12. Run Android app and mac engine separately.
+12. Run the mac engine from the repo root with `scripts/run_mac_engine.sh`.
+13. Run Android app separately.
 
 For a private signed APK artifact, run `scripts/build_android_release.sh` after the setup above.
 To install the latest APK to a connected phone, run `scripts/install_android_release.sh`.

@@ -12,6 +12,7 @@ import com.kibot.android.runtime.AndroidPassiveExchangeGateway
 import com.kibot.android.runtime.AndroidRuntimeConfig
 import com.kibot.android.runtime.AndroidRuntimeConfigLoader
 import com.kibot.android.runtime.HeartbeatWorker
+import com.kibot.android.runtime.LiveStatusStore
 import com.kibot.android.runtime.ReconnectWorker
 import com.kibot.android.runtime.RuntimePreferenceStore
 import com.kibot.android.security.SecureCredentialStore
@@ -30,6 +31,7 @@ class KiBotApplication : Application() {
             database = AppDatabase.build(applicationContext),
             credentialStore = SecureCredentialStore(applicationContext),
             runtimePreferenceStore = RuntimePreferenceStore(applicationContext),
+            liveStatusStore = LiveStatusStore(applicationContext),
             runtimeConfig = AndroidRuntimeConfigLoader.load(),
         )
 
@@ -56,6 +58,7 @@ data class AppContainer(
     val database: AppDatabase,
     val credentialStore: SecureCredentialStore,
     val runtimePreferenceStore: RuntimePreferenceStore,
+    val liveStatusStore: LiveStatusStore,
     val runtimeConfig: AndroidRuntimeConfig,
 ) {
     val controlPlaneGateway by lazy {
@@ -70,9 +73,11 @@ data class AppContainer(
 
     val repository: AppRepository by lazy {
         AppRepository(
+            appContext = appContext,
             database = database,
             credentialStore = credentialStore,
             runtimePreferenceStore = runtimePreferenceStore,
+            liveStatusStore = liveStatusStore,
             exchangeGateway = exchangeGateway,
             controlPlaneGateway = controlPlaneGateway,
             deviceRegistration = runtimeConfig.device,

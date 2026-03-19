@@ -47,7 +47,7 @@ class LocalDashboardServer(
     private val port: Int = 8787,
     private val androidReleaseDirectory: Path,
 ) {
-    private val server = embeddedServer(CIO, port = port) {
+    private val server = embeddedServer(CIO, host = "127.0.0.1", port = port) {
         install(CallLogging)
         install(ContentNegotiation) { json() }
         install(StatusPages) {

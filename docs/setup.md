@@ -72,7 +72,12 @@ scripts/connect_android_wifi.sh <IP-HP>
 
 ## 5. Mac Engine
 
-1. Run the mac engine JVM app.
+1. Run the mac engine from the repo root:
+
+```bash
+scripts/run_mac_engine.sh
+```
+
 2. Open `http://localhost:8787`.
 3. Keep the Mac awake if it is expected to take over automatically.
 

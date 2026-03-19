@@ -1,9 +1,18 @@
 package com.kibot.android.data.local
 
+import android.content.Context
+import com.kibot.android.runtime.LiveHoldingUi
+import com.kibot.android.runtime.LiveStatusSnapshot
+import com.kibot.android.runtime.LiveStatusStore
+import com.kibot.android.runtime.RuntimePreferenceStore
 import com.kibot.android.security.SecureCredentialStore
+import com.kibot.android.ui.DeviceStatusUi
 import com.kibot.android.ui.EngineAction
 import com.kibot.android.ui.KiBotUiState
-import com.kibot.android.runtime.RuntimePreferenceStore
+import com.kibot.android.ui.LogUi
+import com.kibot.android.ui.PositionCardUi
+import com.kibot.android.ui.TradeUi
+import com.kibot.android.widget.KiBotWidgetProvider
 import com.kibot.core.ControlPlaneGateway
 import com.kibot.core.DeviceRegistration
 import com.kibot.core.ExchangeGateway
@@ -27,11 +36,14 @@ import kotlinx.datetime.toLocalDateTime
 import java.text.NumberFormat
 import java.util.Locale
 import kotlin.math.absoluteValue
+import kotlin.math.max
 
 class AppRepository(
+    private val appContext: Context,
     private val database: AppDatabase,
     private val credentialStore: SecureCredentialStore,
     private val runtimePreferenceStore: RuntimePreferenceStore,
+    private val liveStatusStore: LiveStatusStore,
     private val exchangeGateway: ExchangeGateway,
     private val controlPlaneGateway: ControlPlaneGateway? = null,
     private val deviceRegistration: DeviceRegistration? = null,
@@ -116,13 +128,14 @@ class AppRepository(
     suspend fun syncNow() {
         val gateway = controlPlaneGateway ?: return
         ensureDeviceRegistered()
+        val jakartaDate = Clock.System.now().toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
 
         val botState = gateway.fetchBotState(botId) ?: return
         val lease = gateway.fetchLease(botId)
         val devices = gateway.fetchDevices(botId)
         val risk = gateway.fetchDailyRisk(
             botId = botId,
-            date = Clock.System.now().toLocalDateTime(TimeZone.of("Asia/Jakarta")).date,
+            date = jakartaDate,
         )
         val logs = gateway.fetchRecentLogs(botId, limit = 20)
         val orders = gateway.fetchRecentOrders(botId, limit = 20)
@@ -130,18 +143,25 @@ class AppRepository(
         val liveBalances = runCatching { exchangeGateway.fetchBalances() }.getOrDefault(emptyList())
         val liveQuotes = runCatching { exchangeGateway.fetchMarketQuotes() }.getOrDefault(emptyList())
         val liveEquityIdr = estimateEquityIdr(liveBalances, liveQuotes)
-        val openingEquityIdr = risk?.openingEquityIdr?.toDoubleOrZero()
+        val openingEquityIdr = when {
+            risk?.openingEquityIdr != null -> risk.openingEquityIdr.toDoubleOrZero()
+            liveEquityIdr != null -> runtimePreferenceStore.getOrRememberDailyOpeningEquity(
+                dateKey = jakartaDate.toString(),
+                currentEquityIdr = liveEquityIdr,
+            )
+            else -> null
+        }
         val livePnlTodayIdr = when {
             liveEquityIdr != null && openingEquityIdr != null -> liveEquityIdr - openingEquityIdr
             risk != null -> risk.realizedPnlIdr.toDoubleOrZero() + risk.unrealizedPnlIdr.toDoubleOrZero()
-            else -> null
+            else -> 0.0
         }
         val modalSaatIniLabel = liveEquityIdr?.let(::formatIdr)
             ?: risk?.currentEquityIdr?.let { formatIdr(it.toDoubleOrZero()) }
             ?: _uiState.value.modalSaatIniIdr
         val pnlTodayLabel = livePnlTodayIdr?.let(::formatSignedIdr)
-            ?: risk?.realizedPnlIdr?.let { formatSignedIdr(it.toDoubleOrZero()) }
-            ?: _uiState.value.pnlTodayIdr
+            ?: formatSignedIdr(0.0)
+        val livePositions = buildLivePositions(liveBalances, liveQuotes)
 
         val activeDeviceId = lease?.currentHolder ?: botState.activeDeviceId
         val activeEngine = devices.firstOrNull { it.deviceId == activeDeviceId }?.displayName ?: "Unknown"
@@ -177,23 +197,24 @@ class AppRepository(
             weeklyAdaptationSummary = weeklyReview?.adaptationPlan?.notes?.joinToString(" ")
                 ?.takeIf { it.isNotBlank() }
                 ?: "Adaptasi mingguan belum tersedia.",
+            positions = livePositions.ifEmpty { emptyList() },
             logs = logs.map {
-                com.kibot.android.ui.LogUi(
+                LogUi(
                     level = it.level.name,
                     category = it.category,
                     message = it.message,
                 )
             },
             trades = orders.map {
-                com.kibot.android.ui.TradeUi(
+                TradeUi(
                     pair = it.pairId.value,
                     side = it.side.name,
-                    pnl = it.status.name,
+                    pnl = "${it.status.name} • ${formatIdr(max(it.executedQuantity.toDoubleOrZero(), 0.0) * max(it.price.toDoubleOrZero(), 0.0))}",
                 )
             },
             devices = devices.map {
                 val isActive = it.deviceId == activeDeviceId
-                com.kibot.android.ui.DeviceStatusUi(
+                DeviceStatusUi(
                     name = it.displayName,
                     online = true,
                     active = isActive,
@@ -202,6 +223,39 @@ class AppRepository(
                 )
             },
         )
+        liveStatusStore.update(
+            LiveStatusSnapshot(
+                updatedAtEpochMs = System.currentTimeMillis(),
+                activePair = botState.currentPair?.value ?: _uiState.value.pairAktif,
+                totalEquityIdr = modalSaatIniLabel,
+                pnlTodayIdr = pnlTodayLabel,
+                holdings = livePositions.map {
+                    LiveHoldingUi(
+                        asset = it.pair,
+                        amount = it.quantity,
+                        valueIdr = it.pnl,
+                    )
+                },
+            ),
+        )
+        runCatching {
+            KiBotWidgetProvider.updateAll(
+                appContext,
+                LiveStatusSnapshot(
+                    updatedAtEpochMs = System.currentTimeMillis(),
+                    activePair = botState.currentPair?.value ?: _uiState.value.pairAktif,
+                    totalEquityIdr = modalSaatIniLabel,
+                    pnlTodayIdr = pnlTodayLabel,
+                    holdings = livePositions.map {
+                        LiveHoldingUi(
+                            asset = it.pair,
+                            amount = it.quantity,
+                            valueIdr = it.pnl,
+                        )
+                    },
+                ),
+            )
+        }
         persistState()
 
         logs.firstOrNull { it.level == LogLevel.ERROR }?.let { errorLog ->
@@ -256,6 +310,28 @@ class AppRepository(
         return total.takeIf { it > 0.0 }
     }
 
+    private fun buildLivePositions(
+        balances: List<BalanceSnapshot>,
+        quotes: List<MarketQuote>,
+    ): List<PositionCardUi> {
+        return balances
+            .asSequence()
+            .filterNot { it.asset.equals("idr", ignoreCase = true) }
+            .mapNotNull { balance ->
+                val units = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+                if (units <= 0.0) return@mapNotNull null
+                val valueIdr = quoteAssetPriceIdr(balance.asset, quotes)?.let { units * it } ?: 0.0
+                if (valueIdr < MIN_VISIBLE_HOLDING_IDR) return@mapNotNull null
+                PositionCardUi(
+                    pair = "${balance.asset.lowercase()}_idr",
+                    quantity = "${formatQuantity(units)} ${balance.asset.uppercase()}",
+                    pnl = "~${formatIdr(valueIdr)}",
+                )
+            }
+            .sortedByDescending { extractCurrencyValue(it.pnl) }
+            .toList()
+    }
+
     private fun quoteAssetPriceIdr(asset: String, quotes: List<MarketQuote>): Double? {
         if (asset.equals("idr", ignoreCase = true)) return 1.0
         val directPair = "${asset.lowercase()}_idr"
@@ -278,7 +354,32 @@ class AppRepository(
     }
 
     private fun formatSignedIdr(value: Double): String {
+        if (value.absoluteValue < 0.5) return "+${formatIdr(0.0)}"
         val prefix = if (value >= 0.0) "+" else "-"
         return prefix + formatIdr(value.absoluteValue)
+    }
+
+    private fun formatQuantity(value: Double): String {
+        return when {
+            value >= 100 -> "%,.0f".format(Locale.US, value)
+            value >= 1 -> "%,.4f".format(Locale.US, value)
+            else -> "%,.8f".format(Locale.US, value)
+        }.trimEnd('0').trimEnd('.')
+    }
+
+    private fun extractCurrencyValue(label: String): Double {
+        return label
+            .replace("~", "")
+            .replace("+", "")
+            .replace("-", "")
+            .replace("Rp", "")
+            .replace(".", "")
+            .replace(",", ".")
+            .toDoubleOrNull()
+            ?: 0.0
+    }
+
+    companion object {
+        private const val MIN_VISIBLE_HOLDING_IDR = 1_000.0
     }
 }

@@ -126,69 +126,55 @@ private fun DashboardScreen(
         }
         item {
             MetricRow(
-                leftTitle = "Drawdown",
-                leftValue = "${(state.drawdownPct * 100).toInt()}%",
-                rightTitle = "Lease Term",
-                rightValue = "#${state.leaseTerm}",
+                leftTitle = "Open Posisi",
+                leftValue = state.positions.size.toString(),
+                rightTitle = "Sync",
+                rightValue = state.syncHealth,
             )
         }
         item {
             MetricRow(
-                leftTitle = "Sync Lag",
-                leftValue = state.syncLagLabel,
-                rightTitle = "Risk Gate",
+                leftTitle = "Drawdown",
+                leftValue = "${(state.drawdownPct * 100).toInt()}%",
+                rightTitle = "Risk",
                 rightValue = if (state.riskBlocked) "BLOCKED" else "ALLOWED",
             )
         }
         item {
+            SectionTitle("Holdings")
+        }
+        if (state.positions.isEmpty()) {
+            item {
+                SurfaceCard {
+                    Text("Belum ada posisi live yang aktif.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        } else {
+            items(state.positions.take(3)) { position ->
+                SurfaceCard {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column {
+                            Text(position.pair, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(position.quantity, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text(position.pnl, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        }
+        item {
             SurfaceCard {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Ringkasan Engine", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Status Engine", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("Active: ${state.activeEngine}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text("Standby: ${state.standbyEngine}")
-                    Text("Market regime: ${state.marketRegime}")
-                    Text("Profit protection: ${state.profitProtectionStatus}")
-                    Text(state.weeklyLearningSummary)
-                    Text(state.weeklyAdaptationSummary, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-        item {
-            SectionTitle("Open Positions")
-        }
-        items(state.positions) { position ->
-            SurfaceCard {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column {
-                        Text(position.pair, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text(position.quantity, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Text(position.pnl, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                }
-            }
-        }
-        item {
-            SectionTitle("Devices")
-        }
-        items(state.devices) { device ->
-            SurfaceCard {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column {
-                        Text(device.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text("Heartbeat ${device.heartbeat}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text(if (device.active) "ACTIVE" else "STANDBY", color = MaterialTheme.colorScheme.primary)
-                        Text(if (device.online) device.health else "Offline", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    Text("Pair: ${state.pairAktif}")
+                    Text("Mode: ${state.operatingMode} • Edge: ${state.edgeConfidence}")
+                    Text("Regime: ${state.marketRegime} • Profit: ${state.profitProtectionStatus}")
                 }
             }
         }
@@ -216,7 +202,7 @@ private fun HeroCard(
             Text(state.statusMessage, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatusChip(if (state.isBotRunning) "RUNNING" else "STOPPED", if (state.isBotRunning) Color(0xFF0E8A4C) else Color(0xFFB43F3F))
-                StatusChip("ACTIVE ${state.activeEngine.uppercase()}", Color(0xFF0A6FD6))
+                StatusChip("PAIR ${state.pairAktif.uppercase()}", Color(0xFF0A6FD6))
                 StatusChip("SYNC ${state.syncHealth}", Color(0xFF6B5B00))
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -286,26 +272,42 @@ private fun LogsScreen(state: KiBotUiState) {
     ) {
         item { SectionTitle("Logs & Errors") }
         item { SectionTitle("Trade History") }
-        items(state.trades) { trade ->
-            SurfaceCard {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Column {
-                        Text(trade.pair, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text(trade.side, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (state.trades.isEmpty()) {
+            item {
+                SurfaceCard {
+                    Text("Belum ada trade history live.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        } else {
+            items(state.trades) { trade ->
+                SurfaceCard {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column {
+                            Text(trade.pair, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(trade.side, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text(trade.pnl, color = MaterialTheme.colorScheme.primary)
                     }
-                    Text(trade.pnl, color = MaterialTheme.colorScheme.primary)
                 }
             }
         }
         item { SectionTitle("Logs") }
-        items(state.logs) { log ->
-            SurfaceCard {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("${log.level} • ${log.category}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                    Text(log.message)
+        if (state.logs.isEmpty()) {
+            item {
+                SurfaceCard {
+                    Text("Belum ada log terbaru.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        } else {
+            items(state.logs) { log ->
+                SurfaceCard {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("${log.level} • ${log.category}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        Text(log.message)
+                    }
                 }
             }
         }

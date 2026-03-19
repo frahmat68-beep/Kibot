@@ -74,33 +74,21 @@ data class KiBotUiState(
             activeEngine = "Android",
             standbyEngine = "Mac",
             syncHealth = "HEALTHY",
-            pnlTodayIdr = "+Rp2.150",
-            modalSaatIniIdr = "Rp102.150",
-            drawdownPct = 0.03,
+            pnlTodayIdr = "+Rp0",
+            modalSaatIniIdr = "Rp0",
+            drawdownPct = 0.0,
             dailyLossLimitPct = 0.25,
             riskBlocked = false,
-            pairAktif = "btc_idr",
+            pairAktif = "-",
             leaseTerm = 7,
-            syncLagLabel = "420 ms",
-            statusMessage = "Standby mode ready. Android can become master after health checks.",
+            syncLagLabel = "-",
+            statusMessage = "Menunggu sync live Indodax.",
             weeklyLearningSummary = "Belum ada review mingguan.",
             weeklyAdaptationSummary = "Adaptasi mingguan akan muncul setelah data cukup.",
-            positions = listOf(
-                PositionCardUi("btc_idr", "0.0004 BTC", "+Rp1.250"),
-                PositionCardUi("sol_idr", "0.3 SOL", "+Rp900"),
-            ),
-            logs = listOf(
-                LogUi("INFO", "LEASE", "Lease healthy. Last heartbeat 8s ago."),
-                LogUi("WARN", "HEALTH", "Battery low threshold nearing. Consider Mac takeover."),
-            ),
-            trades = listOf(
-                TradeUi("btc_idr", "BUY", "+Rp1.000"),
-                TradeUi("eth_idr", "SELL", "+Rp1.150"),
-            ),
-            devices = listOf(
-                DeviceStatusUi("Android Poco M3", online = true, active = true, heartbeat = "8s ago", health = "Healthy"),
-                DeviceStatusUi("MacBook Pro 2020", online = true, active = false, heartbeat = "11s ago", health = "Ready"),
-            ),
+            positions = emptyList(),
+            logs = emptyList(),
+            trades = emptyList(),
+            devices = emptyList(),
         )
     }
 }

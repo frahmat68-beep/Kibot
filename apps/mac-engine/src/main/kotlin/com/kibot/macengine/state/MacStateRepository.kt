@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.datetime.Clock
+import kotlinx.serialization.Serializable
 
 enum class MacCommand {
     REQUEST_TAKEOVER,
@@ -15,6 +16,7 @@ enum class MacCommand {
     STOP_BOT,
 }
 
+@Serializable
 data class MacDashboardState(
     val isBotRunning: Boolean,
     val effectiveState: BotEffectiveState,
