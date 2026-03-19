@@ -44,20 +44,34 @@ class CapitalDeploymentEngine(
         }
         val currentEquity = portfolio.totalEquityIdr.toDoubleOrZero()
         val openPositions = portfolio.positions.count { it.state != PositionState.CLOSED }
-        val capitalUtilizationTargetPct = (1.0 - reservePct).coerceIn(0.0, 1.0)
+        val baseCapitalUtilizationTargetPct = (1.0 - reservePct).coerceIn(0.0, 1.0)
         val baseTotalCap = (openPositions + risk.maxAllowedAdditionalPositions)
             .coerceAtMost(config.maxConcurrentPositions)
         val firstCandidate = candidates.firstOrNull()
         val secondCandidate = candidates.getOrNull(1)
         val topCandidateGap = ((firstCandidate?.rankingScore ?: 0.0) - (secondCandidate?.rankingScore ?: 0.0))
             .coerceAtLeast(0.0)
+        val dominantTierAReady = openPositions == 0 &&
+            mode.mode in setOf(BotMode.GROWTH, BotMode.ATTACK) &&
+            risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) &&
+            firstCandidate?.tier == com.kibot.shared.models.PairTier.TIER_A &&
+            firstCandidate.rankingScore >= 0.82 &&
+            firstCandidate.marketOpportunityScore >= 0.72 &&
+            topCandidateGap >= 0.08
         val secondSlotReady = risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) &&
             firstCandidate?.rankingScore?.let { it >= config.minSecondSlotRankingScore } == true &&
             secondCandidate?.let {
                 it.rankingScore >= config.minSecondSlotRankingScore &&
                     it.marketOpportunityScore >= config.minSecondSlotOpportunityScore
             } == true &&
-            topCandidateGap <= 0.12
+            topCandidateGap <= 0.08
+        val effectiveReservePct = if (dominantTierAReady) {
+            (reservePct - config.dominantTierAReserveReliefPct)
+                .coerceAtLeast(config.dominantTierAMinCashReservePct)
+        } else {
+            reservePct
+        }
+        val capitalUtilizationTargetPct = (1.0 - effectiveReservePct).coerceIn(0.0, 1.0)
         val maxActivePositions = when {
             !risk.allowNewEntries || !mode.tradingAllowed -> openPositions
             secondSlotReady -> baseTotalCap
@@ -77,7 +91,7 @@ class CapitalDeploymentEngine(
         }
         val perPositionBudget = minOf(
             risk.suggestedPerPositionBudgetIdr * budgetMultiplier,
-            currentEquity * capitalUtilizationTargetPct * config.maxPerPositionBudgetPct,
+            currentEquity * (1.0 - effectiveReservePct).coerceIn(0.0, 1.0) * config.maxPerPositionBudgetPct,
         ).coerceAtLeast(0.0)
         val allowRotation = mode.mode != BotMode.SAFE &&
             openPositions > 0 &&
@@ -92,6 +106,7 @@ class CapitalDeploymentEngine(
             if (candidates.isEmpty()) add("Belum ada kandidat yang layak memakai modal.")
             if (secondSlotReady) add("Slot kedua boleh dibuka karena dua kandidat teratas sama-sama kuat.")
             if (!secondSlotReady && topCandidateGap > 0.12) add("Kandidat teratas terlalu dominan, jadi modal lebih baik difokuskan dulu.")
+            if (dominantTierAReady) add("Cash reserve diringankan sedikit karena kandidat tier A terlihat dominan dan market masih sehat.")
             if (allowRotation) add("Boleh pertimbangkan rotasi jika kandidat baru jauh lebih unggul.")
         }
 
@@ -100,8 +115,8 @@ class CapitalDeploymentEngine(
             allowRotation = allowRotation,
             maxActivePositions = maxActivePositions,
             suggestedPerPositionBudgetIdr = perPositionBudget,
-            targetCashReservePct = reservePct,
-            capitalUtilizationTargetPct = capitalUtilizationTargetPct,
+            targetCashReservePct = effectiveReservePct,
+            capitalUtilizationTargetPct = maxOf(capitalUtilizationTargetPct, baseCapitalUtilizationTargetPct),
             preferredHorizon = candidates.firstOrNull()?.preferredHorizon,
             candidates = candidates.take(6),
             rationale = rationale,

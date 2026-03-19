@@ -30,10 +30,13 @@ import com.kibot.shared.models.ProfitProtectionStatus
 import com.kibot.shared.models.RiskLadderLevel
 import com.kibot.shared.models.StrategyMode
 import com.kibot.shared.models.SyncHealth
+import com.kibot.shared.models.WeeklyAdaptationPlan
+import com.kibot.shared.models.WeeklyLearningSummary
 import com.kibot.testkit.FakeControlPlaneGateway
 import com.kibot.testkit.FakeExchangeGateway
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.Instant
+import kotlinx.datetime.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -197,6 +200,7 @@ class MacEngineDaemonTest {
             rebasePending = false,
             highWatermarkEquityIdr = DecimalValue("102500"),
         )
+        controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
 
         val exchange = FakeExchangeGateway(
             marketQuotes = mutableListOf(
@@ -311,6 +315,24 @@ class MacEngineDaemonTest {
         displayName = "Android Poco M3",
         platform = DevicePlatform.ANDROID,
         role = DeviceRole.PRIMARY,
+    )
+
+    private fun healthyWeeklySummary() = WeeklyLearningSummary(
+        botId = botId,
+        periodStart = LocalDate(2026, 3, 8),
+        periodEnd = LocalDate(2026, 3, 15),
+        falseEntryRate = 0.08,
+        noTradeQualityScore = 0.61,
+        avoidedBadTradesIndicator = 0.42,
+        capitalUtilizationPct = 0.44,
+        productiveUtilizationPct = 0.31,
+        missedOpportunityRate = 0.16,
+        tacticalExpectancy = 0.18,
+        swingExpectancy = 0.21,
+        adaptationPlan = WeeklyAdaptationPlan(
+            notes = listOf("Healthy weekly seed."),
+        ),
+        notes = listOf("Seeded for live rollout test."),
     )
 
     private fun marketQuote(pair: String, quoteVolume: Double, rankingHint: Double) =

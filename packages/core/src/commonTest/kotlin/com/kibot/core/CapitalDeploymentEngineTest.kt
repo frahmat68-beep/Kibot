@@ -77,6 +77,23 @@ class CapitalDeploymentEngineTest {
         assertTrue(plan.suggestedPerPositionBudgetIdr < risk.suggestedPerPositionBudgetIdr)
     }
 
+    @Test
+    fun `relaxes reserve slightly when one tier a candidate is clearly dominant`() {
+        val plan = engine.plan(
+            portfolio = portfolio(),
+            rankedPairs = listOf(
+                pairScore("btc_idr", ranking = 0.88, opportunity = 0.79),
+                pairScore("sol_idr", ranking = 0.76, opportunity = 0.68),
+            ),
+            risk = risk,
+            mode = mode,
+        )
+
+        assertEquals(1, plan.maxActivePositions)
+        assertTrue(plan.targetCashReservePct < 0.13)
+        assertTrue(plan.suggestedPerPositionBudgetIdr > 44_000.0)
+    }
+
     private fun portfolio() = PortfolioSnapshot(
         botId = BotId("main"),
         balances = listOf(BalanceSnapshot("idr", DecimalValue("100000"))),

@@ -7,6 +7,11 @@ data class LeaseProtocolConfig(
 
 data class PairSelectionPolicy(
     val minDailyQuoteVolumeIdr: Double = 15_000_000.0,
+    val smallCapitalMinDailyQuoteVolumeIdr: Double = 3_000_000.0,
+    val smallCapitalMinTop5DepthIdr: Double = 75_000.0,
+    val smallCapitalMinTradeCount24h: Int = 180,
+    val smallCapitalMaxSpreadPct: Double = 0.45,
+    val smallCapitalMaxSlippagePct: Double = 0.40,
     val maxSpreadPct: Double = 0.75,
     val maxEstimatedSlippagePct: Double = 0.80,
     val minOrderBookStabilityScore: Double = 0.45,
@@ -43,6 +48,8 @@ data class RiskConfig(
     val reducedSizeMultiplier: Double = 0.75,
     val defensiveSizeMultiplier: Double = 0.50,
     val attackSizeMultiplier: Double = 1.10,
+    val dominantTierAReserveReliefPct: Double = 0.03,
+    val dominantTierAMinCashReservePct: Double = 0.10,
     val blockEntriesBelowBatteryPct: Int = 18,
     val suggestTakeoverBelowBatteryPct: Int = 30,
 )

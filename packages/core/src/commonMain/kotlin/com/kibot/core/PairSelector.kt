@@ -26,7 +26,15 @@ class PairSelector(
 
         val lenientCandidates = quotes.asSequence()
             .filter { quote ->
-                quote.quoteVolume24h.toDoubleOrZero() >= policy.minDailyQuoteVolumeIdr * 0.25 &&
+                (
+                    quote.quoteVolume24h.toDoubleOrZero() >= policy.minDailyQuoteVolumeIdr * 0.25 ||
+                        isSmallCapitalOverrideEligible(
+                            quote = quote,
+                            stabilityScore = quote.orderBookStabilityScore.coerceIn(0.0, 1.0),
+                            volumeConsistencyScore = quote.recentTradeActivityScore.coerceIn(0.0, 1.0),
+                            fillQualityScore = quote.fillQualityScore.coerceIn(0.0, 1.0),
+                        )
+                    ) &&
                     quote.spreadPct <= policy.maxSpreadPct * 1.6 &&
                     quote.estimatedSlippagePct <= policy.maxEstimatedSlippagePct * 1.6 &&
                     quote.orderBookStabilityScore >= policy.minOrderBookStabilityScore * 0.6
@@ -48,10 +56,29 @@ class PairSelector(
             baseline = policy.minDailyQuoteVolumeIdr,
             saturationMultiplier = 5.0,
         )
+        val depthScore = normalizeRatio(
+            value = minOf(quote.bidDepthTop5Idr.toDoubleOrZero(), quote.askDepthTop5Idr.toDoubleOrZero()),
+            baseline = policy.smallCapitalMinTop5DepthIdr,
+            saturationMultiplier = 5.0,
+        )
         val spreadScore = inverseThresholdScore(quote.spreadPct, policy.maxSpreadPct)
         val slippageScore = inverseThresholdScore(quote.estimatedSlippagePct, policy.maxEstimatedSlippagePct)
         val stabilityScore = quote.orderBookStabilityScore.coerceIn(0.0, 1.0)
-        val volumeConsistencyScore = quote.recentTradeActivityScore.coerceIn(0.0, 1.0)
+        val tradeCountScore = quote.tradeCount24h
+            .takeIf { it > 0 }
+            ?.toDouble()
+            ?.let {
+                normalizeRatio(
+                    value = it,
+                    baseline = policy.smallCapitalMinTradeCount24h.toDouble(),
+                    saturationMultiplier = 4.0,
+                )
+            }
+            ?: quote.recentTradeActivityScore.coerceIn(0.0, 1.0)
+        val volumeConsistencyScore = averageOf(
+            quote.recentTradeActivityScore.coerceIn(0.0, 1.0),
+            tradeCountScore,
+        )
         val volatilityQualityScore = deriveVolatilityQuality(quote)
         val trendQualityScore = deriveTrendQuality(quote)
         val historicalExpectancyScore = quote.historicalExpectancyScore.coerceIn(0.0, 1.0)
@@ -62,10 +89,18 @@ class PairSelector(
             volumeConsistencyScore,
             spreadScore,
             slippageScore,
+            depthScore,
         )
         val holdabilityScore = deriveHoldabilityScore(quote, trendQualityScore, volatilityQualityScore)
+        val smallCapitalEligible = isSmallCapitalOverrideEligible(
+            quote = quote,
+            stabilityScore = stabilityScore,
+            volumeConsistencyScore = volumeConsistencyScore,
+            fillQualityScore = fillQualityScore,
+        )
         val rankingScore = weightedAverage(
-            liquidityScore to 0.12,
+            liquidityScore to 0.10,
+            depthScore to 0.10,
             spreadScore to 0.12,
             slippageScore to 0.12,
             stabilityScore to 0.10,
@@ -83,6 +118,7 @@ class PairSelector(
             maxOf(trendQualityScore, volatilityQualityScore),
         )
         val preferredHorizon = if (
+            !smallCapitalEligible &&
             holdabilityScore >= policy.minHoldabilityForSwing &&
             trendQualityScore >= policy.minTrendScoreForSwing
         ) {
@@ -92,11 +128,16 @@ class PairSelector(
         }
 
         val rejectionReasons = buildList {
-            if (quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr) add("Likuiditas harian terlalu rendah.")
+            if (quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr && !smallCapitalEligible) {
+                add("Likuiditas harian terlalu rendah.")
+            }
             if (quote.spreadPct > policy.maxSpreadPct) add("Spread terlalu lebar.")
             if (quote.estimatedSlippagePct > policy.maxEstimatedSlippagePct) add("Estimasi slippage terlalu tinggi.")
             if (stabilityScore < policy.minOrderBookStabilityScore) add("Kualitas order book belum aman.")
             if (volumeConsistencyScore < policy.minRecentTradeActivityScore) add("Aktivitas trade terlalu tipis.")
+            if (quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr && depthScore < 0.55) {
+                add("Depth order book belum cukup aman untuk modal kecil.")
+            }
             if (fillQualityScore < policy.minFillQualityScore) add("Kualitas fill memburuk.")
             if (historicalExpectancyScore < policy.minHistoricalExpectancyScore) add("Expectancy historis belum cukup sehat.")
             if (marketOpportunityScore < policy.minFeeAdjustedEdgeScore) add("Net edge setelah biaya belum layak.")
@@ -104,6 +145,7 @@ class PairSelector(
 
         val pairTier = when {
             rejectionReasons.isNotEmpty() -> PairTier.TIER_C
+            smallCapitalEligible -> PairTier.TIER_B
             rankingScore >= policy.minTierAScore -> PairTier.TIER_A
             rankingScore >= policy.minTierBScore -> PairTier.TIER_B
             else -> PairTier.TIER_C
@@ -180,17 +222,53 @@ class PairSelector(
             baseline = policy.minDailyQuoteVolumeIdr,
             saturationMultiplier = 5.0,
         )
+        val depthScore = normalizeRatio(
+            value = minOf(quote.bidDepthTop5Idr.toDoubleOrZero(), quote.askDepthTop5Idr.toDoubleOrZero()),
+            baseline = policy.smallCapitalMinTop5DepthIdr,
+            saturationMultiplier = 5.0,
+        )
         val spreadScore = inverseThresholdScore(quote.spreadPct, policy.maxSpreadPct * 1.4)
         val slippageScore = inverseThresholdScore(quote.estimatedSlippagePct, policy.maxEstimatedSlippagePct * 1.4)
-        val tradeFlowScore = quote.recentTradeActivityScore.coerceIn(0.0, 1.0)
+        val tradeFlowScore = averageOf(
+            quote.recentTradeActivityScore.coerceIn(0.0, 1.0),
+            quote.tradeCount24h
+                .takeIf { it > 0 }
+                ?.toDouble()
+                ?.let {
+                    normalizeRatio(
+                        value = it,
+                        baseline = policy.smallCapitalMinTradeCount24h.toDouble(),
+                        saturationMultiplier = 4.0,
+                    )
+                }
+                ?: quote.recentTradeActivityScore.coerceIn(0.0, 1.0),
+        )
         val stabilityScore = quote.orderBookStabilityScore.coerceIn(0.0, 1.0)
         return weightedAverage(
-            liquidityScore to 0.32,
-            spreadScore to 0.22,
-            slippageScore to 0.22,
+            liquidityScore to 0.26,
+            depthScore to 0.16,
+            spreadScore to 0.20,
+            slippageScore to 0.20,
             tradeFlowScore to 0.14,
-            stabilityScore to 0.10,
+            stabilityScore to 0.04,
         )
+    }
+
+    private fun isSmallCapitalOverrideEligible(
+        quote: MarketQuote,
+        stabilityScore: Double,
+        volumeConsistencyScore: Double,
+        fillQualityScore: Double,
+    ): Boolean {
+        val top5DepthIdr = minOf(quote.bidDepthTop5Idr.toDoubleOrZero(), quote.askDepthTop5Idr.toDoubleOrZero())
+        return quote.quoteVolume24h.toDoubleOrZero() >= policy.smallCapitalMinDailyQuoteVolumeIdr &&
+            top5DepthIdr >= policy.smallCapitalMinTop5DepthIdr &&
+            quote.tradeCount24h >= policy.smallCapitalMinTradeCount24h &&
+            quote.spreadPct <= policy.smallCapitalMaxSpreadPct &&
+            quote.estimatedSlippagePct <= policy.smallCapitalMaxSlippagePct &&
+            stabilityScore >= maxOf(0.55, policy.minOrderBookStabilityScore) &&
+            volumeConsistencyScore >= maxOf(0.58, policy.minRecentTradeActivityScore) &&
+            fillQualityScore >= maxOf(0.58, policy.minFillQualityScore)
     }
 
     private fun inverseThresholdScore(value: Double, maxAllowed: Double): Double {
