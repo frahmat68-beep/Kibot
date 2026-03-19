@@ -77,14 +77,22 @@ class BotForegroundService : Service() {
     }
 
     private fun buildNotification(currentPair: String?, isRunning: Boolean): Notification {
-        val pairLabel = currentPair?.takeIf { it.isNotBlank() } ?: "menunggu pair"
+        val snapshot = currentSnapshot()
+        val pairLabel = currentPair?.takeIf { it.isNotBlank() }
+            ?: snapshot.activePair.takeIf { it.isNotBlank() && it != "-" }
+            ?: "scan"
         val stateLabel = if (isRunning) "ON" else "OFF"
+        val balanceLine = "${snapshot.totalEquityIdr} • ${snapshot.pnlTodayIdr}"
+        val detailLine = buildNotificationDetail(snapshot, stateLabel)
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("KiBot")
-            .setContentText("$pairLabel • $stateLabel")
+            .setContentTitle("KiBot • ${pairLabel.lowercase()}")
+            .setContentText(balanceLine)
+            .setSubText(detailLine)
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$balanceLine\n$detailLine"))
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setShowWhen(false)
             .setContentIntent(openAppIntent())
             .addAction(toggleAction(if (isRunning) "Turn OFF" else "Turn ON"))
             .build()
@@ -126,6 +134,11 @@ class BotForegroundService : Service() {
     private fun updateNotification(currentPair: String?, isRunning: Boolean) {
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID, buildNotification(currentPair, isRunning))
+    }
+
+    private fun currentSnapshot(): LiveStatusSnapshot {
+        val app = application as? com.kibot.android.KiBotApplication
+        return app?.container?.liveStatusStore?.current() ?: LiveStatusSnapshot.Empty
     }
 
     private fun toggleAction(label: String): NotificationCompat.Action {
@@ -258,6 +271,23 @@ class BotForegroundService : Service() {
             quantity.toString().take(10)
         }
         return "${rounded} ${asset.uppercase()}"
+    }
+
+    private fun buildNotificationDetail(snapshot: LiveStatusSnapshot, stateLabel: String): String {
+        val updated = formatTime(snapshot.updatedAtEpochMs)
+        val holdings = snapshot.holdings.take(2)
+            .joinToString(" • ") { holding -> holding.asset.uppercase() }
+            .ifBlank { "tidak ada aset aktif" }
+        return "$stateLabel • $updated • $holdings"
+    }
+
+    private fun formatTime(epochMs: Long): String {
+        if (epochMs <= 0L) return "--:--"
+        val local = kotlinx.datetime.Instant.fromEpochMilliseconds(epochMs)
+            .toLocalDateTime(TimeZone.of("Asia/Jakarta"))
+        val hh = local.hour.toString().padStart(2, '0')
+        val mm = local.minute.toString().padStart(2, '0')
+        return "$hh:$mm"
     }
 
     private data class HoldingCandidate(

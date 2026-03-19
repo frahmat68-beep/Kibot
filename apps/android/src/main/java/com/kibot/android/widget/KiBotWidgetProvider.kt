@@ -11,6 +11,7 @@ import com.kibot.android.MainActivity
 import com.kibot.android.R
 import com.kibot.android.runtime.BotForegroundService
 import com.kibot.android.runtime.LiveStatusSnapshot
+import kotlinx.datetime.toLocalDateTime
 
 class KiBotWidgetProvider : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
@@ -45,7 +46,7 @@ class KiBotWidgetProvider : AppWidgetProvider() {
                 val views = RemoteViews(context.packageName, R.layout.widget_kibot_status).apply {
                     setTextViewText(R.id.widget_title, "KiBot")
                     setTextViewText(R.id.widget_pair, snapshot.activePair.lowercase())
-                    setTextViewText(R.id.widget_count, "${visibleHoldings.size} aset")
+                    setTextViewText(R.id.widget_meta, "${visibleHoldings.size} aset • ${formatUpdated(snapshot.updatedAtEpochMs)}")
                     setTextViewText(R.id.widget_equity, snapshot.totalEquityIdr)
                     setTextViewText(R.id.widget_pnl, snapshot.pnlTodayIdr)
                     setTextViewText(R.id.widget_holdings, formatHoldings(visibleHoldings))
@@ -68,9 +69,18 @@ class KiBotWidgetProvider : AppWidgetProvider() {
         private fun formatHoldings(holdings: List<com.kibot.android.runtime.LiveHoldingUi>): String {
             if (holdings.isEmpty()) return "Tidak ada aset aktif."
             val lines = holdings.take(3).map { holding ->
-                "${holding.amount} • ${holding.valueIdr}"
+                "${holding.asset.uppercase()} • ${holding.amount} • ${holding.valueIdr}"
             }
             return lines.joinToString("\n")
+        }
+
+        private fun formatUpdated(epochMs: Long): String {
+            if (epochMs <= 0L) return "--:--"
+            val local = kotlinx.datetime.Instant.fromEpochMilliseconds(epochMs)
+                .toLocalDateTime(kotlinx.datetime.TimeZone.of("Asia/Jakarta"))
+            val hh = local.hour.toString().padStart(2, '0')
+            val mm = local.minute.toString().padStart(2, '0')
+            return "$hh:$mm"
         }
     }
 }
@@ -80,6 +90,7 @@ private class WidgetSnapshotStore(context: Context) {
 
     fun write(snapshot: LiveStatusSnapshot) {
         prefs.edit()
+            .putLong(KEY_UPDATED_AT, snapshot.updatedAtEpochMs)
             .putString(KEY_ACTIVE_PAIR, snapshot.activePair)
             .putString(KEY_TOTAL_EQUITY, snapshot.totalEquityIdr)
             .putString(KEY_PNL_TODAY, snapshot.pnlTodayIdr)
@@ -104,7 +115,7 @@ private class WidgetSnapshotStore(context: Context) {
             }
             .orEmpty()
         return LiveStatusSnapshot(
-            updatedAtEpochMs = 0L,
+            updatedAtEpochMs = prefs.getLong(KEY_UPDATED_AT, 0L),
             activePair = prefs.getString(KEY_ACTIVE_PAIR, null).orEmpty().ifBlank { "-" },
             totalEquityIdr = prefs.getString(KEY_TOTAL_EQUITY, null).orEmpty().ifBlank { "Rp0" },
             pnlTodayIdr = prefs.getString(KEY_PNL_TODAY, null).orEmpty().ifBlank { "+Rp0" },
@@ -114,6 +125,7 @@ private class WidgetSnapshotStore(context: Context) {
 
     companion object {
         private const val PREFS_NAME = "kibot_widget"
+        private const val KEY_UPDATED_AT = "updated_at"
         private const val KEY_ACTIVE_PAIR = "active_pair"
         private const val KEY_TOTAL_EQUITY = "total_equity"
         private const val KEY_PNL_TODAY = "pnl_today"
