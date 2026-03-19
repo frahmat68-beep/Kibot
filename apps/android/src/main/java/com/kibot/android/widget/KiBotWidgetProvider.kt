@@ -72,7 +72,14 @@ class KiBotWidgetProvider : AppWidgetProvider() {
         private fun formatHoldings(holdings: List<com.kibot.android.runtime.LiveHoldingUi>): String {
             if (holdings.isEmpty()) return "Tidak ada aset aktif."
             val lines = holdings.take(3).map { holding ->
-                "${holding.asset.uppercase()} • ${holding.valueIdr}"
+                val pnlSuffix = listOf(holding.pnlIdr, holding.pnlPctLabel)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" ")
+                    .takeIf { it.isNotBlank() }
+                buildString {
+                    append("${holding.asset.uppercase()} • ${holding.valueIdr}")
+                    if (pnlSuffix != null) append(" • $pnlSuffix")
+                }
             }
             return lines.joinToString("\n")
         }
@@ -106,8 +113,8 @@ class KiBotWidgetProvider : AppWidgetProvider() {
             val equity = snapshot.totalEquityIdr.parseRupiahLabel() ?: return "+0.0%"
             val pnl = snapshot.pnlTodayIdr.parseRupiahLabel() ?: return "+0.0%"
             val opening = (equity - pnl).takeIf { it > 0.0 } ?: return "+0.0%"
-            val pct = (pnl / opening) * 100.0
-            val prefix = if (pct >= 0.0) "+" else "-"
+            val pct = kotlin.math.abs((pnl / opening) * 100.0)
+            val prefix = if (snapshot.pnlTodayIdr.trim().startsWith("-") || pnl < 0.0) "-" else "+"
             return "$prefix${"%.1f".format(kotlin.math.abs(pct))}%"
         }
 
@@ -134,7 +141,7 @@ private class WidgetSnapshotStore(context: Context) {
             .putString(KEY_TOTAL_EQUITY, snapshot.totalEquityIdr)
             .putString(KEY_PNL_TODAY, snapshot.pnlTodayIdr)
             .putString(KEY_HOLDINGS, snapshot.holdings.joinToString("\u001F") {
-                listOf(it.asset, it.amount, it.valueIdr).joinToString("\u001E")
+                listOf(it.asset, it.amount, it.valueIdr, it.pnlIdr, it.pnlPctLabel).joinToString("\u001E")
             })
             .apply()
     }
@@ -150,6 +157,8 @@ private class WidgetSnapshotStore(context: Context) {
                     asset = parts[0],
                     amount = parts[1],
                     valueIdr = parts[2],
+                    pnlIdr = parts.getOrElse(3) { "" },
+                    pnlPctLabel = parts.getOrElse(4) { "" },
                 )
             }
             .orEmpty()

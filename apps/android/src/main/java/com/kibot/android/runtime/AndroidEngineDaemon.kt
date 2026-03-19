@@ -15,6 +15,7 @@ import com.kibot.core.LeaseProtocolConfig
 import com.kibot.core.LiveLearningReviewBuilder
 import com.kibot.core.LiveRolloutGuard
 import com.kibot.core.LiveExecutionCoordinator
+import com.kibot.core.ManagedPosition
 import com.kibot.core.ReconciliationService
 import com.kibot.core.RiskConfig
 import com.kibot.core.SituationalLearningEngine
@@ -35,13 +36,19 @@ import com.kibot.shared.models.DeviceDescriptor
 import com.kibot.shared.models.EngineHealthSnapshot
 import com.kibot.shared.models.EngineHeartbeatSnapshot
 import com.kibot.shared.models.EngineLeaseSnapshot
+import com.kibot.shared.models.ExecutionPlan
 import com.kibot.shared.models.HealthStatus
 import com.kibot.shared.models.LogLevel
+import com.kibot.shared.models.OrderSide
+import com.kibot.shared.models.OrderType
+import com.kibot.shared.models.PairId
 import com.kibot.shared.models.PortfolioSnapshot
 import com.kibot.shared.models.PositionSnapshot
 import com.kibot.shared.models.DeviceId
 import com.kibot.shared.models.ReconciliationState
 import com.kibot.shared.models.RuntimeIntelligenceUpdate
+import com.kibot.shared.models.StrategySignal
+import com.kibot.shared.models.StrategySignalType
 import com.kibot.shared.models.SyncHealth
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -97,6 +104,7 @@ class AndroidEngineDaemon(
     private var lastSuccessfulControlPlaneAt: Instant? = null
     private var lastExecutionPolicyLogSignature: String? = null
     private var lastExecutionPolicyLoggedAt: Instant? = null
+    private var forcedTrialExitConsumed = false
 
     suspend fun syncOnce(): AndroidEngineTickResult = coroutineScope {
         ensureRegistered()
@@ -271,6 +279,17 @@ class AndroidEngineDaemon(
             base = recentPersistedOrders,
             updates = reconciledOrderUpdates,
         )
+        val snapshotManagedPositions = if (resolvedBalances.isNotEmpty() && resolvedMarketQuotes.isNotEmpty()) {
+            tradeAutomationCoordinator.deriveManagedPositions(
+                balances = resolvedBalances,
+                marketQuotes = resolvedMarketQuotes,
+                reconciledOrders = effectiveRecentOrders,
+                rankedPairs = strategyCycle?.rankedPairs.orEmpty(),
+                now = now,
+            )
+        } else {
+            emptyList()
+        }
 
         var runtimeBotState = initialBotState
         var runtimeLease = initialLease
@@ -345,6 +364,17 @@ class AndroidEngineDaemon(
             runtimeLease.isHeldBy(config.device.deviceId, now) -> "Android sedang memegang lease master."
             else -> "Android standby memonitor status bot."
         }
+        val ambientLiveLogEntry = if (liveLogEntry == null && strategyCycle != null) {
+            buildAmbientLiveLogEntry(
+                now = now,
+                cycle = strategyCycle,
+                managedPositions = snapshotManagedPositions,
+                dailyRisk = effectiveDailyRisk,
+                scanUniverseCount = resolvedMarketQuotes.size,
+            )
+        } else {
+            null
+        }
 
         return@coroutineScope AndroidEngineTickResult(
             effectiveState = runtimeEffectiveState,
@@ -365,8 +395,9 @@ class AndroidEngineDaemon(
                     ?.take(4)
                     .orEmpty(),
                 statusMessage = tickStatusMessage,
+                managedPositions = snapshotManagedPositions,
             ),
-            liveLogEntry = liveLogEntry,
+            liveLogEntry = liveLogEntry ?: ambientLiveLogEntry,
         )
     }
 
@@ -602,19 +633,28 @@ class AndroidEngineDaemon(
             managedPositions = managedPositions,
             activeOrders = activePersistedOrders,
         )
-        if (exitDecision != null) {
+        val selectedExitDecision = maybeBuildTrialExitDecision(
+            now = now,
+            cycle = cycle,
+            managedPositions = managedPositions,
+            health = health,
+            balances = balances,
+            marketQuotes = marketQuotes,
+        ) ?: exitDecision
+        if (selectedExitDecision != null) {
+            val isTrialExit = selectedExitDecision.message.startsWith("Trial micro-exit")
             val preparedActiveOrders = prepareExitPath(
                 now = now,
                 lease = lease,
                 recentOrders = stabilizedOrders,
                 activePersistedOrders = activePersistedOrders,
-                exitDecision = exitDecision,
+                exitDecision = selectedExitDecision,
             )
             val result = liveExecutionCoordinator.submitExit(
                 botId = controlPlaneConfig.botId,
                 deviceId = config.device.deviceId,
                 term = lease.term,
-                executionPlan = exitDecision.executionPlan,
+                executionPlan = selectedExitDecision.executionPlan,
                 existingPersistedOrders = preparedActiveOrders,
                 exchange = exchange,
                 controlPlane = controlPlane,
@@ -626,19 +666,22 @@ class AndroidEngineDaemon(
                     else -> LogLevel.WARN
                 },
                 category = "AUTO_EXIT",
-                message = "${exitDecision.message} ${result.message}",
+                message = "${selectedExitDecision.message} ${result.message}",
             )
+            if (result.submitted && isTrialExit) {
+                forcedTrialExitConsumed = true
+            }
             return when {
                 result.submitted -> LiveLogEntry(
                     timestampEpochMs = now.toEpochMilliseconds(),
                     category = "SELL",
-                    message = "SELL ${exitDecision.position.pairId.value} • ${result.message}",
+                    message = "SELL ${selectedExitDecision.position.pairId.value} • ${result.message}",
                 )
 
                 result.failSafeTriggered -> LiveLogEntry(
                     timestampEpochMs = now.toEpochMilliseconds(),
                     category = "RISK",
-                    message = "AUTO_EXIT ${exitDecision.position.pairId.value} gagal aman • ${result.message}",
+                    message = "AUTO_EXIT ${selectedExitDecision.position.pairId.value} gagal aman • ${result.message}",
                 )
 
                 else -> null
@@ -729,18 +772,18 @@ class AndroidEngineDaemon(
     }
 
     private fun routeEntryPlanByLatency(
-        executionPlan: com.kibot.shared.models.ExecutionPlan,
+        executionPlan: ExecutionPlan,
         health: EngineHealthSnapshot,
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
     ): EntryRoutingDecision {
-        if (executionPlan.side != com.kibot.shared.models.OrderSide.BUY) {
+        if (executionPlan.side != OrderSide.BUY) {
             return EntryRoutingDecision(executionPlan = executionPlan)
         }
         val latencyMs = health.feedLatencyMs
         val quote = marketQuotes.firstOrNull { it.pairId == executionPlan.signal.pairId }
         return when {
             latencyMs == null || latencyMs <= makerFirstMaxLatencyMs -> {
-                if (executionPlan.orderType == com.kibot.shared.models.OrderType.LIMIT && executionPlan.postOnlyPreferred) {
+                if (executionPlan.orderType == OrderType.LIMIT && executionPlan.postOnlyPreferred) {
                     EntryRoutingDecision(executionPlan = executionPlan)
                 } else {
                     val makerPrice = executionPlan.signal.entryPrice
@@ -753,7 +796,7 @@ class AndroidEngineDaemon(
                         )
                     EntryRoutingDecision(
                         executionPlan = executionPlan.copy(
-                            orderType = com.kibot.shared.models.OrderType.LIMIT,
+                            orderType = OrderType.LIMIT,
                             limitPrice = makerPrice,
                             postOnlyPreferred = true,
                         ),
@@ -772,7 +815,7 @@ class AndroidEngineDaemon(
                     )
                 EntryRoutingDecision(
                     executionPlan = executionPlan.copy(
-                        orderType = com.kibot.shared.models.OrderType.LIMIT,
+                        orderType = OrderType.LIMIT,
                         limitPrice = fastLimitPrice,
                         postOnlyPreferred = false,
                     ),
@@ -1165,6 +1208,7 @@ class AndroidEngineDaemon(
         scanUniverseCount: Int,
         radarPairs: List<String>,
         statusMessage: String,
+        managedPositions: List<ManagedPosition> = emptyList(),
     ): LiveStatusSnapshot? {
         if (balances.isEmpty()) return null
         val equity = balances.sumOf { balance ->
@@ -1178,23 +1222,37 @@ class AndroidEngineDaemon(
         if (equity <= 0.0) return null
         val openingEquity = dailyRisk?.openingEquityIdr?.toDoubleOrZero() ?: equity
         val pnl = equity - openingEquity
-        val holdings = balances
-            .asSequence()
-            .filterNot { it.asset.equals("idr", ignoreCase = true) }
-            .mapNotNull { balance ->
-                val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
-                if (quantity <= 0.0) return@mapNotNull null
-                val value = quantity * (quoteAssetPriceIdr(balance.asset, marketQuotes) ?: 0.0)
-                if (value < 1_000.0) return@mapNotNull null
+        val holdings = managedPositions
+            .takeIf { it.isNotEmpty() }
+            ?.sortedByDescending { it.currentValueIdr.toDoubleOrZero() }
+            ?.take(6)
+            ?.map { position ->
+                val baseAsset = position.pairId.value.substringBefore('_').uppercase()
                 LiveHoldingUi(
-                    asset = balance.asset.uppercase(),
-                    amount = formatAssetAmount(quantity, balance.asset),
-                    valueIdr = formatIdr(value),
+                    asset = baseAsset,
+                    amount = formatAssetAmount(position.quantity.toDoubleOrZero(), baseAsset),
+                    valueIdr = formatIdr(position.currentValueIdr.toDoubleOrZero()),
+                    pnlIdr = formatSignedIdr(position.unrealizedPnlIdr.toDoubleOrZero()),
+                    pnlPctLabel = formatSignedPercentFromPct(position.unrealizedPnlPct),
                 )
             }
-            .sortedByDescending { it.valueIdr.filter(Char::isDigit).toLongOrNull() ?: 0L }
-            .take(4)
-            .toList()
+            ?: balances
+                .asSequence()
+                .filterNot { it.asset.equals("idr", ignoreCase = true) }
+                .mapNotNull { balance ->
+                    val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+                    if (quantity <= 0.0) return@mapNotNull null
+                    val value = quantity * (quoteAssetPriceIdr(balance.asset, marketQuotes) ?: 0.0)
+                    if (value < 1_000.0) return@mapNotNull null
+                    LiveHoldingUi(
+                        asset = balance.asset.uppercase(),
+                        amount = formatAssetAmount(quantity, balance.asset),
+                        valueIdr = formatIdr(value),
+                    )
+                }
+                .sortedByDescending { it.valueIdr.filter(Char::isDigit).toLongOrNull() ?: 0L }
+                .take(6)
+                .toList()
         return LiveStatusSnapshot(
             updatedAtEpochMs = now.toEpochMilliseconds(),
             activePair = currentPair ?: "-",
@@ -1206,6 +1264,174 @@ class AndroidEngineDaemon(
             holdings = holdings,
             statusMessage = statusMessage,
         )
+    }
+
+    private fun maybeBuildTrialExitDecision(
+        now: Instant,
+        cycle: StrategyCycleResult,
+        managedPositions: List<ManagedPosition>,
+        health: EngineHealthSnapshot,
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    ): com.kibot.core.ExitDecision? {
+        val targetPair = config.trialExitPair ?: return null
+        if (forcedTrialExitConsumed) return null
+        val position = managedPositions.firstOrNull { it.pairId.value.equals(targetPair, ignoreCase = true) }
+            ?: buildSyntheticTrialPosition(
+                now = now,
+                targetPair = targetPair,
+                balances = balances,
+                marketQuotes = marketQuotes,
+                cycle = cycle,
+            )
+            ?: return null
+        val currentValue = position.currentValueIdr.toDoubleOrZero()
+        if (currentValue <= 0.0 || currentValue > trialExitMaxNotionalIdr) return null
+        val orderType = if ((health.feedLatencyMs ?: 0L) > aggressiveLimitFallbackLatencyMs) {
+            OrderType.MARKET
+        } else {
+            OrderType.LIMIT
+        }
+        val exitPrice = position.currentBidPrice
+        val signal = StrategySignal(
+            pairId = position.pairId,
+            signalType = StrategySignalType.EXIT,
+            confidence = 1.0,
+            rationale = listOf("trial_micro_exit"),
+            entryPrice = exitPrice,
+            takeProfitPrice = position.takeProfitPrice,
+            stopPrice = position.stopPrice,
+            setupType = position.setupType,
+            horizon = position.horizon,
+            pairTier = position.pairTier,
+            speculativePocket = position.speculativePocket,
+            marketRegime = cycle.marketSnapshot.regime,
+            edgeConfidence = cycle.modeSnapshot.edgeConfidence,
+            expectedHoldingHours = position.expectedHoldingHours,
+            expectedNetProfitabilityPct = kotlin.math.abs(position.unrealizedPnlPct),
+        )
+        return com.kibot.core.ExitDecision(
+            position = position,
+            executionPlan = ExecutionPlan(
+                signal = signal,
+                side = OrderSide.SELL,
+                orderType = orderType,
+                quantity = position.quantity,
+                limitPrice = if (orderType == OrderType.LIMIT) exitPrice else null,
+                postOnlyPreferred = false,
+                expectedNetEdgePct = kotlin.math.abs(position.unrealizedPnlPct),
+                botMode = cycle.modeSnapshot.mode,
+                riskLadderLevel = cycle.riskDecision.riskLadderLevel,
+                pairRankingScore = cycle.rankedPairs.firstOrNull { it.pairId == position.pairId }?.rankingScore ?: 0.0,
+                speculativePocket = position.speculativePocket,
+            ),
+            reason = com.kibot.core.ExitReason.TIME_EXIT,
+            message = "Trial micro-exit ${position.pairId.value} dijalankan untuk verifikasi sell otomatis.",
+        )
+    }
+
+    private fun buildSyntheticTrialPosition(
+        now: Instant,
+        targetPair: String,
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        cycle: StrategyCycleResult,
+    ): ManagedPosition? {
+        val pairId = PairId(targetPair.lowercase())
+        val quote = marketQuotes.firstOrNull { it.pairId == pairId } ?: return null
+        val baseAsset = pairId.value.substringBefore('_')
+        val balance = balances.firstOrNull { it.asset.equals(baseAsset, ignoreCase = true) } ?: return null
+        val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+        if (quantity <= 0.0) return null
+        val quoteAsset = pairId.value.substringAfter('_', "idr")
+        val quoteAssetPrice = quoteAssetPriceIdr(quoteAsset, marketQuotes) ?: return null
+        val bidPrice = quote.bestBid.toDoubleOrZero().takeIf { it > 0.0 } ?: return null
+        val currentValue = quantity * bidPrice * quoteAssetPrice
+        if (currentValue <= 0.0) return null
+        val rankedPair = cycle.rankedPairs.firstOrNull { it.pairId == pairId }
+        return ManagedPosition(
+            pairId = pairId,
+            quantity = DecimalValue.fromDouble(quantity),
+            averageEntryPrice = DecimalValue.fromDouble(bidPrice),
+            currentBidPrice = quote.bestBid,
+            currentValueIdr = DecimalValue.fromDouble(currentValue),
+            unrealizedPnlIdr = DecimalValue.Zero,
+            unrealizedPnlPct = 0.0,
+            takeProfitPrice = quote.bestAsk,
+            stopPrice = quote.bestBid,
+            openedAt = now,
+            updatedAt = now,
+            horizon = rankedPair?.preferredHorizon ?: com.kibot.shared.models.TradingHorizon.TACTICAL,
+            setupType = rankedPair?.preferredHorizon
+                ?.let { com.kibot.shared.models.SetupType.HEALTHY_SHORT_TERM_PULLBACK }
+                ?: com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION,
+            pairTier = rankedPair?.pairTier ?: com.kibot.shared.models.PairTier.TIER_B,
+            speculativePocket = rankedPair?.speculativePocket == true,
+            expectedHoldingHours = 1.0,
+        )
+    }
+
+    private fun buildAmbientLiveLogEntry(
+        now: Instant,
+        cycle: StrategyCycleResult,
+        managedPositions: List<ManagedPosition>,
+        dailyRisk: com.kibot.shared.models.DailyRiskSnapshot?,
+        scanUniverseCount: Int,
+    ): LiveLogEntry? {
+        val candidates = cycle.deploymentPlan.candidates.map { it.pairId.value.lowercase() }.distinct()
+        val selectedSignal = cycle.selectedSignal
+        val executionPlan = cycle.executionPlan
+        val profitToday = dailyRisk?.let {
+            it.realizedPnlIdr.toDoubleOrZero() + it.unrealizedPnlIdr.toDoubleOrZero()
+        } ?: 0.0
+        val message = when {
+            executionPlan != null &&
+                cycle.modeSnapshot.tradingAllowed &&
+                cycle.riskDecision.allowNewEntries -> {
+                LiveLogEntry(
+                    timestampEpochMs = now.toEpochMilliseconds(),
+                    category = "SETUP",
+                    message = "Ancang-ancang ${executionPlan.signal.pairId.value.lowercase()}. Setup siap, tinggal cek harga dan fill.",
+                )
+            }
+
+            selectedSignal != null -> {
+                LiveLogEntry(
+                    timestampEpochMs = now.toEpochMilliseconds(),
+                    category = "TARGET",
+                    message = "Target ${selectedSignal.pairId.value.lowercase()}. Bot masih nahan entry sambil cek gate.",
+                )
+            }
+
+            managedPositions.isNotEmpty() && candidates.isNotEmpty() -> {
+                val held = managedPositions.take(2).joinToString(" • ") { it.pairId.value.lowercase() }
+                LiveLogEntry(
+                    timestampEpochMs = now.toEpochMilliseconds(),
+                    category = "ROTASI",
+                    message = "Pegang $held sambil ngawasin rotasi ke ${candidates.first()}.",
+                )
+            }
+
+            candidates.isNotEmpty() -> {
+                LiveLogEntry(
+                    timestampEpochMs = now.toEpochMilliseconds(),
+                    category = "SCAN",
+                    message = "Scan $scanUniverseCount pair. Radar: ${candidates.take(3).joinToString(" • ")}.",
+                )
+            }
+
+            kotlin.math.abs(profitToday) >= 10.0 -> {
+                val lead = candidates.firstOrNull() ?: selectedSignal?.pairId?.value?.lowercase() ?: managedPositions.firstOrNull()?.pairId?.value?.lowercase() ?: "radar"
+                LiveLogEntry(
+                    timestampEpochMs = now.toEpochMilliseconds(),
+                    category = "PROFIT",
+                    message = "Hari ini ${formatSignedIdr(profitToday)}. Bot jaga hasil sambil pantau $lead.",
+                )
+            }
+
+            else -> null
+        }
+        return message
     }
 
     private fun deriveDailyRiskSnapshot(
@@ -1330,6 +1556,11 @@ class AndroidEngineDaemon(
         return (if (value >= 0.0) "+" else "-") + formatIdr(kotlin.math.abs(value))
     }
 
+    private fun formatSignedPercentFromPct(valuePct: Double): String {
+        val prefix = if (valuePct >= 0.0) "+" else "-"
+        return "$prefix${formatDecimal(kotlin.math.abs(valuePct), 1)}%"
+    }
+
     private fun formatDecimal(value: Double, digits: Int): String = "%.${digits}f".format(java.util.Locale.US, value)
 
     private fun formatAssetAmount(value: Double, asset: String): String {
@@ -1361,6 +1592,7 @@ class AndroidEngineDaemon(
         private const val aggressiveLimitFallbackLatencyMs = 650L
         private const val entryBlockLatencyMs = 900L
         private const val executionPolicyLogCooldownMinutes = 2L
+        private const val trialExitMaxNotionalIdr = 60_000.0
         private val activeOrderStatuses = setOf(
             com.kibot.shared.models.OrderStatus.CREATED,
             com.kibot.shared.models.OrderStatus.SUBMITTING,

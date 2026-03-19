@@ -14,6 +14,7 @@ data class PositionCardUi(
     val pair: String,
     val quantity: String,
     val value: String,
+    val pnl: String = "",
 )
 
 data class LogUi(

@@ -320,6 +320,7 @@ class AppRepository(
                         asset = it.pair,
                         amount = it.quantity,
                         valueIdr = it.value,
+                        pnlIdr = it.pnl,
                     )
                 },
                 statusMessage = _uiState.value.statusMessage,
@@ -423,6 +424,7 @@ class AppRepository(
                     pair = balance.asset.uppercase(),
                     quantity = "${formatQuantity(units)} ${balance.asset.uppercase()}",
                     value = "~${formatIdr(valueIdr)}",
+                    pnl = "",
                 )
             }
             .sortedByDescending { extractCurrencyValue(it.value) }
@@ -569,6 +571,9 @@ class AppRepository(
                     pair = it.asset,
                     quantity = it.amount,
                     value = it.valueIdr,
+                    pnl = listOf(it.pnlIdr, it.pnlPctLabel)
+                        .filter { label -> label.isNotBlank() }
+                        .joinToString(" "),
                 )
             }
     }
@@ -593,7 +598,9 @@ class AppRepository(
         val equity = totalEquityIdr.parseRupiahLabel() ?: return "+0.0%"
         val pnl = pnlTodayIdr.parseRupiahLabel() ?: return "+0.0%"
         val opening = (equity - pnl).takeIf { it > 0.0 } ?: return "+0.0%"
-        return formatSignedPercent(pnl / opening)
+        val pct = kotlin.math.abs(pnl / opening)
+        val prefix = if (pnlTodayIdr.trim().startsWith("-") || pnl < 0.0) "-" else "+"
+        return prefix + "%.1f%%".format(Locale.US, pct * 100.0)
     }
 
     private fun LiveStatusSnapshot.internetPingLabel(): String {

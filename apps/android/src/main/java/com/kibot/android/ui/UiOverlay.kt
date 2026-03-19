@@ -36,8 +36,9 @@ private fun LiveStatusSnapshot.derivedPnlPctLabel(): String {
     val equity = totalEquityIdr.parseRupiahLabel() ?: return "+0.0%"
     val pnl = pnlTodayIdr.parseRupiahLabel() ?: return "+0.0%"
     val opening = (equity - pnl).takeIf { it > 0.0 } ?: return "+0.0%"
-    val pct = pnl / opening
-    return formatSignedPercent(pct)
+    val pct = kotlin.math.abs(pnl / opening)
+    val prefix = if (pnlTodayIdr.trim().startsWith("-") || pnl < 0.0) "-" else "+"
+    return prefix + "%.1f%%".format(kotlin.math.abs(pct * 100.0))
 }
 
 private fun String.parseRupiahLabel(): Double? {

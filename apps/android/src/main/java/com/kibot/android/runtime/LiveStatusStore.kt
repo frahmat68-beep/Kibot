@@ -12,6 +12,8 @@ data class LiveHoldingUi(
     val asset: String,
     val amount: String,
     val valueIdr: String,
+    val pnlIdr: String = "",
+    val pnlPctLabel: String = "",
 )
 
 data class LiveLogEntry(
@@ -150,7 +152,9 @@ class LiveStatusStore(context: Context) {
                 JSONObject()
                     .put("asset", item.asset)
                     .put("amount", item.amount)
-                    .put("value", item.valueIdr),
+                    .put("value", item.valueIdr)
+                    .put("pnl_idr", item.pnlIdr)
+                    .put("pnl_pct", item.pnlPctLabel),
             )
         }
         return array.toString()
@@ -168,6 +172,8 @@ class LiveStatusStore(context: Context) {
                             asset = item.optString("asset", "-"),
                             amount = item.optString("amount", "-"),
                             valueIdr = item.optString("value", "-"),
+                            pnlIdr = item.optString("pnl_idr", ""),
+                            pnlPctLabel = item.optString("pnl_pct", ""),
                         ),
                     )
                 }
@@ -245,7 +251,7 @@ class LiveStatusStore(context: Context) {
         private const val KEY_STATUS_MESSAGE = "status_message"
         private const val KEY_LIVE_LOGS = "live_logs"
         private const val KEY_LOG_DATE = "live_log_date"
-        private const val MAX_LIVE_LOG_ITEMS = 12
+        private const val MAX_LIVE_LOG_ITEMS = 18
         private const val LOG_DEDUP_WINDOW_MS = 90_000L
     }
 }

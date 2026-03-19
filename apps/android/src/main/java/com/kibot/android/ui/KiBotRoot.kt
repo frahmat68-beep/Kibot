@@ -1,6 +1,8 @@
 package com.kibot.android.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -308,43 +311,62 @@ private fun HoldingsPreviewCard(
                 )
             }
         } else {
-            state.positions.take(2).forEach { position ->
-                Surface(
-                    color = Color.White.copy(alpha = 0.04f),
-                    shape = RoundedCornerShape(18.dp),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 212.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                state.positions.forEach { position ->
+                    val perCoinPnl = position.pnl.takeIf { it.isNotBlank() }
+                    Surface(
+                        color = Color.White.copy(alpha = 0.04f),
+                        shape = RoundedCornerShape(18.dp),
                     ) {
                         Row(
-                            modifier = Modifier.weight(1f),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            AssetBadge(symbol = position.pair.uppercase())
-                            Column {
-                                Text(position.pair.uppercase(), fontWeight = FontWeight.Bold)
-                                Text(
-                                    position.quantity,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                AssetBadge(symbol = position.pair.uppercase())
+                                Column {
+                                    Text(position.pair.uppercase(), fontWeight = FontWeight.Bold)
+                                    Text(
+                                        position.quantity,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text(position.value, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                                if (perCoinPnl != null) {
+                                    Text(
+                                        perCoinPnl,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = pnlColor(perCoinPnl),
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                }
                             }
                         }
-                        Text(position.value, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                     }
                 }
-            }
-            if (state.positions.size > 3) {
-                Text(
-                    "+${state.positions.size - 3} aset lainnya",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (state.positions.size > 2) {
+                    Text(
+                        "Scroll untuk lihat aset lain",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -356,8 +378,8 @@ private fun LiveActivityCard(
     state: KiBotUiState,
 ) {
     SurfaceCard(modifier = modifier) {
-        Text("Live Log", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        val entries = state.liveLogEntries.take(3)
+        Text("Timeline Hari Ini", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        val entries = state.liveLogEntries.take(10)
         if (entries.isEmpty()) {
             Surface(
                 color = Color.White.copy(alpha = 0.04f),
@@ -383,44 +405,59 @@ private fun LiveActivityCard(
                 }
             }
         } else {
-            entries.forEach { entry ->
-                Surface(
-                    color = Color.White.copy(alpha = 0.04f),
-                    shape = RoundedCornerShape(18.dp),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 220.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                entries.forEach { entry ->
+                    Surface(
+                        color = Color.White.copy(alpha = 0.04f),
+                        shape = RoundedCornerShape(18.dp),
                     ) {
-                        Surface(
-                            color = liveLogTint(entry.category).copy(alpha = 0.14f),
-                            shape = RoundedCornerShape(10.dp),
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                entry.category,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                color = liveLogTint(entry.category),
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                            )
-                        }
-                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                entry.message,
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                formatLogTime(entry.timestampEpochMs),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            Surface(
+                                color = liveLogTint(entry.category).copy(alpha = 0.14f),
+                                shape = RoundedCornerShape(10.dp),
+                            ) {
+                                Text(
+                                    entry.category,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    color = liveLogTint(entry.category),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    entry.message,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    formatLogTime(entry.timestampEpochMs),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
+                }
+                if (entries.size > 3) {
+                    Text(
+                        "Scroll untuk lihat timeline lain",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
@@ -585,6 +622,11 @@ private fun liveLogTint(category: String): Color = when (category.uppercase()) {
     "BUY" -> Color(0xFF2DD881)
     "SELL" -> Color(0xFF60A5FA)
     "RISK" -> Color(0xFFF97316)
+    "SCAN" -> Color(0xFF9EC5FF)
+    "TARGET" -> Color(0xFFA78BFA)
+    "SETUP" -> Color(0xFF22C55E)
+    "ROTASI" -> Color(0xFFFACC15)
+    "PROFIT" -> Color(0xFF34D399)
     else -> Color(0xFF9EC5FF)
 }
 
