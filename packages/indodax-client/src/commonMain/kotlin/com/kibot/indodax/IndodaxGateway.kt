@@ -77,8 +77,14 @@ class IndodaxGateway internal constructor(
             val volumeIdr = quoteVolume.toDoubleOrZero()
             val volumeFactor = (volumeIdr / 50_000_000.0).coerceIn(0.0, 1.0)
             val stability = (1.0 - (spreadPct / 1.5)).coerceIn(0.0, 1.0) * 0.5 + (volumeFactor * 0.5)
-            val price24h = response.prices24h[pairId.value.replace("_", "")]?.toDoubleOrZero()?.takeIf { it > 0.0 }
-            val price7d = response.prices7d[pairId.value.replace("_", "")]?.toDoubleOrZero()?.takeIf { it > 0.0 }
+            val price24h = response.prices24h[pairId.value.replace("_", "")]
+                ?.let(::DecimalValue)
+                ?.toDoubleOrZero()
+                ?.takeIf { it > 0.0 }
+            val price7d = response.prices7d[pairId.value.replace("_", "")]
+                ?.let(::DecimalValue)
+                ?.toDoubleOrZero()
+                ?.takeIf { it > 0.0 }
             val shortTermReturnPct = percentChange(last, price24h ?: mid)
             val mediumTermReturnPct = percentChange(last, price7d ?: price24h ?: mid)
             val realizedVolatilityPct = if (low > 0.0) (((high - low) / low) * 100.0).coerceAtLeast(0.0) else 0.0
