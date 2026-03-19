@@ -10,13 +10,36 @@ class PairSelector(
     private val policy: PairSelectionPolicy = PairSelectionPolicy(),
 ) {
     fun rank(quotes: List<MarketQuote>): List<PairScore> {
-        return quotes.map(::scoreQuote).sortedWith(pairRankingComparator())
+        val candidates = prefilter(quotes)
+        return candidates.map(::scoreQuote).sortedWith(pairRankingComparator())
     }
 
     fun shortlist(quotes: List<MarketQuote>): List<PairScore> {
         return rank(quotes)
             .filter { it.allowed }
             .take(policy.shortlistSize)
+    }
+
+    private fun prefilter(quotes: List<MarketQuote>): List<MarketQuote> {
+        val poolSize = policy.prefilterCandidatePoolSize.coerceAtLeast(policy.shortlistSize)
+        if (quotes.size <= poolSize) return quotes
+
+        val lenientCandidates = quotes.asSequence()
+            .filter { quote ->
+                quote.quoteVolume24h.toDoubleOrZero() >= policy.minDailyQuoteVolumeIdr * 0.25 &&
+                    quote.spreadPct <= policy.maxSpreadPct * 1.6 &&
+                    quote.estimatedSlippagePct <= policy.maxEstimatedSlippagePct * 1.6 &&
+                    quote.orderBookStabilityScore >= policy.minOrderBookStabilityScore * 0.6
+            }
+            .sortedByDescending(::prefilterScore)
+            .take(poolSize)
+            .toList()
+
+        if (lenientCandidates.isNotEmpty()) return lenientCandidates
+
+        return quotes
+            .sortedByDescending(::prefilterScore)
+            .take(poolSize)
     }
 
     private fun scoreQuote(quote: MarketQuote): PairScore {
@@ -149,6 +172,25 @@ class PairSelector(
     private fun normalizeRatio(value: Double, baseline: Double, saturationMultiplier: Double): Double {
         if (baseline <= 0.0) return 0.0
         return (value / (baseline * saturationMultiplier)).coerceIn(0.0, 1.0)
+    }
+
+    private fun prefilterScore(quote: MarketQuote): Double {
+        val liquidityScore = normalizeRatio(
+            value = quote.quoteVolume24h.toDoubleOrZero(),
+            baseline = policy.minDailyQuoteVolumeIdr,
+            saturationMultiplier = 5.0,
+        )
+        val spreadScore = inverseThresholdScore(quote.spreadPct, policy.maxSpreadPct * 1.4)
+        val slippageScore = inverseThresholdScore(quote.estimatedSlippagePct, policy.maxEstimatedSlippagePct * 1.4)
+        val tradeFlowScore = quote.recentTradeActivityScore.coerceIn(0.0, 1.0)
+        val stabilityScore = quote.orderBookStabilityScore.coerceIn(0.0, 1.0)
+        return weightedAverage(
+            liquidityScore to 0.32,
+            spreadScore to 0.22,
+            slippageScore to 0.22,
+            tradeFlowScore to 0.14,
+            stabilityScore to 0.10,
+        )
     }
 
     private fun inverseThresholdScore(value: Double, maxAllowed: Double): Double {

@@ -40,9 +40,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlin.math.absoluteValue
 
 private enum class RootTab(val title: String) {
     Dashboard("Dashboard"),
@@ -118,20 +119,6 @@ private fun DashboardScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             CompactMetricTile(
                 modifier = Modifier.weight(1f),
-                label = "Modal",
-                value = state.modalSaatIniIdr,
-                supporting = state.activeEngine,
-            )
-            CompactMetricTile(
-                modifier = Modifier.weight(1f),
-                label = "PnL Hari Ini",
-                value = state.pnlTodayIdr,
-                supporting = "DD ${(state.drawdownPct * 100).toInt()}%",
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            CompactMetricTile(
-                modifier = Modifier.weight(1f),
                 label = "Pair",
                 value = state.pairAktif.lowercase(),
                 supporting = state.marketRegime,
@@ -155,6 +142,7 @@ private fun HeroCard(
     state: KiBotUiState,
     onToggleBot: () -> Unit,
 ) {
+    val pnlColor = pnlColor(state.pnlTodayIdr)
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
         shape = RoundedCornerShape(28.dp),
@@ -173,11 +161,9 @@ private fun HeroCard(
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("KiBot", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                     Text(
-                        state.statusMessage,
+                        "Portfolio bot",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 StatusChip(
@@ -185,17 +171,38 @@ private fun HeroCard(
                     if (state.isBotRunning) Color(0xFF0E8A4C) else Color(0xFFB43F3F),
                 )
             }
+            Text(
+                "Total saldo",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                state.modalSaatIniIdr,
+                style = MaterialTheme.typography.displaySmall,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                "PnL hari ini ${state.pnlTodayIdr} • ${state.pnlTodayPctLabel}",
+                style = MaterialTheme.typography.titleSmall,
+                color = pnlColor,
+                fontWeight = FontWeight.SemiBold,
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatusChip(state.operatingMode, Color(0xFF6959CD))
-                StatusChip(state.edgeConfidence, Color(0xFF0F8E9A))
-                StatusChip(state.riskLadderLevel, Color(0xFF8A6A12))
+                StatusChip(modeLabel(state.operatingMode), Color(0xFF6959CD))
+                StatusChip(edgeLabel(state.edgeConfidence), Color(0xFF0F8E9A))
+                StatusChip(riskLabel(state.riskLadderLevel), Color(0xFF8A6A12))
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     Text(
                         "${state.pairAktif.lowercase()} • ${state.marketRegime}",
                         style = MaterialTheme.typography.titleMedium,
@@ -209,10 +216,18 @@ private fun HeroCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                Spacer(modifier = Modifier.width(12.dp))
                 FilledTonalButton(onClick = onToggleBot) {
                     Text(if (state.isBotRunning) "Turn OFF" else "Turn ON")
                 }
             }
+            Text(
+                "Guard ${profitGuardLabel(state.profitProtectionStatus)} • ${profitGuardHint(state.profitProtectionStatus)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
@@ -262,9 +277,7 @@ private fun HoldingsPreviewCard(
                 )
             }
         }
-        Spacer(modifier = Modifier.height(4.dp))
         StatusLine("Backup", state.standbyEngine)
-        StatusLine("Profit guard", state.profitProtectionStatus)
         StatusLine("Lease", "#${state.leaseTerm}")
     }
 }
@@ -422,6 +435,53 @@ private fun SectionTitle(text: String) {
         style = MaterialTheme.typography.headlineSmall,
         fontWeight = FontWeight.SemiBold,
     )
+}
+
+private fun pnlColor(label: String): Color {
+    return when {
+        label.trim().startsWith("-") -> Color(0xFFB43F3F)
+        label.trim() == "+Rp0" || label.trim() == "Rp0" -> Color(0xFFE5E7EB)
+        else -> Color(0xFF0E8A4C)
+    }
+}
+
+private fun modeLabel(value: String): String = when (value.uppercase()) {
+    "DEFENSIVE" -> "DEFEND"
+    else -> value.uppercase()
+}
+
+private fun edgeLabel(value: String): String = when (value.uppercase()) {
+    "MEDIUM" -> "EDGE MID"
+    "HIGH" -> "EDGE HIGH"
+    "LOW" -> "EDGE LOW"
+    else -> value.uppercase()
+}
+
+private fun riskLabel(value: String): String = when (value.uppercase()) {
+    "NORMAL" -> "RISK OK"
+    "WARNING" -> "RISK WARN"
+    "REDUCE_SIZE" -> "SIZE DOWN"
+    "DEFENSIVE_MODE" -> "DEFEND"
+    "RESTRICTED_NEW_ENTRIES" -> "RESTRICT"
+    "STOP_NEW_ENTRIES" -> "PAUSE"
+    "HARD_STOP" -> "HARD STOP"
+    else -> value.uppercase()
+}
+
+private fun profitGuardLabel(value: String): String = when (value.uppercase()) {
+    "INACTIVE" -> "SIAGA"
+    "GUARDING_WEEKLY_PROFIT" -> "JAGA PROFIT"
+    "TRAILING_HIGH_WATERMARK" -> "TRAILING"
+    "COOLING_AGGRESSION" -> "COOLING"
+    else -> value.uppercase()
+}
+
+private fun profitGuardHint(value: String): String = when (value.uppercase()) {
+    "INACTIVE" -> "aktif saat profit sudah cukup untuk dijaga"
+    "GUARDING_WEEKLY_PROFIT" -> "profit mingguan mulai dilindungi"
+    "TRAILING_HIGH_WATERMARK" -> "bot menjaga high watermark agar profit tidak balik"
+    "COOLING_AGGRESSION" -> "agresivitas diturunkan sementara"
+    else -> "status guard diperbarui dari risk engine"
 }
 
 @Composable

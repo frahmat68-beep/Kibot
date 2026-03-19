@@ -63,6 +63,7 @@ class StrategyOrchestrator(
         marketQuotes: List<MarketQuote>,
         pairSupportHints: List<AiPairSupportHint> = emptyList(),
     ): StrategyCycleResult {
+        val quoteByPair = marketQuotes.associateBy { it.pairId }
         val equity = estimatePortfolioValueIdr(balances, marketQuotes)
         val syntheticPositions = deriveSyntheticPositions(balances, marketQuotes)
         val portfolio = PortfolioSnapshot(
@@ -104,6 +105,7 @@ class StrategyOrchestrator(
 
         val selectedSignal = buildSignal(
             rankedPairs = rankedPairs,
+            quoteByPair = quoteByPair,
             marketQuotes = marketQuotes,
             balances = balances,
             positions = syntheticPositions,
@@ -113,6 +115,7 @@ class StrategyOrchestrator(
         )
         val executionPlan = selectedSignal?.toExecutionPlan(
             balances = balances,
+            quoteByPair = quoteByPair,
             marketQuotes = marketQuotes,
             deploymentPlan = deploymentPlan,
             modeSnapshot = modeSnapshot,
@@ -176,6 +179,7 @@ class StrategyOrchestrator(
 
     private fun buildSignal(
         rankedPairs: List<PairScore>,
+        quoteByPair: Map<PairId, MarketQuote>,
         marketQuotes: List<MarketQuote>,
         balances: List<BalanceSnapshot>,
         positions: List<PositionSnapshot>,
@@ -205,7 +209,7 @@ class StrategyOrchestrator(
         } ?: return null
 
         val pairScore = rankedPairs.firstOrNull { it.pairId == chosenCandidate.pairId } ?: return null
-        val quote = marketQuotes.firstOrNull { it.pairId == chosenCandidate.pairId } ?: return null
+        val quote = quoteByPair[chosenCandidate.pairId] ?: return null
 
         val signalType = when {
             pairScore.preferredHorizon == TradingHorizon.SWING &&
@@ -245,11 +249,12 @@ class StrategyOrchestrator(
 
     private fun StrategySignal.toExecutionPlan(
         balances: List<BalanceSnapshot>,
+        quoteByPair: Map<PairId, MarketQuote>,
         marketQuotes: List<MarketQuote>,
         deploymentPlan: com.kibot.shared.models.CapitalDeploymentPlan,
         modeSnapshot: BotModeSnapshot,
     ): ExecutionPlan? {
-        val quote = marketQuotes.firstOrNull { it.pairId == pairId } ?: return null
+        val quote = quoteByPair[pairId] ?: return null
         val pairParts = pairId.assets()
         val quoteAssetPriceIdr = quoteAssetPriceIdr(pairParts.quoteAsset, marketQuotes) ?: return null
         val quoteBalanceUnits = balances

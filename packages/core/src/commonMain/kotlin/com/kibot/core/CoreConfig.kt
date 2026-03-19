@@ -21,6 +21,7 @@ data class PairSelectionPolicy(
     val maxAcceptedVolatilityPct: Double = 8.0,
     val minFeeAdjustedEdgeScore: Double = 0.30,
     val shortlistSize: Int = 8,
+    val prefilterCandidatePoolSize: Int = 18,
 )
 
 data class RiskConfig(

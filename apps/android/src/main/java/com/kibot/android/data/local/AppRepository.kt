@@ -140,6 +140,7 @@ class AppRepository(
         ensureDeviceRegistered()
         val now = Clock.System.now()
         val jakartaDate = now.toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
+        val currentLiveSnapshot = liveStatusStore.current().takeIf { isFreshLiveSnapshot(it, now) }
 
         val botStateDeferred = scope.async { gateway.fetchBotState(botId) }
         val leaseDeferred = scope.async { gateway.fetchLease(botId) }
@@ -150,22 +151,30 @@ class AppRepository(
                 date = jakartaDate,
             )
         }
-        val liveBalancesDeferred = scope.async { runCatching { exchangeGateway.fetchBalances() }.getOrDefault(emptyList()) }
-        val liveQuotesDeferred = scope.async { runCatching { exchangeGateway.fetchMarketQuotes() }.getOrDefault(emptyList()) }
         val lanSnapshotDeferred = scope.async { fetchLanMacSnapshot() }
+        val liveBalancesDeferred: kotlinx.coroutines.Deferred<List<BalanceSnapshot>>? = if (currentLiveSnapshot == null) {
+            scope.async { runCatching { exchangeGateway.fetchBalances() }.getOrDefault(emptyList()) }
+        } else {
+            null
+        }
+        val liveQuotesDeferred: kotlinx.coroutines.Deferred<List<MarketQuote>>? = if (currentLiveSnapshot == null) {
+            scope.async { runCatching { exchangeGateway.fetchMarketQuotes() }.getOrDefault(emptyList()) }
+        } else {
+            null
+        }
 
         val botState = botStateDeferred.await() ?: return
         val lease = leaseDeferred.await()
         val devices = devicesDeferred.await()
         val risk = riskDeferred.await()
-        val liveBalances = liveBalancesDeferred.await()
-        val liveQuotes = liveQuotesDeferred.await()
+        val liveBalances = liveBalancesDeferred?.await().orEmpty()
+        val liveQuotes = liveQuotesDeferred?.await().orEmpty()
         val lanSnapshot = lanSnapshotDeferred.await()
         val auxiliary = fetchAuxiliaryData(gateway, now)
         val logs = auxiliary.logs
         val orders = auxiliary.orders
         val weeklyReview = auxiliary.weeklyReview
-        val liveEquityIdr = estimateEquityIdr(liveBalances, liveQuotes)
+        val liveEquityIdr = currentLiveSnapshot?.totalEquityIdr?.parseRupiahLabel() ?: estimateEquityIdr(liveBalances, liveQuotes)
         val openingEquityIdr = when {
             risk?.openingEquityIdr != null -> risk.openingEquityIdr.toDoubleOrZero()
             liveEquityIdr != null -> runtimePreferenceStore.getOrRememberDailyOpeningEquity(
@@ -175,16 +184,26 @@ class AppRepository(
             else -> null
         }
         val livePnlTodayIdr = when {
+            currentLiveSnapshot != null -> currentLiveSnapshot.pnlTodayIdr.parseRupiahLabel()
             liveEquityIdr != null && openingEquityIdr != null -> liveEquityIdr - openingEquityIdr
             risk != null -> risk.realizedPnlIdr.toDoubleOrZero() + risk.unrealizedPnlIdr.toDoubleOrZero()
             else -> 0.0
         }
-        val modalSaatIniLabel = liveEquityIdr?.let(::formatIdr)
+        val modalSaatIniLabel = currentLiveSnapshot?.totalEquityIdr
+            ?: liveEquityIdr?.let(::formatIdr)
             ?: risk?.currentEquityIdr?.let { formatIdr(it.toDoubleOrZero()) }
             ?: _uiState.value.modalSaatIniIdr
-        val pnlTodayLabel = livePnlTodayIdr?.let(::formatSignedIdr)
+        val pnlTodayLabel = currentLiveSnapshot?.pnlTodayIdr
+            ?: livePnlTodayIdr?.let(::formatSignedIdr)
             ?: formatSignedIdr(0.0)
-        val livePositions = buildLivePositions(liveBalances, liveQuotes)
+        val pnlTodayPctLabel = when {
+            currentLiveSnapshot != null -> currentLiveSnapshot.derivedPnlPctLabel()
+            livePnlTodayIdr != null && openingEquityIdr != null && openingEquityIdr > 0.0 ->
+                formatSignedPercent(livePnlTodayIdr / openingEquityIdr)
+            else -> "+0.0%"
+        }
+        val livePositions = currentLiveSnapshot?.toPositionCards()
+            ?: buildLivePositions(liveBalances, liveQuotes)
 
         val activeDeviceId = lease?.currentHolder ?: botState.activeDeviceId
         val activeEngine = devices.firstOrNull { it.deviceId == activeDeviceId }?.displayName ?: "Unknown"
@@ -205,6 +224,7 @@ class AppRepository(
             standbyEngine = standbyEngine,
             syncHealth = botState.syncHealth.name,
             pnlTodayIdr = pnlTodayLabel,
+            pnlTodayPctLabel = pnlTodayPctLabel,
             modalSaatIniIdr = modalSaatIniLabel,
             drawdownPct = risk?.drawdownPct ?: _uiState.value.drawdownPct,
             dailyLossLimitPct = risk?.hardDailyLossLimitPct ?: _uiState.value.dailyLossLimitPct,
@@ -251,7 +271,7 @@ class AppRepository(
                 )
             },
         )
-        liveStatusStore.update(
+        val refreshedSnapshot = if (currentLiveSnapshot == null) {
             LiveStatusSnapshot(
                 updatedAtEpochMs = System.currentTimeMillis(),
                 activePair = botState.currentPair?.value ?: _uiState.value.pairAktif,
@@ -264,25 +284,15 @@ class AppRepository(
                         valueIdr = it.value,
                     )
                 },
-            ),
-        )
-        runCatching {
-            KiBotWidgetProvider.updateAll(
-                appContext,
-                LiveStatusSnapshot(
-                    updatedAtEpochMs = System.currentTimeMillis(),
-                    activePair = botState.currentPair?.value ?: _uiState.value.pairAktif,
-                    totalEquityIdr = modalSaatIniLabel,
-                    pnlTodayIdr = pnlTodayLabel,
-                    holdings = livePositions.map {
-                        LiveHoldingUi(
-                            asset = it.pair,
-                            amount = it.quantity,
-                            valueIdr = it.value,
-                        )
-                    },
-                ),
             )
+        } else {
+            null
+        }
+        refreshedSnapshot?.let { snapshot ->
+            liveStatusStore.update(snapshot)
+            runCatching {
+                KiBotWidgetProvider.updateAll(appContext, snapshot)
+            }
         }
         persistState()
     }
@@ -471,9 +481,54 @@ class AppRepository(
             ?: 0.0
     }
 
+    private fun LiveStatusSnapshot.toPositionCards(): List<PositionCardUi> {
+        return holdings
+            .filterNot { it.valueIdr.trim() in setOf("Rp0", "+Rp0", "-Rp0", "~Rp0") }
+            .map {
+                PositionCardUi(
+                    pair = it.asset,
+                    quantity = it.amount,
+                    value = it.valueIdr,
+                )
+            }
+    }
+
+    private fun isFreshLiveSnapshot(
+        snapshot: LiveStatusSnapshot,
+        now: Instant,
+    ): Boolean {
+        if (snapshot.updatedAtEpochMs <= 0L) return false
+        return now.toEpochMilliseconds() - snapshot.updatedAtEpochMs <= LIVE_SNAPSHOT_FRESHNESS_MS
+    }
+
+    private fun LiveStatusSnapshot.derivedPnlPctLabel(): String {
+        val equity = totalEquityIdr.parseRupiahLabel() ?: return "+0.0%"
+        val pnl = pnlTodayIdr.parseRupiahLabel() ?: return "+0.0%"
+        val opening = (equity - pnl).takeIf { it > 0.0 } ?: return "+0.0%"
+        return formatSignedPercent(pnl / opening)
+    }
+
+    private fun String.parseRupiahLabel(): Double? {
+        val cleaned = trim()
+            .replace("~", "")
+            .replace("Rp", "")
+            .replace(".", "")
+            .replace(",", ".")
+            .replace("+", "")
+        val numeric = cleaned.toDoubleOrNull() ?: return null
+        return if (trim().startsWith("-")) -numeric else numeric
+    }
+
+    private fun formatSignedPercent(value: Double): String {
+        val pct = value * 100.0
+        val prefix = if (pct >= 0.0) "+" else "-"
+        return prefix + "%.1f%%".format(Locale.US, pct.absoluteValue)
+    }
+
     companion object {
         private const val MIN_VISIBLE_HOLDING_IDR = 1_000.0
         private const val AUXILIARY_CACHE_TTL_MS = 20_000L
+        private const val LIVE_SNAPSHOT_FRESHNESS_MS = 15_000L
     }
 
     private fun defaultStatusMessage(state: BotEffectiveState): String {

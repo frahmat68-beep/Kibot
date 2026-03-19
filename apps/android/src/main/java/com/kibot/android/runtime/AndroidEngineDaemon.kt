@@ -334,6 +334,14 @@ class AndroidEngineDaemon(
         lease: EngineLeaseSnapshot?,
         localHealth: EngineHealthSnapshot,
     ): Boolean {
+        if (
+            lease != null &&
+            lease.currentHolder != config.device.deviceId &&
+            now < lease.expiresAt &&
+            !lease.conflictDetected
+        ) {
+            return false
+        }
         val balances = runCatching { exchange.fetchBalances() }.getOrDefault(emptyList())
         val openOrders = runCatching { exchange.fetchOpenOrders() }.getOrDefault(emptyList())
         val fills = openOrders.map { it.pairId }.distinct().flatMap { pairId ->
