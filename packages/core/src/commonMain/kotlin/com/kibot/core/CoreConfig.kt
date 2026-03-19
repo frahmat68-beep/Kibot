@@ -20,8 +20,8 @@ data class PairSelectionPolicy(
     val idealVolatilityPct: Double = 2.25,
     val maxAcceptedVolatilityPct: Double = 8.0,
     val minFeeAdjustedEdgeScore: Double = 0.30,
-    val shortlistSize: Int = 8,
-    val prefilterCandidatePoolSize: Int = 18,
+    val shortlistSize: Int = 10,
+    val prefilterCandidatePoolSize: Int = 22,
 )
 
 data class RiskConfig(
@@ -32,14 +32,14 @@ data class RiskConfig(
     val restrictedEntriesDrawdownPct: Double = 0.15,
     val stopNewEntriesDrawdownPct: Double = 0.18,
     val maxConcurrentPositions: Int = 2,
-    val minimumCashReservePct: Double = 0.16,
+    val minimumCashReservePct: Double = 0.13,
     val defensiveCashReservePct: Double = 0.40,
     val attackCashReservePct: Double = 0.14,
-    val maxPerPositionBudgetPct: Double = 0.62,
-    val minSecondSlotRankingScore: Double = 0.76,
-    val minSecondSlotOpportunityScore: Double = 0.68,
-    val singlePositionBudgetBoostMultiplier: Double = 1.08,
-    val multiPositionBudgetSplitMultiplier: Double = 0.92,
+    val maxPerPositionBudgetPct: Double = 0.68,
+    val minSecondSlotRankingScore: Double = 0.74,
+    val minSecondSlotOpportunityScore: Double = 0.65,
+    val singlePositionBudgetBoostMultiplier: Double = 1.14,
+    val multiPositionBudgetSplitMultiplier: Double = 0.95,
     val reducedSizeMultiplier: Double = 0.75,
     val defensiveSizeMultiplier: Double = 0.50,
     val attackSizeMultiplier: Double = 1.10,
@@ -87,5 +87,5 @@ data class StrategyExecutionConfig(
     val defensiveMinRankingScore: Double = 0.82,
     val attackMinRankingScore: Double = 0.68,
     val minExpectedOpportunityScore: Double = 0.58,
-    val candidateCount: Int = 6,
+    val candidateCount: Int = 7,
 )

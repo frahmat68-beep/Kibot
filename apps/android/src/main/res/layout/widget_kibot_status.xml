@@ -5,7 +5,7 @@
     android:layout_height="match_parent"
     android:background="@drawable/widget_kibot_background"
     android:orientation="vertical"
-    android:padding="14dp">
+    android:padding="16dp">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -43,7 +43,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
-        android:text="0 aset • --:--"
+        android:text="Update --:--"
         android:textColor="#A8B7D7"
         android:textSize="12sp" />
 
@@ -57,15 +57,36 @@
         android:textSize="26sp"
         android:textStyle="bold" />
 
-    <TextView
-        android:id="@+id/widget_pnl"
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="2dp"
-        android:text="+Rp0"
-        android:textColor="#72E4B8"
-        android:textSize="13sp"
-        android:textStyle="bold" />
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/widget_pnl"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/widget_pnl_neutral"
+            android:paddingLeft="10dp"
+            android:paddingTop="4dp"
+            android:paddingRight="10dp"
+            android:paddingBottom="4dp"
+            android:text="+Rp0"
+            android:textColor="#E5E7EB"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/widget_positions_count"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginLeft="8dp"
+            android:text="0 aset"
+            android:textColor="#A8B7D7"
+            android:textSize="12sp" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/widget_holdings"
@@ -74,7 +95,7 @@
         android:layout_marginTop="10dp"
         android:ellipsize="end"
         android:maxLines="2"
-        android:text="Tidak ada holdings yang aktif."
+        android:text="Tidak ada aset aktif."
         android:textColor="#C7D3EA"
         android:textSize="12sp" />
 

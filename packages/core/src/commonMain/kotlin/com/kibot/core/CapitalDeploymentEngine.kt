@@ -64,7 +64,7 @@ class CapitalDeploymentEngine(
         val hasNewSlotCapacity = maxActivePositions > openPositions
         val budgetMultiplier = when {
             maxActivePositions <= 1 &&
-                firstCandidate?.rankingScore?.let { it >= 0.84 } == true &&
+                firstCandidate?.rankingScore?.let { it >= 0.80 } == true &&
                 risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) ->
                 config.singlePositionBudgetBoostMultiplier
             maxActivePositions >= 2 ->
@@ -77,7 +77,7 @@ class CapitalDeploymentEngine(
         ).coerceAtLeast(0.0)
         val allowRotation = mode.mode != BotMode.SAFE &&
             openPositions > 0 &&
-            candidates.firstOrNull()?.rankingScore?.let { it >= 0.82 } == true
+            candidates.firstOrNull()?.rankingScore?.let { it >= 0.80 } == true
 
         val rationale = buildList {
             if (!risk.allowNewEntries) add("Entry baru diblokir oleh risk engine.")
@@ -97,7 +97,7 @@ class CapitalDeploymentEngine(
             targetCashReservePct = reservePct,
             capitalUtilizationTargetPct = capitalUtilizationTargetPct,
             preferredHorizon = candidates.firstOrNull()?.preferredHorizon,
-            candidates = candidates.take(5),
+            candidates = candidates.take(6),
             rationale = rationale,
         )
     }

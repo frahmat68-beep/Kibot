@@ -46,10 +46,13 @@ class KiBotWidgetProvider : AppWidgetProvider() {
                 val views = RemoteViews(context.packageName, R.layout.widget_kibot_status).apply {
                     setTextViewText(R.id.widget_title, "KiBot")
                     setTextViewText(R.id.widget_pair, snapshot.activePair.lowercase())
-                    setTextViewText(R.id.widget_meta, "${visibleHoldings.size} aset • ${formatUpdated(snapshot.updatedAtEpochMs)}")
+                    setTextViewText(R.id.widget_meta, "Update ${formatUpdated(snapshot.updatedAtEpochMs)}")
                     setTextViewText(R.id.widget_equity, snapshot.totalEquityIdr)
                     setTextViewText(R.id.widget_pnl, snapshot.pnlTodayIdr)
+                    setTextViewText(R.id.widget_positions_count, "${visibleHoldings.size} aset")
                     setTextViewText(R.id.widget_holdings, formatHoldings(visibleHoldings))
+                    setTextColor(R.id.widget_pnl, pnlTextColor(snapshot.pnlTodayIdr))
+                    setInt(R.id.widget_pnl, "setBackgroundResource", pnlBadgeBackground(snapshot.pnlTodayIdr))
                     setOnClickPendingIntent(R.id.widget_root, openAppIntent(context))
                 }
                 appWidgetManager.updateAppWidget(widgetId, views)
@@ -69,9 +72,25 @@ class KiBotWidgetProvider : AppWidgetProvider() {
         private fun formatHoldings(holdings: List<com.kibot.android.runtime.LiveHoldingUi>): String {
             if (holdings.isEmpty()) return "Tidak ada aset aktif."
             val lines = holdings.take(3).map { holding ->
-                "${holding.asset.uppercase()} • ${holding.amount} • ${holding.valueIdr}"
+                "${holding.asset.uppercase()} • ${holding.valueIdr}"
             }
             return lines.joinToString("\n")
+        }
+
+        private fun pnlTextColor(label: String): Int {
+            return when {
+                label.trim().startsWith("-") -> 0xFFEF4444.toInt()
+                label.trim() == "+Rp0" || label.trim() == "Rp0" -> 0xFFE5E7EB.toInt()
+                else -> 0xFF2DD881.toInt()
+            }
+        }
+
+        private fun pnlBadgeBackground(label: String): Int {
+            return when {
+                label.trim().startsWith("-") -> R.drawable.widget_pnl_negative
+                label.trim() == "+Rp0" || label.trim() == "Rp0" -> R.drawable.widget_pnl_neutral
+                else -> R.drawable.widget_pnl_positive
+            }
         }
 
         private fun formatUpdated(epochMs: Long): String {
