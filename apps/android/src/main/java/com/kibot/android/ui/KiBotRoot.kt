@@ -12,15 +12,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Notes
 import androidx.compose.material.icons.outlined.Dashboard
-import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.Wifi
+import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
@@ -40,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -116,21 +120,6 @@ private fun DashboardScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         HeroCard(state = state, onToggleBot = onToggleBot)
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            CompactMetricTile(
-                modifier = Modifier.weight(1f),
-                label = "Pair aktif",
-                value = state.pairAktif.lowercase(),
-                supporting = regimeLabel(state.marketRegime),
-            )
-            CompactMetricTile(
-                modifier = Modifier.weight(1f),
-                label = "Ping Internet",
-                value = state.internetPingLabel,
-                supporting = "Market ping",
-            )
-        }
-        OpsOverviewCard(state = state)
         HoldingsPreviewCard(
             modifier = Modifier.fillMaxWidth(),
             state = state,
@@ -144,77 +133,124 @@ private fun HeroCard(
     onToggleBot: () -> Unit,
 ) {
     val pnlColor = pnlColor(state.pnlTodayIdr)
+    val pingState = pingVisual(state.isBotRunning, state.internetPingLabel)
     Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         shape = RoundedCornerShape(28.dp),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .background(
+                    brush = Brush.linearGradient(
+                        colors = listOf(
+                            Color(0xFF17233F),
+                            Color(0xFF111A31),
+                            Color(0xFF0F172A),
+                        ),
+                    ),
+                    shape = RoundedCornerShape(28.dp),
+                )
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("KiBot", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        "Saldo bot",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                Text("KiBot", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Surface(
+                    color = pingState.tint.copy(alpha = 0.18f),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = if (pingState.online) Icons.Outlined.Wifi else Icons.Outlined.WifiOff,
+                            contentDescription = "Ping internet",
+                            tint = pingState.tint,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            pingState.label,
+                            color = pingState.tint,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
                 }
-                StatusChip(
-                    if (state.isBotRunning) "RUNNING" else "STOPPED",
-                    if (state.isBotRunning) Color(0xFF0E8A4C) else Color(0xFFB43F3F),
-                )
             }
             Text(
-                "Total saldo",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
                 state.modalSaatIniIdr,
-                style = MaterialTheme.typography.displaySmall,
+                style = MaterialTheme.typography.displayMedium,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                "PnL hari ini ${state.pnlTodayIdr} • ${state.pnlTodayPctLabel}",
-                style = MaterialTheme.typography.titleSmall,
-                color = pnlColor,
-                fontWeight = FontWeight.SemiBold,
-            )
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                Text(
+                    state.pnlTodayIdr,
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = pnlColor,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Surface(
+                    color = pnlColor.copy(alpha = 0.14f),
+                    shape = RoundedCornerShape(12.dp),
                 ) {
                     Text(
-                        "${state.pairAktif.lowercase()} • ${regimeLabel(state.marketRegime)}",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        "${state.syncPathLabel} • ${state.lastUpdatedLabel}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        state.pnlTodayPctLabel,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        color = pnlColor,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.labelLarge,
                     )
                 }
-                Spacer(modifier = Modifier.width(12.dp))
-                FilledTonalButton(onClick = onToggleBot) {
-                    Text(if (state.isBotRunning) "Turn OFF" else "Turn ON")
+            }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Color.White.copy(alpha = 0.06f),
+                shape = RoundedCornerShape(22.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AssetBadge(symbol = state.pairAktif.substringBefore('_').uppercase())
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                state.pairAktif.lowercase(),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                regimeLabel(state.marketRegime),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    FilledTonalButton(onClick = onToggleBot) {
+                        Text(if (state.isBotRunning) "Turn OFF" else "Turn ON")
+                    }
                 }
             }
         }
@@ -222,40 +258,24 @@ private fun HeroCard(
 }
 
 @Composable
-private fun OpsOverviewCard(
-    state: KiBotUiState,
+private fun AssetBadge(
+    symbol: String,
 ) {
-    SurfaceCard {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            CompactMetricTile(
-                modifier = Modifier.weight(1f),
-                label = "Mode",
-                value = modeLabel(state.operatingMode),
-                supporting = edgeLabel(state.edgeConfidence),
-            )
-            CompactMetricTile(
-                modifier = Modifier.weight(1f),
-                label = "Safety",
-                value = riskLabel(state.riskLadderLevel),
-                supporting = profitGuardLabel(state.profitProtectionStatus),
+    val normalized = symbol.ifBlank { "?" }
+    val accent = assetAccent(normalized)
+    Surface(
+        color = accent.copy(alpha = 0.18f),
+        shape = CircleShape,
+        modifier = Modifier.size(40.dp),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                normalized.take(2),
+                color = accent,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
             )
         }
-        StatusLine("Sinkron", "${state.syncPathLabel} • ${state.syncLagLabel}")
-        StatusLine("Backup", state.standbyEngine)
-    }
-}
-
-@Composable
-private fun CompactMetricTile(
-    modifier: Modifier = Modifier,
-    label: String,
-    value: String,
-    supporting: String,
-) {
-    SurfaceCard(modifier = modifier) {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        Text(supporting, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -269,28 +289,45 @@ private fun HoldingsPreviewCard(
         if (state.positions.isEmpty()) {
             Text("Belum ada aset aktif di akun bot.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            state.positions.take(2).forEach { position ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+            state.positions.take(3).forEach { position ->
+                Surface(
+                    color = Color.White.copy(alpha = 0.04f),
+                    shape = RoundedCornerShape(18.dp),
                 ) {
-                    Column {
-                        Text(position.pair.uppercase(), fontWeight = FontWeight.Bold)
-                        Text(position.quantity, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            AssetBadge(symbol = position.pair.uppercase())
+                            Column {
+                                Text(position.pair.uppercase(), fontWeight = FontWeight.Bold)
+                                Text(
+                                    position.quantity,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        Text(position.value, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                     }
-                    Text(position.value, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                 }
             }
-            if (state.positions.size > 2) {
+            if (state.positions.size > 3) {
                 Text(
-                    "+${state.positions.size - 2} aset lainnya",
+                    "+${state.positions.size - 3} aset lainnya",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
-        StatusLine("Backup", state.standbyEngine)
     }
 }
 
@@ -409,20 +446,6 @@ private fun SurfaceCard(
 }
 
 @Composable
-private fun MetricCard(
-    modifier: Modifier = Modifier,
-    label: String,
-    value: String,
-    supporting: String,
-) {
-    SurfaceCard(modifier = modifier) {
-        Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        Text(supporting, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-@Composable
 private fun StatusChip(
     label: String,
     tint: Color,
@@ -453,31 +476,8 @@ private fun pnlColor(label: String): Color {
     return when {
         label.trim().startsWith("-") -> Color(0xFFB43F3F)
         label.trim() == "+Rp0" || label.trim() == "Rp0" -> Color(0xFFE5E7EB)
-        else -> Color(0xFF0E8A4C)
+        else -> Color(0xFF2DD881)
     }
-}
-
-private fun modeLabel(value: String): String = when (value.uppercase()) {
-    "DEFENSIVE" -> "DEFEND"
-    else -> value.uppercase()
-}
-
-private fun edgeLabel(value: String): String = when (value.uppercase()) {
-    "MEDIUM" -> "EDGE MID"
-    "HIGH" -> "EDGE HIGH"
-    "LOW" -> "EDGE LOW"
-    else -> value.uppercase()
-}
-
-private fun riskLabel(value: String): String = when (value.uppercase()) {
-    "NORMAL" -> "RISK OK"
-    "WARNING" -> "RISK WARN"
-    "REDUCE_SIZE" -> "SIZE DOWN"
-    "DEFENSIVE_MODE" -> "DEFEND"
-    "RESTRICTED_NEW_ENTRIES" -> "RESTRICT"
-    "STOP_NEW_ENTRIES" -> "PAUSE"
-    "HARD_STOP" -> "HARD STOP"
-    else -> value.uppercase()
 }
 
 private fun regimeLabel(value: String): String = when (value.uppercase()) {
@@ -486,22 +486,6 @@ private fun regimeLabel(value: String): String = when (value.uppercase()) {
     "HIGH_VOLATILITY_UNCLEAR" -> "Volatil tinggi"
     "BREAKDOWN_PANIC" -> "Panic"
     else -> value.replace('_', ' ').lowercase().replaceFirstChar { it.titlecase() }
-}
-
-private fun profitGuardLabel(value: String): String = when (value.uppercase()) {
-    "INACTIVE" -> "SIAGA"
-    "GUARDING_WEEKLY_PROFIT" -> "JAGA PROFIT"
-    "TRAILING_HIGH_WATERMARK" -> "TRAILING"
-    "COOLING_AGGRESSION" -> "COOLING"
-    else -> value.uppercase()
-}
-
-private fun profitGuardHint(value: String): String = when (value.uppercase()) {
-    "INACTIVE" -> "aktif saat profit sudah cukup untuk dijaga"
-    "GUARDING_WEEKLY_PROFIT" -> "profit mingguan mulai dilindungi"
-    "TRAILING_HIGH_WATERMARK" -> "bot menjaga high watermark agar profit tidak balik"
-    "COOLING_AGGRESSION" -> "agresivitas diturunkan sementara"
-    else -> "status guard diperbarui dari risk engine"
 }
 
 @Composable
@@ -519,5 +503,41 @@ private fun StatusLine(label: String, value: String) {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+private data class PingVisualState(
+    val label: String,
+    val tint: Color,
+    val online: Boolean,
+)
+
+private fun pingVisual(
+    isBotRunning: Boolean,
+    label: String,
+): PingVisualState {
+    if (!isBotRunning) {
+        return PingVisualState("OFF", Color(0xFF94A3B8), online = false)
+    }
+    val ms = label.substringBefore(" ").toLongOrNull()
+    if (ms == null) {
+        return PingVisualState("--", Color(0xFFF59E0B), online = false)
+    }
+    val tint = when {
+        ms <= 180L -> Color(0xFF2DD881)
+        ms <= 320L -> Color(0xFFF59E0B)
+        else -> Color(0xFFEF4444)
+    }
+    return PingVisualState("${ms} ms", tint, online = true)
+}
+
+private fun assetAccent(symbol: String): Color {
+    return when (symbol.lowercase()) {
+        "btc", "bitcoin" -> Color(0xFFF7931A)
+        "eth", "ethereum" -> Color(0xFF8B93A7)
+        "sol", "solana" -> Color(0xFF8B5CF6)
+        "xrp" -> Color(0xFF60A5FA)
+        "usdt" -> Color(0xFF22C55E)
+        else -> Color(0xFFA78BFA)
     }
 }
