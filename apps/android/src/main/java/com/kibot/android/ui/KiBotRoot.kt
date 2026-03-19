@@ -231,19 +231,21 @@ private fun HeroCard(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        AssetBadge(symbol = state.pairAktif.substringBefore('_').uppercase())
+                        AssetBadge(symbol = visiblePairLabel(state).substringBefore('_').uppercase())
                         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(
-                                state.pairAktif.lowercase(),
+                                visiblePairLabel(state),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
                             Text(
-                                regimeLabel(state.marketRegime),
+                                radarSummary(state),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
@@ -491,12 +493,21 @@ private fun pnlColor(label: String): Color {
     }
 }
 
-private fun regimeLabel(value: String): String = when (value.uppercase()) {
-    "HEALTHY_UPTREND" -> "Uptrend sehat"
-    "HEALTHY_SIDEWAYS" -> "Sideways sehat"
-    "HIGH_VOLATILITY_UNCLEAR" -> "Volatil tinggi"
-    "BREAKDOWN_PANIC" -> "Panic"
-    else -> value.replace('_', ' ').lowercase().replaceFirstChar { it.titlecase() }
+private fun radarSummary(state: KiBotUiState): String {
+    val active = state.pairAktif.takeUnless { it.isBlank() || it == "-" }?.lowercase()
+    val radar = state.radarPairs
+        .filter { it.isNotBlank() && it != "-" }
+        .map { it.lowercase() }
+        .filterNot { it == active }
+        .take(3)
+        .joinToString(" • ")
+    val count = state.scanUniverseCount.takeIf { it > 0 }?.let { "Scan $it pair" } ?: "Scan berjalan"
+    return if (radar.isBlank()) count else "$count • $radar"
+}
+
+private fun visiblePairLabel(state: KiBotUiState): String {
+    val active = state.pairAktif.takeUnless { it.isBlank() || it == "-" }?.lowercase()
+    return active ?: state.radarPairs.firstOrNull()?.lowercase() ?: "scan"
 }
 
 @Composable

@@ -148,7 +148,9 @@ class AppRepository(
         ensureDeviceRegistered()
         val now = Clock.System.now()
         val jakartaDate = now.toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
-        val currentLiveSnapshot = liveStatusStore.current().takeIf { isFreshLiveSnapshot(it, now) }
+        val storedLiveSnapshot = liveStatusStore.current().takeIf { it.updatedAtEpochMs > 0L }
+        val currentLiveSnapshot = storedLiveSnapshot?.takeIf { isFreshLiveSnapshot(it, now) }
+        val uiPreferredSnapshot = currentLiveSnapshot ?: storedLiveSnapshot?.takeIf { isUiUsableLiveSnapshot(it, now) }
 
         val botStateDeferred = scope.async { gateway.fetchBotState(botId) }
         val leaseDeferred = scope.async { gateway.fetchLease(botId) }
@@ -160,12 +162,12 @@ class AppRepository(
             )
         }
         val lanSnapshotDeferred = scope.async { fetchLanMacSnapshot() }
-        val liveBalancesDeferred: kotlinx.coroutines.Deferred<List<BalanceSnapshot>>? = if (currentLiveSnapshot == null) {
+        val liveBalancesDeferred: kotlinx.coroutines.Deferred<List<BalanceSnapshot>>? = if (uiPreferredSnapshot == null) {
             scope.async { runCatching { exchangeGateway.fetchBalances() }.getOrDefault(emptyList()) }
         } else {
             null
         }
-        val liveQuotesDeferred: kotlinx.coroutines.Deferred<List<MarketQuote>>? = if (currentLiveSnapshot == null) {
+        val liveQuotesDeferred: kotlinx.coroutines.Deferred<List<MarketQuote>>? = if (uiPreferredSnapshot == null) {
             scope.async { runCatching { exchangeGateway.fetchMarketQuotes() }.getOrDefault(emptyList()) }
         } else {
             null
@@ -182,7 +184,7 @@ class AppRepository(
         val logs = auxiliary.logs
         val orders = auxiliary.orders
         val weeklyReview = auxiliary.weeklyReview
-        val liveEquityIdr = currentLiveSnapshot?.totalEquityIdr?.parseRupiahLabel() ?: estimateEquityIdr(liveBalances, liveQuotes)
+        val liveEquityIdr = uiPreferredSnapshot?.totalEquityIdr?.parseRupiahLabel() ?: estimateEquityIdr(liveBalances, liveQuotes)
         val openingEquityIdr = when {
             risk?.openingEquityIdr != null -> risk.openingEquityIdr.toDoubleOrZero()
             liveEquityIdr != null -> runtimePreferenceStore.getOrRememberDailyOpeningEquity(
@@ -192,25 +194,25 @@ class AppRepository(
             else -> null
         }
         val livePnlTodayIdr = when {
-            currentLiveSnapshot != null -> currentLiveSnapshot.pnlTodayIdr.parseRupiahLabel()
+            uiPreferredSnapshot != null -> uiPreferredSnapshot.pnlTodayIdr.parseRupiahLabel()
             liveEquityIdr != null && openingEquityIdr != null -> liveEquityIdr - openingEquityIdr
             risk != null -> risk.realizedPnlIdr.toDoubleOrZero() + risk.unrealizedPnlIdr.toDoubleOrZero()
             else -> 0.0
         }
-        val modalSaatIniLabel = currentLiveSnapshot?.totalEquityIdr
+        val modalSaatIniLabel = uiPreferredSnapshot?.totalEquityIdr
             ?: liveEquityIdr?.let(::formatIdr)
             ?: risk?.currentEquityIdr?.let { formatIdr(it.toDoubleOrZero()) }
             ?: _uiState.value.modalSaatIniIdr
-        val pnlTodayLabel = currentLiveSnapshot?.pnlTodayIdr
+        val pnlTodayLabel = uiPreferredSnapshot?.pnlTodayIdr
             ?: livePnlTodayIdr?.let(::formatSignedIdr)
             ?: formatSignedIdr(0.0)
         val pnlTodayPctLabel = when {
-            currentLiveSnapshot != null -> currentLiveSnapshot.derivedPnlPctLabel()
+            uiPreferredSnapshot != null -> uiPreferredSnapshot.derivedPnlPctLabel()
             livePnlTodayIdr != null && openingEquityIdr != null && openingEquityIdr > 0.0 ->
                 formatSignedPercent(livePnlTodayIdr / openingEquityIdr)
             else -> "+0.0%"
         }
-        val livePositions = currentLiveSnapshot?.toPositionCards()
+        val livePositions = uiPreferredSnapshot?.toPositionCards()
             ?: buildLivePositions(liveBalances, liveQuotes)
 
         val activeDeviceId = lease?.currentHolder ?: botState.activeDeviceId
@@ -218,6 +220,10 @@ class AppRepository(
         val standbyEngine = devices.firstOrNull { it.deviceId != activeDeviceId && !it.isRevoked }?.displayName ?: "Waiting"
         val lastHeartbeatMillis = botState.lastHeartbeatAt?.toEpochMilliseconds() ?: System.currentTimeMillis()
         val syncLagMillis = (System.currentTimeMillis() - lastHeartbeatMillis).coerceAtLeast(0)
+        val candidateSummary = (uiPreferredSnapshot?.radarPairs ?: botState.activeCandidatePairs.map { it.value })
+            .take(3)
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString(" • ") { it.lowercase() }
         runtimePreferenceStore.setDesiredOn(botState.desiredState == BotDesiredState.ON)
 
         _uiState.value = _uiState.value.copy(
@@ -231,19 +237,31 @@ class AppRepository(
             activeEngine = activeEngine,
             standbyEngine = standbyEngine,
             syncHealth = botState.syncHealth.name,
-            internetPingLabel = currentLiveSnapshot?.internetPingLabel() ?: _uiState.value.internetPingLabel,
+            internetPingLabel = uiPreferredSnapshot?.internetPingLabel() ?: _uiState.value.internetPingLabel,
             pnlTodayIdr = pnlTodayLabel,
             pnlTodayPctLabel = pnlTodayPctLabel,
             modalSaatIniIdr = modalSaatIniLabel,
+            scanUniverseCount = uiPreferredSnapshot?.scanUniverseCount
+                ?: _uiState.value.scanUniverseCount,
+            radarPairs = uiPreferredSnapshot?.radarPairs?.takeIf { it.isNotEmpty() }
+                ?: botState.activeCandidatePairs.map { it.value }.takeIf { it.isNotEmpty() }
+                ?: _uiState.value.radarPairs,
             drawdownPct = risk?.drawdownPct ?: _uiState.value.drawdownPct,
             dailyLossLimitPct = risk?.hardDailyLossLimitPct ?: _uiState.value.dailyLossLimitPct,
             riskBlocked = risk?.hardStopTriggered == true,
-            pairAktif = botState.currentPair?.value ?: "-",
+            pairAktif = uiPreferredSnapshot?.activePair
+                ?.takeIf { it.isNotBlank() && it != "-" }
+                ?: botState.currentPair?.value
+                ?: botState.activeCandidatePairs.firstOrNull()?.value
+                ?: _uiState.value.radarPairs.firstOrNull()
+                ?: _uiState.value.pairAktif,
             leaseTerm = lease?.term?.value ?: botState.currentTerm.value,
             syncLagLabel = formatSyncLag(syncLagMillis),
             syncPathLabel = resolveSyncPathLabel(lanSnapshot),
             lastUpdatedLabel = formatLastUpdated(now),
-            statusMessage = botState.safeModeReason ?: defaultStatusMessage(botState.effectiveState),
+            statusMessage = botState.safeModeReason
+                ?: candidateSummary?.let { "Radar aktif: $it" }
+                ?: defaultStatusMessage(botState.effectiveState),
             weeklyLearningSummary = weeklyReview?.let {
                 "Week ${it.periodStart} - ${it.periodEnd} • no-trade ${(it.noTradeQualityScore * 100).toInt()}% • util ${(it.productiveUtilizationPct * 100).toInt()}%"
             } ?: "Belum ada review mingguan.",
@@ -276,12 +294,18 @@ class AppRepository(
                 )
             },
         )
-        val refreshedSnapshot = if (currentLiveSnapshot == null) {
+        val refreshedSnapshot = if (uiPreferredSnapshot == null) {
             LiveStatusSnapshot(
                 updatedAtEpochMs = System.currentTimeMillis(),
-                activePair = botState.currentPair?.value ?: _uiState.value.pairAktif,
+                activePair = botState.currentPair?.value
+                    ?: _uiState.value.pairAktif
+                    .takeIf { it.isNotBlank() && it != "-" }
+                    ?: _uiState.value.radarPairs.firstOrNull()
+                    ?: "-",
                 totalEquityIdr = modalSaatIniLabel,
                 pnlTodayIdr = pnlTodayLabel,
+                scanUniverseCount = _uiState.value.scanUniverseCount,
+                radarPairs = _uiState.value.radarPairs,
                 holdings = livePositions.map {
                     LiveHoldingUi(
                         asset = it.pair,
@@ -547,6 +571,14 @@ class AppRepository(
         return now.toEpochMilliseconds() - snapshot.updatedAtEpochMs <= LIVE_SNAPSHOT_FRESHNESS_MS
     }
 
+    private fun isUiUsableLiveSnapshot(
+        snapshot: LiveStatusSnapshot,
+        now: Instant,
+    ): Boolean {
+        if (snapshot.updatedAtEpochMs <= 0L) return false
+        return now.toEpochMilliseconds() - snapshot.updatedAtEpochMs <= LIVE_SNAPSHOT_UI_TTL_MS
+    }
+
     private fun LiveStatusSnapshot.derivedPnlPctLabel(): String {
         val equity = totalEquityIdr.parseRupiahLabel() ?: return "+0.0%"
         val pnl = pnlTodayIdr.parseRupiahLabel() ?: return "+0.0%"
@@ -579,6 +611,7 @@ class AppRepository(
         private const val MIN_VISIBLE_HOLDING_IDR = 1_000.0
         private const val AUXILIARY_CACHE_TTL_MS = 20_000L
         private const val LIVE_SNAPSHOT_FRESHNESS_MS = 15_000L
+        private const val LIVE_SNAPSHOT_UI_TTL_MS = 60_000L
         private const val LAN_DISCOVERY_RETRY_MS = 60_000L
         private const val LAN_VERIFIED_TTL_MS = 120_000L
     }

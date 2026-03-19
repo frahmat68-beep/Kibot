@@ -19,6 +19,8 @@ data class LiveStatusSnapshot(
     val totalEquityIdr: String,
     val pnlTodayIdr: String,
     val internetPingMs: Long? = null,
+    val scanUniverseCount: Int = 0,
+    val radarPairs: List<String> = emptyList(),
     val holdings: List<LiveHoldingUi>,
 ) {
     companion object {
@@ -28,6 +30,8 @@ data class LiveStatusSnapshot(
             totalEquityIdr = "Rp0",
             pnlTodayIdr = "+Rp0",
             internetPingMs = null,
+            scanUniverseCount = 0,
+            radarPairs = emptyList(),
             holdings = emptyList(),
         )
     }
@@ -52,6 +56,8 @@ class LiveStatusStore(context: Context) {
             .putString(KEY_TOTAL_EQUITY, snapshot.totalEquityIdr)
             .putString(KEY_PNL_TODAY, snapshot.pnlTodayIdr)
             .putLong(KEY_INTERNET_PING_MS, snapshot.internetPingMs ?: -1L)
+            .putInt(KEY_SCAN_UNIVERSE_COUNT, snapshot.scanUniverseCount)
+            .putString(KEY_RADAR_PAIRS, encodeRadarPairs(snapshot.radarPairs))
             .putString(KEY_HOLDINGS, encodeHoldings(snapshot.holdings))
             .apply()
     }
@@ -64,6 +70,8 @@ class LiveStatusStore(context: Context) {
             totalEquityIdr = prefs.getString(KEY_TOTAL_EQUITY, null).orEmpty().ifBlank { "Rp0" },
             pnlTodayIdr = prefs.getString(KEY_PNL_TODAY, null).orEmpty().ifBlank { "+Rp0" },
             internetPingMs = prefs.getLong(KEY_INTERNET_PING_MS, -1L).takeIf { it >= 0L },
+            scanUniverseCount = prefs.getInt(KEY_SCAN_UNIVERSE_COUNT, 0),
+            radarPairs = decodeRadarPairs(prefs.getString(KEY_RADAR_PAIRS, null)),
             holdings = holdings,
         )
     }
@@ -100,6 +108,25 @@ class LiveStatusStore(context: Context) {
         }.getOrDefault(emptyList())
     }
 
+    private fun encodeRadarPairs(pairs: List<String>): String {
+        val array = JSONArray()
+        pairs.forEach { array.put(it) }
+        return array.toString()
+    }
+
+    private fun decodeRadarPairs(encoded: String?): List<String> {
+        if (encoded.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val array = JSONArray(encoded)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.optString(index).orEmpty()
+                    if (item.isNotBlank()) add(item)
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
     companion object {
         private const val PREFS_NAME = "kibot_live_status"
         private const val KEY_UPDATED_AT = "updated_at"
@@ -107,6 +134,8 @@ class LiveStatusStore(context: Context) {
         private const val KEY_TOTAL_EQUITY = "total_equity"
         private const val KEY_PNL_TODAY = "pnl_today"
         private const val KEY_INTERNET_PING_MS = "internet_ping_ms"
+        private const val KEY_SCAN_UNIVERSE_COUNT = "scan_universe_count"
+        private const val KEY_RADAR_PAIRS = "radar_pairs"
         private const val KEY_HOLDINGS = "holdings"
     }
 }

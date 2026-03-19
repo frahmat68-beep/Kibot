@@ -106,15 +106,21 @@ class AndroidEngineDaemon(
             exchangeReachable = exchangeReachable,
             rawPingMs = exchangePingMs,
         )
-        val botState = async { controlPlane.fetchBotState(controlPlaneConfig.botId) }.await()
-            ?: error("Bot state tidak ditemukan di control plane.")
-        val lease = async { controlPlane.fetchLease(controlPlaneConfig.botId) }.await()
-        val devices = async { controlPlane.fetchDevices(controlPlaneConfig.botId) }.await()
-        val dailyRisk = async { controlPlane.fetchDailyRisk(controlPlaneConfig.botId, jakartaDate) }.await()
-        val commands = async { controlPlane.fetchPendingCommands(controlPlaneConfig.botId, config.device.deviceId) }.await()
-        val weeklyReview = runCatching {
-            controlPlane.fetchLatestWeeklyLearningSummary(controlPlaneConfig.botId)
-        }.getOrNull()
+        val botStateDeferred = async { controlPlane.fetchBotState(controlPlaneConfig.botId) }
+        val leaseDeferred = async { controlPlane.fetchLease(controlPlaneConfig.botId) }
+        val devicesDeferred = async { controlPlane.fetchDevices(controlPlaneConfig.botId) }
+        val dailyRiskDeferred = async { controlPlane.fetchDailyRisk(controlPlaneConfig.botId, jakartaDate) }
+        val commandsDeferred = async { controlPlane.fetchPendingCommands(controlPlaneConfig.botId, config.device.deviceId) }
+        val weeklyReviewDeferred = async {
+            runCatching { controlPlane.fetchLatestWeeklyLearningSummary(controlPlaneConfig.botId) }.getOrNull()
+        }
+
+        val botState = botStateDeferred.await() ?: error("Bot state tidak ditemukan di control plane.")
+        val lease = leaseDeferred.await()
+        val devices = devicesDeferred.await()
+        val dailyRisk = dailyRiskDeferred.await()
+        val commands = commandsDeferred.await()
+        val weeklyReview = weeklyReviewDeferred.await()
 
         val warnings = mutableListOf<String>()
         if (!exchangeReachable) warnings += "Exchange tidak bisa dijangkau."
@@ -240,6 +246,10 @@ class AndroidEngineDaemon(
             ),
         )
 
+        val visiblePair = strategyCycle?.selectedSignal?.pairId?.value
+            ?: strategyCycle?.deploymentPlan?.candidates?.firstOrNull()?.pairId?.value
+            ?: runtimeBotState.currentPair?.value
+
         return@coroutineScope AndroidEngineTickResult(
             effectiveState = runtimeEffectiveState,
             statusMessage = when {
@@ -250,15 +260,21 @@ class AndroidEngineDaemon(
                 runtimeLease.isHeldBy(config.device.deviceId, now) -> "Android sedang memegang lease master."
                 else -> "Android standby memonitor status bot."
             },
-            currentPair = strategyCycle?.selectedSignal?.pairId?.value ?: runtimeBotState.currentPair?.value,
+            currentPair = visiblePair,
             operatingMode = strategyCycle?.modeSnapshot?.mode?.name ?: runtimeBotState.operatingMode.name,
             liveStatusSnapshot = buildLiveStatusSnapshot(
                 now = now,
-                currentPair = strategyCycle?.selectedSignal?.pairId?.value ?: runtimeBotState.currentPair?.value,
+                currentPair = visiblePair,
                 balances = resolvedBalances,
                 marketQuotes = resolvedMarketQuotes,
                 dailyRisk = dailyRisk,
                 internetPingMs = displayPingMs,
+                scanUniverseCount = resolvedMarketQuotes.size,
+                radarPairs = strategyCycle?.deploymentPlan?.candidates
+                    ?.map { it.pairId.value }
+                    ?.distinct()
+                    ?.take(4)
+                    .orEmpty(),
             ),
         )
     }
@@ -420,7 +436,7 @@ class AndroidEngineDaemon(
                     botId = controlPlaneConfig.botId,
                     deviceId = config.device.deviceId,
                     term = lease.term,
-                    currentPair = cycle.selectedSignal?.pairId,
+                    currentPair = cycle.selectedSignal?.pairId ?: cycle.deploymentPlan.candidates.firstOrNull()?.pairId,
                     operatingMode = cycle.modeSnapshot.mode,
                     edgeConfidence = cycle.modeSnapshot.edgeConfidence,
                     aggressionScore = cycle.modeSnapshot.aggressionScore,
@@ -672,6 +688,8 @@ class AndroidEngineDaemon(
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
         dailyRisk: com.kibot.shared.models.DailyRiskSnapshot?,
         internetPingMs: Long?,
+        scanUniverseCount: Int,
+        radarPairs: List<String>,
     ): LiveStatusSnapshot? {
         if (balances.isEmpty()) return null
         val equity = balances.sumOf { balance ->
@@ -708,6 +726,8 @@ class AndroidEngineDaemon(
             totalEquityIdr = formatIdr(equity),
             pnlTodayIdr = formatSignedIdr(pnl),
             internetPingMs = internetPingMs,
+            scanUniverseCount = scanUniverseCount,
+            radarPairs = radarPairs,
             holdings = holdings,
         )
     }

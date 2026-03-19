@@ -23,7 +23,9 @@ fun KiBotUiState.withLiveSnapshot(snapshot: LiveStatusSnapshot?): KiBotUiState {
         pnlTodayIdr = snapshot.pnlTodayIdr,
         pnlTodayPctLabel = snapshot.derivedPnlPctLabel(),
         internetPingLabel = snapshot.internetPingLabel(),
-        pairAktif = snapshot.activePair.ifBlank { pairAktif },
+        pairAktif = snapshot.activePair.takeUnless { it.isBlank() || it == "-" } ?: pairAktif,
+        scanUniverseCount = snapshot.scanUniverseCount.takeIf { it > 0 } ?: scanUniverseCount,
+        radarPairs = snapshot.radarPairs.ifEmpty { radarPairs },
         positions = if (livePositions.isNotEmpty()) livePositions else positions,
     )
 }
