@@ -144,8 +144,8 @@ private fun HeroCard(
                 .background(
                     brush = Brush.linearGradient(
                         colors = listOf(
-                            Color(0xFF17233F),
-                            Color(0xFF111A31),
+                            Color(0xFF1A2850),
+                            Color(0xFF131E3C),
                             Color(0xFF0F172A),
                         ),
                     ),
@@ -287,7 +287,18 @@ private fun HoldingsPreviewCard(
     SurfaceCard(modifier = modifier) {
         Text("Holdings", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         if (state.positions.isEmpty()) {
-            Text("Belum ada aset aktif di akun bot.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Surface(
+                color = Color.White.copy(alpha = 0.04f),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Text(
+                    "Belum ada aset aktif di akun bot.",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 14.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         } else {
             state.positions.take(3).forEach { position ->
                 Surface(
@@ -524,8 +535,8 @@ private fun pingVisual(
         return PingVisualState("--", Color(0xFFF59E0B), online = false)
     }
     val tint = when {
-        ms <= 180L -> Color(0xFF2DD881)
-        ms <= 320L -> Color(0xFFF59E0B)
+        ms <= 220L -> Color(0xFF2DD881)
+        ms <= 520L -> Color(0xFFF59E0B)
         else -> Color(0xFFEF4444)
     }
     return PingVisualState("${ms} ms", tint, online = true)

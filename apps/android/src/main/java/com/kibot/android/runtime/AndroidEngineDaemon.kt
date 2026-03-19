@@ -48,6 +48,7 @@ import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import kotlin.math.roundToLong
 
 data class AndroidEngineTickResult(
     val effectiveState: BotEffectiveState,
@@ -87,6 +88,8 @@ class AndroidEngineDaemon(
     private var lastLearningSignature: String? = null
     private var lastLearningPublishedAt: Instant? = null
     private var lastWeeklyReviewPublishedAt: Instant? = null
+    private var smoothedExchangePingMs: Double? = null
+    private var lastSuccessfulExchangePingAt: Instant? = null
 
     suspend fun syncOnce(): AndroidEngineTickResult = coroutineScope {
         ensureRegistered()
@@ -98,6 +101,11 @@ class AndroidEngineDaemon(
         val exchangePingMs = ((System.nanoTime() - pingStartedAtNs) / 1_000_000L)
             .takeIf { exchangeReachable }
             ?.coerceAtLeast(1L)
+        val displayPingMs = recordDisplayPing(
+            now = now,
+            exchangeReachable = exchangeReachable,
+            rawPingMs = exchangePingMs,
+        )
         val botState = async { controlPlane.fetchBotState(controlPlaneConfig.botId) }.await()
             ?: error("Bot state tidak ditemukan di control plane.")
         val lease = async { controlPlane.fetchLease(controlPlaneConfig.botId) }.await()
@@ -249,7 +257,7 @@ class AndroidEngineDaemon(
                 balances = resolvedBalances,
                 marketQuotes = resolvedMarketQuotes,
                 dailyRisk = dailyRisk,
-                internetPingMs = exchangePingMs,
+                internetPingMs = displayPingMs,
             ),
         )
     }
@@ -631,6 +639,29 @@ class AndroidEngineDaemon(
                 ),
             )
         }
+    }
+
+    private fun recordDisplayPing(
+        now: Instant,
+        exchangeReachable: Boolean,
+        rawPingMs: Long?,
+    ): Long? {
+        if (exchangeReachable && rawPingMs != null) {
+            val next = smoothedExchangePingMs
+                ?.let { (it * 0.72) + (rawPingMs.toDouble() * 0.28) }
+                ?: rawPingMs.toDouble()
+            smoothedExchangePingMs = next
+            lastSuccessfulExchangePingAt = now
+            return next.roundToLong().coerceAtLeast(1L)
+        }
+
+        val lastSuccess = lastSuccessfulExchangePingAt
+        if (lastSuccess != null && (now - lastSuccess).inWholeSeconds <= 45) {
+            return smoothedExchangePingMs?.roundToLong()?.coerceAtLeast(1L)
+        }
+
+        smoothedExchangePingMs = null
+        return null
     }
 
     private fun buildLiveStatusSnapshot(

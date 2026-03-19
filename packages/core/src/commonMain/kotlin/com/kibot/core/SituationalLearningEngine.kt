@@ -183,16 +183,6 @@ class SituationalLearningEngine(
                     now = now,
                 )
             }
-            "request_failed" -> {
-                hints += hint(
-                    code = "ai_support_fallback",
-                    severity = AdvisorySeverity.LOW,
-                    source = "ai_support",
-                    summary = "AI support gagal sekali dan sementara fallback ke logika inti.",
-                    rationale = listOf("Safety core tetap jadi acuan utama, jadi trading tidak bergantung pada AI."),
-                    now = now,
-                )
-            }
         }
 
         if (aiUsedNetwork && cycle.marketSnapshot.marketOpportunityScore < 0.40) {
