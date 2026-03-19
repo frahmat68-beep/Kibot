@@ -44,9 +44,9 @@ class KiBotWidgetProvider : AppWidgetProvider() {
                     setTextViewText(R.id.widget_equity, snapshot.totalEquityIdr)
                     setTextViewText(R.id.widget_daily_return_value, dailyReturnPct)
                     setTextViewText(R.id.widget_pnl_value, snapshot.pnlTodayIdr)
-                    setTextColor(R.id.widget_daily_return_value, pnlTextColor(snapshot.pnlTodayIdr))
+                    setTextColor(R.id.widget_daily_return_value, pnlTextColor(dailyReturnPct))
                     setTextColor(R.id.widget_pnl_value, pnlTextColor(snapshot.pnlTodayIdr))
-                    setInt(R.id.widget_daily_return_container, "setBackgroundResource", pnlBadgeBackground(snapshot.pnlTodayIdr))
+                    setInt(R.id.widget_daily_return_container, "setBackgroundResource", pnlBadgeBackground(dailyReturnPct))
                     setInt(R.id.widget_pnl_container, "setBackgroundResource", pnlBadgeBackground(snapshot.pnlTodayIdr))
                     setTextViewText(
                         R.id.widget_pair,

@@ -64,17 +64,17 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="PNL"
+                android:text="RETURN"
                 android:textColor="#A8B7D7"
                 android:textSize="10sp"
                 android:textStyle="bold" />
 
             <TextView
-                android:id="@+id/widget_pnl_value"
+                android:id="@+id/widget_daily_return_value"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
-                android:text="+Rp0"
+                android:text="+0.0%"
                 android:textColor="#E5E7EB"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -96,17 +96,17 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="RETURN"
+                android:text="PNL"
                 android:textColor="#A8B7D7"
                 android:textSize="10sp"
                 android:textStyle="bold" />
 
             <TextView
-                android:id="@+id/widget_daily_return_value"
+                android:id="@+id/widget_pnl_value"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
-                android:text="+0.0%"
+                android:text="+Rp0"
                 android:textColor="#E5E7EB"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -116,26 +116,18 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="8dp"
         android:orientation="vertical"
-        android:paddingTop="2dp">
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="PAIR"
-            android:textColor="#7F95BF"
-            android:textSize="10sp"
-            android:textStyle="bold" />
+        android:paddingTop="0dp">
 
         <TextView
             android:id="@+id/widget_pair"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
             android:text="-"
             android:textColor="#F4F7FF"
             android:textSize="16sp"
-            android:textStyle="bold" />
+            android:textStyle="bold"
+            android:textAllCaps="true" />
     </LinearLayout>
 </LinearLayout>
