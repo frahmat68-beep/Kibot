@@ -407,7 +407,7 @@ class AndroidEngineDaemon(
                 radarPairs = strategyCycle?.deploymentPlan?.candidates
                     ?.map { it.pairId.value }
                     ?.distinct()
-                    ?.take(8)
+                    ?.take(10)
                     .orEmpty(),
                 statusMessage = tickStatusMessage,
                 managedPositions = snapshotManagedPositions,
