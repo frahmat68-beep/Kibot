@@ -590,12 +590,19 @@ private fun PairRadarCard(
                 if (radarPairs.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         radarPairs.chunked(3).take(4).forEach { rowPairs ->
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
                                 rowPairs.forEach { pair ->
                                     RadarPairPill(
+                                        modifier = Modifier.weight(1f),
                                         label = pair,
                                         highlighted = pair == radarPairs.firstOrNull(),
                                     )
+                                }
+                                repeat(3 - rowPairs.size) {
+                                    Spacer(modifier = Modifier.weight(1f))
                                 }
                             }
                         }
@@ -608,22 +615,27 @@ private fun PairRadarCard(
 
 @Composable
 private fun RadarPairPill(
+    modifier: Modifier = Modifier,
     label: String,
     highlighted: Boolean = false,
 ) {
     val accent = assetAccent(label.substringBefore('_').uppercase())
     Surface(
+        modifier = modifier,
         color = if (highlighted) accent.copy(alpha = 0.22f) else accent.copy(alpha = 0.14f),
-        shape = RoundedCornerShape(999.dp),
+        shape = RoundedCornerShape(16.dp),
     ) {
         Text(
             text = label,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 9.dp),
             color = if (highlighted) accent else accent.copy(alpha = 0.96f),
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
         )
     }
 }
