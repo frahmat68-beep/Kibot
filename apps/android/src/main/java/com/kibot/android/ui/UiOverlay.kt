@@ -16,6 +16,10 @@ fun KiBotUiState.withLiveSnapshot(snapshot: LiveStatusSnapshot?): KiBotUiState {
                 pair = holding.asset,
                 quantity = holding.amount,
                 value = holding.valueIdr,
+                pnl = listOf(holding.pnlIdr, holding.pnlPctLabel)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" ")
+                    .trim(),
             )
         }
     return copy(

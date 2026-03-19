@@ -94,7 +94,9 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="10dp"
         android:ellipsize="end"
-        android:maxLines="2"
+        android:lineSpacingExtra="2dp"
+        android:maxLines="3"
+        android:minLines="2"
         android:text="Tidak ada aset aktif."
         android:textColor="#C7D3EA"
         android:textSize="12sp" />

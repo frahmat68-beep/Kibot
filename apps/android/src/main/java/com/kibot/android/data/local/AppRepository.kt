@@ -276,6 +276,7 @@ class AppRepository(
                     level = it.level.name,
                     category = it.category,
                     message = it.message,
+                    timeLabel = formatMomentLabel(it.recordedAt),
                 )
             },
             trades = orders
@@ -288,8 +289,9 @@ class AppRepository(
                 TradeUi(
                     pair = it.pairId.value,
                     side = "${it.side.name} • ${it.orderType.name}",
-                    pnl = it.status.name,
+                    status = it.status.name,
                     detail = "${formatQuantity(max(it.executedQuantity.toDoubleOrZero(), it.originalQuantity.toDoubleOrZero()))} @ ${formatIdr(max(it.price.toDoubleOrZero(), 0.0))}",
+                    timeLabel = formatMomentLabel(it.updatedAt),
                 )
             },
             devices = devices.map {
@@ -622,6 +624,13 @@ class AppRepository(
         val pct = value * 100.0
         val prefix = if (pct >= 0.0) "+" else "-"
         return prefix + "%.1f%%".format(Locale.US, pct.absoluteValue)
+    }
+
+    private fun formatMomentLabel(instant: Instant): String {
+        val local = instant.toLocalDateTime(TimeZone.of("Asia/Jakarta"))
+        val hh = local.hour.toString().padStart(2, '0')
+        val mm = local.minute.toString().padStart(2, '0')
+        return "$hh:$mm"
     }
 
     companion object {

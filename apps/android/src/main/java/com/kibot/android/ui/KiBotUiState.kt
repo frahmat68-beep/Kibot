@@ -21,13 +21,15 @@ data class LogUi(
     val level: String,
     val category: String,
     val message: String,
+    val timeLabel: String = "",
 )
 
 data class TradeUi(
     val pair: String,
     val side: String,
-    val pnl: String,
+    val status: String,
     val detail: String,
+    val timeLabel: String = "",
 )
 
 data class DeviceStatusUi(

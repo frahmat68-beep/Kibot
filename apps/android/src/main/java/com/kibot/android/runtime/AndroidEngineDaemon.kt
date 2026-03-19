@@ -1420,7 +1420,16 @@ class AndroidEngineDaemon(
                 )
             }
 
-            kotlin.math.abs(profitToday) >= 10.0 -> {
+            profitToday <= -10.0 -> {
+                val lead = candidates.firstOrNull() ?: selectedSignal?.pairId?.value?.lowercase() ?: managedPositions.firstOrNull()?.pairId?.value?.lowercase() ?: "radar"
+                LiveLogEntry(
+                    timestampEpochMs = now.toEpochMilliseconds(),
+                    category = "LOSS",
+                    message = "Hari ini loss ${formatSignedIdr(profitToday)}. Bot ngerem sambil pantau $lead.",
+                )
+            }
+
+            profitToday >= 10.0 -> {
                 val lead = candidates.firstOrNull() ?: selectedSignal?.pairId?.value?.lowercase() ?: managedPositions.firstOrNull()?.pairId?.value?.lowercase() ?: "radar"
                 LiveLogEntry(
                     timestampEpochMs = now.toEpochMilliseconds(),

@@ -45,8 +45,8 @@ class KiBotWidgetProvider : AppWidgetProvider() {
             appWidgetIds.forEach { widgetId ->
                 val views = RemoteViews(context.packageName, R.layout.widget_kibot_status).apply {
                     setTextViewText(R.id.widget_title, "KiBot")
-                    setTextViewText(R.id.widget_pair, snapshot.activePair.lowercase())
-                    setTextViewText(R.id.widget_meta, "Update ${formatUpdated(snapshot.updatedAtEpochMs)}")
+                    setTextViewText(R.id.widget_pair, snapshot.activePair.uppercase())
+                    setTextViewText(R.id.widget_meta, "Live • ${formatUpdated(snapshot.updatedAtEpochMs)}")
                     setTextViewText(R.id.widget_equity, snapshot.totalEquityIdr)
                     setTextViewText(R.id.widget_pnl, "${snapshot.pnlTodayIdr} ${derivePnlPct(snapshot)}".trim())
                     setTextViewText(R.id.widget_positions_count, "${visibleHoldings.size} aset")
@@ -71,7 +71,8 @@ class KiBotWidgetProvider : AppWidgetProvider() {
 
         private fun formatHoldings(holdings: List<com.kibot.android.runtime.LiveHoldingUi>): String {
             if (holdings.isEmpty()) return "Tidak ada aset aktif."
-            val lines = holdings.take(3).map { holding ->
+            val visible = holdings.take(2)
+            val lines = visible.map { holding ->
                 val pnlSuffix = listOf(holding.pnlIdr, holding.pnlPctLabel)
                     .filter { it.isNotBlank() }
                     .joinToString(" ")
@@ -81,7 +82,12 @@ class KiBotWidgetProvider : AppWidgetProvider() {
                     if (pnlSuffix != null) append(" • $pnlSuffix")
                 }
             }
-            return lines.joinToString("\n")
+            return buildString {
+                append(lines.joinToString("\n"))
+                if (holdings.size > visible.size) {
+                    append("\n+${holdings.size - visible.size} aset lain")
+                }
+            }
         }
 
         private fun pnlTextColor(label: String): Int {

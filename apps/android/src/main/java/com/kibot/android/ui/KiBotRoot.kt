@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -118,21 +119,24 @@ private fun DashboardScreen(
     state: KiBotUiState,
     onToggleBot: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(14.dp),
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        HeroCard(state = state, onToggleBot = onToggleBot)
-        HoldingsPreviewCard(
-            modifier = Modifier.fillMaxWidth(),
-            state = state,
-        )
-        LiveActivityCard(
-            modifier = Modifier.fillMaxWidth(),
-            state = state,
-        )
+        item { HeroCard(state = state, onToggleBot = onToggleBot) }
+        item {
+            HoldingsPreviewCard(
+                modifier = Modifier.fillMaxWidth(),
+                state = state,
+            )
+        }
+        item {
+            LiveActivityCard(
+                modifier = Modifier.fillMaxWidth(),
+                state = state,
+            )
+        }
     }
 }
 
@@ -241,7 +245,7 @@ private fun HeroCard(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         AssetBadge(symbol = visiblePairLabel(state).substringBefore('_').uppercase())
-                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(
                                 visiblePairLabel(state),
                                 style = MaterialTheme.typography.titleMedium,
@@ -249,13 +253,14 @@ private fun HeroCard(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            Text(
-                                radarSummary(state),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                RadarChip(label = scanCountLabel(state))
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    radarPairs(state).forEach { radar ->
+                                        RadarChip(label = radar)
+                                    }
+                                }
+                            }
                         }
                     }
                     Spacer(modifier = Modifier.width(12.dp))
@@ -336,17 +341,28 @@ private fun HoldingsPreviewCard(
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                AssetBadge(symbol = position.pair.uppercase())
-                                Column {
+                                AssetBadge(symbol = position.pair.uppercase().take(6))
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                     Text(position.pair.uppercase(), fontWeight = FontWeight.Bold)
                                     Text(
-                                        position.quantity,
+                                        assetDisplayName(position.pair),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        "Unrealized P&L",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
                             }
                             Column(horizontalAlignment = Alignment.End) {
+                                Text(
+                                    position.quantity,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.Medium,
+                                )
                                 Text(position.value, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                                 if (perCoinPnl != null) {
                                     Text(
@@ -379,7 +395,7 @@ private fun LiveActivityCard(
 ) {
     SurfaceCard(modifier = modifier) {
         Text("Timeline Hari Ini", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        val entries = state.liveLogEntries.take(10)
+        val entries = state.liveLogEntries.take(8)
         if (entries.isEmpty()) {
             Surface(
                 color = Color.White.copy(alpha = 0.04f),
@@ -413,6 +429,7 @@ private fun LiveActivityCard(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 entries.forEach { entry ->
+                    val displayCategory = displayLiveLogCategory(entry.category, entry.message)
                     Surface(
                         color = Color.White.copy(alpha = 0.04f),
                         shape = RoundedCornerShape(18.dp),
@@ -425,13 +442,13 @@ private fun LiveActivityCard(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Surface(
-                                color = liveLogTint(entry.category).copy(alpha = 0.14f),
+                                color = liveLogTint(displayCategory).copy(alpha = 0.14f),
                                 shape = RoundedCornerShape(10.dp),
                             ) {
                                 Text(
-                                    entry.category,
+                                    displayCategory,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    color = liveLogTint(entry.category),
+                                    color = liveLogTint(displayCategory),
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Bold,
                                 )
@@ -440,7 +457,7 @@ private fun LiveActivityCard(
                                 Text(
                                     entry.message,
                                     style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 3,
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                 )
                                 Text(
@@ -469,39 +486,80 @@ private fun EngineControlScreen(
     state: KiBotUiState,
     onCommand: (EngineAction) -> Unit,
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp),
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item {
-            SurfaceCard {
-                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("Engine Control", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                    Text(state.statusMessage, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        StatusChip(state.activeEngine, Color(0xFF1D4ED8))
-                        StatusChip("Backup ${state.standbyEngine}", Color(0xFF4B6385))
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    FilledTonalButton(onClick = { onCommand(EngineAction.RequestTakeover) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Request Takeover")
-                    }
-                    FilledTonalButton(onClick = { onCommand(EngineAction.ForceSafeTakeover) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Force Safe Takeover")
-                    }
-                    FilledTonalButton(onClick = { onCommand(EngineAction.ReleaseControl) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Release Control")
-                    }
-                    FilledTonalButton(onClick = { onCommand(EngineAction.SyncNow) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Sync Status Now")
-                    }
-                    Text(
-                        "Takeover tetap lewat control-plane. Jika state ambigu, bot akan tetap blok entry baru.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+        SurfaceCard {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text("Engine Control", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    StatusChip("Active ${state.activeEngine}", Color(0xFF1D4ED8))
+                    StatusChip("Standby ${state.standbyEngine}", Color(0xFF64748B))
                 }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    StatusChip(visiblePairLabel(state), Color(0xFF8B5CF6))
+                    StatusChip(state.syncPathLabel, Color(0xFF0EA5E9))
+                }
+                Text(
+                    engineSummaryLine(state),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    engineSummarySubline(state),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FilledTonalButton(
+                        onClick = { onCommand(EngineAction.RequestTakeover) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Takeover")
+                    }
+                    FilledTonalButton(
+                        onClick = { onCommand(EngineAction.SyncNow) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Sync Now")
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FilledTonalButton(
+                        onClick = { onCommand(EngineAction.ForceSafeTakeover) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color(0xFFFFF7ED),
+                            contentColor = Color(0xFFEA580C),
+                        ),
+                    ) {
+                        Text("Force Safe")
+                    }
+                    FilledTonalButton(
+                        onClick = { onCommand(EngineAction.ReleaseControl) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color(0xFFFBEAEC),
+                            contentColor = Color(0xFFBE123C),
+                        ),
+                    ) {
+                        Text("Release")
+                    }
+                }
+                Text(
+                    "Takeover tetap aman. Kalau state ambigu, bot tetap blok entry baru.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
@@ -509,53 +567,123 @@ private fun EngineControlScreen(
 
 @Composable
 private fun LogsScreen(state: KiBotUiState) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item { SectionTitle("Logs & Errors") }
-        item { SectionTitle("Trade History") }
-        if (state.trades.isEmpty()) {
-            item {
-                SurfaceCard {
-                    Text("Belum ada trade history live.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        } else {
-            items(state.trades) { trade ->
-                SurfaceCard {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Column {
-                            Text(trade.pair, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            Text(trade.side, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(
-                                trade.detail,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+        Text("Logs & Errors", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+        SurfaceCard {
+            Text("Trade History", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            if (state.trades.isEmpty()) {
+                Text("Belum ada trade history live.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 260.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    state.trades.take(16).forEach { trade ->
+                        Surface(
+                            color = Color.White.copy(alpha = 0.04f),
+                            shape = RoundedCornerShape(18.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Surface(
+                                    color = tradeSideTint(trade.side).copy(alpha = 0.14f),
+                                    shape = RoundedCornerShape(10.dp),
+                                ) {
+                                    Text(
+                                        trade.side.substringBefore(" • "),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        color = tradeSideTint(trade.side),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(trade.pair, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        trade.detail,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        trade.timeLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                StatusChip(trade.status, tradeStatusTint(trade.status))
+                            }
                         }
-                        Text(trade.pnl, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
         }
-        item { SectionTitle("Logs") }
-        if (state.logs.isEmpty()) {
-            item {
-                SurfaceCard {
-                    Text("Belum ada log terbaru.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        } else {
-            items(state.logs) { log ->
-                SurfaceCard {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("${log.level} • ${log.category}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                        Text(log.message)
+        SurfaceCard {
+            Text("Logs", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            if (state.logs.isEmpty()) {
+                Text("Belum ada log terbaru.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 260.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    state.logs.take(20).forEach { log ->
+                        val displayCategory = displayLiveLogCategory(log.category, log.message)
+                        Surface(
+                            color = Color.White.copy(alpha = 0.04f),
+                            shape = RoundedCornerShape(18.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Surface(
+                                    color = liveLogTint(displayCategory).copy(alpha = 0.14f),
+                                    shape = RoundedCornerShape(10.dp),
+                                ) {
+                                    Text(
+                                        displayCategory,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        color = liveLogTint(displayCategory),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        log.message,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 3,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        "${log.level} • ${log.timeLabel}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -602,12 +730,20 @@ private fun StatusChip(
 }
 
 @Composable
-private fun SectionTitle(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.headlineSmall,
-        fontWeight = FontWeight.SemiBold,
-    )
+private fun RadarChip(label: String) {
+    Surface(
+        color = Color.White.copy(alpha = 0.08f),
+        shape = RoundedCornerShape(999.dp),
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
 private fun pnlColor(label: String): Color {
@@ -627,7 +763,34 @@ private fun liveLogTint(category: String): Color = when (category.uppercase()) {
     "SETUP" -> Color(0xFF22C55E)
     "ROTASI" -> Color(0xFFFACC15)
     "PROFIT" -> Color(0xFF34D399)
+    "LOSS" -> Color(0xFFEF4444)
     else -> Color(0xFF9EC5FF)
+}
+
+private fun displayLiveLogCategory(category: String, message: String): String {
+    val normalizedCategory = category.uppercase()
+    val normalizedMessage = message.lowercase()
+    return when {
+        normalizedCategory == "PROFIT" && (
+            normalizedMessage.contains("loss") ||
+                normalizedMessage.contains("-rp") ||
+                normalizedMessage.contains("minus")
+            ) -> "LOSS"
+        else -> normalizedCategory
+    }
+}
+
+private fun tradeSideTint(label: String): Color = when {
+    label.startsWith("SELL") -> Color(0xFF60A5FA)
+    label.startsWith("BUY") -> Color(0xFF22C55E)
+    else -> Color(0xFF9EC5FF)
+}
+
+private fun tradeStatusTint(label: String): Color = when (label.uppercase()) {
+    "FILLED" -> Color(0xFF34D399)
+    "PARTIALLY_FILLED" -> Color(0xFFF59E0B)
+    "CANCELED" -> Color(0xFF94A3B8)
+    else -> Color(0xFF60A5FA)
 }
 
 private fun formatLogTime(epochMs: Long): String {
@@ -639,21 +802,61 @@ private fun formatLogTime(epochMs: Long): String {
     return "$hh:$mm"
 }
 
-private fun radarSummary(state: KiBotUiState): String {
+private fun scanCountLabel(state: KiBotUiState): String {
+    return state.scanUniverseCount.takeIf { it > 0 }?.let { "Scan $it pair" } ?: "Scan berjalan"
+}
+
+private fun radarPairs(state: KiBotUiState): List<String> {
     val active = state.pairAktif.takeUnless { it.isBlank() || it == "-" }?.lowercase()
-    val radar = state.radarPairs
+    return state.radarPairs
         .filter { it.isNotBlank() && it != "-" }
         .map { it.lowercase() }
         .filterNot { it == active }
-        .take(3)
-        .joinToString(" • ")
-    val count = state.scanUniverseCount.takeIf { it > 0 }?.let { "Scan $it pair" } ?: "Scan berjalan"
-    return if (radar.isBlank()) count else "$count • $radar"
+        .take(2)
 }
 
 private fun visiblePairLabel(state: KiBotUiState): String {
     val active = state.pairAktif.takeUnless { it.isBlank() || it == "-" }?.lowercase()
     return active ?: state.radarPairs.firstOrNull()?.lowercase() ?: "scan"
+}
+
+private fun assetDisplayName(symbol: String): String {
+    val normalized = symbol.substringBefore('_').uppercase()
+    return when (normalized) {
+        "TRX" -> "Tron"
+        "XRP" -> "XRP"
+        "BTC" -> "Bitcoin"
+        "ETH" -> "Ethereum"
+        "USDT" -> "Tether"
+        "PEPE" -> "Pepe"
+        else -> normalized.lowercase().replaceFirstChar { it.titlecase() }
+    }
+}
+
+private fun engineSummaryLine(state: KiBotUiState): String {
+    return listOf(
+        "Regime ${state.marketRegime.removePrefix("HEALTHY_").replace('_', ' ')}",
+        "Mode ${state.operatingMode}",
+        "Edge ${state.edgeConfidence}",
+    ).joinToString(" · ")
+}
+
+private fun engineSummarySubline(state: KiBotUiState): String {
+    val guard = if (state.profitProtectionStatus.equals("INACTIVE", ignoreCase = true)) "Siaga" else state.profitProtectionStatus
+    return listOf(
+        "Risk ${state.riskLadderLevel}",
+        "Guard $guard",
+        compactStatusMessage(state.statusMessage),
+    ).joinToString(" · ")
+}
+
+private fun compactStatusMessage(message: String): String {
+    val sentences = message
+        .split(".")
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+    if (sentences.isEmpty()) return "Monitor live aktif."
+    return sentences.last()
 }
 
 @Composable
