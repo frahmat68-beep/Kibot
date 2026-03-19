@@ -51,6 +51,7 @@ class LocalDashboardServer(
     private val androidReleaseDirectory: Path,
 ) {
     private val lanProbeUrl = detectLanProbeUrl(host, port)
+    private val lanServiceAdvertiser = LanServiceAdvertiser(host, port)
 
     private val server = embeddedServer(CIO, host = host, port = port) {
         install(CallLogging)
@@ -175,9 +176,13 @@ class LocalDashboardServer(
         }
     }
 
-    fun start() = server.start(wait = true)
+    fun start() {
+        lanServiceAdvertiser.start()
+        server.start(wait = true)
+    }
 
     fun stop() {
+        lanServiceAdvertiser.stop()
         server.stop(1_000, 2_000)
     }
 }

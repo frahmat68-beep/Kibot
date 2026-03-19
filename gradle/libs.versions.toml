@@ -21,6 +21,7 @@ turbine = "1.2.0"
 truth = "1.4.4"
 slf4j = "2.0.16"
 logback = "1.5.16"
+jmdns = "3.5.8"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -67,6 +68,7 @@ androidx-datastore-preferences = { module = "androidx.datastore:datastore-prefer
 
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+jmdns = { module = "org.jmdns:jmdns", version.ref = "jmdns" }
 
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 truth = { module = "com.google.truth:truth", version.ref = "truth" }

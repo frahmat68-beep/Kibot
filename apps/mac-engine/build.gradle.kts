@@ -30,6 +30,7 @@ dependencies {
     implementation(libs.ktor.server.html.builder)
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.slf4j.api)
+    implementation(libs.jmdns)
     runtimeOnly(libs.logback.classic)
 
     testImplementation(libs.junit.jupiter)

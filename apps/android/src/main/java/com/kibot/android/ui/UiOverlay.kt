@@ -22,6 +22,7 @@ fun KiBotUiState.withLiveSnapshot(snapshot: LiveStatusSnapshot?): KiBotUiState {
         modalSaatIniIdr = snapshot.totalEquityIdr,
         pnlTodayIdr = snapshot.pnlTodayIdr,
         pnlTodayPctLabel = snapshot.derivedPnlPctLabel(),
+        internetPingLabel = snapshot.internetPingLabel(),
         pairAktif = snapshot.activePair.ifBlank { pairAktif },
         positions = if (livePositions.isNotEmpty()) livePositions else positions,
     )
@@ -50,4 +51,8 @@ private fun formatSignedPercent(value: Double): String {
     val pct = value * 100.0
     val prefix = if (pct >= 0.0) "+" else "-"
     return prefix + "%.1f%%".format(kotlin.math.abs(pct))
+}
+
+private fun LiveStatusSnapshot.internetPingLabel(): String {
+    return internetPingMs?.let { "${it} ms" } ?: "--"
 }

@@ -119,17 +119,18 @@ private fun DashboardScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             CompactMetricTile(
                 modifier = Modifier.weight(1f),
-                label = "Pair",
+                label = "Pair aktif",
                 value = state.pairAktif.lowercase(),
-                supporting = state.marketRegime,
+                supporting = regimeLabel(state.marketRegime),
             )
             CompactMetricTile(
                 modifier = Modifier.weight(1f),
-                label = "Sync",
-                value = state.syncHealth,
-                supporting = "${state.syncPathLabel} • ${state.syncLagLabel}",
+                label = "Ping Internet",
+                value = state.internetPingLabel,
+                supporting = "Market ping",
             )
         }
+        OpsOverviewCard(state = state)
         HoldingsPreviewCard(
             modifier = Modifier.fillMaxWidth(),
             state = state,
@@ -161,7 +162,7 @@ private fun HeroCard(
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("KiBot", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Portfolio bot",
+                        "Saldo bot",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -189,11 +190,6 @@ private fun HeroCard(
                 color = pnlColor,
                 fontWeight = FontWeight.SemiBold,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatusChip(modeLabel(state.operatingMode), Color(0xFF6959CD))
-                StatusChip(edgeLabel(state.edgeConfidence), Color(0xFF0F8E9A))
-                StatusChip(riskLabel(state.riskLadderLevel), Color(0xFF8A6A12))
-            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -204,14 +200,14 @@ private fun HeroCard(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Text(
-                        "${state.pairAktif.lowercase()} • ${state.marketRegime}",
+                        "${state.pairAktif.lowercase()} • ${regimeLabel(state.marketRegime)}",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        "Sync ${state.syncPathLabel} • ${state.lastUpdatedLabel}",
+                        "${state.syncPathLabel} • ${state.lastUpdatedLabel}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -221,14 +217,31 @@ private fun HeroCard(
                     Text(if (state.isBotRunning) "Turn OFF" else "Turn ON")
                 }
             }
-            Text(
-                "Guard ${profitGuardLabel(state.profitProtectionStatus)} • ${profitGuardHint(state.profitProtectionStatus)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+        }
+    }
+}
+
+@Composable
+private fun OpsOverviewCard(
+    state: KiBotUiState,
+) {
+    SurfaceCard {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            CompactMetricTile(
+                modifier = Modifier.weight(1f),
+                label = "Mode",
+                value = modeLabel(state.operatingMode),
+                supporting = edgeLabel(state.edgeConfidence),
+            )
+            CompactMetricTile(
+                modifier = Modifier.weight(1f),
+                label = "Safety",
+                value = riskLabel(state.riskLadderLevel),
+                supporting = profitGuardLabel(state.profitProtectionStatus),
             )
         }
+        StatusLine("Sinkron", "${state.syncPathLabel} • ${state.syncLagLabel}")
+        StatusLine("Backup", state.standbyEngine)
     }
 }
 
@@ -278,7 +291,6 @@ private fun HoldingsPreviewCard(
             }
         }
         StatusLine("Backup", state.standbyEngine)
-        StatusLine("Lease", "#${state.leaseTerm}")
     }
 }
 
@@ -468,6 +480,14 @@ private fun riskLabel(value: String): String = when (value.uppercase()) {
     else -> value.uppercase()
 }
 
+private fun regimeLabel(value: String): String = when (value.uppercase()) {
+    "HEALTHY_UPTREND" -> "Uptrend sehat"
+    "HEALTHY_SIDEWAYS" -> "Sideways sehat"
+    "HIGH_VOLATILITY_UNCLEAR" -> "Volatil tinggi"
+    "BREAKDOWN_PANIC" -> "Panic"
+    else -> value.replace('_', ' ').lowercase().replaceFirstChar { it.titlecase() }
+}
+
 private fun profitGuardLabel(value: String): String = when (value.uppercase()) {
     "INACTIVE" -> "SIAGA"
     "GUARDING_WEEKLY_PROFIT" -> "JAGA PROFIT"
@@ -493,6 +513,11 @@ private fun StatusLine(label: String, value: String) {
     ) {
         Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(modifier = Modifier.width(12.dp))
-        Text(value, fontWeight = FontWeight.SemiBold)
+        Text(
+            value,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }

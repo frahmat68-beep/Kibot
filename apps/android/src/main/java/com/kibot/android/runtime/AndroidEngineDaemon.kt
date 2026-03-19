@@ -93,6 +93,11 @@ class AndroidEngineDaemon(
 
         val now = Clock.System.now()
         val jakartaDate = jakartaNowDate(now)
+        val pingStartedAtNs = System.nanoTime()
+        val exchangeReachable = runCatching { exchange.ping() }.getOrElse { false }
+        val exchangePingMs = ((System.nanoTime() - pingStartedAtNs) / 1_000_000L)
+            .takeIf { exchangeReachable }
+            ?.coerceAtLeast(1L)
         val botState = async { controlPlane.fetchBotState(controlPlaneConfig.botId) }.await()
             ?: error("Bot state tidak ditemukan di control plane.")
         val lease = async { controlPlane.fetchLease(controlPlaneConfig.botId) }.await()
@@ -103,7 +108,6 @@ class AndroidEngineDaemon(
             controlPlane.fetchLatestWeeklyLearningSummary(controlPlaneConfig.botId)
         }.getOrNull()
 
-        val exchangeReachable = runCatching { exchange.ping() }.getOrElse { false }
         val warnings = mutableListOf<String>()
         if (!exchangeReachable) warnings += "Exchange tidak bisa dijangkau."
         if (dailyRisk?.hardStopTriggered == true) warnings += "Daily hard stop aktif."
@@ -119,7 +123,7 @@ class AndroidEngineDaemon(
             }
         }
 
-        val localHealth = buildLocalHealth(exchangeReachable, warnings)
+        val localHealth = buildLocalHealth(exchangeReachable, warnings, exchangePingMs)
         val masterBeforeTakeover = leaseAfterCommands.isHeldBy(config.device.deviceId, now)
         if (botStateAfterCommands.desiredState == BotDesiredState.ON && !masterBeforeTakeover) {
             maybeTakeOver(now, botStateAfterCommands, leaseAfterCommands, localHealth)
@@ -155,7 +159,7 @@ class AndroidEngineDaemon(
         val resolvedOpenOrders = openOrdersDeferred?.await().orEmpty()
         val resolvedMarketQuotes = marketQuotesDeferred?.await().orEmpty()
         if (exchangeReachable && resolvedMarketQuotes.isEmpty()) warnings += "Feed market kosong."
-        val finalHealth = buildLocalHealth(exchangeReachable, warnings)
+        val finalHealth = buildLocalHealth(exchangeReachable, warnings, exchangePingMs)
         val healthDecision = healthAdvisor.evaluate(finalHealth)
         val aiSupportEvaluation = if (isMaster && resolvedMarketQuotes.isNotEmpty()) {
             val shortlist = strategyOrchestrator.shortlistForSupport(resolvedMarketQuotes)
@@ -245,6 +249,7 @@ class AndroidEngineDaemon(
                 balances = resolvedBalances,
                 marketQuotes = resolvedMarketQuotes,
                 dailyRisk = dailyRisk,
+                internetPingMs = exchangePingMs,
             ),
         )
     }
@@ -547,6 +552,7 @@ class AndroidEngineDaemon(
     private fun buildLocalHealth(
         exchangeReachable: Boolean,
         warnings: List<String>,
+        feedLatencyMs: Long? = null,
     ): EngineHealthSnapshot {
         val batteryStatus = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val batteryPct = batteryStatus?.let {
@@ -589,6 +595,7 @@ class AndroidEngineDaemon(
             batteryPercent = batteryPct,
             charging = charging,
             networkMetered = networkMetered,
+            feedLatencyMs = feedLatencyMs,
             fillQualityScore = if (warnings.any { it.contains("fill", ignoreCase = true) }) 0.35 else 0.75,
             anomalyCount = warnings.size,
             lastError = warnings.firstOrNull(),
@@ -632,6 +639,7 @@ class AndroidEngineDaemon(
         balances: List<BalanceSnapshot>,
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
         dailyRisk: com.kibot.shared.models.DailyRiskSnapshot?,
+        internetPingMs: Long?,
     ): LiveStatusSnapshot? {
         if (balances.isEmpty()) return null
         val equity = balances.sumOf { balance ->
@@ -667,6 +675,7 @@ class AndroidEngineDaemon(
             activePair = currentPair ?: "-",
             totalEquityIdr = formatIdr(equity),
             pnlTodayIdr = formatSignedIdr(pnl),
+            internetPingMs = internetPingMs,
             holdings = holdings,
         )
     }

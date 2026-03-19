@@ -11,6 +11,7 @@ import com.kibot.android.runtime.BotForegroundService
 import com.kibot.android.ui.KiBotRoot
 import com.kibot.android.ui.withLiveSnapshot
 import com.kibot.android.ui.theme.KiBotTheme
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -22,6 +23,10 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             repository.syncNow()
+            if (repository.uiState.value.syncPathLabel != "Supabase + LAN") {
+                delay(2_500)
+                repository.syncNow()
+            }
             if (repository.uiState.value.isBotRunning) {
                 BotForegroundService.start(this@MainActivity)
             }

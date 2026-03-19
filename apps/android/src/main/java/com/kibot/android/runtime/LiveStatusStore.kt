@@ -18,6 +18,7 @@ data class LiveStatusSnapshot(
     val activePair: String,
     val totalEquityIdr: String,
     val pnlTodayIdr: String,
+    val internetPingMs: Long? = null,
     val holdings: List<LiveHoldingUi>,
 ) {
     companion object {
@@ -26,6 +27,7 @@ data class LiveStatusSnapshot(
             activePair = "-",
             totalEquityIdr = "Rp0",
             pnlTodayIdr = "+Rp0",
+            internetPingMs = null,
             holdings = emptyList(),
         )
     }
@@ -49,6 +51,7 @@ class LiveStatusStore(context: Context) {
             .putString(KEY_ACTIVE_PAIR, snapshot.activePair)
             .putString(KEY_TOTAL_EQUITY, snapshot.totalEquityIdr)
             .putString(KEY_PNL_TODAY, snapshot.pnlTodayIdr)
+            .putLong(KEY_INTERNET_PING_MS, snapshot.internetPingMs ?: -1L)
             .putString(KEY_HOLDINGS, encodeHoldings(snapshot.holdings))
             .apply()
     }
@@ -60,6 +63,7 @@ class LiveStatusStore(context: Context) {
             activePair = prefs.getString(KEY_ACTIVE_PAIR, null).orEmpty().ifBlank { "-" },
             totalEquityIdr = prefs.getString(KEY_TOTAL_EQUITY, null).orEmpty().ifBlank { "Rp0" },
             pnlTodayIdr = prefs.getString(KEY_PNL_TODAY, null).orEmpty().ifBlank { "+Rp0" },
+            internetPingMs = prefs.getLong(KEY_INTERNET_PING_MS, -1L).takeIf { it >= 0L },
             holdings = holdings,
         )
     }
@@ -102,6 +106,7 @@ class LiveStatusStore(context: Context) {
         private const val KEY_ACTIVE_PAIR = "active_pair"
         private const val KEY_TOTAL_EQUITY = "total_equity"
         private const val KEY_PNL_TODAY = "pnl_today"
+        private const val KEY_INTERNET_PING_MS = "internet_ping_ms"
         private const val KEY_HOLDINGS = "holdings"
     }
 }

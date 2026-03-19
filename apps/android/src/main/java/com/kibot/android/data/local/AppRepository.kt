@@ -39,9 +39,9 @@ import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import org.json.JSONObject
-import java.text.NumberFormat
-import java.net.HttpURLConnection
 import java.net.URL
+import java.net.HttpURLConnection
+import java.text.NumberFormat
 import java.util.Locale
 import kotlin.math.absoluteValue
 import kotlin.math.max
@@ -61,8 +61,16 @@ class AppRepository(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _uiState = MutableStateFlow(KiBotUiState.preview())
     val uiState: StateFlow<KiBotUiState> = _uiState.asStateFlow()
+    private val macLanDiscovery = MacLanDiscovery(appContext)
     private var deviceRegistered = false
     private var cachedAuxiliaryData: AuxiliarySyncCache? = null
+    private var cachedLanEndpoint: CachedLanEndpoint? = macLanSyncBaseUrl
+        ?.trim()
+        ?.removeSuffix("/")
+        ?.removeSuffix("/api/lan/ping")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { CachedLanEndpoint(it, 0L) }
+    private var lastLanDiscoveryAttemptEpochMs: Long = 0L
 
     fun toggleBot(): Boolean {
         val current = _uiState.value
@@ -223,6 +231,7 @@ class AppRepository(
             activeEngine = activeEngine,
             standbyEngine = standbyEngine,
             syncHealth = botState.syncHealth.name,
+            internetPingLabel = currentLiveSnapshot?.internetPingLabel() ?: _uiState.value.internetPingLabel,
             pnlTodayIdr = pnlTodayLabel,
             pnlTodayPctLabel = pnlTodayPctLabel,
             modalSaatIniIdr = modalSaatIniLabel,
@@ -232,11 +241,7 @@ class AppRepository(
             pairAktif = botState.currentPair?.value ?: "-",
             leaseTerm = lease?.term?.value ?: botState.currentTerm.value,
             syncLagLabel = formatSyncLag(syncLagMillis),
-            syncPathLabel = when {
-                lanSnapshot?.reachable == true -> "Supabase + LAN"
-                macLanSyncBaseUrl.isNullOrBlank() -> "Supabase"
-                else -> "Supabase only"
-            },
+            syncPathLabel = resolveSyncPathLabel(lanSnapshot),
             lastUpdatedLabel = formatLastUpdated(now),
             statusMessage = botState.safeModeReason ?: defaultStatusMessage(botState.effectiveState),
             weeklyLearningSummary = weeklyReview?.let {
@@ -440,26 +445,67 @@ class AppRepository(
         return "$hh:$mm WIB"
     }
 
-    private fun fetchLanMacSnapshot(): LanMacSnapshot? {
-        val baseUrl = macLanSyncBaseUrl?.trim()?.removeSuffix("/") ?: return null
+    private suspend fun fetchLanMacSnapshot(): LanMacSnapshot? {
         if (!isWifiConnected()) return null
 
+        val nowMs = System.currentTimeMillis()
+        val candidates = linkedSetOf<String>().apply {
+            cachedLanEndpoint?.baseUrl?.let(::add)
+            macLanSyncBaseUrl
+                ?.trim()
+                ?.removeSuffix("/")
+                ?.removeSuffix("/api/lan/ping")
+                ?.takeIf { it.isNotBlank() }
+                ?.let(::add)
+        }
+
+        candidates?.forEach { baseUrl ->
+            probeLanBaseUrl(baseUrl)?.let {
+                cachedLanEndpoint = CachedLanEndpoint(baseUrl, nowMs)
+                return it
+            }
+        }
+
+        val shouldDiscover = nowMs - lastLanDiscoveryAttemptEpochMs >= LAN_DISCOVERY_RETRY_MS
+        if (!shouldDiscover) return null
+
+        lastLanDiscoveryAttemptEpochMs = nowMs
+        val discoveredBaseUrl = macLanDiscovery.discoverBaseUrl()
+        if (discoveredBaseUrl != null) {
+            probeLanBaseUrl(discoveredBaseUrl)?.let {
+                cachedLanEndpoint = CachedLanEndpoint(discoveredBaseUrl, nowMs)
+                return it
+            }
+        }
+        return null
+    }
+
+    private fun probeLanBaseUrl(baseUrl: String): LanMacSnapshot? {
         return runCatching {
-            val connection = (URL("$baseUrl/api/state").openConnection() as HttpURLConnection).apply {
-                connectTimeout = 1_500
-                readTimeout = 1_500
+            val connection = (URL("$baseUrl/api/lan/ping").openConnection() as HttpURLConnection).apply {
+                connectTimeout = 1_000
+                readTimeout = 1_000
                 requestMethod = "GET"
             }
             connection.inputStream.bufferedReader().use { reader ->
                 val json = JSONObject(reader.readText())
                 LanMacSnapshot(
-                    reachable = true,
-                    activeEngine = json.optString("activeEngine"),
-                    syncHealth = json.optString("syncHealth"),
-                    statusMessage = json.optString("statusMessage"),
+                    reachable = json.optBoolean("ok", false),
+                    baseUrl = baseUrl,
                 )
             }
-        }.getOrNull()
+        }.getOrNull()?.takeIf { it.reachable }
+    }
+
+    private fun resolveSyncPathLabel(
+        lanSnapshot: LanMacSnapshot?,
+    ): String {
+        if (lanSnapshot?.reachable == true) return "Supabase + LAN"
+        val verifiedAt = cachedLanEndpoint?.verifiedAtEpochMs ?: 0L
+        if (verifiedAt > 0L && System.currentTimeMillis() - verifiedAt <= LAN_VERIFIED_TTL_MS) {
+            return "Supabase + LAN"
+        }
+        return "Supabase"
     }
 
     private fun isWifiConnected(): Boolean {
@@ -508,6 +554,10 @@ class AppRepository(
         return formatSignedPercent(pnl / opening)
     }
 
+    private fun LiveStatusSnapshot.internetPingLabel(): String {
+        return internetPingMs?.let { "${it} ms" } ?: "--"
+    }
+
     private fun String.parseRupiahLabel(): Double? {
         val cleaned = trim()
             .replace("~", "")
@@ -529,6 +579,8 @@ class AppRepository(
         private const val MIN_VISIBLE_HOLDING_IDR = 1_000.0
         private const val AUXILIARY_CACHE_TTL_MS = 20_000L
         private const val LIVE_SNAPSHOT_FRESHNESS_MS = 15_000L
+        private const val LAN_DISCOVERY_RETRY_MS = 60_000L
+        private const val LAN_VERIFIED_TTL_MS = 120_000L
     }
 
     private fun defaultStatusMessage(state: BotEffectiveState): String {
@@ -544,9 +596,7 @@ class AppRepository(
 
 private data class LanMacSnapshot(
     val reachable: Boolean,
-    val activeEngine: String,
-    val syncHealth: String,
-    val statusMessage: String,
+    val baseUrl: String,
 )
 
 private data class AuxiliarySyncCache(
@@ -554,4 +604,9 @@ private data class AuxiliarySyncCache(
     val logs: List<com.kibot.shared.models.AuditLogRecord>,
     val orders: List<com.kibot.shared.models.OrderSnapshot>,
     val weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
+)
+
+private data class CachedLanEndpoint(
+    val baseUrl: String,
+    val verifiedAtEpochMs: Long,
 )
