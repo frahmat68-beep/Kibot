@@ -20,7 +20,7 @@
             android:layout_weight="1"
             android:text="KiBot"
             android:textColor="#F4F7FF"
-            android:textSize="17sp"
+            android:textSize="23sp"
             android:textStyle="bold" />
 
         <LinearLayout
@@ -58,87 +58,48 @@
         android:id="@+id/widget_equity"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="18dp"
         android:text="Rp0"
         android:textColor="#F4F7FF"
-        android:textSize="30sp"
+        android:textSize="44sp"
         android:textStyle="bold" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="10dp"
+        android:layout_marginTop="12dp"
         android:gravity="center_vertical"
         android:orientation="horizontal">
 
-        <LinearLayout
-            android:id="@+id/widget_daily_return_container"
-            android:layout_width="0dp"
+        <TextView
+            android:id="@+id/widget_pnl_value"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:background="@drawable/widget_metric_container"
-            android:orientation="vertical"
-            android:paddingLeft="12dp"
-            android:paddingTop="8dp"
-            android:paddingRight="12dp"
-            android:paddingBottom="8dp">
+            android:text="+Rp0"
+            android:textColor="#2DD881"
+            android:textSize="28sp"
+            android:textStyle="bold" />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="RETURN"
-                android:textColor="#A8B7D7"
-                android:textSize="10sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/widget_daily_return_value"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
-                android:text="+0.0%"
-                android:textColor="#E5E7EB"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/widget_pnl_container"
-            android:layout_width="0dp"
+        <TextView
+            android:id="@+id/widget_daily_return_value"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginLeft="8dp"
-            android:layout_weight="1"
-            android:background="@drawable/widget_metric_container"
-            android:orientation="vertical"
-            android:paddingLeft="12dp"
+            android:layout_marginLeft="10dp"
+            android:background="@drawable/widget_pnl_positive"
+            android:paddingLeft="14dp"
             android:paddingTop="8dp"
-            android:paddingRight="12dp"
-            android:paddingBottom="8dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="PNL"
-                android:textColor="#A8B7D7"
-                android:textSize="10sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/widget_pnl_value"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
-                android:text="+Rp0"
-                android:textColor="#E5E7EB"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-        </LinearLayout>
+            android:paddingRight="14dp"
+            android:paddingBottom="8dp"
+            android:text="+0.0%"
+            android:textColor="#2DD881"
+            android:textSize="16sp"
+            android:textStyle="bold" />
     </LinearLayout>
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="14dp"
         android:orientation="vertical"
         android:paddingTop="0dp">
 
@@ -148,7 +109,7 @@
             android:layout_height="wrap_content"
             android:text="-"
             android:textColor="#F4F7FF"
-            android:textSize="16sp"
+            android:textSize="18sp"
             android:textStyle="bold"
             android:textAllCaps="true" />
     </LinearLayout>
