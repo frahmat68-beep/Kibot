@@ -23,7 +23,7 @@ class LiveRolloutGuardTest {
     private val guard = LiveRolloutGuard()
 
     @Test
-    fun `small weekly sample stays in shadow seed even when setup is strong`() {
+    fun `small weekly sample can go guarded live when setup is strong`() {
         val cycle = healthyCycle()
         val summary = WeeklyLearningSummary(
             botId = BotId("main"),
@@ -44,7 +44,7 @@ class LiveRolloutGuardTest {
         val decision = guard.evaluate(cycle, summary)
 
         assertTrue(decision.allowed)
-        assertEquals("shadow_seed", decision.phase)
+        assertEquals("guarded_live", decision.phase)
     }
 
     @Test
@@ -62,7 +62,7 @@ class LiveRolloutGuardTest {
             botId = BotId("main"),
             periodStart = LocalDate(2026, 3, 10),
             periodEnd = LocalDate(2026, 3, 16),
-            tradeCount = 2,
+            tradeCount = 1,
             falseEntryRate = 0.0,
             noTradeQualityScore = 0.75,
             avoidedBadTradesIndicator = 0.45,
@@ -81,7 +81,7 @@ class LiveRolloutGuardTest {
     }
 
     @Test
-    fun `speculative setup stays blocked until weekly sample is mature`() {
+    fun `speculative setup can seed live when momentum is dominant`() {
         val cycle = healthyCycle().copy(
             selectedSignal = healthyCycle().selectedSignal?.copy(
                 pairTier = PairTier.TIER_B,
@@ -97,7 +97,7 @@ class LiveRolloutGuardTest {
             botId = BotId("main"),
             periodStart = LocalDate(2026, 3, 10),
             periodEnd = LocalDate(2026, 3, 16),
-            tradeCount = 2,
+            tradeCount = 1,
             falseEntryRate = 0.0,
             noTradeQualityScore = 0.75,
             avoidedBadTradesIndicator = 0.45,
@@ -111,8 +111,8 @@ class LiveRolloutGuardTest {
 
         val decision = guard.evaluate(cycle, summary)
 
-        assertFalse(decision.allowed)
-        assertEquals("shadow", decision.phase)
+        assertTrue(decision.allowed)
+        assertEquals("shadow_seed", decision.phase)
     }
 
     private fun healthyCycle() = orchestrator.analyze(

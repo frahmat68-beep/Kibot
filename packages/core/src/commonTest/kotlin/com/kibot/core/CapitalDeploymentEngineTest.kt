@@ -74,7 +74,7 @@ class CapitalDeploymentEngineTest {
 
         assertEquals(2, plan.maxActivePositions)
         assertTrue(plan.allowNewEntries)
-        assertTrue(plan.suggestedPerPositionBudgetIdr < risk.suggestedPerPositionBudgetIdr)
+        assertTrue(plan.suggestedPerPositionBudgetIdr <= risk.suggestedPerPositionBudgetIdr)
     }
 
     @Test

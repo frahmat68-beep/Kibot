@@ -45,13 +45,12 @@ class KiBotWidgetProvider : AppWidgetProvider() {
             appWidgetIds.forEach { widgetId ->
                 val views = RemoteViews(context.packageName, R.layout.widget_kibot_status).apply {
                     val hasActivePair = snapshot.activePair.isNotBlank() && snapshot.activePair != "-"
+                    val radarLabel = formatRadar(snapshot)
                     setTextViewText(R.id.widget_title, "KiBot")
                     setTextViewText(R.id.widget_pair, snapshot.activePair.uppercase())
-                    setTextViewText(R.id.widget_pair_label, if (hasActivePair) "BOT ON" else "RADAR")
-                    setTextViewText(
-                        R.id.widget_meta,
-                        if (hasActivePair) "Pair aktif • ${formatUpdated(snapshot.updatedAtEpochMs)}" else "Radar • ${formatUpdated(snapshot.updatedAtEpochMs)}",
-                    )
+                    setTextViewText(R.id.widget_pair_label, if (hasActivePair) "PAIR LIVE" else "RADAR NOW")
+                    setTextViewText(R.id.widget_radar, radarLabel)
+                    setTextViewText(R.id.widget_meta, "Update ${formatUpdated(snapshot.updatedAtEpochMs)}")
                     setTextViewText(R.id.widget_equity, snapshot.totalEquityIdr)
                     setTextViewText(R.id.widget_pnl, "${snapshot.pnlTodayIdr} ${derivePnlPct(snapshot)}".trim())
                     setTextViewText(R.id.widget_positions_count, "${visibleHoldings.size} aset")
@@ -92,6 +91,22 @@ class KiBotWidgetProvider : AppWidgetProvider() {
                 if (holdings.size > visible.size) {
                     append("\n+${holdings.size - visible.size} aset lain")
                 }
+            }
+        }
+
+        private fun formatRadar(snapshot: LiveStatusSnapshot): String {
+            val radarPairs = snapshot.radarPairs
+                .map { it.lowercase() }
+                .filter { it.isNotBlank() && it != "-" && it != snapshot.activePair.lowercase() }
+                .take(4)
+            return if (radarPairs.isEmpty()) {
+                if (snapshot.activePair.isNotBlank() && snapshot.activePair != "-") {
+                    "Pantau ${snapshot.activePair.lowercase()}"
+                } else {
+                    "Radar pair belum terkunci"
+                }
+            } else {
+                radarPairs.joinToString(" • ")
             }
         }
 
@@ -151,6 +166,7 @@ private class WidgetSnapshotStore(context: Context) {
             .putString(KEY_ACTIVE_PAIR, snapshot.activePair)
             .putString(KEY_TOTAL_EQUITY, snapshot.totalEquityIdr)
             .putString(KEY_PNL_TODAY, snapshot.pnlTodayIdr)
+            .putString(KEY_RADAR_PAIRS, snapshot.radarPairs.joinToString("\u001F"))
             .putString(KEY_HOLDINGS, snapshot.holdings.joinToString("\u001F") {
                 listOf(it.asset, it.amount, it.valueIdr, it.pnlIdr, it.pnlPctLabel).joinToString("\u001E")
             })
@@ -178,6 +194,10 @@ private class WidgetSnapshotStore(context: Context) {
             activePair = prefs.getString(KEY_ACTIVE_PAIR, null).orEmpty().ifBlank { "-" },
             totalEquityIdr = prefs.getString(KEY_TOTAL_EQUITY, null).orEmpty().ifBlank { "Rp0" },
             pnlTodayIdr = prefs.getString(KEY_PNL_TODAY, null).orEmpty().ifBlank { "+Rp0" },
+            radarPairs = prefs.getString(KEY_RADAR_PAIRS, null)
+                ?.split("\u001F")
+                ?.filter { it.isNotBlank() }
+                .orEmpty(),
             holdings = holdings,
         )
     }
@@ -188,6 +208,7 @@ private class WidgetSnapshotStore(context: Context) {
         private const val KEY_ACTIVE_PAIR = "active_pair"
         private const val KEY_TOTAL_EQUITY = "total_equity"
         private const val KEY_PNL_TODAY = "pnl_today"
+        private const val KEY_RADAR_PAIRS = "radar_pairs"
         private const val KEY_HOLDINGS = "holdings"
     }
 }

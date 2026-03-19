@@ -276,9 +276,9 @@ class PairSelector(
             quote.tradeCount24h >= policy.smallCapitalMinTradeCount24h &&
             quote.spreadPct <= policy.smallCapitalMaxSpreadPct &&
             quote.estimatedSlippagePct <= policy.smallCapitalMaxSlippagePct &&
-            stabilityScore >= maxOf(0.55, policy.minOrderBookStabilityScore) &&
-            volumeConsistencyScore >= maxOf(0.58, policy.minRecentTradeActivityScore) &&
-            fillQualityScore >= maxOf(0.58, policy.minFillQualityScore)
+            stabilityScore >= maxOf(0.50, policy.minOrderBookStabilityScore) &&
+            volumeConsistencyScore >= maxOf(0.52, policy.minRecentTradeActivityScore) &&
+            fillQualityScore >= maxOf(0.54, policy.minFillQualityScore)
     }
 
     private fun isSpeculativePocketEligible(
@@ -293,10 +293,10 @@ class PairSelector(
             quote.mediumTermReturnPct >= policy.speculativeMinMediumTermReturnPct &&
             quote.recentTradeActivityScore >= policy.speculativeMinTradeActivityScore &&
             depthScore >= policy.speculativeMinDepthScore &&
-            stabilityScore >= 0.62 &&
-            volumeConsistencyScore >= 0.65 &&
+            stabilityScore >= 0.56 &&
+            volumeConsistencyScore >= 0.58 &&
             historicalExpectancyScore >= policy.speculativeMinHistoricalExpectancyScore &&
-            fillQualityScore >= 0.65 &&
+            fillQualityScore >= 0.56 &&
             quote.spreadPct <= policy.smallCapitalMaxSpreadPct &&
             quote.estimatedSlippagePct <= policy.smallCapitalMaxSlippagePct
     }
@@ -324,6 +324,7 @@ class PairSelector(
     }
 
     private fun pairRankingComparator() = compareByDescending<PairScore> { it.pairTier == PairTier.TIER_A }
+        .thenByDescending { it.speculativePocket }
         .thenByDescending { it.rankingScore }
         .thenByDescending { it.marketOpportunityScore }
         .thenByDescending { it.fillQualityScore }

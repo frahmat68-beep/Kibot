@@ -322,7 +322,7 @@ class StrategyOrchestrator(
         val productiveIdleBiasActive = heldPairs.isEmpty() &&
             modeSnapshot.mode in setOf(BotMode.GROWTH, BotMode.ATTACK) &&
             marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC &&
-            marketSnapshot.marketOpportunityScore >= 0.60
+            marketSnapshot.marketOpportunityScore >= 0.57
         return EntryThresholds(
             minRankingScore = (baseRankingScore - if (productiveIdleBiasActive) executionConfig.productiveIdleRankingDelta else 0.0)
                 .coerceAtLeast(0.0),
@@ -350,11 +350,11 @@ class StrategyOrchestrator(
             pairScore.speculativePocket &&
                 marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC &&
                 speculativePocketAllowed(marketSnapshot) &&
-                quote.shortTermReturnPct <= 18.0 -> {
+                quote.shortTermReturnPct <= 24.0 -> {
                 setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION
                 signalType = StrategySignalType.BREAKOUT_ENTRY
-                adjustedOpportunityFloor = (baseOpportunityFloor + 0.01).coerceAtMost(1.0)
-                expectedHoldingHours = 3.5
+                adjustedOpportunityFloor = (baseOpportunityFloor + 0.005).coerceAtMost(1.0)
+                expectedHoldingHours = 3.0
                 rationale = "Sleeve spekulatif aktif: momentum meledak masih sehat, tapi budget dan durasi entry dipersempit."
             }
 
@@ -370,26 +370,26 @@ class StrategyOrchestrator(
                 rationale = "Regime uptrend dan holdability kuat, jadi swing continuation boleh diprioritaskan."
             }
 
-            quote.spreadPct <= 0.32 &&
-                quote.estimatedSlippagePct <= 0.32 &&
-                pairScore.fillQualityScore >= 0.62 &&
-                quote.shortTermReturnPct <= 0.55 &&
+            quote.spreadPct <= 0.38 &&
+                quote.estimatedSlippagePct <= 0.38 &&
+                pairScore.fillQualityScore >= 0.58 &&
+                quote.shortTermReturnPct <= 0.90 &&
                 marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC -> {
                 setupType = com.kibot.shared.models.SetupType.HEALTHY_SHORT_TERM_PULLBACK
                 signalType = StrategySignalType.MEAN_REVERSION_ENTRY
-                adjustedOpportunityFloor = (baseOpportunityFloor - 0.02).coerceAtLeast(0.0)
-                expectedHoldingHours = 8.0
+                adjustedOpportunityFloor = (baseOpportunityFloor - 0.03).coerceAtLeast(0.0)
+                expectedHoldingHours = 7.0
                 rationale = "Spread dan fill sehat, jadi pullback taktis boleh dipakai saat harga sedang rehat sehat."
             }
 
-            quote.mediumTermReturnPct >= 0.85 &&
-                quote.shortTermReturnPct >= 0.30 -> {
+            quote.mediumTermReturnPct >= 0.70 &&
+                quote.shortTermReturnPct >= 0.18 -> {
                 setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION
                 signalType = StrategySignalType.BREAKOUT_ENTRY
                 adjustedOpportunityFloor = when (marketSnapshot.regime) {
-                    MarketRegime.HEALTHY_SIDEWAYS -> baseOpportunityFloor + 0.03
-                    MarketRegime.HIGH_VOLATILITY_UNCLEAR -> baseOpportunityFloor + 0.04
-                    else -> baseOpportunityFloor + 0.01
+                    MarketRegime.HEALTHY_SIDEWAYS -> baseOpportunityFloor + 0.015
+                    MarketRegime.HIGH_VOLATILITY_UNCLEAR -> baseOpportunityFloor + 0.03
+                    else -> baseOpportunityFloor
                 }.coerceAtMost(1.0)
                 expectedHoldingHours = if (pairScore.preferredHorizon == TradingHorizon.SWING) 48.0 else 10.0
                 rationale = "Breakout continuation tetap boleh, tapi threshold diperketat saat market belum benar-benar nyaman."
@@ -431,7 +431,7 @@ class StrategyOrchestrator(
             else ->
                 averageOf(pairScore.trendQualityScore, pairScore.historicalExpectancyScore)
         }
-        val dominanceBonus = if (dominantPairId == pairScore.pairId) 0.025 else 0.0
+        val dominanceBonus = if (dominantPairId == pairScore.pairId) 0.035 else 0.0
         val affordableUnits = if (quote.bestAsk.toDoubleOrZero() > 0.0) {
             targetBudgetIdr / quote.bestAsk.toDoubleOrZero()
         } else {
@@ -446,19 +446,19 @@ class StrategyOrchestrator(
             else -> 0.40
         }
         val affordableNominalBias = when {
-            pairScore.speculativePocket -> 0.028
-            pairScore.preferredHorizon == TradingHorizon.TACTICAL && affordableUnits >= 100.0 -> 0.018
+            pairScore.speculativePocket -> 0.045
+            pairScore.preferredHorizon == TradingHorizon.TACTICAL && affordableUnits >= 100.0 -> 0.028
             else -> 0.0
         }
 
         return weightedAverage(
-            pairScore.rankingScore to 0.31,
-            pairScore.marketOpportunityScore to 0.25,
+            pairScore.rankingScore to 0.29,
+            pairScore.marketOpportunityScore to 0.24,
             pairScore.fillQualityScore to 0.12,
             pairScore.historicalExpectancyScore to 0.10,
             followThroughScore to 0.10,
-            quote.recentTradeActivityScore.coerceIn(0.0, 1.0) to 0.06,
-            affordabilityScore to 0.06,
+            quote.recentTradeActivityScore.coerceIn(0.0, 1.0) to 0.07,
+            affordabilityScore to 0.08,
         ).let { base ->
             (base + regimeBias + dominanceBonus + affordableNominalBias).coerceIn(0.0, 1.0)
         }

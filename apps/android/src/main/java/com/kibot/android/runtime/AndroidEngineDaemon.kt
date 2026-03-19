@@ -407,7 +407,7 @@ class AndroidEngineDaemon(
                 radarPairs = strategyCycle?.deploymentPlan?.candidates
                     ?.map { it.pairId.value }
                     ?.distinct()
-                    ?.take(4)
+                    ?.take(8)
                     .orEmpty(),
                 statusMessage = tickStatusMessage,
                 managedPositions = snapshotManagedPositions,
@@ -1501,7 +1501,7 @@ class AndroidEngineDaemon(
                 LiveLogEntry(
                     timestampEpochMs = now.toEpochMilliseconds(),
                     category = "SETUP",
-                    message = "Ancang-ancang ${executionPlan.signal.pairId.value.lowercase()}. Setup siap, tinggal cek harga dan fill.",
+                    message = "Siap entry ${executionPlan.signal.pairId.value.lowercase()}. Harga dan fill lagi dicek cepat.",
                 )
             }
 
@@ -1509,7 +1509,7 @@ class AndroidEngineDaemon(
                 LiveLogEntry(
                     timestampEpochMs = now.toEpochMilliseconds(),
                     category = "TARGET",
-                    message = "Target ${selectedSignal.pairId.value.lowercase()}. Bot masih nahan entry sambil cek gate.",
+                    message = "Bidik ${selectedSignal.pairId.value.lowercase()}. Momentum sudah hidup, tinggal lolos gate akhir.",
                 )
             }
 
@@ -1526,7 +1526,7 @@ class AndroidEngineDaemon(
                 LiveLogEntry(
                     timestampEpochMs = now.toEpochMilliseconds(),
                     category = "SCAN",
-                    message = "Scan $scanUniverseCount pair. Radar: ${candidates.take(3).joinToString(" • ")}.",
+                    message = "Radar cepat ${candidates.take(5).joinToString(" • ")}.",
                 )
             }
 

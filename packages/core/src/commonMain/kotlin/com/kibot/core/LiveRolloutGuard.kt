@@ -7,16 +7,16 @@ import com.kibot.shared.models.RiskLadderLevel
 import com.kibot.shared.models.WeeklyLearningSummary
 
 data class LiveRolloutConfig(
-    val shadowMinRankingScore: Double = 0.76,
-    val shadowMinExpectedEdgePct: Double = 0.52,
+    val shadowMinRankingScore: Double = 0.72,
+    val shadowMinExpectedEdgePct: Double = 0.44,
     val shadowMinBotHealthScore: Double = 0.62,
-    val shadowMinOpportunityScore: Double = 0.60,
-    val minimumWeeklyTradeSamples: Int = 4,
-    val speculativeMinWeeklyTradeSamples: Int = 3,
-    val speculativeMinRankingScore: Double = 0.76,
-    val speculativeMinExpectedEdgePct: Double = 0.62,
-    val speculativeMaxWeeklyFalseEntryRate: Double = 0.30,
-    val maxWeeklyFalseEntryRate: Double = 0.42,
+    val shadowMinOpportunityScore: Double = 0.56,
+    val minimumWeeklyTradeSamples: Int = 2,
+    val speculativeMinWeeklyTradeSamples: Int = 1,
+    val speculativeMinRankingScore: Double = 0.68,
+    val speculativeMinExpectedEdgePct: Double = 0.46,
+    val speculativeMaxWeeklyFalseEntryRate: Double = 0.45,
+    val maxWeeklyFalseEntryRate: Double = 0.50,
 )
 
 data class LiveRolloutDecision(
@@ -51,7 +51,17 @@ class LiveRolloutGuard(
         }
         if (executionPlan.speculativePocket) {
             if (weeklySummary == null || weeklySummary.tradeCount < config.speculativeMinWeeklyTradeSamples) {
-                return blocked("shadow", "Sleeve spekulatif butuh sample trade mingguan yang lebih matang sebelum boleh live.")
+                return if (
+                    executionPlan.pairRankingScore >= config.speculativeMinRankingScore + 0.04 &&
+                    executionPlan.expectedNetEdgePct >= config.speculativeMinExpectedEdgePct + 0.08 &&
+                    cycle.marketSnapshot.botHealthScore >= config.shadowMinBotHealthScore &&
+                    cycle.marketSnapshot.marketOpportunityScore >= config.shadowMinOpportunityScore &&
+                    cycle.modeSnapshot.mode in setOf(BotMode.GROWTH, BotMode.ATTACK)
+                ) {
+                    allowed("guarded_live", "Sleeve spekulatif boleh seed live saat momentum kecil terlihat sangat dominan.")
+                } else {
+                    blocked("shadow", "Sleeve spekulatif belum cukup matang untuk live penuh.")
+                }
             }
             if (cycle.modeSnapshot.edgeConfidence != EdgeConfidence.HIGH) {
                 return blocked("guarded_live", "Sleeve spekulatif hanya boleh live saat edge confidence benar-benar tinggi.")

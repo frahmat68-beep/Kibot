@@ -544,29 +544,21 @@ private fun PairRadarCard(
     modifier: Modifier = Modifier,
     state: KiBotUiState,
 ) {
+    val livePair = visiblePairLabel(state)
+    val radarPairs = radarPairs(state)
     SurfaceCard(modifier = modifier) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AssetBadge(symbol = visiblePairLabel(state).substringBefore('_').uppercase())
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        visiblePairLabel(state),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        if (state.isBotRunning) "Pair aktif bot" else "Radar pair teratas",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Live Pair", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (state.isBotRunning) "Bot lagi bidik pair yang paling siap." else "Radar pair tetap hidup meski bot sedang off.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             StatusChip(
                 label = if (state.isBotRunning) "LIVE" else "OFF",
@@ -581,30 +573,76 @@ private fun PairRadarCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    RadarChip(label = scanCountLabel(state))
-                    RadarChip(label = "${radarPairs(state).size} kandidat")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AssetBadge(symbol = livePair.substringBefore('_').uppercase())
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Text(
+                            livePair,
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            if (radarPairs.isNotEmpty()) {
+                                "Radar sekarang: ${radarPairs.take(3).joinToString(" • ")}"
+                            } else {
+                                "Bot lagi muter radar pair yang paling gerak."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-                if (radarPairs(state).isNotEmpty()) {
-                    Text(
-                        radarPairs(state).joinToString(" • "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                if (radarPairs.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        radarPairs.chunked(3).take(2).forEach { rowPairs ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                rowPairs.forEachIndexed { index, pair ->
+                                    RadarPairPill(
+                                        label = pair,
+                                        highlighted = index == 0 && pair == radarPairs.firstOrNull(),
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
-                Text(
-                    state.syncPathLabel,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
             }
         }
+    }
+}
+
+@Composable
+private fun RadarPairPill(
+    label: String,
+    highlighted: Boolean = false,
+) {
+    val accent = assetAccent(label.substringBefore('_').uppercase())
+    Surface(
+        color = if (highlighted) accent.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.06f),
+        shape = RoundedCornerShape(999.dp),
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            color = if (highlighted) accent else MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -1129,10 +1167,6 @@ private fun formatLogTime(epochMs: Long): String {
     return "$hh:$mm"
 }
 
-private fun scanCountLabel(state: KiBotUiState): String {
-    return state.scanUniverseCount.takeIf { it > 0 }?.let { "Scan $it pair" } ?: "Scan berjalan"
-}
-
 private fun dashboardTimelineEntries(state: KiBotUiState): List<com.kibot.android.runtime.LiveLogEntry> {
     val priorityCategories = setOf("BUY", "SELL", "LOSS", "PROFIT", "RISK", "ROTASI")
     val displayEntries = state.liveLogEntries.map { entry ->
@@ -1153,7 +1187,7 @@ private fun radarPairs(state: KiBotUiState): List<String> {
         .filter { it.isNotBlank() && it != "-" }
         .map { it.lowercase() }
         .filterNot { it == active }
-        .take(2)
+        .take(6)
 }
 
 private fun visiblePairLabel(state: KiBotUiState): String {
