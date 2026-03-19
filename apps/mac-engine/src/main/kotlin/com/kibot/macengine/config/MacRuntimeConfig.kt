@@ -76,6 +76,10 @@ object MacRuntimeConfigLoader {
                         maxCandidates = optional("GEMINI_SUPPORT_MAX_CANDIDATES")?.toIntOrNull() ?: 6,
                         minIntervalMinutes = optional("GEMINI_SUPPORT_MIN_INTERVAL_MINUTES")?.toIntOrNull() ?: 240,
                         timeoutMillis = optional("GEMINI_SUPPORT_TIMEOUT_MS")?.toLongOrNull() ?: 15_000L,
+                        maxOutputTokens = optional("GEMINI_SUPPORT_MAX_OUTPUT_TOKENS")?.toIntOrNull() ?: 384,
+                        hourlyRequestBudget = optional("GEMINI_SUPPORT_HOURLY_REQUEST_BUDGET")?.toIntOrNull() ?: 2,
+                        dailyRequestBudget = optional("GEMINI_SUPPORT_DAILY_REQUEST_BUDGET")?.toIntOrNull() ?: 12,
+                        failureCooldownMinutes = optional("GEMINI_SUPPORT_FAILURE_COOLDOWN_MINUTES")?.toIntOrNull() ?: 120,
                     )
                 },
             analysisPublishIntervalMillis = optional("BOT_ANALYSIS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 30_000L,

@@ -69,6 +69,10 @@ object AndroidRuntimeConfigLoader {
                 maxCandidates = BuildConfig.KIBOT_GEMINI_SUPPORT_MAX_CANDIDATES,
                 minIntervalMinutes = BuildConfig.KIBOT_GEMINI_SUPPORT_MIN_INTERVAL_MINUTES,
                 timeoutMillis = BuildConfig.KIBOT_GEMINI_SUPPORT_TIMEOUT_MS,
+                maxOutputTokens = BuildConfig.KIBOT_GEMINI_SUPPORT_MAX_OUTPUT_TOKENS,
+                hourlyRequestBudget = BuildConfig.KIBOT_GEMINI_SUPPORT_HOURLY_REQUEST_BUDGET,
+                dailyRequestBudget = BuildConfig.KIBOT_GEMINI_SUPPORT_DAILY_REQUEST_BUDGET,
+                failureCooldownMinutes = BuildConfig.KIBOT_GEMINI_SUPPORT_FAILURE_COOLDOWN_MINUTES,
             )
         } else {
             null

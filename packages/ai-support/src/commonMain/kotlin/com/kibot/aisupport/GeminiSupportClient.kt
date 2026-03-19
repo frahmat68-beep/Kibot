@@ -11,11 +11,15 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlin.math.round
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.minutes
 
 class GeminiSupportClient private constructor(
     private val config: GeminiSupportConfig,
@@ -54,7 +58,7 @@ class GeminiSupportClient private constructor(
             ),
             generationConfig = GeminiGenerationConfig(
                 temperature = 0.1,
-                maxOutputTokens = 700,
+                maxOutputTokens = config.maxOutputTokens,
                 responseMimeType = "application/json",
             ),
         )
@@ -129,9 +133,26 @@ class GeminiSupportCoordinator(
     private var lastSignature: String? = null
     private var lastRequestedAt: Instant? = null
     private var lastHints: List<AiPairSupportHint> = emptyList()
+    private var cooldownUntil: Instant? = null
+    private val requestHistory = mutableListOf<Instant>()
 
-    suspend fun evaluate(candidates: List<AiSupportCandidate>, now: Instant = Clock.System.now()): List<AiPairSupportHint> {
-        if (!config.isUsable || candidates.isEmpty()) return emptyList()
+    suspend fun evaluate(
+        candidates: List<AiSupportCandidate>,
+        now: Instant = Clock.System.now(),
+    ): GeminiSupportEvaluation {
+        if (!config.isUsable || candidates.isEmpty()) return GeminiSupportEvaluation()
+        requestHistory.removeAll { requestAt -> (now - requestAt).inWholeHours >= 24 }
+
+        cooldownUntil?.let { blockedUntil ->
+            if (now < blockedUntil) {
+                return GeminiSupportEvaluation(
+                    hints = lastHints,
+                    reusedCachedHints = lastHints.isNotEmpty(),
+                    blockedReason = "failure_cooldown",
+                )
+            }
+        }
+
         val trimmed = candidates.take(config.maxCandidates)
         val signature = trimmed.joinToString("|") {
             buildString {
@@ -148,21 +169,74 @@ class GeminiSupportCoordinator(
         val requestedAt = lastRequestedAt
         val ageMinutes = requestedAt?.let { (now - it).inWholeMinutes } ?: Long.MAX_VALUE
         if (signature == lastSignature && ageMinutes in 0 until config.minIntervalMinutes.toLong()) {
-            return lastHints
+            return GeminiSupportEvaluation(
+                hints = lastHints,
+                reusedCachedHints = lastHints.isNotEmpty(),
+                blockedReason = "same_signature_cooldown",
+            )
         }
         if (requestedAt != null && ageMinutes in 0 until config.minIntervalMinutes.toLong()) {
-            return lastHints
+            return GeminiSupportEvaluation(
+                hints = lastHints,
+                reusedCachedHints = lastHints.isNotEmpty(),
+                blockedReason = "global_cooldown",
+            )
+        }
+
+        val hourlyRequests = requestHistory.count { requestAt ->
+            (now - requestAt).inWholeMinutes in 0 until 60
+        }
+        if (hourlyRequests >= config.hourlyRequestBudget) {
+            return GeminiSupportEvaluation(
+                hints = lastHints,
+                reusedCachedHints = lastHints.isNotEmpty(),
+                blockedReason = "hourly_budget",
+            )
+        }
+
+        val currentUtcDate = now.toLocalDateTime(TimeZone.UTC).date
+        val dailyRequests = requestHistory.count { requestAt ->
+            requestAt.toLocalDateTime(TimeZone.UTC).date == currentUtcDate
+        }
+        if (dailyRequests >= config.dailyRequestBudget) {
+            return GeminiSupportEvaluation(
+                hints = lastHints,
+                reusedCachedHints = lastHints.isNotEmpty(),
+                blockedReason = "daily_budget",
+            )
         }
 
         return runCatching { client.analyze(trimmed) }
-            .onSuccess {
-                lastSignature = signature
-                lastRequestedAt = now
-                lastHints = it
-            }
-            .getOrElse { lastHints }
+            .fold(
+                onSuccess = {
+                    lastSignature = signature
+                    lastRequestedAt = now
+                    lastHints = it
+                    cooldownUntil = null
+                    requestHistory += now
+                    GeminiSupportEvaluation(
+                        hints = it,
+                        usedNetwork = true,
+                    )
+                },
+                onFailure = {
+                    cooldownUntil = now + config.failureCooldownMinutes.minutes
+                    GeminiSupportEvaluation(
+                        hints = lastHints,
+                        reusedCachedHints = lastHints.isNotEmpty(),
+                        blockedReason = "request_failed",
+                    )
+                },
+            )
     }
 }
+
+data class GeminiSupportEvaluation(
+    val hints: List<AiPairSupportHint> = emptyList(),
+    val usedNetwork: Boolean = false,
+    val reusedCachedHints: Boolean = false,
+    val blockedReason: String? = null,
+)
 
 @Serializable
 private data class GeminiGenerateContentRequest(

@@ -126,10 +126,21 @@ class AndroidEngineDaemon(
         if (exchangeReachable && marketQuotes.isEmpty()) warnings += "Feed market kosong."
         val finalHealth = buildLocalHealth(exchangeReachable, warnings)
         val healthDecision = healthAdvisor.evaluate(finalHealth)
-        val aiSupportHints = if (marketQuotes.isNotEmpty()) {
-            aiSupportCoordinator
-                ?.evaluate(strategyOrchestrator.shortlistForSupport(marketQuotes))
-                .orEmpty()
+        val aiSupportHints = if (isMaster && marketQuotes.isNotEmpty()) {
+            val shortlist = strategyOrchestrator.shortlistForSupport(marketQuotes)
+            val evaluation = aiSupportCoordinator
+                ?.evaluate(
+                    candidates = shortlist,
+                    now = now,
+                )
+            if (evaluation?.usedNetwork == true) {
+                appendAuditLog(
+                    LogLevel.INFO,
+                    "AI_SUPPORT",
+                    "REQUEST",
+                )
+            }
+            evaluation?.hints.orEmpty()
         } else {
             emptyList()
         }
