@@ -137,6 +137,12 @@ private fun DashboardScreen(
         item { HeroCard(state = state, onToggleBot = onToggleBot) }
         item { PairRadarCard(modifier = Modifier.fillMaxWidth(), state = state) }
         item {
+            HoldingsPreviewCard(
+                modifier = Modifier.fillMaxWidth(),
+                state = state,
+            )
+        }
+        item {
             LiveActivityCard(
                 modifier = Modifier.fillMaxWidth(),
                 state = state,

@@ -82,7 +82,7 @@ class AppRepository(
         _uiState.value = current.copy(
             isBotRunning = nextRunning,
             effectiveState = if (nextRunning) BotEffectiveState.RUNNING else BotEffectiveState.STOPPED,
-            statusMessage = if (nextRunning) "Bot start requested." else "Bot stop requested.",
+            statusMessage = if (nextRunning) "Bot start requested." else "Stop aman dimulai. Bot blok entry baru lalu rapikan posisi dulu.",
         )
         runtimePreferenceStore.setDesiredOn(nextRunning)
 

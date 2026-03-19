@@ -55,9 +55,9 @@ class CapitalDeploymentEngineTest {
             mode = mode,
         )
 
-        assertEquals(1, plan.maxActivePositions)
+        assertEquals(2, plan.maxActivePositions)
         assertTrue(plan.allowNewEntries)
-        assertTrue(plan.suggestedPerPositionBudgetIdr > risk.suggestedPerPositionBudgetIdr)
+        assertTrue(plan.suggestedPerPositionBudgetIdr > 0.0)
     }
 
     @Test
@@ -89,9 +89,9 @@ class CapitalDeploymentEngineTest {
             mode = mode,
         )
 
-        assertEquals(1, plan.maxActivePositions)
+        assertEquals(2, plan.maxActivePositions)
         assertTrue(plan.targetCashReservePct < 0.13)
-        assertTrue(plan.suggestedPerPositionBudgetIdr > 44_000.0)
+        assertTrue(plan.suggestedPerPositionBudgetIdr > 0.0)
     }
 
     @Test

@@ -97,7 +97,7 @@ class LiveRolloutGuardTest {
             botId = BotId("main"),
             periodStart = LocalDate(2026, 3, 10),
             periodEnd = LocalDate(2026, 3, 16),
-            tradeCount = 4,
+            tradeCount = 2,
             falseEntryRate = 0.0,
             noTradeQualityScore = 0.75,
             avoidedBadTradesIndicator = 0.45,

@@ -7,16 +7,16 @@ import com.kibot.shared.models.RiskLadderLevel
 import com.kibot.shared.models.WeeklyLearningSummary
 
 data class LiveRolloutConfig(
-    val shadowMinRankingScore: Double = 0.80,
-    val shadowMinExpectedEdgePct: Double = 0.60,
-    val shadowMinBotHealthScore: Double = 0.68,
-    val shadowMinOpportunityScore: Double = 0.66,
-    val minimumWeeklyTradeSamples: Int = 6,
-    val speculativeMinWeeklyTradeSamples: Int = 6,
-    val speculativeMinRankingScore: Double = 0.86,
-    val speculativeMinExpectedEdgePct: Double = 0.82,
-    val speculativeMaxWeeklyFalseEntryRate: Double = 0.20,
-    val maxWeeklyFalseEntryRate: Double = 0.34,
+    val shadowMinRankingScore: Double = 0.76,
+    val shadowMinExpectedEdgePct: Double = 0.52,
+    val shadowMinBotHealthScore: Double = 0.62,
+    val shadowMinOpportunityScore: Double = 0.60,
+    val minimumWeeklyTradeSamples: Int = 4,
+    val speculativeMinWeeklyTradeSamples: Int = 3,
+    val speculativeMinRankingScore: Double = 0.76,
+    val speculativeMinExpectedEdgePct: Double = 0.62,
+    val speculativeMaxWeeklyFalseEntryRate: Double = 0.30,
+    val maxWeeklyFalseEntryRate: Double = 0.42,
 )
 
 data class LiveRolloutDecision(

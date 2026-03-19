@@ -89,21 +89,21 @@ class CapitalDeploymentEngine(
             mode.mode in setOf(BotMode.GROWTH, BotMode.ATTACK) &&
             risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) &&
             firstCandidate?.tier == com.kibot.shared.models.PairTier.TIER_A &&
-            firstCandidate.rankingScore >= 0.82 &&
-            firstCandidate.marketOpportunityScore >= 0.72 &&
-            topCandidateGap >= 0.08
+            firstCandidate.rankingScore >= 0.78 &&
+            firstCandidate.marketOpportunityScore >= 0.68 &&
+            topCandidateGap >= 0.05
         val speculativePocketReady = openPositions == 0 &&
             risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) &&
             firstCandidate?.speculativePocket == true &&
-            firstCandidate.rankingScore >= 0.62 &&
-            firstCandidate.marketOpportunityScore >= 0.60
+            firstCandidate.rankingScore >= 0.58 &&
+            firstCandidate.marketOpportunityScore >= 0.55
         val secondSlotReady = risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) &&
             firstCandidate?.rankingScore?.let { it >= config.minSecondSlotRankingScore } == true &&
             secondCandidate?.let {
                 it.rankingScore >= config.minSecondSlotRankingScore &&
                     it.marketOpportunityScore >= config.minSecondSlotOpportunityScore
             } == true &&
-            topCandidateGap <= 0.08
+            topCandidateGap <= 0.12
         val multiSlotReadyCount = candidates
             .take(baseTotalCap.coerceAtLeast(1))
             .count {
@@ -120,7 +120,7 @@ class CapitalDeploymentEngine(
         val maxActivePositions = when {
             !risk.allowNewEntries || !mode.tradingAllowed -> openPositions
             speculativePocketReady -> maxOf(openPositions, 1)
-            multiSlotReadyCount >= 3 -> maxOf(openPositions, multiSlotReadyCount.coerceAtMost(baseTotalCap))
+            multiSlotReadyCount >= 2 -> maxOf(openPositions, multiSlotReadyCount.coerceAtMost(baseTotalCap))
             secondSlotReady -> baseTotalCap
             else -> maxOf(openPositions, if (risk.maxAllowedAdditionalPositions > 0) 1 else openPositions)
                 .coerceAtMost(config.maxConcurrentPositions)
@@ -145,7 +145,7 @@ class CapitalDeploymentEngine(
         val allowRotation = mode.mode != BotMode.SAFE &&
             !speculativePocketReady &&
             openPositions > 0 &&
-            candidates.firstOrNull()?.rankingScore?.let { it >= 0.78 } == true &&
+            candidates.firstOrNull()?.rankingScore?.let { it >= 0.74 } == true &&
             (
                 topCandidateGap >= config.rotationRankingGapMin ||
                     top1DeployableConcentration >= config.top1DeployableConcentrationMaxPct ||
@@ -160,7 +160,7 @@ class CapitalDeploymentEngine(
             if (candidates.isEmpty()) add("Belum ada kandidat yang layak memakai modal.")
             if (speculativePocketReady) add("Sleeve spekulatif aktif: pair agresif boleh dimainkan, tapi maksimal 25% equity harian.")
             if (secondSlotReady) add("Slot kedua boleh dibuka karena dua kandidat teratas sama-sama kuat.")
-            if (multiSlotReadyCount >= 3) add("$multiSlotReadyCount kandidat terlihat sama-sama executable, jadi bot boleh menyebar modal lebih aktif.")
+            if (multiSlotReadyCount >= 2) add("$multiSlotReadyCount kandidat terlihat sama-sama executable, jadi bot boleh menyebar modal lebih aktif.")
             if (!secondSlotReady && topCandidateGap > 0.12) add("Kandidat teratas terlalu dominan, jadi modal lebih baik difokuskan dulu.")
             if (top1DeployableConcentration >= config.top1DeployableConcentrationMaxPct) add("Konsentrasi top-1 sudah tinggi, jadi rotasi lebih diprioritaskan daripada menambah ukuran posisi lama.")
             if (top2DeployableConcentration >= config.top2DeployableConcentrationMaxPct) add("Dua aset teratas sudah mendominasi modal aktif, jadi penyebaran modal harus lebih disiplin.")

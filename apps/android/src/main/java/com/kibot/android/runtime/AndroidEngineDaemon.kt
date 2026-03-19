@@ -105,6 +105,7 @@ class AndroidEngineDaemon(
     private var lastExecutionPolicyLogSignature: String? = null
     private var lastExecutionPolicyLoggedAt: Instant? = null
     private var forcedTrialExitConsumed = false
+    private var stopProtectionStartedAt: Instant? = null
 
     suspend fun syncOnce(): AndroidEngineTickResult = coroutineScope {
         ensureRegistered()
@@ -161,16 +162,20 @@ class AndroidEngineDaemon(
             marketFeedHealthy = exchangeReachable,
         )
         val masterBeforeTakeover = leaseAfterCommands.isHeldBy(config.device.deviceId, now)
+        if (botStateAfterCommands.desiredState == BotDesiredState.ON && stopProtectionStartedAt != null) {
+            stopProtectionStartedAt = null
+        }
         if (botStateAfterCommands.desiredState == BotDesiredState.ON && !masterBeforeTakeover) {
             maybeTakeOver(now, botStateAfterCommands, leaseAfterCommands, localHealth)
         } else if (botStateAfterCommands.desiredState == BotDesiredState.OFF && masterBeforeTakeover) {
-            controlPlane.releaseLease(
-                botId = controlPlaneConfig.botId,
-                deviceId = config.device.deviceId,
-                term = leaseAfterCommands?.term?.value ?: 0L,
-                reason = "Bot diminta OFF dari Android.",
-            )
-            appendAuditLog(LogLevel.INFO, "LEASE", "Android melepas lease karena desired state OFF.")
+            if (stopProtectionStartedAt == null) {
+                stopProtectionStartedAt = now
+                appendAuditLog(
+                    LogLevel.WARN,
+                    "STOP",
+                    "Bot diminta OFF. Android masuk stop aman: blok entry baru lalu rapikan posisi sebelum lease dilepas.",
+                )
+            }
         }
 
         val initialBotState = controlPlane.fetchBotState(controlPlaneConfig.botId) ?: botStateAfterCommands
@@ -335,6 +340,16 @@ class AndroidEngineDaemon(
                 aiBlockedReason = aiSupportEvaluation?.blockedReason,
                 aiUsedNetwork = aiSupportEvaluation?.usedNetwork == true,
             )
+            runtimeBotState = controlPlane.fetchBotState(controlPlaneConfig.botId) ?: runtimeBotState
+            runtimeLease = controlPlane.fetchLease(controlPlaneConfig.botId)
+        }
+        if (botStateAfterCommands.desiredState == BotDesiredState.OFF && runtimeLease.isHeldBy(config.device.deviceId, now)) {
+            handleStopProtection(
+                now = now,
+                lease = runtimeLease,
+                managedPositions = snapshotManagedPositions,
+                recentOrders = effectiveRecentOrders,
+            )?.let { warnings += it }
             runtimeBotState = controlPlane.fetchBotState(controlPlaneConfig.botId) ?: runtimeBotState
             runtimeLease = controlPlane.fetchLease(controlPlaneConfig.botId)
         }
@@ -640,6 +655,11 @@ class AndroidEngineDaemon(
             health = health,
             balances = balances,
             marketQuotes = marketQuotes,
+        ) ?: maybeBuildManualStopExitDecision(
+            now = now,
+            cycle = cycle,
+            managedPositions = managedPositions,
+            health = health,
         ) ?: exitDecision
         if (selectedExitDecision != null) {
             val isTrialExit = selectedExitDecision.message.startsWith("Trial micro-exit")
@@ -686,6 +706,17 @@ class AndroidEngineDaemon(
 
                 else -> null
             }
+        }
+        if (stopProtectionStartedAt != null) {
+            return LiveLogEntry(
+                timestampEpochMs = now.toEpochMilliseconds(),
+                category = "STOP",
+                message = if (managedPositions.isEmpty()) {
+                    "Stop aman aktif. Bot menunggu order bersih sebelum benar-benar mati."
+                } else {
+                    "Stop aman aktif. Bot tahan entry baru sambil rapikan ${managedPositions.first().pairId.value}."
+                },
+            )
         }
 
         val executionPlan = cycle.executionPlan ?: return null
@@ -851,7 +882,8 @@ class AndroidEngineDaemon(
                     0.0
                 }
                 val pairFlipped = cycle.selectedSignal?.pairId != order.pairId
-                val shouldCancel = ageMinutes >= staleEntryOrderMaxAgeMinutes ||
+                val shouldCancel = stopProtectionStartedAt != null ||
+                    ageMinutes >= staleEntryOrderMaxAgeMinutes ||
                     (pairFlipped && ageMinutes >= staleEntryOrderPairFlipGraceMinutes) ||
                     driftPct >= staleEntryOrderMaxDriftPct
                 if (!shouldCancel) return@forEach
@@ -1330,6 +1362,84 @@ class AndroidEngineDaemon(
         )
     }
 
+    private fun maybeBuildManualStopExitDecision(
+        now: Instant,
+        cycle: StrategyCycleResult,
+        managedPositions: List<ManagedPosition>,
+        health: EngineHealthSnapshot,
+    ): com.kibot.core.ExitDecision? {
+        if (stopProtectionStartedAt == null || managedPositions.isEmpty()) return null
+        val position = managedPositions.maxByOrNull { it.currentValueIdr.toDoubleOrZero() } ?: return null
+        val orderType = if ((health.feedLatencyMs ?: 0L) > aggressiveLimitFallbackLatencyMs) {
+            OrderType.MARKET
+        } else {
+            OrderType.LIMIT
+        }
+        val signal = StrategySignal(
+            pairId = position.pairId,
+            signalType = StrategySignalType.EXIT,
+            confidence = 0.95,
+            rationale = listOf("manual_stop_protection"),
+            entryPrice = position.currentBidPrice,
+            takeProfitPrice = position.takeProfitPrice,
+            stopPrice = position.stopPrice,
+            setupType = position.setupType,
+            horizon = position.horizon,
+            pairTier = position.pairTier,
+            speculativePocket = position.speculativePocket,
+            marketRegime = cycle.marketSnapshot.regime,
+            edgeConfidence = cycle.modeSnapshot.edgeConfidence,
+            expectedHoldingHours = position.expectedHoldingHours,
+            expectedNetProfitabilityPct = kotlin.math.abs(position.unrealizedPnlPct),
+        )
+        return com.kibot.core.ExitDecision(
+            position = position,
+            reason = com.kibot.core.ExitReason.TIME_EXIT,
+            message = "Stop aman aktif. ${position.pairId.value} dijual dulu supaya bot bisa mati dengan posisi lebih bersih.",
+            executionPlan = ExecutionPlan(
+                signal = signal,
+                side = OrderSide.SELL,
+                orderType = orderType,
+                quantity = position.quantity,
+                limitPrice = if (orderType == OrderType.LIMIT) position.currentBidPrice else null,
+                postOnlyPreferred = false,
+                expectedNetEdgePct = kotlin.math.abs(position.unrealizedPnlPct),
+                botMode = cycle.modeSnapshot.mode,
+                riskLadderLevel = cycle.riskDecision.riskLadderLevel,
+                pairRankingScore = cycle.rankedPairs.firstOrNull { it.pairId == position.pairId }?.rankingScore ?: 0.60,
+                speculativePocket = position.speculativePocket,
+            ),
+        )
+    }
+
+    private suspend fun handleStopProtection(
+        now: Instant,
+        lease: EngineLeaseSnapshot?,
+        managedPositions: List<ManagedPosition>,
+        recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
+    ): String? {
+        val startedAt = stopProtectionStartedAt ?: return null
+        val activeOrders = recentOrders.count { it.status in activeOrderStatuses }
+        val hasExposure = managedPositions.isNotEmpty() || activeOrders > 0
+        if (!hasExposure && lease != null) {
+            controlPlane.releaseLease(
+                botId = controlPlaneConfig.botId,
+                deviceId = config.device.deviceId,
+                term = lease.term.value,
+                reason = "Stop aman selesai: posisi dan order sudah bersih.",
+            )
+            stopProtectionStartedAt = null
+            appendAuditLog(LogLevel.INFO, "LEASE", "Android melepas lease setelah stop aman selesai.")
+            return "Stop aman selesai. Lease dilepas."
+        }
+        val remainingSeconds = ((manualStopProtectionStatusWindowMs - (now - startedAt).inWholeMilliseconds).coerceAtLeast(0L) / 1_000L)
+        return if (remainingSeconds > 0L) {
+            "Stop aman aktif. Entry baru diblokir, posisi/order sedang dirapikan (${remainingSeconds}s)."
+        } else {
+            "Stop aman aktif. Bot tetap pegang lease sampai posisi dan order benar-benar bersih."
+        }
+    }
+
     private fun buildSyntheticTrialPosition(
         now: Instant,
         targetPair: String,
@@ -1600,6 +1710,7 @@ class AndroidEngineDaemon(
         private const val makerFirstMaxLatencyMs = 320L
         private const val aggressiveLimitFallbackLatencyMs = 820L
         private const val entryBlockLatencyMs = 1100L
+        private const val manualStopProtectionStatusWindowMs = 90_000L
         private const val executionPolicyLogCooldownMinutes = 2L
         private const val trialExitMaxNotionalIdr = 60_000.0
         private val activeOrderStatuses = setOf(
