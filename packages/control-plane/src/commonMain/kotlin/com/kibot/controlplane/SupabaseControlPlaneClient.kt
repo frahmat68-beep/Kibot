@@ -1047,11 +1047,11 @@ private data class OrderRow(
     val side: String,
     @SerialName("order_type") val orderType: String,
     val status: String,
-    val price: String? = null,
-    val quantity: String,
-    @SerialName("executed_quantity") val executedQuantity: String,
-    @SerialName("remaining_quantity") val remainingQuantity: String,
-    @SerialName("fee_paid") val feePaid: String,
+    val price: JsonElement? = null,
+    val quantity: JsonElement? = null,
+    @SerialName("executed_quantity") val executedQuantity: JsonElement? = null,
+    @SerialName("remaining_quantity") val remainingQuantity: JsonElement? = null,
+    @SerialName("fee_paid") val feePaid: JsonElement? = null,
     @SerialName("opened_at") val openedAt: Instant,
     @SerialName("updated_at") val updatedAt: Instant,
 )
@@ -1063,14 +1063,20 @@ private fun OrderRow.toOrderSnapshot(): OrderSnapshot = OrderSnapshot(
     side = OrderSide.valueOf(side),
     orderType = OrderType.valueOf(orderType),
     status = OrderStatus.valueOf(status),
-    price = DecimalValue(price ?: "0"),
-    originalQuantity = DecimalValue(quantity),
-    executedQuantity = DecimalValue(executedQuantity),
-    remainingQuantity = DecimalValue(remainingQuantity),
-    feePaid = DecimalValue(feePaid),
+    price = DecimalValue(price.toDecimalString()),
+    originalQuantity = DecimalValue(quantity.toDecimalString()),
+    executedQuantity = DecimalValue(executedQuantity.toDecimalString()),
+    remainingQuantity = DecimalValue(remainingQuantity.toDecimalString()),
+    feePaid = DecimalValue(feePaid.toDecimalString()),
     createdAt = openedAt,
     updatedAt = updatedAt,
 )
+
+private fun JsonElement?.toDecimalString(): String = when (this) {
+    null -> "0"
+    is JsonPrimitive -> content
+    else -> toString()
+}
 
 @Serializable
 private data class WeeklyLearningReviewRow(
