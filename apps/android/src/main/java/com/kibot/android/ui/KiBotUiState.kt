@@ -12,7 +12,7 @@ enum class EngineAction {
 data class PositionCardUi(
     val pair: String,
     val quantity: String,
-    val pnl: String,
+    val value: String,
 )
 
 data class LogUi(
@@ -54,6 +54,8 @@ data class KiBotUiState(
     val pairAktif: String,
     val leaseTerm: Long,
     val syncLagLabel: String,
+    val syncPathLabel: String,
+    val lastUpdatedLabel: String,
     val statusMessage: String,
     val weeklyLearningSummary: String,
     val weeklyAdaptationSummary: String,
@@ -82,6 +84,8 @@ data class KiBotUiState(
             pairAktif = "-",
             leaseTerm = 7,
             syncLagLabel = "-",
+            syncPathLabel = "Supabase",
+            lastUpdatedLabel = "Baru saja",
             statusMessage = "Menunggu sync live Indodax.",
             weeklyLearningSummary = "Belum ada review mingguan.",
             weeklyAdaptationSummary = "Adaptasi mingguan akan muncul setelah data cukup.",

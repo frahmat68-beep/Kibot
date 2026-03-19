@@ -72,6 +72,7 @@ android {
         buildConfigField("int", "KIBOT_GEMINI_SUPPORT_HOURLY_REQUEST_BUDGET", envOrDefault("GEMINI_SUPPORT_HOURLY_REQUEST_BUDGET", "2"))
         buildConfigField("int", "KIBOT_GEMINI_SUPPORT_DAILY_REQUEST_BUDGET", envOrDefault("GEMINI_SUPPORT_DAILY_REQUEST_BUDGET", "12"))
         buildConfigField("int", "KIBOT_GEMINI_SUPPORT_FAILURE_COOLDOWN_MINUTES", envOrDefault("GEMINI_SUPPORT_FAILURE_COOLDOWN_MINUTES", "120"))
+        buildConfigField("String", "KIBOT_MAC_LAN_SYNC_URL", envOrDefault("MAC_ENGINE_LAN_SYNC_URL").asBuildConfigString())
         buildConfigField("boolean", "KIBOT_ENABLE_LIVE_EXECUTION", envOrDefault("BOT_ENABLE_LIVE_EXECUTION", "false"))
         buildConfigField("long", "KIBOT_POLL_INTERVAL_MS", envOrDefault("BOT_POLL_INTERVAL_MS", "5000") + "L")
         buildConfigField("int", "KIBOT_LEASE_TTL_SECONDS", envOrDefault("BOT_DEFAULT_LEASE_TTL_SECONDS", "30"))

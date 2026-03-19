@@ -16,6 +16,7 @@ import java.nio.file.Paths
 
 data class MacRuntimeConfig(
     val port: Int,
+    val bindHost: String,
     val controlPlane: ControlPlaneConfig,
     val device: DeviceRegistration,
     val pollIntervalMillis: Long,
@@ -50,6 +51,7 @@ object MacRuntimeConfigLoader {
 
         return MacRuntimeConfig(
             port = optional("MAC_ENGINE_PORT")?.toIntOrNull() ?: 8787,
+            bindHost = optional("MAC_ENGINE_BIND_HOST") ?: "0.0.0.0",
             controlPlane = ControlPlaneConfig(
                 supabaseUrl = required("SUPABASE_URL"),
                 supabaseAnonKey = required("SUPABASE_ANON_KEY"),

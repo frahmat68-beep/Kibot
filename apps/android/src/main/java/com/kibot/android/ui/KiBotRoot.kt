@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -55,7 +56,7 @@ fun KiBotRoot(
     var currentTab by rememberSaveable { mutableStateOf(RootTab.Dashboard) }
     val background = Brush.verticalGradient(
         colors = listOf(
-            MaterialTheme.colorScheme.surface,
+            MaterialTheme.colorScheme.surfaceContainerLowest,
             MaterialTheme.colorScheme.surfaceContainerLowest,
             MaterialTheme.colorScheme.surface,
         ),
@@ -112,12 +113,18 @@ private fun DashboardScreen(
         item { HeroCard(state = state, onToggleBot = onToggleBot) }
         item {
             SurfaceCard {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    StatusLine("Engine", state.activeEngine)
-                    StatusLine("Standby", state.standbyEngine)
-                    StatusLine("Mode", "${state.operatingMode} • ${state.edgeConfidence}")
-                    StatusLine("Sync", state.syncHealth)
-                }
+                StatusLine("Mode", state.operatingMode)
+                StatusLine("Edge", state.edgeConfidence)
+                StatusLine("Sync", "${state.syncPathLabel} • ${state.syncHealth}")
+                StatusLine("Lag", state.syncLagLabel)
+            }
+        }
+        item {
+            SurfaceCard {
+                StatusLine("Risk", state.riskLadderLevel)
+                StatusLine("Profit guard", state.profitProtectionStatus)
+                StatusLine("Update", state.lastUpdatedLabel)
+                StatusLine("Backup", state.standbyEngine)
             }
         }
         item { SectionTitle("Holdings") }
@@ -139,23 +146,51 @@ private fun DashboardScreen(
                             Text(position.pair.uppercase(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                             Text(position.quantity, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Text(position.pnl, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                        Text(position.value, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
         }
         item {
             SurfaceCard {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Status Bot", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(
-                        if (state.isBotRunning) "Bot sedang aktif." else "Bot sedang berhenti.",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    MetricCard(
+                        label = "Drawdown",
+                        value = "${(state.drawdownPct * 100).toInt()}%",
+                        supporting = "Limit ${(state.dailyLossLimitPct * 100).toInt()}%",
                     )
-                    Text("Pair aktif: ${state.pairAktif.lowercase()}")
-                    Text("Risk: ${state.riskLadderLevel} • ${if (state.riskBlocked) "entry diblokir" else "entry diizinkan"}")
-                    Text("Regime: ${state.marketRegime}")
+                    MetricCard(
+                        label = "Lease",
+                        value = "#${state.leaseTerm}",
+                        supporting = state.profitProtectionStatus,
+                    )
+                    StatusLine("Engine aktif", state.activeEngine)
+                    StatusLine("Backup", state.standbyEngine)
+                    StatusLine("Pair aktif", state.pairAktif.lowercase())
+                    StatusLine("Regime", state.marketRegime)
+                    StatusLine("Sync", state.syncPathLabel)
+                    StatusLine("Status", state.statusMessage)
+                }
+            }
+        }
+        if (state.devices.isNotEmpty()) {
+            item { SectionTitle("Devices") }
+            items(state.devices) { device ->
+                SurfaceCard {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(device.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(device.heartbeat, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        StatusChip(
+                            if (device.active) "ACTIVE" else device.health.uppercase(),
+                            if (device.active) Color(0xFF147D57) else Color(0xFF4B6385),
+                        )
+                    }
                 }
             }
         }
@@ -175,15 +210,25 @@ private fun HeroCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("KiBot", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                StatusChip(state.pairAktif.lowercase(), Color(0xFF1D4ED8))
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("KiBot", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (state.isBotRunning) "Balance live akun bot" else "Siap dipakai lagi",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                StatusChip(
+                    if (state.pairAktif == "-") "scan" else state.pairAktif.lowercase(),
+                    Color(0xFF1D4ED8),
+                )
             }
             Text(state.modalSaatIniIdr, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
             Text(
@@ -197,17 +242,30 @@ private fun HeroCard(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatusChip(if (state.isBotRunning) "RUNNING" else "STOPPED", if (state.isBotRunning) Color(0xFF0E8A4C) else Color(0xFFB43F3F))
+                StatusChip(state.operatingMode, Color(0xFF6959CD))
+                StatusChip(state.syncPathLabel, Color(0xFF8A6A12))
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatusChip(if (state.isBotRunning) "ON" else "OFF", if (state.isBotRunning) Color(0xFF0E8A4C) else Color(0xFFB43F3F))
-                    StatusChip(state.syncHealth, Color(0xFF6B5B00))
-                }
                 FilledTonalButton(onClick = onToggleBot) {
                     Text(if (state.isBotRunning) "Turn OFF" else "Turn ON")
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        state.activeEngine,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "Update ${state.lastUpdatedLabel}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
@@ -224,12 +282,16 @@ private fun EngineControlScreen(
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item { SectionTitle("Engine Control") }
         item {
             SurfaceCard {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Active engine: ${state.activeEngine}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text("Standby engine: ${state.standbyEngine}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text("Engine Control", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                    Text(state.statusMessage, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        StatusChip(state.activeEngine, Color(0xFF1D4ED8))
+                        StatusChip("Backup ${state.standbyEngine}", Color(0xFF4B6385))
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
                     FilledTonalButton(onClick = { onCommand(EngineAction.RequestTakeover) }, modifier = Modifier.fillMaxWidth()) {
                         Text("Request Takeover")
                     }
@@ -242,6 +304,11 @@ private fun EngineControlScreen(
                     FilledTonalButton(onClick = { onCommand(EngineAction.SyncNow) }, modifier = Modifier.fillMaxWidth()) {
                         Text("Sync Status Now")
                     }
+                    Text(
+                        "Takeover tetap lewat control-plane. Jika state ambigu, bot akan tetap blok entry baru.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
@@ -320,6 +387,20 @@ private fun SurfaceCard(
 }
 
 @Composable
+private fun MetricCard(
+    modifier: Modifier = Modifier,
+    label: String,
+    value: String,
+    supporting: String,
+) {
+    SurfaceCard(modifier = modifier) {
+        Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Text(supporting, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
 private fun StatusChip(
     label: String,
     tint: Color,
@@ -363,6 +444,6 @@ private fun heroSubtitle(state: KiBotUiState): String {
     return when {
         !state.isBotRunning -> "Bot sedang berhenti."
         state.syncHealth == "BROKEN" -> "Sync bermasalah. Cek tab Logs."
-        else -> "${state.activeEngine} aktif • memantau ${state.pairAktif.lowercase()}."
+        else -> "${state.activeEngine} aktif • ${state.marketRegime} • lag ${state.syncLagLabel}."
     }
 }

@@ -10,10 +10,7 @@ class PairSelector(
     private val policy: PairSelectionPolicy = PairSelectionPolicy(),
 ) {
     fun rank(quotes: List<MarketQuote>): List<PairScore> {
-        return quotes.map(::scoreQuote).sortedWith(
-            compareByDescending<PairScore> { it.pairTier == PairTier.TIER_A }
-                .thenByDescending { it.rankingScore },
-        )
+        return quotes.map(::scoreQuote).sortedWith(pairRankingComparator())
     }
 
     fun shortlist(quotes: List<MarketQuote>): List<PairScore> {
@@ -45,16 +42,16 @@ class PairSelector(
         )
         val holdabilityScore = deriveHoldabilityScore(quote, trendQualityScore, volatilityQualityScore)
         val rankingScore = weightedAverage(
-            liquidityScore to 0.14,
+            liquidityScore to 0.12,
             spreadScore to 0.12,
             slippageScore to 0.12,
             stabilityScore to 0.10,
-            volumeConsistencyScore to 0.08,
-            volatilityQualityScore to 0.09,
-            trendQualityScore to 0.11,
-            historicalExpectancyScore to 0.08,
+            volumeConsistencyScore to 0.07,
+            volatilityQualityScore to 0.08,
+            trendQualityScore to 0.08,
+            historicalExpectancyScore to 0.11,
             recentHealthScore to 0.08,
-            fillQualityScore to 0.04,
+            fillQualityScore to 0.08,
             holdabilityScore to 0.04,
         )
         val marketOpportunityScore = averageOf(
@@ -175,4 +172,11 @@ class PairSelector(
         if (values.isEmpty()) return 0.0
         return values.map { it.coerceIn(0.0, 1.0) }.average().coerceIn(0.0, 1.0)
     }
+
+    private fun pairRankingComparator() = compareByDescending<PairScore> { it.pairTier == PairTier.TIER_A }
+        .thenByDescending { it.rankingScore }
+        .thenByDescending { it.marketOpportunityScore }
+        .thenByDescending { it.fillQualityScore }
+        .thenByDescending { it.historicalExpectancyScore }
+        .thenByDescending { it.spreadScore + it.slippageScore }
 }

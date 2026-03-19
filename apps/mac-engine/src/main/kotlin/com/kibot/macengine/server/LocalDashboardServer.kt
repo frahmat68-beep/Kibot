@@ -37,16 +37,22 @@ import kotlinx.html.span
 import kotlinx.html.style
 import kotlinx.html.title
 import kotlinx.html.unsafe
+import kotlinx.serialization.Serializable
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Collections
+import java.net.NetworkInterface
 
 class LocalDashboardServer(
     private val repository: MacStateRepository,
     private val dispatchCommand: suspend (MacCommand) -> Unit,
+    private val host: String = "0.0.0.0",
     private val port: Int = 8787,
     private val androidReleaseDirectory: Path,
 ) {
-    private val server = embeddedServer(CIO, host = "127.0.0.1", port = port) {
+    private val lanProbeUrl = detectLanProbeUrl(host, port)
+
+    private val server = embeddedServer(CIO, host = host, port = port) {
         install(CallLogging)
         install(ContentNegotiation) { json() }
         install(StatusPages) {
@@ -71,7 +77,7 @@ class LocalDashboardServer(
                         }
                     }
                     body {
-                        renderDashboard(repository.state.value)
+                        renderDashboard(repository.state.value, lanProbeUrl)
                         script {
                             unsafe {
                                 +"""
@@ -80,9 +86,16 @@ class LocalDashboardServer(
                                     .then(r => r.json())
                                     .then(state => {
                                       document.getElementById('status-message').textContent = state.statusMessage;
+                                      document.getElementById('portfolio-value').textContent = state.portfolioValueIdr;
+                                      document.getElementById('portfolio-value-card').textContent = state.portfolioValueIdr;
+                                      document.getElementById('pnl-today').textContent = state.pnlTodayIdr;
+                                      document.getElementById('pnl-today-card').textContent = state.pnlTodayIdr;
+                                      document.getElementById('last-updated').textContent = state.lastUpdatedLabel;
+                                      document.getElementById('last-updated-card').textContent = state.lastUpdatedLabel;
                                       document.getElementById('active-engine').textContent = state.activeEngine;
                                       document.getElementById('standby-engine').textContent = state.standbyEngine;
                                       document.getElementById('sync-health').textContent = state.syncHealth;
+                                      document.getElementById('sync-path').textContent = state.syncPathLabel;
                                       document.getElementById('operating-mode').textContent = state.operatingMode;
                                       document.getElementById('edge-confidence').textContent = state.edgeConfidence;
                                       document.getElementById('market-regime').textContent = state.marketRegime;
@@ -127,6 +140,10 @@ class LocalDashboardServer(
 
             get("/api/state") {
                 call.respond(repository.state.value)
+            }
+
+            get("/api/lan/ping") {
+                call.respond(LanPingResponse(ok = true, host = host, port = port, lanProbeUrl = lanProbeUrl))
             }
 
             get("/api/releases/android/latest") {
@@ -174,7 +191,7 @@ private fun String.toMacCommand(): MacCommand = when (uppercase()) {
     else -> error("Unknown action: $this")
 }
 
-private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState) {
+private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbeUrl: String?) {
     div("page-shell") {
         div("hero") {
             div("hero-copy") {
@@ -182,6 +199,11 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState) {
                 p {
                     attributes["id"] = "status-message"
                     +state.statusMessage
+                }
+                div("hero-metrics") {
+                    metricTile("Portfolio", state.portfolioValueIdr, "portfolio-value")
+                    metricTile("PnL Hari Ini", state.pnlTodayIdr, "pnl-today")
+                    metricTile("Update", state.lastUpdatedLabel, "last-updated")
                 }
             }
             div("hero-actions") {
@@ -200,11 +222,19 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState) {
 
         div("grid") {
             div("card accent") {
+                h2 { +"Wallet Snapshot" }
+                statusLine("Saldo", state.portfolioValueIdr, "portfolio-value-card")
+                statusLine("PnL Hari Ini", state.pnlTodayIdr, "pnl-today-card")
+                statusLine("Lease Term", "#${state.leaseTerm}", "lease-term")
+                statusLine("Update", state.lastUpdatedLabel, "last-updated-card")
+            }
+            div("card") {
                 h2 { +"Control Plane" }
                 statusLine("Bot", state.isBotRunningLabel(), "bot-running")
                 statusLine("Active Engine", state.activeEngine, "active-engine")
                 statusLine("Standby Engine", state.standbyEngine, "standby-engine")
                 statusLine("Sync", state.syncHealth, "sync-health")
+                statusLine("Path", state.syncPathLabel, "sync-path")
             }
             div("card") {
                 h2 { +"Strategy Brain" }
@@ -216,7 +246,6 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState) {
             }
             div("card") {
                 h2 { +"Lease & Health" }
-                statusLine("Lease Term", "#${state.leaseTerm}", "lease-term")
                 statusLine("Last Heartbeat", state.lastHeartbeatLabel, "heartbeat")
                 statusLine("Health", state.healthSummary, "health-summary")
             }
@@ -232,7 +261,9 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState) {
                 p { +"Jika conflict atau status order ambigu terdeteksi, Mac tidak akan entry baru dan bot dipaksa ke safe mode." }
             }
             div("card") {
-                h2 { +"Android Update Feed" }
+                h2 { +"LAN & Update Feed" }
+                p { +"LAN probe: ${lanProbeUrl ?: "unavailable"}" }
+                p { +"Jika Android dan Mac ada di Wi-Fi yang sama, endpoint ini bisa dipakai untuk probe sinkronisasi lokal yang lebih cepat." }
                 p { +"Latest signed APK is served locally from the laptop when available." }
                 p { +"Manifest: /api/releases/android/latest" }
                 p { +"APK: /releases/android/kibot-android-latest.apk" }
@@ -245,6 +276,16 @@ private fun FlowContent.statusLine(label: String, value: String, idValue: String
     div("status-row") {
         span("status-label") { +label }
         span("status-value") {
+            attributes["id"] = idValue
+            +value
+        }
+    }
+}
+
+private fun FlowContent.metricTile(label: String, value: String, idValue: String) {
+    div("metric-tile") {
+        span("metric-label") { +label }
+        span("metric-value") {
             attributes["id"] = idValue
             +value
         }
@@ -309,6 +350,30 @@ private fun dashboardStyles(): String = """
       color: var(--muted);
       font-size: 16px;
       line-height: 1.6;
+    }
+    .hero-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .metric-tile {
+      display: grid;
+      gap: 8px;
+      padding: 16px;
+      border-radius: 20px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .metric-value {
+      font-size: 22px;
+      font-weight: 800;
     }
     .hero-actions {
       display: grid;
@@ -378,5 +443,31 @@ private fun dashboardStyles(): String = """
       .hero, .grid {
         grid-template-columns: 1fr;
       }
+      .hero-metrics {
+        grid-template-columns: 1fr;
+      }
     }
 """.trimIndent()
+
+private fun detectLanProbeUrl(host: String, port: Int): String? {
+    if (host != "0.0.0.0") {
+        return "http://$host:$port/api/lan/ping"
+    }
+    val lanAddress = runCatching {
+        Collections.list(NetworkInterface.getNetworkInterfaces())
+            .asSequence()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { Collections.list(it.inetAddresses).asSequence() }
+            .firstOrNull { address -> !address.isLoopbackAddress && address.hostAddress?.contains(':') == false }
+            ?.hostAddress
+    }.getOrNull()
+    return lanAddress?.let { "http://$it:$port/api/lan/ping" }
+}
+
+@Serializable
+private data class LanPingResponse(
+    val ok: Boolean,
+    val host: String,
+    val port: Int,
+    val lanProbeUrl: String?,
+)

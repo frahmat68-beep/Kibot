@@ -337,7 +337,11 @@ class StrategyOrchestrator(
             }
             .sortedWith(
                 compareByDescending<PairScore> { it.pairTier == com.kibot.shared.models.PairTier.TIER_A }
-                    .thenByDescending { it.rankingScore },
+                    .thenByDescending { it.rankingScore }
+                    .thenByDescending { it.marketOpportunityScore }
+                    .thenByDescending { it.fillQualityScore }
+                    .thenByDescending { it.historicalExpectancyScore }
+                    .thenByDescending { it.spreadScore + it.slippageScore },
             )
     }
 

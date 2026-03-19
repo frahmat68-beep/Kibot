@@ -45,6 +45,8 @@ import kotlin.time.Duration.Companion.seconds
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import org.slf4j.LoggerFactory
+import java.text.NumberFormat
+import java.util.Locale
 
 class MacEngineDaemon(
     private val repository: MacStateRepository,
@@ -219,6 +221,8 @@ class MacEngineDaemon(
                 lease = runtimeLease,
                 devices = devices,
                 localHealth = finalHealth,
+                dailyRisk = dailyRisk,
+                balances = balances,
                 strategyCycle = strategyCycle,
                 weeklyReview = weeklyReview,
                 healthDecisionSummary = if (healthDecision.reasons.isEmpty()) {
@@ -576,6 +580,8 @@ class MacEngineDaemon(
         lease: EngineLeaseSnapshot?,
         devices: List<DeviceDescriptor>,
         localHealth: EngineHealthSnapshot,
+        dailyRisk: DailyRiskSnapshot?,
+        balances: List<BalanceSnapshot>,
         strategyCycle: com.kibot.core.StrategyCycleResult?,
         weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
         healthDecisionSummary: String,
@@ -583,6 +589,13 @@ class MacEngineDaemon(
         val activeDevice = devices.firstOrNull { it.deviceId == (lease?.currentHolder ?: botState.activeDeviceId) }
         val standbyDevice = devices.firstOrNull { it.deviceId != activeDevice?.deviceId && !it.isRevoked }
         val heartbeatInstant = lease?.lastHeartbeatAt ?: botState.lastHeartbeatAt
+        val portfolioValue = estimatePortfolioValue(balances).toDoubleOrZero()
+            .takeIf { it > 0.0 }
+            ?: dailyRisk?.currentEquityIdr?.toDoubleOrZero()
+            ?: 0.0
+        val pnlToday = dailyRisk?.let {
+            it.realizedPnlIdr.toDoubleOrZero() + it.unrealizedPnlIdr.toDoubleOrZero()
+        } ?: 0.0
 
         return com.kibot.macengine.state.MacDashboardState(
             isBotRunning = botState.desiredState == BotDesiredState.ON,
@@ -592,6 +605,9 @@ class MacEngineDaemon(
             marketRegime = strategyCycle?.marketSnapshot?.regime?.name ?: botState.marketRegime.name,
             topCandidate = strategyCycle?.topCandidate?.value ?: botState.activeCandidatePairs.firstOrNull()?.value ?: "-",
             liveExecutionEnabled = config.enableLiveExecution,
+            portfolioValueIdr = formatIdr(portfolioValue),
+            pnlTodayIdr = formatSignedIdr(pnlToday),
+            syncPathLabel = if (config.bindHost == "127.0.0.1" || config.bindHost == "localhost") "Supabase" else "Supabase + LAN",
             activeEngine = activeDevice?.displayName ?: "None",
             standbyEngine = standbyDevice?.displayName ?: "Waiting",
             syncHealth = localHealth.syncHealth.name,
@@ -608,6 +624,7 @@ class MacEngineDaemon(
                 ?.takeIf { it.isNotBlank() }
                 ?: "Adaptasi mingguan belum tersedia.",
             lastHeartbeatLabel = heartbeatInstant?.let { formatAge(now, it) } ?: "Never",
+            lastUpdatedLabel = formatUpdatedLabel(now),
             statusMessage = when {
                 botState.effectiveState == BotEffectiveState.SAFE_MODE || lease?.conflictDetected == true ->
                     "Safe mode active. Resolve exchange/control-plane ambiguity before resuming."
@@ -638,6 +655,29 @@ class MacEngineDaemon(
             ageSeconds < 3_600 -> "${ageSeconds / 60}m ago"
             else -> "${ageSeconds / 3_600}h ago"
         }
+    }
+
+    private fun formatUpdatedLabel(now: Instant): String {
+        val local = now.toLocalDateTime(TimeZone.of("Asia/Jakarta"))
+        val hh = local.hour.toString().padStart(2, '0')
+        val mm = local.minute.toString().padStart(2, '0')
+        return "$hh:$mm WIB"
+    }
+
+    private fun formatIdr(value: Double): String {
+        val locale = Locale.Builder()
+            .setLanguage("id")
+            .setRegion("ID")
+            .build()
+        return NumberFormat.getCurrencyInstance(locale).apply {
+            maximumFractionDigits = 0
+        }.format(value)
+    }
+
+    private fun formatSignedIdr(value: Double): String {
+        if (kotlin.math.abs(value) < 0.5) return "+${formatIdr(0.0)}"
+        val prefix = if (value >= 0.0) "+" else "-"
+        return prefix + formatIdr(kotlin.math.abs(value))
     }
 }
 

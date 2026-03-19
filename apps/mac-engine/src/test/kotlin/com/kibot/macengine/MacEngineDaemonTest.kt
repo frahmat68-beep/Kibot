@@ -282,6 +282,7 @@ class MacEngineDaemonTest {
 
     private fun runtimeConfig(enableLiveExecution: Boolean = false): MacRuntimeConfig = MacRuntimeConfig(
         port = 8787,
+        bindHost = "127.0.0.1",
         controlPlane = ControlPlaneConfig(
             supabaseUrl = "https://example.supabase.co",
             supabaseAnonKey = "anon",

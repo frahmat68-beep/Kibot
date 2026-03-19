@@ -18,6 +18,7 @@ data class AndroidRuntimeConfig(
     val pollIntervalMillis: Long,
     val leaseTtlSeconds: Int,
     val enableLiveExecution: Boolean,
+    val macLanSyncBaseUrl: String?,
     val aiSupportConfig: GeminiSupportConfig?,
     val indodaxCredentials: IndodaxCredentials?,
     val indodaxClientConfig: IndodaxClientConfig,
@@ -89,6 +90,7 @@ object AndroidRuntimeConfigLoader {
             pollIntervalMillis = BuildConfig.KIBOT_POLL_INTERVAL_MS,
             leaseTtlSeconds = BuildConfig.KIBOT_LEASE_TTL_SECONDS,
             enableLiveExecution = BuildConfig.KIBOT_ENABLE_LIVE_EXECUTION,
+            macLanSyncBaseUrl = BuildConfig.KIBOT_MAC_LAN_SYNC_URL.takeIf { it.isNotBlank() },
             aiSupportConfig = aiSupportConfig,
             indodaxCredentials = credentials,
             indodaxClientConfig = IndodaxClientConfig(

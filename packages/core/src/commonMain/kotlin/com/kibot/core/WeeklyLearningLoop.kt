@@ -145,8 +145,8 @@ class WeeklyLearningLoop(
             else -> 0.0
         }
         val tacticalBiasDelta = when {
-            tacticalExpectancy > swingExpectancy + 0.20 -> config.maxBiasDeltaPerReview
-            swingExpectancy > tacticalExpectancy + 0.20 -> -config.maxBiasDeltaPerReview
+            tacticalExpectancy > swingExpectancy + 0.15 -> config.maxBiasDeltaPerReview
+            swingExpectancy > tacticalExpectancy + 0.15 -> -config.maxBiasDeltaPerReview
             else -> 0.0
         }
         val swingBiasDelta = -tacticalBiasDelta

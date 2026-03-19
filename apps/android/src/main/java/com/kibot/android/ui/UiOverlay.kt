@@ -15,7 +15,7 @@ fun KiBotUiState.withLiveSnapshot(snapshot: LiveStatusSnapshot?): KiBotUiState {
             PositionCardUi(
                 pair = holding.asset,
                 quantity = holding.amount,
-                pnl = holding.valueIdr,
+                value = holding.valueIdr,
             )
         }
     return copy(

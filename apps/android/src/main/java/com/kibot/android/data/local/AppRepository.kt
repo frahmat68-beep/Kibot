@@ -1,6 +1,8 @@
 package com.kibot.android.data.local
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import com.kibot.android.runtime.LiveHoldingUi
 import com.kibot.android.runtime.LiveStatusSnapshot
 import com.kibot.android.runtime.LiveStatusStore
@@ -31,9 +33,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
+import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import org.json.JSONObject
 import java.text.NumberFormat
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
 import kotlin.math.absoluteValue
 import kotlin.math.max
@@ -48,6 +54,7 @@ class AppRepository(
     private val controlPlaneGateway: ControlPlaneGateway? = null,
     private val deviceRegistration: DeviceRegistration? = null,
     private val botId: BotId = BotId("main"),
+    private val macLanSyncBaseUrl: String? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _uiState = MutableStateFlow(KiBotUiState.preview())
@@ -140,6 +147,7 @@ class AppRepository(
         val logs = gateway.fetchRecentLogs(botId, limit = 20)
         val orders = gateway.fetchRecentOrders(botId, limit = 20)
         val weeklyReview = gateway.fetchLatestWeeklyLearningSummary(botId)
+        val lanSnapshot = fetchLanMacSnapshot()
         val liveBalances = runCatching { exchangeGateway.fetchBalances() }.getOrDefault(emptyList())
         val liveQuotes = runCatching { exchangeGateway.fetchMarketQuotes() }.getOrDefault(emptyList())
         val liveEquityIdr = estimateEquityIdr(liveBalances, liveQuotes)
@@ -167,6 +175,7 @@ class AppRepository(
         val activeEngine = devices.firstOrNull { it.deviceId == activeDeviceId }?.displayName ?: "Unknown"
         val standbyEngine = devices.firstOrNull { it.deviceId != activeDeviceId && !it.isRevoked }?.displayName ?: "Waiting"
         val lastHeartbeatMillis = botState.lastHeartbeatAt?.toEpochMilliseconds() ?: System.currentTimeMillis()
+        val syncLagMillis = (System.currentTimeMillis() - lastHeartbeatMillis).coerceAtLeast(0)
         runtimePreferenceStore.setDesiredOn(botState.desiredState == BotDesiredState.ON)
 
         _uiState.value = _uiState.value.copy(
@@ -187,7 +196,13 @@ class AppRepository(
             riskBlocked = risk?.hardStopTriggered == true,
             pairAktif = botState.currentPair?.value ?: "-",
             leaseTerm = lease?.term?.value ?: botState.currentTerm.value,
-            syncLagLabel = "${(System.currentTimeMillis() - lastHeartbeatMillis).coerceAtLeast(0)} ms",
+            syncLagLabel = formatSyncLag(syncLagMillis),
+            syncPathLabel = when {
+                lanSnapshot?.reachable == true -> "Supabase + LAN"
+                macLanSyncBaseUrl.isNullOrBlank() -> "Supabase"
+                else -> "Supabase only"
+            },
+            lastUpdatedLabel = formatLastUpdated(Clock.System.now()),
             statusMessage = botState.safeModeReason ?: defaultStatusMessage(botState.effectiveState),
             weeklyLearningSummary = weeklyReview?.let {
                 "Week ${it.periodStart} - ${it.periodEnd} • no-trade ${(it.noTradeQualityScore * 100).toInt()}% • util ${(it.productiveUtilizationPct * 100).toInt()}%"
@@ -231,7 +246,7 @@ class AppRepository(
                     LiveHoldingUi(
                         asset = it.pair,
                         amount = it.quantity,
-                        valueIdr = it.pnl,
+                        valueIdr = it.value,
                     )
                 },
             ),
@@ -248,7 +263,7 @@ class AppRepository(
                         LiveHoldingUi(
                             asset = it.pair,
                             amount = it.quantity,
-                            valueIdr = it.pnl,
+                            valueIdr = it.value,
                         )
                     },
                 ),
@@ -319,10 +334,10 @@ class AppRepository(
                 PositionCardUi(
                     pair = balance.asset.uppercase(),
                     quantity = "${formatQuantity(units)} ${balance.asset.uppercase()}",
-                    pnl = "~${formatIdr(valueIdr)}",
+                    value = "~${formatIdr(valueIdr)}",
                 )
             }
-            .sortedByDescending { extractCurrencyValue(it.pnl) }
+            .sortedByDescending { extractCurrencyValue(it.value) }
             .toList()
     }
 
@@ -361,6 +376,50 @@ class AppRepository(
         }.trimEnd('0').trimEnd('.')
     }
 
+    private fun formatSyncLag(valueMs: Long): String {
+        return when {
+            valueMs < 1_000 -> "${valueMs} ms"
+            valueMs < 60_000 -> "${valueMs / 1_000}s"
+            else -> "${valueMs / 60_000}m"
+        }
+    }
+
+    private fun formatLastUpdated(now: Instant): String {
+        val local = now.toLocalDateTime(TimeZone.of("Asia/Jakarta"))
+        val hh = local.hour.toString().padStart(2, '0')
+        val mm = local.minute.toString().padStart(2, '0')
+        return "$hh:$mm WIB"
+    }
+
+    private fun fetchLanMacSnapshot(): LanMacSnapshot? {
+        val baseUrl = macLanSyncBaseUrl?.trim()?.removeSuffix("/") ?: return null
+        if (!isWifiConnected()) return null
+
+        return runCatching {
+            val connection = (URL("$baseUrl/api/state").openConnection() as HttpURLConnection).apply {
+                connectTimeout = 1_500
+                readTimeout = 1_500
+                requestMethod = "GET"
+            }
+            connection.inputStream.bufferedReader().use { reader ->
+                val json = JSONObject(reader.readText())
+                LanMacSnapshot(
+                    reachable = true,
+                    activeEngine = json.optString("activeEngine"),
+                    syncHealth = json.optString("syncHealth"),
+                    statusMessage = json.optString("statusMessage"),
+                )
+            }
+        }.getOrNull()
+    }
+
+    private fun isWifiConnected(): Boolean {
+        val manager = appContext.getSystemService(ConnectivityManager::class.java) ?: return false
+        val network = manager.activeNetwork ?: return false
+        val capabilities = manager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    }
+
     private fun extractCurrencyValue(label: String): Double {
         return label
             .replace("~", "")
@@ -387,3 +446,10 @@ class AppRepository(
         }
     }
 }
+
+private data class LanMacSnapshot(
+    val reachable: Boolean,
+    val activeEngine: String,
+    val syncHealth: String,
+    val statusMessage: String,
+)
