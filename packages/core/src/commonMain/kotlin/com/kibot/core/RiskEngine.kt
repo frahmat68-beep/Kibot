@@ -98,8 +98,23 @@ class RiskEngine(
         }
         val sizeMultiplier = (riskSizeMultiplier * profitProtection.sizeMultiplier).coerceIn(0.0, config.attackSizeMultiplier)
         val deploymentMultiplier = (riskSizeMultiplier * profitProtection.aggressionMultiplier).coerceIn(0.0, 1.0)
-        val suggestedBudget = (availableBudget * config.maxPerPositionBudgetPct * sizeMultiplier).coerceAtLeast(0.0)
-        val additionalSlots = (config.maxConcurrentPositions - openPositions).coerceAtLeast(0)
+        val desiredActiveSlots = when {
+            availableBudget < config.targetMinPositionBudgetIdr -> 1
+            else -> kotlin.math.floor(availableBudget / config.targetMinPositionBudgetIdr)
+                .toInt()
+                .coerceAtLeast(1)
+                .coerceAtMost(config.maxConcurrentPositions)
+        }
+        val additionalSlots = (desiredActiveSlots - openPositions).coerceAtLeast(0)
+        val slotAwareBudget = if (desiredActiveSlots > 0) {
+            availableBudget / desiredActiveSlots
+        } else {
+            0.0
+        }
+        val suggestedBudget = minOf(
+            availableBudget * config.maxPerPositionBudgetPct * sizeMultiplier,
+            slotAwareBudget * (1.0 + ((sizeMultiplier - 1.0) * 0.35)),
+        ).coerceAtLeast(0.0)
 
         return RiskDecision(
             allowNewEntries = allowNewEntries,

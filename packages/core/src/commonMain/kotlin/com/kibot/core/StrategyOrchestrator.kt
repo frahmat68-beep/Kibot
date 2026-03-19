@@ -247,6 +247,7 @@ class StrategyOrchestrator(
                     marketSnapshot = marketSnapshot,
                     setupReadiness = setupReadiness,
                     dominantPairId = dominantPairId,
+                    targetBudgetIdr = deploymentPlan.suggestedPerPositionBudgetIdr,
                 )
 
                 CandidateSelection(
@@ -412,6 +413,7 @@ class StrategyOrchestrator(
         marketSnapshot: MarketOpportunitySnapshot,
         setupReadiness: SetupReadiness,
         dominantPairId: PairId?,
+        targetBudgetIdr: Double,
     ): Double {
         val regimeBias = when {
             setupReadiness.setupType == com.kibot.shared.models.SetupType.SWING_TREND_CONTINUATION ->
@@ -430,16 +432,35 @@ class StrategyOrchestrator(
                 averageOf(pairScore.trendQualityScore, pairScore.historicalExpectancyScore)
         }
         val dominanceBonus = if (dominantPairId == pairScore.pairId) 0.025 else 0.0
+        val affordableUnits = if (quote.bestAsk.toDoubleOrZero() > 0.0) {
+            targetBudgetIdr / quote.bestAsk.toDoubleOrZero()
+        } else {
+            0.0
+        }
+        val affordabilityScore = when {
+            affordableUnits >= 2_500.0 -> 1.0
+            affordableUnits >= 500.0 -> 0.88
+            affordableUnits >= 100.0 -> 0.76
+            affordableUnits >= 25.0 -> 0.64
+            affordableUnits >= 5.0 -> 0.52
+            else -> 0.40
+        }
+        val affordableNominalBias = when {
+            pairScore.speculativePocket -> 0.028
+            pairScore.preferredHorizon == TradingHorizon.TACTICAL && affordableUnits >= 100.0 -> 0.018
+            else -> 0.0
+        }
 
         return weightedAverage(
-            pairScore.rankingScore to 0.34,
-            pairScore.marketOpportunityScore to 0.26,
+            pairScore.rankingScore to 0.31,
+            pairScore.marketOpportunityScore to 0.25,
             pairScore.fillQualityScore to 0.12,
             pairScore.historicalExpectancyScore to 0.10,
             followThroughScore to 0.10,
-            quote.recentTradeActivityScore.coerceIn(0.0, 1.0) to 0.08,
+            quote.recentTradeActivityScore.coerceIn(0.0, 1.0) to 0.06,
+            affordabilityScore to 0.06,
         ).let { base ->
-            (base + regimeBias + dominanceBonus).coerceIn(0.0, 1.0)
+            (base + regimeBias + dominanceBonus + affordableNominalBias).coerceIn(0.0, 1.0)
         }
     }
 
