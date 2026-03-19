@@ -21,12 +21,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
-import java.text.NumberFormat
-import java.util.Locale
-import kotlin.math.absoluteValue
 
 class BotForegroundService : Service() {
     private val loggerTag = "KiBotService"
@@ -117,7 +113,7 @@ class BotForegroundService : Service() {
                 }
 
                 val tick = daemon.syncOnce()
-                publishLiveStatus(app, tick.currentPair)
+                publishLiveStatus(app, tick.liveStatusSnapshot)
                 val pairLabel = tick.currentPair?.takeIf { it.isNotBlank() }?.lowercase()
                 val isRunning = app.container.repository.isDesiredOn()
                 Log.i(loggerTag, "tick ok: ${pairLabel ?: "menunggu pair"} • ${if (isRunning) "ON" else "OFF"}")
@@ -178,99 +174,13 @@ class BotForegroundService : Service() {
         }
     }
 
-    private suspend fun publishLiveStatus(
+    private fun publishLiveStatus(
         app: com.kibot.android.KiBotApplication,
-        currentPair: String?,
+        snapshot: LiveStatusSnapshot?,
     ) {
-        val exchange = app.container.exchangeGateway
-        val balances = runCatching { exchange.fetchBalances() }.getOrDefault(emptyList())
-        val quotes = runCatching { exchange.fetchMarketQuotes() }.getOrDefault(emptyList())
-        if (balances.isEmpty()) return
-
-        val equity = estimateEquityIdr(balances, quotes)
-        val dateKey = Clock.System.now().toLocalDateTime(TimeZone.of("Asia/Jakarta")).date.toString()
-        val openingEquity = app.container.runtimePreferenceStore.getOrRememberDailyOpeningEquity(dateKey, equity)
-        val pnl = equity - openingEquity
-        val holdings = balances
-            .filter { !it.asset.equals("idr", ignoreCase = true) }
-            .mapNotNull { balance ->
-                val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
-                if (quantity <= 0.0) return@mapNotNull null
-                val value = assetValueIdr(balance.asset, quantity, quotes)
-                if (value < MIN_VISIBLE_HOLDING_IDR) return@mapNotNull null
-                HoldingCandidate(balance.asset, quantity, value)
-            }
-            .sortedByDescending { it.valueIdr }
-            .take(4)
-            .map {
-                LiveHoldingUi(
-                    asset = it.asset,
-                    amount = formatAssetAmount(it.asset, it.quantity),
-                    valueIdr = formatIdr(it.valueIdr),
-                )
-            }
-
-        val snapshot = LiveStatusSnapshot(
-            updatedAtEpochMs = Clock.System.now().toEpochMilliseconds(),
-            activePair = currentPair ?: app.container.liveStatusStore.current().activePair,
-            totalEquityIdr = formatIdr(equity),
-            pnlTodayIdr = formatSignedIdr(pnl),
-            holdings = holdings,
-        )
+        if (snapshot == null) return
         app.container.liveStatusStore.update(snapshot)
         KiBotWidgetProvider.updateAll(this, snapshot)
-    }
-
-    private fun estimateEquityIdr(
-        balances: List<com.kibot.shared.models.BalanceSnapshot>,
-        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
-    ): Double {
-        return balances.sumOf { balance ->
-            val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
-            when {
-                quantity <= 0.0 -> 0.0
-                balance.asset.equals("idr", ignoreCase = true) -> quantity
-                else -> assetValueIdr(balance.asset, quantity, marketQuotes)
-            }
-        }
-    }
-
-    private fun assetValueIdr(
-        asset: String,
-        quantity: Double,
-        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
-    ): Double {
-        if (asset.equals("idr", ignoreCase = true)) return quantity
-        val directPair = marketQuotes.firstOrNull { it.pairId.value.equals("${asset.lowercase()}_idr", ignoreCase = true) }
-        if (directPair != null) return quantity * directPair.midPrice.toDoubleOrZero()
-        val usdtPair = marketQuotes.firstOrNull { it.pairId.value.equals("${asset.lowercase()}_usdt", ignoreCase = true) }
-        val usdtIdr = marketQuotes.firstOrNull { it.pairId.value.equals("usdt_idr", ignoreCase = true) }
-        if (usdtPair != null && usdtIdr != null) {
-            return quantity * usdtPair.midPrice.toDoubleOrZero() * usdtIdr.midPrice.toDoubleOrZero()
-        }
-        return 0.0
-    }
-
-    private fun formatIdr(value: Double): String {
-        val formatter = NumberFormat.getCurrencyInstance(Locale("id", "ID")).apply {
-            maximumFractionDigits = 0
-        }
-        return formatter.format(value)
-    }
-
-    private fun formatSignedIdr(value: Double): String {
-        if (value.absoluteValue < 0.5) return "+${formatIdr(0.0)}"
-        val prefix = if (value >= 0.0) "+" else "-"
-        return prefix + formatIdr(value.absoluteValue)
-    }
-
-    private fun formatAssetAmount(asset: String, quantity: Double): String {
-        val rounded = if (asset.equals("idr", ignoreCase = true)) {
-            quantity.toLong().toString()
-        } else {
-            quantity.toString().take(10)
-        }
-        return "${rounded} ${asset.uppercase()}"
     }
 
     private fun buildNotificationDetail(snapshot: LiveStatusSnapshot, stateLabel: String): String {
@@ -290,14 +200,7 @@ class BotForegroundService : Service() {
         return "$hh:$mm"
     }
 
-    private data class HoldingCandidate(
-        val asset: String,
-        val quantity: Double,
-        val valueIdr: Double,
-    )
-
     companion object {
-        private const val MIN_VISIBLE_HOLDING_IDR = 1_000.0
         private const val CHANNEL_ID = "kibot-engine"
         private const val NOTIFICATION_ID = 1001
         private const val ACTION_START = "com.kibot.android.runtime.START"

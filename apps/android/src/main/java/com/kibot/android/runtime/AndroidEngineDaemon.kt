@@ -12,6 +12,8 @@ import com.kibot.core.ExchangeGateway
 import com.kibot.core.HealthAdvisor
 import com.kibot.core.LeaseCoordinator
 import com.kibot.core.LeaseProtocolConfig
+import com.kibot.core.LiveLearningReviewBuilder
+import com.kibot.core.LiveRolloutGuard
 import com.kibot.core.LiveExecutionCoordinator
 import com.kibot.core.ReconciliationService
 import com.kibot.core.RiskConfig
@@ -40,17 +42,19 @@ import com.kibot.shared.models.DeviceId
 import com.kibot.shared.models.ReconciliationState
 import com.kibot.shared.models.RuntimeIntelligenceUpdate
 import com.kibot.shared.models.SyncHealth
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
-import kotlin.time.Duration.Companion.hours
 
 data class AndroidEngineTickResult(
     val effectiveState: BotEffectiveState,
     val statusMessage: String,
     val currentPair: String?,
     val operatingMode: String,
+    val liveStatusSnapshot: LiveStatusSnapshot? = null,
 )
 
 class AndroidEngineDaemon(
@@ -67,6 +71,8 @@ class AndroidEngineDaemon(
     private val reconciliationService: ReconciliationService = ReconciliationService(),
     private val healthAdvisor: HealthAdvisor = HealthAdvisor(RiskConfig()),
     private val strategyOrchestrator: StrategyOrchestrator = StrategyOrchestrator(),
+    private val liveLearningReviewBuilder: LiveLearningReviewBuilder = LiveLearningReviewBuilder(),
+    private val liveRolloutGuard: LiveRolloutGuard = LiveRolloutGuard(),
     private val liveExecutionCoordinator: LiveExecutionCoordinator = LiveExecutionCoordinator(),
     private val situationalLearningEngine: SituationalLearningEngine = SituationalLearningEngine(),
     private val aiSupportCoordinator: GeminiSupportCoordinator? = null,
@@ -80,17 +86,19 @@ class AndroidEngineDaemon(
     private var lastCandidateSignature: String? = null
     private var lastLearningSignature: String? = null
     private var lastLearningPublishedAt: Instant? = null
+    private var lastWeeklyReviewPublishedAt: Instant? = null
 
-    suspend fun syncOnce(): AndroidEngineTickResult {
+    suspend fun syncOnce(): AndroidEngineTickResult = coroutineScope {
         ensureRegistered()
 
         val now = Clock.System.now()
-        val botState = controlPlane.fetchBotState(controlPlaneConfig.botId)
+        val jakartaDate = jakartaNowDate(now)
+        val botState = async { controlPlane.fetchBotState(controlPlaneConfig.botId) }.await()
             ?: error("Bot state tidak ditemukan di control plane.")
-        val lease = controlPlane.fetchLease(controlPlaneConfig.botId)
-        val devices = controlPlane.fetchDevices(controlPlaneConfig.botId)
-        val dailyRisk = controlPlane.fetchDailyRisk(controlPlaneConfig.botId, jakartaNowDate(now))
-        val commands = controlPlane.fetchPendingCommands(controlPlaneConfig.botId, config.device.deviceId)
+        val lease = async { controlPlane.fetchLease(controlPlaneConfig.botId) }.await()
+        val devices = async { controlPlane.fetchDevices(controlPlaneConfig.botId) }.await()
+        val dailyRisk = async { controlPlane.fetchDailyRisk(controlPlaneConfig.botId, jakartaDate) }.await()
+        val commands = async { controlPlane.fetchPendingCommands(controlPlaneConfig.botId, config.device.deviceId) }.await()
         val weeklyReview = runCatching {
             controlPlane.fetchLatestWeeklyLearningSummary(controlPlaneConfig.botId)
         }.getOrNull()
@@ -128,14 +136,29 @@ class AndroidEngineDaemon(
         val initialBotState = controlPlane.fetchBotState(controlPlaneConfig.botId) ?: botStateAfterCommands
         val initialLease = controlPlane.fetchLease(controlPlaneConfig.botId)
         val isMaster = initialLease.isHeldBy(config.device.deviceId, now)
-        val balances = if (exchangeReachable) runCatching { exchange.fetchBalances() }.getOrDefault(emptyList()) else emptyList()
-        val openOrders = if (exchangeReachable) runCatching { exchange.fetchOpenOrders() }.getOrDefault(emptyList()) else emptyList()
-        val marketQuotes = if (exchangeReachable) runCatching { exchange.fetchMarketQuotes() }.getOrDefault(emptyList()) else emptyList()
-        if (exchangeReachable && marketQuotes.isEmpty()) warnings += "Feed market kosong."
+        val balancesDeferred: kotlinx.coroutines.Deferred<List<BalanceSnapshot>>? = if (exchangeReachable) {
+            async { runCatching { exchange.fetchBalances() }.getOrDefault(emptyList()) }
+        } else {
+            null
+        }
+        val openOrdersDeferred: kotlinx.coroutines.Deferred<List<com.kibot.shared.models.OrderSnapshot>>? = if (exchangeReachable) {
+            async { runCatching { exchange.fetchOpenOrders() }.getOrDefault(emptyList()) }
+        } else {
+            null
+        }
+        val marketQuotesDeferred: kotlinx.coroutines.Deferred<List<com.kibot.shared.models.MarketQuote>>? = if (exchangeReachable) {
+            async { runCatching { exchange.fetchMarketQuotes() }.getOrDefault(emptyList()) }
+        } else {
+            null
+        }
+        val resolvedBalances = balancesDeferred?.await().orEmpty()
+        val resolvedOpenOrders = openOrdersDeferred?.await().orEmpty()
+        val resolvedMarketQuotes = marketQuotesDeferred?.await().orEmpty()
+        if (exchangeReachable && resolvedMarketQuotes.isEmpty()) warnings += "Feed market kosong."
         val finalHealth = buildLocalHealth(exchangeReachable, warnings)
         val healthDecision = healthAdvisor.evaluate(finalHealth)
-        val aiSupportEvaluation = if (isMaster && marketQuotes.isNotEmpty()) {
-            val shortlist = strategyOrchestrator.shortlistForSupport(marketQuotes)
+        val aiSupportEvaluation = if (isMaster && resolvedMarketQuotes.isNotEmpty()) {
+            val shortlist = strategyOrchestrator.shortlistForSupport(resolvedMarketQuotes)
             aiSupportCoordinator?.evaluate(
                 candidates = shortlist,
                 now = now,
@@ -153,14 +176,14 @@ class AndroidEngineDaemon(
             }
             evaluation?.hints.orEmpty()
         } ?: emptyList()
-        val strategyCycle = if (marketQuotes.isNotEmpty()) {
+        val strategyCycle = if (resolvedMarketQuotes.isNotEmpty()) {
             strategyOrchestrator.analyze(
                 botId = controlPlaneConfig.botId,
-                balances = balances,
-                openOrders = openOrders,
+                balances = resolvedBalances,
+                openOrders = resolvedOpenOrders,
                 dailyRisk = dailyRisk,
                 health = finalHealth,
-                marketQuotes = marketQuotes,
+                marketQuotes = resolvedMarketQuotes,
                 pairSupportHints = aiSupportHints,
             )
         } else {
@@ -169,13 +192,20 @@ class AndroidEngineDaemon(
 
         var runtimeBotState = initialBotState
         var runtimeLease = initialLease
+        var effectiveWeeklyReview = weeklyReview
         if (isMaster && runtimeLease != null && strategyCycle != null) {
+            effectiveWeeklyReview = maybePublishWeeklyLearningSummary(
+                now = now,
+                cycle = strategyCycle,
+                marketQuotes = resolvedMarketQuotes,
+                currentWeeklyReview = weeklyReview,
+            )
             publishAnalysisIfNeeded(now, runtimeLease, strategyCycle)
-            maybeExecuteLiveOrder(now, runtimeLease, strategyCycle)
+            maybeExecuteLiveOrder(now, runtimeLease, strategyCycle, effectiveWeeklyReview)
             publishLearningSignalsIfNeeded(
                 now = now,
                 cycle = strategyCycle,
-                weeklyReview = weeklyReview,
+                weeklyReview = effectiveWeeklyReview,
                 aiBlockedReason = aiSupportEvaluation?.blockedReason,
                 aiUsedNetwork = aiSupportEvaluation?.usedNetwork == true,
             )
@@ -197,7 +227,7 @@ class AndroidEngineDaemon(
             ),
         )
 
-        return AndroidEngineTickResult(
+        return@coroutineScope AndroidEngineTickResult(
             effectiveState = runtimeEffectiveState,
             statusMessage = when {
                 runtimeBotState.effectiveState == BotEffectiveState.SAFE_MODE || runtimeLease?.conflictDetected == true ->
@@ -209,6 +239,13 @@ class AndroidEngineDaemon(
             },
             currentPair = strategyCycle?.selectedSignal?.pairId?.value ?: runtimeBotState.currentPair?.value,
             operatingMode = strategyCycle?.modeSnapshot?.mode?.name ?: runtimeBotState.operatingMode.name,
+            liveStatusSnapshot = buildLiveStatusSnapshot(
+                now = now,
+                currentPair = strategyCycle?.selectedSignal?.pairId?.value ?: runtimeBotState.currentPair?.value,
+                balances = resolvedBalances,
+                marketQuotes = resolvedMarketQuotes,
+                dailyRisk = dailyRisk,
+            ),
         )
     }
 
@@ -389,10 +426,20 @@ class AndroidEngineDaemon(
         now: Instant,
         lease: EngineLeaseSnapshot,
         cycle: StrategyCycleResult,
+        weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
     ) {
         if (!config.enableLiveExecution) return
         val executionPlan = cycle.executionPlan ?: return
         if (!cycle.modeSnapshot.tradingAllowed || !cycle.riskDecision.allowNewEntries) return
+        val rolloutDecision = liveRolloutGuard.evaluate(cycle, weeklyReview)
+        if (!rolloutDecision.allowed) {
+            appendAuditLog(
+                level = LogLevel.INFO,
+                category = "ROLLOUT_GUARD",
+                message = rolloutDecision.reason,
+            )
+            return
+        }
 
         val persistedOpenOrders = controlPlane.fetchOpenPersistedOrders(controlPlaneConfig.botId)
         if (persistedOpenOrders.isNotEmpty()) return
@@ -418,6 +465,29 @@ class AndroidEngineDaemon(
         if (result.submitted) {
             lastAnalysisPublishedAt = now
         }
+    }
+
+    private suspend fun maybePublishWeeklyLearningSummary(
+        now: Instant,
+        cycle: StrategyCycleResult,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        currentWeeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
+    ): com.kibot.shared.models.WeeklyLearningSummary? {
+        val shouldPublish = lastWeeklyReviewPublishedAt == null ||
+            (now - lastWeeklyReviewPublishedAt!!).inWholeHours >= 6
+        if (!shouldPublish) return currentWeeklyReview
+
+        val recentOrders = controlPlane.fetchRecentOrders(controlPlaneConfig.botId, limit = 120)
+        val summary = liveLearningReviewBuilder.build(
+            botId = controlPlaneConfig.botId,
+            now = now,
+            cycle = cycle,
+            marketQuotes = marketQuotes,
+            recentOrders = recentOrders,
+        ) ?: return currentWeeklyReview
+        controlPlane.upsertWeeklyLearningSummary(summary)
+        lastWeeklyReviewPublishedAt = now
+        return summary
     }
 
     private suspend fun publishLearningSignalsIfNeeded(
@@ -546,6 +616,84 @@ class AndroidEngineDaemon(
                 ),
             )
         }
+    }
+
+    private fun buildLiveStatusSnapshot(
+        now: Instant,
+        currentPair: String?,
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        dailyRisk: com.kibot.shared.models.DailyRiskSnapshot?,
+    ): LiveStatusSnapshot? {
+        if (balances.isEmpty()) return null
+        val equity = balances.sumOf { balance ->
+            val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+            when {
+                quantity <= 0.0 -> 0.0
+                balance.asset.equals("idr", ignoreCase = true) -> quantity
+                else -> quantity * (quoteAssetPriceIdr(balance.asset, marketQuotes) ?: 0.0)
+            }
+        }
+        if (equity <= 0.0) return null
+        val openingEquity = dailyRisk?.openingEquityIdr?.toDoubleOrZero() ?: equity
+        val pnl = equity - openingEquity
+        val holdings = balances
+            .asSequence()
+            .filterNot { it.asset.equals("idr", ignoreCase = true) }
+            .mapNotNull { balance ->
+                val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+                if (quantity <= 0.0) return@mapNotNull null
+                val value = quantity * (quoteAssetPriceIdr(balance.asset, marketQuotes) ?: 0.0)
+                if (value < 1_000.0) return@mapNotNull null
+                LiveHoldingUi(
+                    asset = balance.asset.uppercase(),
+                    amount = formatAssetAmount(quantity, balance.asset),
+                    valueIdr = formatIdr(value),
+                )
+            }
+            .sortedByDescending { it.valueIdr.filter(Char::isDigit).toLongOrNull() ?: 0L }
+            .take(4)
+            .toList()
+        return LiveStatusSnapshot(
+            updatedAtEpochMs = now.toEpochMilliseconds(),
+            activePair = currentPair ?: "-",
+            totalEquityIdr = formatIdr(equity),
+            pnlTodayIdr = formatSignedIdr(pnl),
+            holdings = holdings,
+        )
+    }
+
+    private fun quoteAssetPriceIdr(asset: String, quotes: List<com.kibot.shared.models.MarketQuote>): Double? {
+        if (asset.equals("idr", ignoreCase = true)) return 1.0
+        val direct = quotes.firstOrNull { it.pairId.value.equals("${asset.lowercase()}_idr", ignoreCase = true) }
+        if (direct != null) return direct.midPrice.toDoubleOrZero()
+        val usdtAsset = quotes.firstOrNull { it.pairId.value.equals("${asset.lowercase()}_usdt", ignoreCase = true) }
+        val usdtIdr = quotes.firstOrNull { it.pairId.value.equals("usdt_idr", ignoreCase = true) }
+        if (usdtAsset != null && usdtIdr != null) {
+            return usdtAsset.midPrice.toDoubleOrZero() * usdtIdr.midPrice.toDoubleOrZero()
+        }
+        return null
+    }
+
+    private fun formatIdr(value: Double): String {
+        val formatter = java.text.NumberFormat.getCurrencyInstance(java.util.Locale("id", "ID")).apply {
+            maximumFractionDigits = 0
+        }
+        return formatter.format(value)
+    }
+
+    private fun formatSignedIdr(value: Double): String {
+        if (kotlin.math.abs(value) < 0.5) return "+${formatIdr(0.0)}"
+        return (if (value >= 0.0) "+" else "-") + formatIdr(kotlin.math.abs(value))
+    }
+
+    private fun formatAssetAmount(value: Double, asset: String): String {
+        val formatted = when {
+            value >= 100 -> "%,.0f".format(java.util.Locale.US, value)
+            value >= 1 -> "%,.4f".format(java.util.Locale.US, value)
+            else -> "%,.8f".format(java.util.Locale.US, value)
+        }.trimEnd('0').trimEnd('.')
+        return "$formatted ${asset.uppercase()}"
     }
 
     private fun estimatePortfolioValue(balances: List<BalanceSnapshot>): DecimalValue {

@@ -17,6 +17,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Notes
+import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material3.Card
@@ -38,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
@@ -72,9 +75,9 @@ fun KiBotRoot(
                         icon = {
                             Icon(
                                 imageVector = when (tab) {
-                                    RootTab.Dashboard -> Icons.Outlined.PowerSettingsNew
+                                    RootTab.Dashboard -> Icons.Outlined.Dashboard
                                     RootTab.Control -> Icons.Outlined.Sync
-                                    RootTab.Logs -> Icons.Outlined.Sync
+                                    RootTab.Logs -> Icons.AutoMirrored.Outlined.Notes
                                 },
                                 contentDescription = tab.title,
                             )
@@ -105,95 +108,45 @@ private fun DashboardScreen(
     state: KiBotUiState,
     onToggleBot: () -> Unit,
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        item { HeroCard(state = state, onToggleBot = onToggleBot) }
-        item {
-            SurfaceCard {
-                StatusLine("Mode", state.operatingMode)
-                StatusLine("Edge", state.edgeConfidence)
-                StatusLine("Sync", "${state.syncPathLabel} • ${state.syncHealth}")
-                StatusLine("Lag", state.syncLagLabel)
-            }
+        HeroCard(state = state, onToggleBot = onToggleBot)
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            CompactMetricTile(
+                modifier = Modifier.weight(1f),
+                label = "Modal",
+                value = state.modalSaatIniIdr,
+                supporting = state.activeEngine,
+            )
+            CompactMetricTile(
+                modifier = Modifier.weight(1f),
+                label = "PnL Hari Ini",
+                value = state.pnlTodayIdr,
+                supporting = "DD ${(state.drawdownPct * 100).toInt()}%",
+            )
         }
-        item {
-            SurfaceCard {
-                StatusLine("Risk", state.riskLadderLevel)
-                StatusLine("Profit guard", state.profitProtectionStatus)
-                StatusLine("Update", state.lastUpdatedLabel)
-                StatusLine("Backup", state.standbyEngine)
-            }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            CompactMetricTile(
+                modifier = Modifier.weight(1f),
+                label = "Pair",
+                value = state.pairAktif.lowercase(),
+                supporting = state.marketRegime,
+            )
+            CompactMetricTile(
+                modifier = Modifier.weight(1f),
+                label = "Sync",
+                value = state.syncHealth,
+                supporting = "${state.syncPathLabel} • ${state.syncLagLabel}",
+            )
         }
-        item { SectionTitle("Holdings") }
-        if (state.positions.isEmpty()) {
-            item {
-                SurfaceCard {
-                    Text("Belum ada aset aktif di akun Indodax.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        } else {
-            items(state.positions.take(4)) { position ->
-                SurfaceCard {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column {
-                            Text(position.pair.uppercase(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            Text(position.quantity, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Text(position.value, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                    }
-                }
-            }
-        }
-        item {
-            SurfaceCard {
-                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    MetricCard(
-                        label = "Drawdown",
-                        value = "${(state.drawdownPct * 100).toInt()}%",
-                        supporting = "Limit ${(state.dailyLossLimitPct * 100).toInt()}%",
-                    )
-                    MetricCard(
-                        label = "Lease",
-                        value = "#${state.leaseTerm}",
-                        supporting = state.profitProtectionStatus,
-                    )
-                    StatusLine("Engine aktif", state.activeEngine)
-                    StatusLine("Backup", state.standbyEngine)
-                    StatusLine("Pair aktif", state.pairAktif.lowercase())
-                    StatusLine("Regime", state.marketRegime)
-                    StatusLine("Sync", state.syncPathLabel)
-                    StatusLine("Status", state.statusMessage)
-                }
-            }
-        }
-        if (state.devices.isNotEmpty()) {
-            item { SectionTitle("Devices") }
-            items(state.devices) { device ->
-                SurfaceCard {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(device.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            Text(device.heartbeat, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        StatusChip(
-                            if (device.active) "ACTIVE" else device.health.uppercase(),
-                            if (device.active) Color(0xFF147D57) else Color(0xFF4B6385),
-                        )
-                    }
-                }
-            }
-        }
+        HoldingsPreviewCard(
+            modifier = Modifier.fillMaxWidth(),
+            state = state,
+        )
     }
 }
 
@@ -209,8 +162,8 @@ private fun HeroCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -220,55 +173,99 @@ private fun HeroCard(
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("KiBot", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                     Text(
-                        if (state.isBotRunning) "Balance live akun bot" else "Siap dipakai lagi",
-                        style = MaterialTheme.typography.bodyMedium,
+                        state.statusMessage,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 StatusChip(
-                    if (state.pairAktif == "-") "scan" else state.pairAktif.lowercase(),
-                    Color(0xFF1D4ED8),
+                    if (state.isBotRunning) "RUNNING" else "STOPPED",
+                    if (state.isBotRunning) Color(0xFF0E8A4C) else Color(0xFFB43F3F),
                 )
             }
-            Text(state.modalSaatIniIdr, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
-            Text(
-                state.pnlTodayIdr,
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                heroSubtitle(state),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatusChip(if (state.isBotRunning) "RUNNING" else "STOPPED", if (state.isBotRunning) Color(0xFF0E8A4C) else Color(0xFFB43F3F))
                 StatusChip(state.operatingMode, Color(0xFF6959CD))
-                StatusChip(state.syncPathLabel, Color(0xFF8A6A12))
+                StatusChip(state.edgeConfidence, Color(0xFF0F8E9A))
+                StatusChip(state.riskLadderLevel, Color(0xFF8A6A12))
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                FilledTonalButton(onClick = onToggleBot) {
-                    Text(if (state.isBotRunning) "Turn OFF" else "Turn ON")
-                }
-                Column(horizontalAlignment = Alignment.End) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
-                        state.activeEngine,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        "${state.pairAktif.lowercase()} • ${state.marketRegime}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        "Update ${state.lastUpdatedLabel}",
+                        "Sync ${state.syncPathLabel} • ${state.lastUpdatedLabel}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                FilledTonalButton(onClick = onToggleBot) {
+                    Text(if (state.isBotRunning) "Turn OFF" else "Turn ON")
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun CompactMetricTile(
+    modifier: Modifier = Modifier,
+    label: String,
+    value: String,
+    supporting: String,
+) {
+    SurfaceCard(modifier = modifier) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Text(supporting, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun HoldingsPreviewCard(
+    modifier: Modifier = Modifier,
+    state: KiBotUiState,
+) {
+    SurfaceCard(modifier = modifier) {
+        Text("Holdings", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        if (state.positions.isEmpty()) {
+            Text("Belum ada aset aktif di akun bot.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            state.positions.take(2).forEach { position ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column {
+                        Text(position.pair.uppercase(), fontWeight = FontWeight.Bold)
+                        Text(position.quantity, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Text(position.value, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            if (state.positions.size > 2) {
+                Text(
+                    "+${state.positions.size - 2} aset lainnya",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        StatusLine("Backup", state.standbyEngine)
+        StatusLine("Profit guard", state.profitProtectionStatus)
+        StatusLine("Lease", "#${state.leaseTerm}")
     }
 }
 
@@ -437,13 +434,5 @@ private fun StatusLine(label: String, value: String) {
         Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(modifier = Modifier.width(12.dp))
         Text(value, fontWeight = FontWeight.SemiBold)
-    }
-}
-
-private fun heroSubtitle(state: KiBotUiState): String {
-    return when {
-        !state.isBotRunning -> "Bot sedang berhenti."
-        state.syncHealth == "BROKEN" -> "Sync bermasalah. Cek tab Logs."
-        else -> "${state.activeEngine} aktif • ${state.marketRegime} • lag ${state.syncLagLabel}."
     }
 }

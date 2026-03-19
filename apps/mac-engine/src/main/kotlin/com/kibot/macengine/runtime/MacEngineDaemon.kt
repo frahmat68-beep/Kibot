@@ -2,15 +2,17 @@ package com.kibot.macengine.runtime
 
 import com.kibot.aisupport.GeminiSupportCoordinator
 import com.kibot.core.ControlPlaneGateway
-import com.kibot.core.StrategyOrchestrator
 import com.kibot.core.ExchangeGateway
 import com.kibot.core.HealthAdvisor
 import com.kibot.core.LeaseCoordinator
 import com.kibot.core.LeaseProtocolConfig
+import com.kibot.core.LiveLearningReviewBuilder
+import com.kibot.core.LiveRolloutGuard
 import com.kibot.core.LiveExecutionCoordinator
 import com.kibot.core.ReconciliationService
 import com.kibot.core.RiskConfig
 import com.kibot.core.SituationalLearningEngine
+import com.kibot.core.StrategyOrchestrator
 import com.kibot.macengine.config.MacRuntimeConfig
 import com.kibot.macengine.state.MacStateRepository
 import com.kibot.shared.models.AuditLogRecord
@@ -38,6 +40,8 @@ import com.kibot.shared.models.ReconciliationReport
 import com.kibot.shared.models.ReconciliationState
 import com.kibot.shared.models.RuntimeIntelligenceUpdate
 import com.kibot.shared.models.SyncHealth
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
@@ -64,6 +68,8 @@ class MacEngineDaemon(
     private val reconciliationService: ReconciliationService = ReconciliationService(),
     private val healthAdvisor: HealthAdvisor = HealthAdvisor(RiskConfig()),
     private val strategyOrchestrator: StrategyOrchestrator = StrategyOrchestrator(),
+    private val liveLearningReviewBuilder: LiveLearningReviewBuilder = LiveLearningReviewBuilder(),
+    private val liveRolloutGuard: LiveRolloutGuard = LiveRolloutGuard(),
     private val liveExecutionCoordinator: LiveExecutionCoordinator = LiveExecutionCoordinator(),
     private val situationalLearningEngine: SituationalLearningEngine = SituationalLearningEngine(),
     private val aiSupportCoordinator: GeminiSupportCoordinator? = null,
@@ -75,6 +81,7 @@ class MacEngineDaemon(
     private var lastCandidateSignature: String? = null
     private var lastLearningSignature: String? = null
     private var lastLearningPublishedAt: Instant? = null
+    private var lastWeeklyReviewPublishedAt: Instant? = null
     private var releaseCooldownUntil: Instant? = null
 
     suspend fun run() {
@@ -90,7 +97,7 @@ class MacEngineDaemon(
         }
     }
 
-    suspend fun syncOnce() {
+    suspend fun syncOnce() = coroutineScope {
         ensureRegistered()
 
         val now = Clock.System.now()
@@ -152,16 +159,31 @@ class MacEngineDaemon(
         val initialBotState = controlPlane.fetchBotState(config.controlPlane.botId) ?: botStateAfterCommands
         val initialLease = controlPlane.fetchLease(config.controlPlane.botId)
         val isMaster = initialLease.isHeldBy(config.device.deviceId, now)
-        val balances = if (exchangeReachable) runCatching { exchange.fetchBalances() }.getOrDefault(emptyList()) else emptyList()
-        val openOrders = if (exchangeReachable) runCatching { exchange.fetchOpenOrders() }.getOrDefault(emptyList()) else emptyList()
-        val marketQuotes = if (exchangeReachable) runCatching { exchange.fetchMarketQuotes() }.getOrDefault(emptyList()) else emptyList()
-        if (exchangeReachable && marketQuotes.isEmpty()) {
+        val balancesDeferred: kotlinx.coroutines.Deferred<List<BalanceSnapshot>>? = if (exchangeReachable) {
+            async { runCatching { exchange.fetchBalances() }.getOrDefault(emptyList()) }
+        } else {
+            null
+        }
+        val openOrdersDeferred: kotlinx.coroutines.Deferred<List<com.kibot.shared.models.OrderSnapshot>>? = if (exchangeReachable) {
+            async { runCatching { exchange.fetchOpenOrders() }.getOrDefault(emptyList()) }
+        } else {
+            null
+        }
+        val marketQuotesDeferred: kotlinx.coroutines.Deferred<List<com.kibot.shared.models.MarketQuote>>? = if (exchangeReachable) {
+            async { runCatching { exchange.fetchMarketQuotes() }.getOrDefault(emptyList()) }
+        } else {
+            null
+        }
+        val resolvedBalances = balancesDeferred?.await().orEmpty()
+        val resolvedOpenOrders = openOrdersDeferred?.await().orEmpty()
+        val resolvedMarketQuotes = marketQuotesDeferred?.await().orEmpty()
+        if (exchangeReachable && resolvedMarketQuotes.isEmpty()) {
             healthWarnings += "Market quote feed kosong."
         }
         val finalHealth = buildLocalHealth(exchangeReachable, healthWarnings)
         val healthDecision = healthAdvisor.evaluate(finalHealth)
-        val aiSupportEvaluation = if (isMaster && marketQuotes.isNotEmpty()) {
-            val shortlist = strategyOrchestrator.shortlistForSupport(marketQuotes)
+        val aiSupportEvaluation = if (isMaster && resolvedMarketQuotes.isNotEmpty()) {
+            val shortlist = strategyOrchestrator.shortlistForSupport(resolvedMarketQuotes)
             aiSupportCoordinator?.evaluate(
                 candidates = shortlist,
                 now = now,
@@ -175,14 +197,14 @@ class MacEngineDaemon(
             }
             evaluation.hints
         }.orEmpty()
-        val strategyCycle = if (marketQuotes.isNotEmpty()) {
+        val strategyCycle = if (resolvedMarketQuotes.isNotEmpty()) {
             strategyOrchestrator.analyze(
                 botId = config.controlPlane.botId,
-                balances = balances,
-                openOrders = openOrders,
+                balances = resolvedBalances,
+                openOrders = resolvedOpenOrders,
                 dailyRisk = dailyRisk,
                 health = finalHealth,
-                marketQuotes = marketQuotes,
+                marketQuotes = resolvedMarketQuotes,
                 pairSupportHints = aiSupportHints,
             )
         } else {
@@ -192,7 +214,14 @@ class MacEngineDaemon(
         var runtimeBotState = initialBotState
         var runtimeLease = initialLease
 
+        var effectiveWeeklyReview = weeklyReview
         if (isMaster && runtimeLease != null && strategyCycle != null) {
+            effectiveWeeklyReview = maybePublishWeeklyLearningSummary(
+                now = now,
+                cycle = strategyCycle,
+                marketQuotes = resolvedMarketQuotes,
+                currentWeeklyReview = weeklyReview,
+            )
             publishAnalysisIfNeeded(
                 now = now,
                 lease = runtimeLease,
@@ -202,11 +231,12 @@ class MacEngineDaemon(
                 now = now,
                 lease = runtimeLease,
                 cycle = strategyCycle,
+                weeklyReview = effectiveWeeklyReview,
             )
             publishLearningSignalsIfNeeded(
                 now = now,
                 cycle = strategyCycle,
-                weeklyReview = weeklyReview,
+                weeklyReview = effectiveWeeklyReview,
                 aiBlockedReason = aiSupportEvaluation?.blockedReason,
                 aiUsedNetwork = aiSupportEvaluation?.usedNetwork == true,
             )
@@ -235,9 +265,9 @@ class MacEngineDaemon(
                 devices = devices,
                 localHealth = finalHealth,
                 dailyRisk = dailyRisk,
-                balances = balances,
+                balances = resolvedBalances,
                 strategyCycle = strategyCycle,
-                weeklyReview = weeklyReview,
+                weeklyReview = effectiveWeeklyReview,
                 healthDecisionSummary = if (healthDecision.reasons.isEmpty()) {
                     if (runtimeLease.isHeldBy(config.device.deviceId, now)) {
                         strategyCycle?.summary?.joinToString(" ") ?: "Master healthy. Lease fenced and heartbeat current."
@@ -510,11 +540,17 @@ class MacEngineDaemon(
         now: Instant,
         lease: EngineLeaseSnapshot,
         cycle: com.kibot.core.StrategyCycleResult,
+        weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
     ) {
         if (!config.enableLiveExecution) return
         val executionPlan = cycle.executionPlan ?: return
         if (!cycle.modeSnapshot.tradingAllowed) return
         if (cycle.riskDecision.allowNewEntries.not()) return
+        val rolloutDecision = liveRolloutGuard.evaluate(cycle, weeklyReview)
+        if (!rolloutDecision.allowed) {
+            appendAuditLog(LogLevel.INFO, "ROLLOUT_GUARD", rolloutDecision.reason)
+            return
+        }
 
         val persistedOpenOrders = controlPlane.fetchOpenPersistedOrders(config.controlPlane.botId)
         if (persistedOpenOrders.isNotEmpty()) return
@@ -551,6 +587,29 @@ class MacEngineDaemon(
         } else if (result.failSafeTriggered) {
             logger.error("Live order submit became ambiguous, safe mode triggered.")
         }
+    }
+
+    private suspend fun maybePublishWeeklyLearningSummary(
+        now: Instant,
+        cycle: com.kibot.core.StrategyCycleResult,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        currentWeeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
+    ): com.kibot.shared.models.WeeklyLearningSummary? {
+        val shouldPublish = lastWeeklyReviewPublishedAt == null ||
+            (now - lastWeeklyReviewPublishedAt!!).inWholeHours >= 6
+        if (!shouldPublish) return currentWeeklyReview
+
+        val recentOrders = controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 120)
+        val summary = liveLearningReviewBuilder.build(
+            botId = config.controlPlane.botId,
+            now = now,
+            cycle = cycle,
+            marketQuotes = marketQuotes,
+            recentOrders = recentOrders,
+        ) ?: return currentWeeklyReview
+        controlPlane.upsertWeeklyLearningSummary(summary)
+        lastWeeklyReviewPublishedAt = now
+        return summary
     }
 
     private suspend fun publishLearningSignalsIfNeeded(

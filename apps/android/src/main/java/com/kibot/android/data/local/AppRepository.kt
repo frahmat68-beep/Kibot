@@ -28,6 +28,8 @@ import com.kibot.shared.models.MarketQuote
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -60,6 +62,7 @@ class AppRepository(
     private val _uiState = MutableStateFlow(KiBotUiState.preview())
     val uiState: StateFlow<KiBotUiState> = _uiState.asStateFlow()
     private var deviceRegistered = false
+    private var cachedAuxiliaryData: AuxiliarySyncCache? = null
 
     fun toggleBot(): Boolean {
         val current = _uiState.value
@@ -135,21 +138,33 @@ class AppRepository(
     suspend fun syncNow() {
         val gateway = controlPlaneGateway ?: return
         ensureDeviceRegistered()
-        val jakartaDate = Clock.System.now().toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
+        val now = Clock.System.now()
+        val jakartaDate = now.toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
 
-        val botState = gateway.fetchBotState(botId) ?: return
-        val lease = gateway.fetchLease(botId)
-        val devices = gateway.fetchDevices(botId)
-        val risk = gateway.fetchDailyRisk(
-            botId = botId,
-            date = jakartaDate,
-        )
-        val logs = gateway.fetchRecentLogs(botId, limit = 20)
-        val orders = gateway.fetchRecentOrders(botId, limit = 20)
-        val weeklyReview = gateway.fetchLatestWeeklyLearningSummary(botId)
-        val lanSnapshot = fetchLanMacSnapshot()
-        val liveBalances = runCatching { exchangeGateway.fetchBalances() }.getOrDefault(emptyList())
-        val liveQuotes = runCatching { exchangeGateway.fetchMarketQuotes() }.getOrDefault(emptyList())
+        val botStateDeferred = scope.async { gateway.fetchBotState(botId) }
+        val leaseDeferred = scope.async { gateway.fetchLease(botId) }
+        val devicesDeferred = scope.async { gateway.fetchDevices(botId) }
+        val riskDeferred = scope.async {
+            gateway.fetchDailyRisk(
+                botId = botId,
+                date = jakartaDate,
+            )
+        }
+        val liveBalancesDeferred = scope.async { runCatching { exchangeGateway.fetchBalances() }.getOrDefault(emptyList()) }
+        val liveQuotesDeferred = scope.async { runCatching { exchangeGateway.fetchMarketQuotes() }.getOrDefault(emptyList()) }
+        val lanSnapshotDeferred = scope.async { fetchLanMacSnapshot() }
+
+        val botState = botStateDeferred.await() ?: return
+        val lease = leaseDeferred.await()
+        val devices = devicesDeferred.await()
+        val risk = riskDeferred.await()
+        val liveBalances = liveBalancesDeferred.await()
+        val liveQuotes = liveQuotesDeferred.await()
+        val lanSnapshot = lanSnapshotDeferred.await()
+        val auxiliary = fetchAuxiliaryData(gateway, now)
+        val logs = auxiliary.logs
+        val orders = auxiliary.orders
+        val weeklyReview = auxiliary.weeklyReview
         val liveEquityIdr = estimateEquityIdr(liveBalances, liveQuotes)
         val openingEquityIdr = when {
             risk?.openingEquityIdr != null -> risk.openingEquityIdr.toDoubleOrZero()
@@ -202,7 +217,7 @@ class AppRepository(
                 macLanSyncBaseUrl.isNullOrBlank() -> "Supabase"
                 else -> "Supabase only"
             },
-            lastUpdatedLabel = formatLastUpdated(Clock.System.now()),
+            lastUpdatedLabel = formatLastUpdated(now),
             statusMessage = botState.safeModeReason ?: defaultStatusMessage(botState.effectiveState),
             weeklyLearningSummary = weeklyReview?.let {
                 "Week ${it.periodStart} - ${it.periodEnd} • no-trade ${(it.noTradeQualityScore * 100).toInt()}% • util ${(it.productiveUtilizationPct * 100).toInt()}%"
@@ -270,6 +285,30 @@ class AppRepository(
             )
         }
         persistState()
+    }
+
+    private suspend fun fetchAuxiliaryData(
+        gateway: ControlPlaneGateway,
+        now: Instant,
+    ): AuxiliarySyncCache {
+        val cached = cachedAuxiliaryData
+        if (cached != null && now.toEpochMilliseconds() - cached.fetchedAtEpochMs < AUXILIARY_CACHE_TTL_MS) {
+            return cached
+        }
+
+        val refreshed = coroutineScope {
+            val logsDeferred = async { gateway.fetchRecentLogs(botId, limit = 20) }
+            val ordersDeferred = async { gateway.fetchRecentOrders(botId, limit = 20) }
+            val weeklyReviewDeferred = async { gateway.fetchLatestWeeklyLearningSummary(botId) }
+            AuxiliarySyncCache(
+                fetchedAtEpochMs = now.toEpochMilliseconds(),
+                logs = logsDeferred.await(),
+                orders = ordersDeferred.await(),
+                weeklyReview = weeklyReviewDeferred.await(),
+            )
+        }
+        cachedAuxiliaryData = refreshed
+        return refreshed
     }
 
     fun isDesiredOn(): Boolean = runtimePreferenceStore.isDesiredOn()
@@ -434,6 +473,7 @@ class AppRepository(
 
     companion object {
         private const val MIN_VISIBLE_HOLDING_IDR = 1_000.0
+        private const val AUXILIARY_CACHE_TTL_MS = 20_000L
     }
 
     private fun defaultStatusMessage(state: BotEffectiveState): String {
@@ -452,4 +492,11 @@ private data class LanMacSnapshot(
     val activeEngine: String,
     val syncHealth: String,
     val statusMessage: String,
+)
+
+private data class AuxiliarySyncCache(
+    val fetchedAtEpochMs: Long,
+    val logs: List<com.kibot.shared.models.AuditLogRecord>,
+    val orders: List<com.kibot.shared.models.OrderSnapshot>,
+    val weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
 )
