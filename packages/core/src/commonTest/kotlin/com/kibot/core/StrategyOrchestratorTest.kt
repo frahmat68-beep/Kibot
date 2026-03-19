@@ -7,6 +7,7 @@ import com.kibot.shared.models.DecimalValue
 import com.kibot.shared.models.EngineHealthSnapshot
 import com.kibot.shared.models.HealthStatus
 import com.kibot.shared.models.MarketQuote
+import com.kibot.shared.models.OrderType
 import com.kibot.shared.models.PairId
 import com.kibot.shared.models.SetupType
 import com.kibot.shared.models.SyncHealth
@@ -238,6 +239,50 @@ class StrategyOrchestratorTest {
         val signal = assertNotNull(analysis.selectedSignal)
         assertEquals("beta_idr", signal.pairId.value)
         assertEquals(SetupType.SWING_TREND_CONTINUATION, signal.setupType)
+    }
+
+    @Test
+    fun attackBreakoutOnIdrPairCanUseMarketBuyWhenExecutionQualityIsExcellent() {
+        val now = Clock.System.now()
+        val marketAwareOrchestrator = StrategyOrchestrator(
+            executionConfig = StrategyExecutionConfig(
+                marketEntryMinRankingScore = 0.0,
+                marketEntryMinExpectedNetProfitPct = 0.0,
+                marketEntryMaxSpreadPct = 1.0,
+                marketEntryMaxSlippagePct = 1.0,
+                marketEntryMinTradeActivityScore = 0.0,
+                marketEntryMinTrendScore = 0.0,
+            ),
+        )
+        val analysis = marketAwareOrchestrator.analyze(
+            botId = BotId("main"),
+            balances = listOf(BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(100_000.0))),
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = healthyEngine(),
+            marketQuotes = listOf(
+                quote(
+                    pair = "rocket_idr",
+                    price = 125.0,
+                    spreadPct = 0.08,
+                    slippagePct = 0.07,
+                    trendScore = 0.90,
+                    expectancyScore = 0.84,
+                    volume = 96_000_000.0,
+                    holdabilityScore = 0.54,
+                    shortTermReturnPct = 0.95,
+                    mediumTermReturnPct = 0.95,
+                    now = now,
+                ),
+            ),
+        )
+
+        val signal = assertNotNull(analysis.selectedSignal)
+        assertEquals("rocket_idr", signal.pairId.value)
+        assertEquals(SetupType.LIGHT_BREAKOUT_CONTINUATION, signal.setupType)
+        val plan = assertNotNull(analysis.executionPlan)
+        assertEquals(OrderType.MARKET, plan.orderType)
+        assertFalse(plan.postOnlyPreferred)
     }
 
     private fun healthyEngine() = EngineHealthSnapshot(

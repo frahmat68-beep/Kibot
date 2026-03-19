@@ -97,6 +97,7 @@ data class WeeklyLearningConfig(
 
 data class StrategyExecutionConfig(
     val minOrderNotionalIdr: Double = 12_000.0,
+    val entrySpendBufferPct: Double = 0.01,
     val growthMinRankingScore: Double = 0.70,
     val defensiveMinRankingScore: Double = 0.82,
     val attackMinRankingScore: Double = 0.68,
@@ -104,4 +105,11 @@ data class StrategyExecutionConfig(
     val candidateCount: Int = 10,
     val productiveIdleRankingDelta: Double = 0.02,
     val productiveIdleOpportunityDelta: Double = 0.03,
+    val marketEntryEnabled: Boolean = true,
+    val marketEntryMinRankingScore: Double = 0.80,
+    val marketEntryMinExpectedNetProfitPct: Double = 0.50,
+    val marketEntryMaxSpreadPct: Double = 0.22,
+    val marketEntryMaxSlippagePct: Double = 0.18,
+    val marketEntryMinTradeActivityScore: Double = 0.84,
+    val marketEntryMinTrendScore: Double = 0.78,
 )

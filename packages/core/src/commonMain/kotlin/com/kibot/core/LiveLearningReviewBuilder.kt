@@ -46,7 +46,16 @@ class LiveLearningReviewBuilder(
             recentOrders
                 .asSequence()
                 .filter { it.updatedAt.toEpochMilliseconds() >= cutoffEpochMs }
-                .filter { it.status in setOf(OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED) }
+                .filter { order ->
+                    when (order.status) {
+                        OrderStatus.FILLED,
+                        OrderStatus.PARTIALLY_FILLED,
+                        -> true
+
+                        OrderStatus.CANCELED -> order.executedQuantity.toDoubleOrZero() > 0.0
+                        else -> false
+                    }
+                }
                 .take(config.maxRecentOrders)
                 .forEach { order ->
                     val quote = quoteByPair[order.pairId]

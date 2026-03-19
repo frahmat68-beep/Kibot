@@ -458,10 +458,12 @@ class StrategyOrchestrator(
             ?.free
             ?.toDoubleOrZero()
             ?: 0.0
-        val budgetIdr = minOf(
+        val rawBudgetIdr = minOf(
             deploymentPlan.suggestedPerPositionBudgetIdr,
             quoteBalanceUnits * quoteAssetPriceIdr,
         )
+        val budgetIdr = (rawBudgetIdr * (1.0 - executionConfig.entrySpendBufferPct))
+            .coerceAtLeast(0.0)
         if (budgetIdr < executionConfig.minOrderNotionalIdr) return null
 
         val priceInQuoteAsset = entryPrice?.toDoubleOrZero()?.takeIf { it > 0.0 } ?: return null
@@ -470,17 +472,36 @@ class StrategyOrchestrator(
         } else {
             budgetIdr / quoteAssetPriceIdr
         }
-        val quantity = budgetQuoteUnits / priceInQuoteAsset
+        val useMarketBuy =
+            executionConfig.marketEntryEnabled &&
+                pairParts.quoteAsset == "idr" &&
+                setupType == com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION &&
+                confidence >= executionConfig.marketEntryMinRankingScore &&
+                expectedNetProfitabilityPct >= executionConfig.marketEntryMinExpectedNetProfitPct &&
+                quote.spreadPct <= executionConfig.marketEntryMaxSpreadPct &&
+                quote.estimatedSlippagePct <= executionConfig.marketEntryMaxSlippagePct &&
+                quote.recentTradeActivityScore >= executionConfig.marketEntryMinTradeActivityScore &&
+                quote.trendQualityScore >= executionConfig.marketEntryMinTrendScore &&
+                (
+                    speculativePocket ||
+                        modeSnapshot.mode in setOf(BotMode.GROWTH, BotMode.ATTACK)
+                )
+        val effectivePriceInQuoteAsset = if (useMarketBuy) {
+            quote.bestAsk.toDoubleOrZero().takeIf { it > 0.0 } ?: priceInQuoteAsset
+        } else {
+            priceInQuoteAsset
+        }
+        val quantity = budgetQuoteUnits / effectivePriceInQuoteAsset
         if (quantity <= 0.0) return null
 
         return ExecutionPlan(
             signal = this,
             side = OrderSide.BUY,
-            orderType = OrderType.LIMIT,
+            orderType = if (useMarketBuy) OrderType.MARKET else OrderType.LIMIT,
             quantity = DecimalValue.fromDouble(quantity),
-            limitPrice = entryPrice,
+            limitPrice = if (useMarketBuy) null else entryPrice,
             quoteBudget = DecimalValue.fromDouble(budgetIdr),
-            postOnlyPreferred = true,
+            postOnlyPreferred = !useMarketBuy,
             expectedNetEdgePct = expectedNetProfitabilityPct,
             botMode = modeSnapshot.mode,
             riskLadderLevel = modeSnapshot.riskLadderLevel,

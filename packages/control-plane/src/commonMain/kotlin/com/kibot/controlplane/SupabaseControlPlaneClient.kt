@@ -68,12 +68,14 @@ import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonUnquotedLiteral
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -131,6 +133,36 @@ class SupabaseControlPlaneClient internal constructor(
                 "equity_date" to "eq.$date",
             ),
         )?.toDailyRiskSnapshot()
+    }
+
+    override suspend fun upsertDailyRisk(
+        botId: BotId,
+        date: LocalDate,
+        snapshot: DailyRiskSnapshot,
+    ) {
+        upsertTable(
+            table = "daily_equity",
+            body = buildJsonObject {
+                put("bot_id", botId.value)
+                put("equity_date", date.toString())
+                put("opening_equity_idr", decimalJson(snapshot.openingEquityIdr))
+                put("current_equity_idr", decimalJson(snapshot.currentEquityIdr))
+                put("realized_pnl_idr", decimalJson(snapshot.realizedPnlIdr))
+                put("unrealized_pnl_idr", decimalJson(snapshot.unrealizedPnlIdr))
+                put("drawdown_pct", snapshot.drawdownPct)
+                put("hard_daily_loss_limit_pct", snapshot.hardDailyLossLimitPct)
+                put("hard_stop_triggered", snapshot.hardStopTriggered)
+                put("rebase_pending", snapshot.rebasePending)
+                put("risk_ladder_level", snapshot.riskLadderLevel.name)
+                put("weekly_drawdown_pct", snapshot.weeklyDrawdownPct)
+                put("loss_streak_count", snapshot.lossStreakCount)
+                put("performance_decay_detected", snapshot.performanceDecayDetected)
+                put("high_watermark_equity_idr", decimalJson(snapshot.highWatermarkEquityIdr))
+                put("giveback_pct", snapshot.givebackPct)
+                put("profit_protection_status", snapshot.profitProtectionStatus.name)
+            },
+            onConflict = "bot_id,equity_date",
+        )
     }
 
     override suspend fun fetchPendingCommands(botId: BotId, deviceId: DeviceId, limit: Int): List<CommandEnvelope> {
@@ -711,6 +743,11 @@ class SupabaseControlPlaneClient internal constructor(
         return json.parseToJsonElement(value)
     }
 
+    @OptIn(ExperimentalSerializationApi::class)
+    private fun decimalJson(value: DecimalValue): JsonElement {
+        return JsonUnquotedLiteral(value.value)
+    }
+
     data class ControlPlaneSnapshot(
         val botState: BotStateSnapshot?,
         val lease: EngineLeaseSnapshot?,
@@ -939,10 +976,10 @@ private fun LeaseRow.toLeaseSnapshot(): EngineLeaseSnapshot = EngineLeaseSnapsho
 
 @Serializable
 private data class DailyEquityRow(
-    @SerialName("opening_equity_idr") val openingEquityIdr: String,
-    @SerialName("current_equity_idr") val currentEquityIdr: String,
-    @SerialName("realized_pnl_idr") val realizedPnlIdr: String,
-    @SerialName("unrealized_pnl_idr") val unrealizedPnlIdr: String,
+    @SerialName("opening_equity_idr") val openingEquityIdr: JsonElement,
+    @SerialName("current_equity_idr") val currentEquityIdr: JsonElement,
+    @SerialName("realized_pnl_idr") val realizedPnlIdr: JsonElement,
+    @SerialName("unrealized_pnl_idr") val unrealizedPnlIdr: JsonElement,
     @SerialName("drawdown_pct") val drawdownPct: Double,
     @SerialName("hard_daily_loss_limit_pct") val hardDailyLossLimitPct: Double,
     @SerialName("hard_stop_triggered") val hardStopTriggered: Boolean,
@@ -951,16 +988,16 @@ private data class DailyEquityRow(
     @SerialName("weekly_drawdown_pct") val weeklyDrawdownPct: Double? = null,
     @SerialName("loss_streak_count") val lossStreakCount: Int? = null,
     @SerialName("performance_decay_detected") val performanceDecayDetected: Boolean? = null,
-    @SerialName("high_watermark_equity_idr") val highWatermarkEquityIdr: String? = null,
+    @SerialName("high_watermark_equity_idr") val highWatermarkEquityIdr: JsonElement? = null,
     @SerialName("giveback_pct") val givebackPct: Double? = null,
     @SerialName("profit_protection_status") val profitProtectionStatus: String? = null,
 )
 
 private fun DailyEquityRow.toDailyRiskSnapshot(): DailyRiskSnapshot = DailyRiskSnapshot(
-    openingEquityIdr = DecimalValue(openingEquityIdr),
-    currentEquityIdr = DecimalValue(currentEquityIdr),
-    realizedPnlIdr = DecimalValue(realizedPnlIdr),
-    unrealizedPnlIdr = DecimalValue(unrealizedPnlIdr),
+    openingEquityIdr = openingEquityIdr.toDecimalValue(),
+    currentEquityIdr = currentEquityIdr.toDecimalValue(),
+    realizedPnlIdr = realizedPnlIdr.toDecimalValue(),
+    unrealizedPnlIdr = unrealizedPnlIdr.toDecimalValue(),
     drawdownPct = drawdownPct,
     hardDailyLossLimitPct = hardDailyLossLimitPct,
     hardStopTriggered = hardStopTriggered,
@@ -969,10 +1006,15 @@ private fun DailyEquityRow.toDailyRiskSnapshot(): DailyRiskSnapshot = DailyRiskS
     weeklyDrawdownPct = weeklyDrawdownPct ?: 0.0,
     lossStreakCount = lossStreakCount ?: 0,
     performanceDecayDetected = performanceDecayDetected ?: false,
-    highWatermarkEquityIdr = DecimalValue(highWatermarkEquityIdr ?: currentEquityIdr),
+    highWatermarkEquityIdr = (highWatermarkEquityIdr ?: currentEquityIdr).toDecimalValue(),
     givebackPct = givebackPct ?: 0.0,
     profitProtectionStatus = profitProtectionStatus?.let(ProfitProtectionStatus::valueOf) ?: ProfitProtectionStatus.INACTIVE,
 )
+
+private fun JsonElement.toDecimalValue(): DecimalValue = when (this) {
+    is JsonPrimitive -> DecimalValue(contentOrNull ?: toString())
+    else -> DecimalValue.Zero
+}
 
 @Serializable
 private data class CommandRow(

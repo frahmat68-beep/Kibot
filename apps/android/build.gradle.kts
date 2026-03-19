@@ -61,7 +61,7 @@ android {
         buildConfigField("String", "KIBOT_INDODAX_PRIVATE_BASE_URL", envOrDefault("INDODAX_PRIVATE_BASE_URL", "https://indodax.com/tapi").asBuildConfigString())
         buildConfigField("String", "KIBOT_INDODAX_TRADE_API_V2_BASE_URL", envOrDefault("INDODAX_TRADE_API_V2_BASE_URL", "https://tapi.indodax.com").asBuildConfigString())
         buildConfigField("String", "KIBOT_INDODAX_WS_PUBLIC_URL", envOrDefault("INDODAX_WS_PUBLIC_URL", "wss://ws1.indodax.com/ws").asBuildConfigString())
-        buildConfigField("String", "KIBOT_INDODAX_WS_PRIVATE_URL", envOrDefault("INDODAX_WS_PRIVATE_URL", "wss://ws1.indodax.com/ws/private").asBuildConfigString())
+        buildConfigField("String", "KIBOT_INDODAX_WS_PRIVATE_URL", envOrDefault("INDODAX_WS_PRIVATE_URL", "wss://pws.indodax.com/ws/?cf_ws_frame_ping_pong=true").asBuildConfigString())
         buildConfigField("boolean", "KIBOT_GEMINI_SUPPORT_ENABLED", envOrDefault("GEMINI_SUPPORT_ENABLED", "false"))
         buildConfigField("String", "KIBOT_GEMINI_SUPPORT_API_KEY", envOrDefault("GEMINI_SUPPORT_API_KEY").asBuildConfigString())
         buildConfigField("String", "KIBOT_GEMINI_SUPPORT_MODEL", envOrDefault("GEMINI_SUPPORT_MODEL", "gemini-2.0-flash-lite").asBuildConfigString())

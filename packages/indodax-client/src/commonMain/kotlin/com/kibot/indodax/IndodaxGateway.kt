@@ -1,6 +1,8 @@
 package com.kibot.indodax
 
 import com.kibot.core.ExchangeGateway
+import com.kibot.core.ExchangeOrderVisibilityException
+import com.kibot.core.ExchangeRejectedException
 import com.kibot.shared.models.BalanceSnapshot
 import com.kibot.shared.models.ClientOrderId
 import com.kibot.shared.models.DecimalValue
@@ -21,13 +23,16 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 import io.ktor.client.request.url
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.Parameters
 import io.ktor.http.isSuccess
 import kotlinx.atomicfu.atomic
+import kotlinx.coroutines.delay
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -198,7 +203,7 @@ class IndodaxGateway internal constructor(
         return response.data.map { trade ->
             FillSnapshot(
                 fillId = FillId(trade.tradeId),
-                orderId = OrderId(trade.orderId),
+                orderId = OrderId(normalizeExchangeOrderId(trade.orderId)),
                 pairId = pairId,
                 side = if (trade.isBuyer) OrderSide.BUY else OrderSide.SELL,
                 quantity = DecimalValue(trade.qty),
@@ -218,28 +223,45 @@ class IndodaxGateway internal constructor(
             "client_order_id" to clientOrderId.value,
             "order_type" to plan.orderType.apiValue(),
         )
+        if (plan.orderType == OrderType.LIMIT && plan.postOnlyPreferred) {
+            params["time_in_force"] = "MOC"
+        }
 
         when {
             plan.side == OrderSide.BUY && plan.orderType == OrderType.MARKET -> {
                 require(pairParts.quoteAsset == "idr") {
                     "Market buy is only supported safely for *_idr pairs in the current adapter."
                 }
-                params["idr"] = plan.quoteBudget?.value ?: error("Market buy requires quoteBudget.")
+                params["idr"] = formatIndodaxDecimal(
+                    plan.quoteBudget?.value ?: error("Market buy requires quoteBudget."),
+                )
+            }
+
+            plan.side == OrderSide.SELL && plan.orderType == OrderType.MARKET -> {
+                params[pairParts.baseAsset] = formatIndodaxDecimal(plan.quantity.value)
             }
 
             plan.side == OrderSide.BUY -> {
-                params[pairParts.baseAsset] = plan.quantity.value
-                params["price"] = plan.limitPrice?.value ?: error("Limit buy requires limitPrice.")
+                params[pairParts.baseAsset] = formatIndodaxDecimal(plan.quantity.value)
+                params["price"] = formatIndodaxDecimal(
+                    plan.limitPrice?.value ?: error("Limit buy requires limitPrice."),
+                )
             }
 
             else -> {
-                params[pairParts.baseAsset] = plan.quantity.value
-                params["price"] = plan.limitPrice?.value ?: plan.signal.entryPrice?.value ?: "0"
+                params[pairParts.baseAsset] = formatIndodaxDecimal(plan.quantity.value)
+                params["price"] = formatIndodaxDecimal(
+                    plan.limitPrice?.value ?: plan.signal.entryPrice?.value ?: "0",
+                )
             }
         }
 
-        submitPrivate<TradeResponse>("trade", params)
-        return fetchOrderByClientOrderId(clientOrderId, plan.signal.pairId)
+        val tradeResponse = submitPrivate<TradeResponse>("trade", params)
+        return awaitSubmittedOrder(
+            plan = plan,
+            clientOrderId = clientOrderId,
+            exchangeOrderId = tradeResponse.result.orderId?.toString(),
+        )
     }
 
     override suspend fun cancelOrder(clientOrderId: ClientOrderId): Boolean {
@@ -269,14 +291,66 @@ class IndodaxGateway internal constructor(
             nonce = nextNonce(),
             params = params,
         )
-        return client.submitForm(
+        val payload = client.submitForm(
             url = config.privateBaseUrl,
             formParameters = Parameters.build {
                 signed.body.forEach { (key, value) -> append(key, value) }
             },
         ) {
             signed.headers.forEach { (key, value) -> header(key, value) }
-        }.body()
+        }.bodyAsText()
+        val element = json.parseToJsonElement(payload)
+        if (element is JsonObject) {
+            val success = element["success"]?.jsonPrimitive?.contentOrNull
+            if (success == "0") {
+                val error = element["error"]?.jsonPrimitive?.contentOrNull ?: "Unknown Indodax API error"
+                val errorCode = element["error_code"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                throw ExchangeRejectedException(
+                    if (errorCode != null) "$error ($errorCode)" else error,
+                )
+            }
+        }
+        return json.decodeFromString(payload)
+    }
+
+    private suspend fun awaitSubmittedOrder(
+        plan: ExecutionPlan,
+        clientOrderId: ClientOrderId,
+        exchangeOrderId: String?,
+    ): OrderSnapshot {
+        repeat(orderVisibilityRetries) { attempt ->
+            runCatching {
+                fetchOrderByClientOrderId(clientOrderId, plan.signal.pairId)
+            }.getOrNull()?.let { return it }
+
+            runCatching {
+                fetchOpenOrders().firstOrNull { it.clientOrderId == clientOrderId }
+            }.getOrNull()?.let { return it }
+
+            if (exchangeOrderId != null) {
+                val matchingFills = runCatching {
+                    fetchRecentFills(plan.signal.pairId, limit = 20)
+                        .filter { it.orderId.value == exchangeOrderId }
+                }.getOrDefault(emptyList())
+                if (matchingFills.isNotEmpty()) {
+                    return fillsToSnapshot(
+                        pairId = plan.signal.pairId,
+                        clientOrderId = clientOrderId,
+                        exchangeOrderId = exchangeOrderId,
+                        plan = plan,
+                        fills = matchingFills,
+                    )
+                }
+            }
+
+            if (attempt < orderVisibilityRetries - 1) {
+                delay(orderVisibilityRetryDelaysMs[attempt.coerceAtMost(orderVisibilityRetryDelaysMs.lastIndex)])
+            }
+        }
+
+        throw ExchangeOrderVisibilityException(
+            "Order ${clientOrderId.value} belum terlihat di open orders, order lookup, atau recent fills setelah submit.",
+        )
     }
 
     private fun nextNonce(): Long {
@@ -300,6 +374,8 @@ class IndodaxGateway internal constructor(
     }
 
     companion object {
+        private val orderVisibilityRetryDelaysMs = listOf(350L, 700L, 1_250L, 2_000L)
+        private const val orderVisibilityRetries = 4
         private val defaultJson = Json {
             ignoreUnknownKeys = true
             encodeDefaults = true
@@ -515,7 +591,7 @@ private fun JsonObject.toOrderSnapshot(pairId: PairId): OrderSnapshot {
         clientOrderId = ClientOrderId(string("client_order_id") ?: orderId),
         pairId = pairId,
         side = (string("type") ?: "buy").toOrderSide(),
-        orderType = OrderType.LIMIT,
+        orderType = (string("order_type") ?: "limit").toOrderType(),
         status = string("status").toOrderStatus(
             originalQuantity = originalQuantity.toDoubleOrZero(),
             remainingQuantity = remainingQuantity.toDoubleOrZero(),
@@ -531,14 +607,46 @@ private fun JsonObject.toOrderSnapshot(pairId: PairId): OrderSnapshot {
     )
 }
 
+private fun fillsToSnapshot(
+    pairId: PairId,
+    clientOrderId: ClientOrderId,
+    exchangeOrderId: String,
+    plan: ExecutionPlan,
+    fills: List<FillSnapshot>,
+): OrderSnapshot {
+    val executedQuantity = fills.sumOf { it.quantity.toDoubleOrZero() }.coerceAtLeast(0.0)
+    val weightedPrice = weightedFillPrice(fills)
+        ?: plan.limitPrice?.toDoubleOrZero()
+        ?: plan.signal.entryPrice?.toDoubleOrZero()
+        ?: 0.0
+    val feePaid = fills.sumOf { it.fee.toDoubleOrZero() }.coerceAtLeast(0.0)
+    val firstAt = fills.minOf { it.executedAt }
+    val lastAt = fills.maxOf { it.executedAt }
+    return OrderSnapshot(
+        orderId = OrderId(exchangeOrderId),
+        clientOrderId = clientOrderId,
+        pairId = pairId,
+        side = plan.side,
+        orderType = plan.orderType,
+        status = OrderStatus.FILLED,
+        price = DecimalValue.fromDouble(weightedPrice),
+        originalQuantity = DecimalValue.fromDouble(executedQuantity),
+        executedQuantity = DecimalValue.fromDouble(executedQuantity),
+        remainingQuantity = DecimalValue.Zero,
+        feePaid = DecimalValue.fromDouble(feePaid),
+        createdAt = firstAt,
+        updatedAt = lastAt,
+    )
+}
+
 private fun JsonObject.quantityFor(parts: PairParts): DecimalValue = when ((string("type") ?: "").lowercase()) {
-    "buy" -> DecimalValue(normalizeNumeric(orderForQuoteOrBase(parts)))
-    else -> DecimalValue(normalizeNumeric(orderForQuoteOrBase(parts)))
+    "buy" -> DecimalValue(normalizeNumeric(buyOriginalBaseQuantity(parts)))
+    else -> DecimalValue(normalizeNumeric(orderForAsset(parts.baseAsset)))
 }
 
 private fun JsonObject.remainingFor(parts: PairParts): DecimalValue = when ((string("type") ?: "").lowercase()) {
-    "buy" -> DecimalValue(normalizeNumeric(remainForQuoteOrBase(parts)))
-    else -> DecimalValue(normalizeNumeric(remainForQuoteOrBase(parts)))
+    "buy" -> DecimalValue(normalizeNumeric(buyRemainingBaseQuantity(parts)))
+    else -> DecimalValue(normalizeNumeric(remainForAsset(parts.baseAsset)))
 }
 
 private fun JsonObject.orderForQuoteOrBase(parts: PairParts): String? {
@@ -555,6 +663,32 @@ private fun JsonObject.orderForAsset(asset: String): String? {
 
 private fun JsonObject.remainForAsset(asset: String): String? {
     return string("remain_${asset.lowercase()}") ?: string("remain_rp")
+}
+
+private fun JsonObject.buyOriginalBaseQuantity(parts: PairParts): String {
+    string("receive_${parts.baseAsset}")?.let { return it }
+    orderForAsset(parts.baseAsset)?.let { return it }
+    return deriveBaseQuantityFromQuote(
+        quoteAmount = orderForAsset(parts.quoteAsset),
+        price = string("price"),
+    )
+}
+
+private fun JsonObject.buyRemainingBaseQuantity(parts: PairParts): String {
+    remainForAsset(parts.baseAsset)?.let { return it }
+    return deriveBaseQuantityFromQuote(
+        quoteAmount = remainForAsset(parts.quoteAsset),
+        price = string("price"),
+    )
+}
+
+private fun deriveBaseQuantityFromQuote(
+    quoteAmount: String?,
+    price: String?,
+): String {
+    val quoteValue = quoteAmount?.toDoubleOrNull() ?: return "0"
+    val priceValue = price?.toDoubleOrNull()?.takeIf { it > 0.0 } ?: return "0"
+    return formatIndodaxDecimal((quoteValue / priceValue).toString())
 }
 
 private fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
@@ -577,6 +711,10 @@ private fun PairId.assets(): PairParts {
 }
 
 private fun PairId.toTradeApiV2Symbol(): String = value.replace("_", "")
+
+private fun normalizeExchangeOrderId(raw: String): String {
+    return raw.substringAfterLast("-").ifBlank { raw }
+}
 
 private fun String.toOrderSide(): OrderSide = if (equals("buy", ignoreCase = true)) OrderSide.BUY else OrderSide.SELL
 
@@ -602,6 +740,46 @@ private fun normalizeNumeric(value: Any?): String = when (value) {
     null -> "0"
     is JsonPrimitive -> value.content
     else -> value.toString()
+}
+
+internal fun formatIndodaxDecimal(
+    raw: String,
+    scale: Int = 8,
+): String {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return "0"
+    val negative = trimmed.startsWith("-")
+    val unsigned = trimmed.removePrefix("-").removePrefix("+")
+    val lower = unsigned.lowercase()
+    val scientific = lower.split("e", limit = 2)
+    val mantissa = scientific[0]
+    val exponent = scientific.getOrNull(1)?.toIntOrNull() ?: 0
+
+    val dotIndex = mantissa.indexOf('.').takeIf { it >= 0 } ?: mantissa.length
+    val digits = mantissa.filter { it.isDigit() }
+    if (digits.isEmpty() || digits.all { it == '0' }) return "0"
+
+    val decimalIndex = dotIndex + exponent
+    val plain = when {
+        decimalIndex <= 0 -> "0." + "0".repeat(-decimalIndex) + digits
+        decimalIndex >= digits.length -> digits + "0".repeat(decimalIndex - digits.length)
+        else -> digits.take(decimalIndex) + "." + digits.drop(decimalIndex)
+    }
+
+    val plainParts = plain.split('.', limit = 2)
+    val integer = plainParts[0].trimStart('0').ifEmpty { "0" }
+    val fraction = plainParts.getOrElse(1) { "" }
+        .let { if (scale >= 0) it.take(scale) else it }
+        .trimEnd('0')
+
+    val normalized = if (fraction.isEmpty()) integer else "$integer.$fraction"
+    return if (negative && normalized != "0") "-$normalized" else normalized
+}
+
+private fun weightedFillPrice(fills: List<FillSnapshot>): Double? {
+    val quantity = fills.sumOf { it.quantity.toDoubleOrZero() }
+    if (quantity <= 0.0) return null
+    return fills.sumOf { it.price.toDoubleOrZero() * it.quantity.toDoubleOrZero() } / quantity
 }
 
 private fun String.toEpochSecondsInstant(): Instant = Instant.fromEpochSeconds(toLong())

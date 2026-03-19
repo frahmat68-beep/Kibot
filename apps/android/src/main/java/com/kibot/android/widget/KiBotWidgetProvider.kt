@@ -48,7 +48,7 @@ class KiBotWidgetProvider : AppWidgetProvider() {
                     setTextViewText(R.id.widget_pair, snapshot.activePair.lowercase())
                     setTextViewText(R.id.widget_meta, "Update ${formatUpdated(snapshot.updatedAtEpochMs)}")
                     setTextViewText(R.id.widget_equity, snapshot.totalEquityIdr)
-                    setTextViewText(R.id.widget_pnl, snapshot.pnlTodayIdr)
+                    setTextViewText(R.id.widget_pnl, "${snapshot.pnlTodayIdr} ${derivePnlPct(snapshot)}".trim())
                     setTextViewText(R.id.widget_positions_count, "${visibleHoldings.size} aset")
                     setTextViewText(R.id.widget_holdings, formatHoldings(visibleHoldings))
                     setTextColor(R.id.widget_pnl, pnlTextColor(snapshot.pnlTodayIdr))
@@ -100,6 +100,26 @@ class KiBotWidgetProvider : AppWidgetProvider() {
             val hh = local.hour.toString().padStart(2, '0')
             val mm = local.minute.toString().padStart(2, '0')
             return "$hh:$mm"
+        }
+
+        private fun derivePnlPct(snapshot: LiveStatusSnapshot): String {
+            val equity = snapshot.totalEquityIdr.parseRupiahLabel() ?: return "+0.0%"
+            val pnl = snapshot.pnlTodayIdr.parseRupiahLabel() ?: return "+0.0%"
+            val opening = (equity - pnl).takeIf { it > 0.0 } ?: return "+0.0%"
+            val pct = (pnl / opening) * 100.0
+            val prefix = if (pct >= 0.0) "+" else "-"
+            return "$prefix${"%.1f".format(kotlin.math.abs(pct))}%"
+        }
+
+        private fun String.parseRupiahLabel(): Double? {
+            val cleaned = trim()
+                .replace("~", "")
+                .replace("Rp", "")
+                .replace(".", "")
+                .replace(",", ".")
+                .replace("+", "")
+            val numeric = cleaned.toDoubleOrNull() ?: return null
+            return if (trim().startsWith("-")) -numeric else numeric
         }
     }
 }

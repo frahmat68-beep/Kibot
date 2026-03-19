@@ -12,8 +12,19 @@ class ClientOrderIdFactory {
         pairSymbol: String,
         epochMillis: Long = Clock.System.now().toEpochMilliseconds(),
     ): ClientOrderId {
-        val compactPair = pairSymbol.lowercase().replace("/", "_")
-        return ClientOrderId("${deviceId.value}-${term.value}-$compactPair-$epochMillis")
+        val compactDevice = deviceId.value
+            .lowercase()
+            .filter { it.isLetterOrDigit() }
+            .takeLast(6)
+            .ifBlank { "device" }
+        val compactPair = pairSymbol
+            .lowercase()
+            .filter { it.isLetterOrDigit() }
+            .take(8)
+            .ifBlank { "pair" }
+        val compactTerm = term.value.toString(36)
+        val compactEpoch = epochMillis.toString(36)
+        val candidate = "$compactDevice-$compactTerm-$compactPair-$compactEpoch"
+        return ClientOrderId(candidate.take(36))
     }
 }
-

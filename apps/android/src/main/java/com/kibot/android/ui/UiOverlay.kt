@@ -27,6 +27,8 @@ fun KiBotUiState.withLiveSnapshot(snapshot: LiveStatusSnapshot?): KiBotUiState {
         scanUniverseCount = snapshot.scanUniverseCount.takeIf { it > 0 } ?: scanUniverseCount,
         radarPairs = snapshot.radarPairs.ifEmpty { radarPairs },
         positions = if (livePositions.isNotEmpty()) livePositions else positions,
+        statusMessage = snapshot.statusMessage.ifBlank { statusMessage },
+        liveLogEntries = if (snapshot.liveLogEntries.isNotEmpty()) snapshot.liveLogEntries else liveLogEntries,
     )
 }
 

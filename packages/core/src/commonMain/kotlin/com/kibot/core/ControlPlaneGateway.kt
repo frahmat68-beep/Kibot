@@ -42,6 +42,12 @@ interface ControlPlaneGateway {
 
     suspend fun fetchDailyRisk(botId: BotId, date: LocalDate): DailyRiskSnapshot?
 
+    suspend fun upsertDailyRisk(
+        botId: BotId,
+        date: LocalDate,
+        snapshot: DailyRiskSnapshot,
+    )
+
     suspend fun fetchPendingCommands(botId: BotId, deviceId: DeviceId, limit: Int = 25): List<CommandEnvelope>
 
     suspend fun setDesiredState(botId: BotId, desiredState: BotDesiredState)

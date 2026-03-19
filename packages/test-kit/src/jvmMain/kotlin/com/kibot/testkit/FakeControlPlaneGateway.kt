@@ -88,6 +88,10 @@ class FakeControlPlaneGateway(
 
     override suspend fun fetchDailyRisk(botId: BotId, date: LocalDate): DailyRiskSnapshot? = dailyRisk
 
+    override suspend fun upsertDailyRisk(botId: BotId, date: LocalDate, snapshot: DailyRiskSnapshot) {
+        dailyRisk = snapshot
+    }
+
     override suspend fun fetchPendingCommands(botId: BotId, deviceId: DeviceId, limit: Int): List<CommandEnvelope> {
         return commands
             .filter { it.botId == botId && it.status == CommandStatus.QUEUED }

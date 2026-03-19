@@ -33,10 +33,52 @@ class LiveExecutionCoordinator(
         if (existingPersistedOrders.any { it.pairId == executionPlan.signal.pairId }) {
             return LiveExecutionResult(
                 submitted = false,
-                message = "Masih ada order aktif tersimpan untuk ${executionPlan.signal.pairId.value}.",
+                message = "${executionPlan.side.name} ${executionPlan.signal.pairId.value} ditunda karena masih ada order aktif tersimpan.",
             )
         }
+        return submitManagedOrder(
+            botId = botId,
+            deviceId = deviceId,
+            term = term,
+            executionPlan = executionPlan,
+            exchange = exchange,
+            controlPlane = controlPlane,
+        )
+    }
 
+    suspend fun submitExit(
+        botId: BotId,
+        deviceId: DeviceId,
+        term: LeaseTerm,
+        executionPlan: ExecutionPlan,
+        existingPersistedOrders: List<OrderSnapshot>,
+        exchange: ExchangeGateway,
+        controlPlane: ControlPlaneGateway,
+    ): LiveExecutionResult {
+        if (existingPersistedOrders.any { it.pairId == executionPlan.signal.pairId }) {
+            return LiveExecutionResult(
+                submitted = false,
+                message = "Exit ${executionPlan.signal.pairId.value} ditunda karena masih ada order aktif untuk pair yang sama.",
+            )
+        }
+        return submitManagedOrder(
+            botId = botId,
+            deviceId = deviceId,
+            term = term,
+            executionPlan = executionPlan,
+            exchange = exchange,
+            controlPlane = controlPlane,
+        )
+    }
+
+    private suspend fun submitManagedOrder(
+        botId: BotId,
+        deviceId: DeviceId,
+        term: LeaseTerm,
+        executionPlan: ExecutionPlan,
+        exchange: ExchangeGateway,
+        controlPlane: ControlPlaneGateway,
+    ): LiveExecutionResult {
         val orderIntentId = buildOrderIntentId(term, executionPlan)
         val action = controlPlane.reserveExecutionAction(
             botId = botId,
@@ -72,7 +114,23 @@ class LiveExecutionCoordinator(
                 submitted = true,
                 clientOrderId = clientOrderId,
                 order = order,
-                message = "Order ${clientOrderId.value} berhasil dikirim.",
+                message = "${executionPlan.side.name} ${executionPlan.orderType.name} ${executionPlan.signal.pairId.value} berhasil dikirim (${clientOrderId.value}).",
+            )
+        } catch (error: ExchangeRejectedException) {
+            controlPlane.upsertOrderSnapshot(
+                botId = botId,
+                term = term.value,
+                deviceId = deviceId,
+                order = draftOrder.copy(
+                    status = OrderStatus.REJECTED,
+                    updatedAt = Clock.System.now(),
+                ),
+            )
+            controlPlane.completeExecutionAction(action.actionId, deviceId, "FAILED")
+            LiveExecutionResult(
+                submitted = false,
+                clientOrderId = clientOrderId,
+                message = "Submit ${executionPlan.side.name} ${executionPlan.signal.pairId.value} ditolak exchange: ${error.message ?: "unknown error"}.",
             )
         } catch (error: Throwable) {
             val reconciledOrder = runCatching {
@@ -91,7 +149,7 @@ class LiveExecutionCoordinator(
                     submitted = true,
                     clientOrderId = clientOrderId,
                     order = reconciledOrder,
-                    message = "Order ${clientOrderId.value} sempat error, tapi berhasil direkonsiliasi dari exchange.",
+                    message = "${executionPlan.side.name} ${executionPlan.orderType.name} ${executionPlan.signal.pairId.value} sempat error, tapi berhasil direkonsiliasi dari exchange (${clientOrderId.value}).",
                 )
             } else {
                 controlPlane.upsertOrderSnapshot(
@@ -112,7 +170,7 @@ class LiveExecutionCoordinator(
                     submitted = false,
                     clientOrderId = clientOrderId,
                     failSafeTriggered = true,
-                    message = "Submit order gagal dan statusnya ambigu, bot masuk SAFE_MODE.",
+                    message = "Submit ${executionPlan.side.name} ${executionPlan.signal.pairId.value} gagal dan statusnya ambigu, bot masuk SAFE_MODE.",
                 )
             }
         }

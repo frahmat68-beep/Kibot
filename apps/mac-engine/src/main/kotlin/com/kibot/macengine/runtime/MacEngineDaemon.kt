@@ -13,6 +13,7 @@ import com.kibot.core.ReconciliationService
 import com.kibot.core.RiskConfig
 import com.kibot.core.SituationalLearningEngine
 import com.kibot.core.StrategyOrchestrator
+import com.kibot.core.TradeAutomationCoordinator
 import com.kibot.macengine.config.MacRuntimeConfig
 import com.kibot.macengine.state.MacStateRepository
 import com.kibot.shared.models.AuditLogRecord
@@ -51,6 +52,7 @@ import kotlinx.datetime.toLocalDateTime
 import org.slf4j.LoggerFactory
 import java.text.NumberFormat
 import java.util.Locale
+import kotlin.math.max
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
 
@@ -72,6 +74,7 @@ class MacEngineDaemon(
     private val liveRolloutGuard: LiveRolloutGuard = LiveRolloutGuard(),
     private val liveExecutionCoordinator: LiveExecutionCoordinator = LiveExecutionCoordinator(),
     private val situationalLearningEngine: SituationalLearningEngine = SituationalLearningEngine(),
+    private val tradeAutomationCoordinator: TradeAutomationCoordinator = TradeAutomationCoordinator(),
     private val aiSupportCoordinator: GeminiSupportCoordinator? = null,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -84,6 +87,10 @@ class MacEngineDaemon(
     private var lastWeeklyReviewPublishedAt: Instant? = null
     private var releaseCooldownUntil: Instant? = null
     private var lastSuccessfulControlPlaneAt: Instant? = null
+    private var smoothedExchangePingMs: Double? = null
+    private var lastSuccessfulExchangePingAt: Instant? = null
+    private var lastExecutionPolicyLogSignature: String? = null
+    private var lastExecutionPolicyLoggedAt: Instant? = null
 
     suspend fun run() {
         logger.info("Mac engine daemon loop started.")
@@ -102,23 +109,36 @@ class MacEngineDaemon(
         ensureRegistered()
 
         val now = Clock.System.now()
+        val jakartaDate = jakartaNowDate(now)
         val botState = controlPlane.fetchBotState(config.controlPlane.botId) ?: error("Bot state not found in Supabase.")
         val lease = controlPlane.fetchLease(config.controlPlane.botId)
         val devices = controlPlane.fetchDevices(config.controlPlane.botId)
-        val dailyRisk = controlPlane.fetchDailyRisk(config.controlPlane.botId, jakartaNowDate(now))
+        val dailyRisk = controlPlane.fetchDailyRisk(config.controlPlane.botId, jakartaDate)
         val commands = controlPlane.fetchPendingCommands(config.controlPlane.botId, config.device.deviceId)
         val weeklyReview = runCatching {
             controlPlane.fetchLatestWeeklyLearningSummary(config.controlPlane.botId)
         }.getOrNull()
         lastSuccessfulControlPlaneAt = now
 
+        val pingStartedAtNs = System.nanoTime()
         val exchangeReachable = runCatching { exchange.ping() }.getOrElse { false }
+        val exchangePingMs = ((System.nanoTime() - pingStartedAtNs) / 1_000_000L)
+            .takeIf { exchangeReachable }
+            ?.coerceAtLeast(1L)
+        val displayPingMs = recordDisplayPing(
+            now = now,
+            exchangeReachable = exchangeReachable,
+            rawPingMs = exchangePingMs,
+        )
         val healthWarnings = mutableListOf<String>()
         if (!exchangeReachable) {
             healthWarnings += "Exchange unreachable or credentials not configured."
         }
         if (dailyRisk?.hardStopTriggered == true) {
             healthWarnings += "Daily hard stop is active."
+        }
+        if ((displayPingMs ?: 0L) >= entryBlockLatencyMs) {
+            healthWarnings += "Exchange latency is heavy."
         }
 
         var leaseAfterCommands = lease
@@ -136,6 +156,7 @@ class MacEngineDaemon(
         val localHealth = buildLocalHealth(
             exchangeReachable = exchangeReachable,
             warnings = healthWarnings,
+            feedLatencyMs = exchangePingMs,
             marketFeedHealthy = exchangeReachable,
         )
         val masterBeforeTakeover = leaseAfterCommands.isHeldBy(config.device.deviceId, now)
@@ -189,6 +210,7 @@ class MacEngineDaemon(
         val finalHealth = buildLocalHealth(
             exchangeReachable = exchangeReachable,
             warnings = healthWarnings,
+            feedLatencyMs = exchangePingMs,
             marketFeedHealthy = exchangeReachable && resolvedMarketQuotes.isNotEmpty(),
         )
         val healthDecision = healthAdvisor.evaluate(finalHealth)
@@ -207,12 +229,17 @@ class MacEngineDaemon(
             }
             evaluation.hints
         }.orEmpty()
+        val derivedDailyRisk = deriveDailyRiskSnapshot(
+            previous = dailyRisk,
+            balances = resolvedBalances,
+            marketQuotes = resolvedMarketQuotes,
+        ) ?: dailyRisk
         val strategyCycle = if (resolvedMarketQuotes.isNotEmpty()) {
             strategyOrchestrator.analyze(
                 botId = config.controlPlane.botId,
                 balances = resolvedBalances,
                 openOrders = resolvedOpenOrders,
-                dailyRisk = dailyRisk,
+                dailyRisk = derivedDailyRisk,
                 health = finalHealth,
                 marketQuotes = resolvedMarketQuotes,
                 pairSupportHints = aiSupportHints,
@@ -221,28 +248,86 @@ class MacEngineDaemon(
         } else {
             null
         }
+        val recentPersistedOrders = if (isMaster && exchangeReachable) {
+            runCatching { controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 160) }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
+        val recentFills = if (isMaster && exchangeReachable) {
+            relevantFillPairs(
+                balances = resolvedBalances,
+                marketQuotes = resolvedMarketQuotes,
+                openOrders = resolvedOpenOrders,
+                persistedOrders = recentPersistedOrders,
+                cycle = strategyCycle,
+            ).flatMap { pairId ->
+                runCatching { exchange.fetchRecentFills(pairId, limit = 30) }.getOrDefault(emptyList())
+            }
+        } else {
+            emptyList()
+        }
+        val reconciledOrderUpdates = if (isMaster && recentPersistedOrders.isNotEmpty()) {
+            tradeAutomationCoordinator.reconcileOrders(
+                persistedOrders = recentPersistedOrders,
+                exchangeOpenOrders = resolvedOpenOrders,
+                recentFills = recentFills,
+            )
+        } else {
+            emptyList()
+        }
+        reconciledOrderUpdates.forEach { order ->
+            controlPlane.upsertOrderSnapshot(
+                botId = config.controlPlane.botId,
+                term = initialLease?.term?.value ?: initialBotState.currentTerm.value,
+                deviceId = config.device.deviceId,
+                order = order,
+            )
+        }
+        val effectiveRecentOrders = mergeRecentOrders(
+            base = recentPersistedOrders,
+            updates = reconciledOrderUpdates,
+        )
 
         var runtimeBotState = initialBotState
         var runtimeLease = initialLease
 
         var effectiveWeeklyReview = weeklyReview
+        val effectiveDailyRisk = strategyCycle?.let { cycle ->
+            derivedDailyRisk?.copy(
+                hardStopTriggered = cycle.riskDecision.hardStopTriggered,
+                riskLadderLevel = cycle.riskDecision.riskLadderLevel,
+                profitProtectionStatus = cycle.riskDecision.profitProtectionStatus,
+            )
+        } ?: derivedDailyRisk
+        if (isMaster && effectiveDailyRisk != null) {
+            controlPlane.upsertDailyRisk(
+                botId = config.controlPlane.botId,
+                date = jakartaDate,
+                snapshot = effectiveDailyRisk,
+            )
+        }
         if (isMaster && runtimeLease != null && strategyCycle != null) {
             effectiveWeeklyReview = maybePublishWeeklyLearningSummary(
                 now = now,
                 cycle = strategyCycle,
                 marketQuotes = resolvedMarketQuotes,
                 currentWeeklyReview = weeklyReview,
+                recentOrders = effectiveRecentOrders,
             )
             publishAnalysisIfNeeded(
                 now = now,
                 lease = runtimeLease,
                 cycle = strategyCycle,
             )
-            maybeExecuteLiveOrder(
+            maybeManageLiveTrading(
                 now = now,
                 lease = runtimeLease,
                 cycle = strategyCycle,
                 weeklyReview = effectiveWeeklyReview,
+                health = finalHealth,
+                balances = resolvedBalances,
+                marketQuotes = resolvedMarketQuotes,
+                recentOrders = effectiveRecentOrders,
             )
             publishLearningSignalsIfNeeded(
                 now = now,
@@ -489,6 +574,7 @@ class MacEngineDaemon(
     private fun buildLocalHealth(
         exchangeReachable: Boolean,
         warnings: List<String>,
+        feedLatencyMs: Long? = null,
         supabaseReachable: Boolean = isControlPlaneReachable(Clock.System.now()),
         marketFeedHealthy: Boolean = exchangeReachable,
     ): EngineHealthSnapshot {
@@ -508,6 +594,7 @@ class MacEngineDaemon(
             websocketHealthy = marketFeedHealthy,
             exchangeReachable = exchangeReachable,
             supabaseReachable = supabaseReachable,
+            feedLatencyMs = feedLatencyMs,
             fillQualityScore = if (warnings.any { it.contains("fill", ignoreCase = true) }) 0.35 else 0.75,
             anomalyCount = warnings.size,
             lastError = warnings.firstOrNull(),
@@ -569,13 +656,81 @@ class MacEngineDaemon(
         }
     }
 
-    private suspend fun maybeExecuteLiveOrder(
+    private suspend fun maybeManageLiveTrading(
         now: Instant,
         lease: EngineLeaseSnapshot,
         cycle: com.kibot.core.StrategyCycleResult,
         weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
+        health: EngineHealthSnapshot,
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
     ) {
         if (!config.enableLiveExecution) return
+        val entryStabilizedOrders = manageStaleEntryOrders(
+            now = now,
+            lease = lease,
+            cycle = cycle,
+            marketQuotes = marketQuotes,
+            recentOrders = recentOrders,
+        )
+        val preExitManagedPositions = tradeAutomationCoordinator.deriveManagedPositions(
+            balances = balances,
+            marketQuotes = marketQuotes,
+            reconciledOrders = entryStabilizedOrders,
+            rankedPairs = cycle.rankedPairs,
+            now = now,
+        )
+        val stabilizedOrders = manageStaleExitOrders(
+            now = now,
+            lease = lease,
+            managedPositions = preExitManagedPositions,
+            marketQuotes = marketQuotes,
+            recentOrders = entryStabilizedOrders,
+        )
+        val activePersistedOrders = stabilizedOrders.filter { it.status in activeOrderStatuses }
+        val managedPositions = tradeAutomationCoordinator.deriveManagedPositions(
+            balances = balances,
+            marketQuotes = marketQuotes,
+            reconciledOrders = stabilizedOrders,
+            rankedPairs = cycle.rankedPairs,
+            now = now,
+        )
+        val exitDecision = tradeAutomationCoordinator.planExit(
+            now = now,
+            cycle = cycle,
+            managedPositions = managedPositions,
+            activeOrders = activePersistedOrders,
+        )
+        if (exitDecision != null) {
+            val preparedActiveOrders = prepareExitPath(
+                now = now,
+                lease = lease,
+                recentOrders = stabilizedOrders,
+                activePersistedOrders = activePersistedOrders,
+                exitDecision = exitDecision,
+            )
+            val result = liveExecutionCoordinator.submitExit(
+                botId = config.controlPlane.botId,
+                deviceId = config.device.deviceId,
+                term = lease.term,
+                executionPlan = exitDecision.executionPlan,
+                existingPersistedOrders = preparedActiveOrders,
+                exchange = exchange,
+                controlPlane = controlPlane,
+            )
+            appendAuditLog(
+                level = when {
+                    result.failSafeTriggered -> LogLevel.ERROR
+                    result.submitted -> LogLevel.INFO
+                    else -> LogLevel.WARN
+                },
+                category = "AUTO_EXIT",
+                message = "${exitDecision.message} ${result.message}",
+            )
+            return
+        }
+
         val executionPlan = cycle.executionPlan ?: return
         if (!cycle.modeSnapshot.tradingAllowed) return
         if (cycle.riskDecision.allowNewEntries.not()) return
@@ -584,16 +739,46 @@ class MacEngineDaemon(
             appendAuditLog(LogLevel.INFO, "ROLLOUT_GUARD", rolloutDecision.reason)
             return
         }
+        if (activePersistedOrders.isNotEmpty()) {
+            appendThrottledAuditLog(
+                now = now,
+                level = LogLevel.INFO,
+                category = "ENTRY_POLICY",
+                message = "Entry ${executionPlan.signal.pairId.value} ditunda karena masih ada order aktif yang belum selesai.",
+            )
+            return
+        }
 
-        val persistedOpenOrders = controlPlane.fetchOpenPersistedOrders(config.controlPlane.botId)
-        if (persistedOpenOrders.isNotEmpty()) return
+        val routedEntry = routeEntryPlanByLatency(
+            executionPlan = executionPlan,
+            health = health,
+            marketQuotes = marketQuotes,
+        )
+        routedEntry.blockedReason?.let { blockedReason ->
+            appendThrottledAuditLog(
+                now = now,
+                level = LogLevel.WARN,
+                category = "ENTRY_POLICY",
+                message = blockedReason,
+            )
+            return
+        }
+        routedEntry.message?.let { note ->
+            appendThrottledAuditLog(
+                now = now,
+                level = LogLevel.INFO,
+                category = "ENTRY_POLICY",
+                message = note,
+            )
+        }
+        val effectiveExecutionPlan = routedEntry.executionPlan ?: return
 
         val result = liveExecutionCoordinator.submitEntry(
             botId = config.controlPlane.botId,
             deviceId = config.device.deviceId,
             term = lease.term,
-            executionPlan = executionPlan,
-            existingPersistedOrders = persistedOpenOrders,
+            executionPlan = effectiveExecutionPlan,
+            existingPersistedOrders = activePersistedOrders,
             exchange = exchange,
             controlPlane = controlPlane,
         )
@@ -612,7 +797,7 @@ class MacEngineDaemon(
             logger.info(
                 "Live order submitted on {} pair={} clientOrderId={} term={}",
                 config.device.displayName,
-                executionPlan.signal.pairId.value,
+                effectiveExecutionPlan.signal.pairId.value,
                 result.clientOrderId?.value,
                 lease.term.value,
             )
@@ -622,17 +807,233 @@ class MacEngineDaemon(
         }
     }
 
+    private fun routeEntryPlanByLatency(
+        executionPlan: com.kibot.shared.models.ExecutionPlan,
+        health: EngineHealthSnapshot,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    ): EntryRoutingDecision {
+        if (executionPlan.side != com.kibot.shared.models.OrderSide.BUY) {
+            return EntryRoutingDecision(executionPlan = executionPlan)
+        }
+        val latencyMs = health.feedLatencyMs
+        val quote = marketQuotes.firstOrNull { it.pairId == executionPlan.signal.pairId }
+        return when {
+            latencyMs == null || latencyMs <= makerFirstMaxLatencyMs -> {
+                if (executionPlan.orderType == com.kibot.shared.models.OrderType.LIMIT && executionPlan.postOnlyPreferred) {
+                    EntryRoutingDecision(executionPlan = executionPlan)
+                } else {
+                    val makerPrice = executionPlan.signal.entryPrice
+                        ?: executionPlan.limitPrice
+                        ?: quote?.bestBid
+                        ?: quote?.midPrice
+                        ?: return EntryRoutingDecision(
+                            executionPlan = null,
+                            blockedReason = "Entry ${executionPlan.signal.pairId.value} diblokir karena harga maker tidak tersedia.",
+                        )
+                    EntryRoutingDecision(
+                        executionPlan = executionPlan.copy(
+                            orderType = com.kibot.shared.models.OrderType.LIMIT,
+                            limitPrice = makerPrice,
+                            postOnlyPreferred = true,
+                        ),
+                        message = "Ping hijau ${latencyLabel(latencyMs)}. Entry ${executionPlan.signal.pairId.value} dipaksa maker-first LIMIT.",
+                    )
+                }
+            }
+
+            latencyMs <= aggressiveLimitFallbackLatencyMs -> {
+                val fastLimitPrice = quote?.bestAsk
+                    ?: executionPlan.limitPrice
+                    ?: executionPlan.signal.entryPrice
+                    ?: return EntryRoutingDecision(
+                        executionPlan = null,
+                        blockedReason = "Entry ${executionPlan.signal.pairId.value} ditunda karena harga fallback tidak tersedia saat ping ${latencyMs}ms.",
+                    )
+                EntryRoutingDecision(
+                    executionPlan = executionPlan.copy(
+                        orderType = com.kibot.shared.models.OrderType.LIMIT,
+                        limitPrice = fastLimitPrice,
+                        postOnlyPreferred = false,
+                    ),
+                    message = "Ping kuning ${latencyMs}ms. Entry ${executionPlan.signal.pairId.value} diturunkan ke LIMIT biasa agar tidak bergantung maker-only.",
+                )
+            }
+
+            else -> EntryRoutingDecision(
+                executionPlan = null,
+                blockedReason = "Ping merah ${latencyMs}ms. Entry baru ${executionPlan.signal.pairId.value} diblokir sampai feed pulih; bot hanya fokus monitor/exit aman.",
+            )
+        }
+    }
+
+    private suspend fun manageStaleEntryOrders(
+        now: Instant,
+        lease: EngineLeaseSnapshot,
+        cycle: com.kibot.core.StrategyCycleResult,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
+    ): List<com.kibot.shared.models.OrderSnapshot> {
+        val quoteByPair = marketQuotes.associateBy { it.pairId }
+        val canceledSnapshots = mutableListOf<com.kibot.shared.models.OrderSnapshot>()
+        recentOrders
+            .filter { it.status in activeOrderStatuses && it.side == com.kibot.shared.models.OrderSide.BUY }
+            .forEach { order ->
+                val ageMinutes = ((now.toEpochMilliseconds() - order.createdAt.toEpochMilliseconds()).coerceAtLeast(0L) / 60_000.0)
+                val bestAsk = quoteByPair[order.pairId]?.bestAsk?.toDoubleOrZero() ?: 0.0
+                val orderPrice = order.price.toDoubleOrZero()
+                val driftPct = if (bestAsk > 0.0 && orderPrice > 0.0) {
+                    ((bestAsk - orderPrice) / orderPrice) * 100.0
+                } else {
+                    0.0
+                }
+                val pairFlipped = cycle.selectedSignal?.pairId != order.pairId
+                val shouldCancel = ageMinutes >= staleEntryOrderMaxAgeMinutes ||
+                    (pairFlipped && ageMinutes >= staleEntryOrderPairFlipGraceMinutes) ||
+                    driftPct >= staleEntryOrderMaxDriftPct
+                if (!shouldCancel) return@forEach
+
+                val canceled = exchange.cancelOrder(order.clientOrderId)
+                if (canceled) {
+                    val canceledSnapshot = order.copy(
+                        status = com.kibot.shared.models.OrderStatus.CANCELED,
+                        updatedAt = now,
+                    )
+                    controlPlane.upsertOrderSnapshot(
+                        botId = config.controlPlane.botId,
+                        term = lease.term.value,
+                        deviceId = config.device.deviceId,
+                        order = canceledSnapshot,
+                    )
+                    canceledSnapshots += canceledSnapshot
+                    appendAuditLog(
+                        level = LogLevel.WARN,
+                        category = "EXECUTION",
+                        message = "Entry ${order.pairId.value} dibatalkan otomatis karena stale/drift (${formatDecimal(ageMinutes, 1)}m, ${formatDecimal(driftPct, 2)}%).",
+                    )
+                }
+            }
+
+        return mergeRecentOrders(
+            base = recentOrders,
+            updates = canceledSnapshots,
+        )
+    }
+
+    private suspend fun manageStaleExitOrders(
+        now: Instant,
+        lease: EngineLeaseSnapshot,
+        managedPositions: List<com.kibot.core.ManagedPosition>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
+    ): List<com.kibot.shared.models.OrderSnapshot> {
+        val positionsByPair = managedPositions.associateBy { it.pairId }
+        val quoteByPair = marketQuotes.associateBy { it.pairId }
+        val canceledSnapshots = mutableListOf<com.kibot.shared.models.OrderSnapshot>()
+        recentOrders
+            .filter {
+                it.status in activeOrderStatuses &&
+                    it.side == com.kibot.shared.models.OrderSide.SELL &&
+                    it.orderType == com.kibot.shared.models.OrderType.LIMIT
+            }
+            .forEach { order ->
+                val position = positionsByPair[order.pairId] ?: return@forEach
+                val ageMinutes = ((now.toEpochMilliseconds() - order.createdAt.toEpochMilliseconds()).coerceAtLeast(0L) / 60_000.0)
+                val bestBid = quoteByPair[order.pairId]?.bestBid?.toDoubleOrZero() ?: position.currentBidPrice.toDoubleOrZero()
+                val orderPrice = order.price.toDoubleOrZero()
+                val driftPct = if (bestBid > 0.0 && orderPrice > 0.0) {
+                    ((orderPrice - bestBid) / orderPrice) * 100.0
+                } else {
+                    0.0
+                }
+                val shouldCancel = ageMinutes >= staleExitOrderMaxAgeMinutes ||
+                    driftPct >= staleExitOrderMaxDriftPct ||
+                    position.unrealizedPnlPct <= staleExitRepriceLossFloorPct
+                if (!shouldCancel) return@forEach
+
+                val canceled = exchange.cancelOrder(order.clientOrderId)
+                if (canceled) {
+                    val canceledSnapshot = order.copy(
+                        status = com.kibot.shared.models.OrderStatus.CANCELED,
+                        updatedAt = now,
+                    )
+                    controlPlane.upsertOrderSnapshot(
+                        botId = config.controlPlane.botId,
+                        term = lease.term.value,
+                        deviceId = config.device.deviceId,
+                        order = canceledSnapshot,
+                    )
+                    canceledSnapshots += canceledSnapshot
+                    appendAuditLog(
+                        level = LogLevel.WARN,
+                        category = "AUTO_EXIT",
+                        message = "Exit ${order.pairId.value} dibatalkan untuk reprice/fallback (${formatDecimal(ageMinutes, 1)}m, drift ${formatDecimal(driftPct, 2)}%).",
+                    )
+                }
+            }
+
+        return mergeRecentOrders(
+            base = recentOrders,
+            updates = canceledSnapshots,
+        )
+    }
+
+    private suspend fun prepareExitPath(
+        now: Instant,
+        lease: EngineLeaseSnapshot,
+        recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
+        activePersistedOrders: List<com.kibot.shared.models.OrderSnapshot>,
+        exitDecision: com.kibot.core.ExitDecision,
+    ): List<com.kibot.shared.models.OrderSnapshot> {
+        if (exitDecision.executionPlan.orderType != com.kibot.shared.models.OrderType.MARKET) {
+            return activePersistedOrders
+        }
+        val pairActiveSellOrders = activePersistedOrders.filter {
+            it.pairId == exitDecision.position.pairId && it.side == com.kibot.shared.models.OrderSide.SELL
+        }
+        if (pairActiveSellOrders.isEmpty()) {
+            return activePersistedOrders
+        }
+
+        val canceledSnapshots = mutableListOf<com.kibot.shared.models.OrderSnapshot>()
+        pairActiveSellOrders.forEach { order ->
+            val canceled = exchange.cancelOrder(order.clientOrderId)
+            if (canceled) {
+                val canceledSnapshot = order.copy(
+                    status = com.kibot.shared.models.OrderStatus.CANCELED,
+                    updatedAt = now,
+                )
+                controlPlane.upsertOrderSnapshot(
+                    botId = config.controlPlane.botId,
+                    term = lease.term.value,
+                    deviceId = config.device.deviceId,
+                    order = canceledSnapshot,
+                )
+                canceledSnapshots += canceledSnapshot
+                appendAuditLog(
+                    level = LogLevel.WARN,
+                    category = "AUTO_EXIT",
+                    message = "Exit lama ${order.clientOrderId.value} dibatalkan agar emergency exit ${exitDecision.position.pairId.value} bisa dijalankan.",
+                )
+            }
+        }
+
+        return mergeRecentOrders(
+            base = recentOrders,
+            updates = canceledSnapshots,
+        ).filter { it.status in activeOrderStatuses }
+    }
+
     private suspend fun maybePublishWeeklyLearningSummary(
         now: Instant,
         cycle: com.kibot.core.StrategyCycleResult,
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
         currentWeeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
+        recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
     ): com.kibot.shared.models.WeeklyLearningSummary? {
         val shouldPublish = lastWeeklyReviewPublishedAt == null ||
             (now - lastWeeklyReviewPublishedAt!!).inWholeHours >= 6
         if (!shouldPublish) return currentWeeklyReview
 
-        val recentOrders = controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 120)
         val summary = liveLearningReviewBuilder.build(
             botId = config.controlPlane.botId,
             now = now,
@@ -706,6 +1107,49 @@ class MacEngineDaemon(
                 ),
             )
         }.onFailure { logger.warn("Failed to append audit log: {}", it.message) }
+    }
+
+    private suspend fun appendThrottledAuditLog(
+        now: Instant,
+        level: LogLevel,
+        category: String,
+        message: String,
+    ) {
+        val signature = "$category|$message"
+        val lastLoggedAt = lastExecutionPolicyLoggedAt
+        if (
+            lastExecutionPolicyLogSignature == signature &&
+            lastLoggedAt != null &&
+            (now - lastLoggedAt).inWholeMinutes < executionPolicyLogCooldownMinutes
+        ) {
+            return
+        }
+        lastExecutionPolicyLogSignature = signature
+        lastExecutionPolicyLoggedAt = now
+        appendAuditLog(level = level, category = category, message = message)
+    }
+
+    private fun recordDisplayPing(
+        now: Instant,
+        exchangeReachable: Boolean,
+        rawPingMs: Long?,
+    ): Long? {
+        if (exchangeReachable && rawPingMs != null) {
+            val next = smoothedExchangePingMs
+                ?.let { (it * 0.72) + (rawPingMs.toDouble() * 0.28) }
+                ?: rawPingMs.toDouble()
+            smoothedExchangePingMs = next
+            lastSuccessfulExchangePingAt = now
+            return next.toLong().coerceAtLeast(1L)
+        }
+
+        val lastSuccess = lastSuccessfulExchangePingAt
+        if (lastSuccess != null && (now - lastSuccess).inWholeSeconds <= 45) {
+            return smoothedExchangePingMs?.toLong()?.coerceAtLeast(1L)
+        }
+
+        smoothedExchangePingMs = null
+        return null
     }
 
     private fun deriveEffectiveState(
@@ -788,12 +1232,125 @@ class MacEngineDaemon(
         )
     }
 
+    private fun relevantFillPairs(
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        openOrders: List<com.kibot.shared.models.OrderSnapshot>,
+        persistedOrders: List<com.kibot.shared.models.OrderSnapshot>,
+        cycle: com.kibot.core.StrategyCycleResult?,
+    ): List<com.kibot.shared.models.PairId> {
+        val quotePairs = marketQuotes.map { it.pairId }.toSet()
+        return buildSet {
+            openOrders.mapTo(this) { it.pairId }
+            persistedOrders.mapTo(this) { it.pairId }
+            cycle?.selectedSignal?.pairId?.let(::add)
+            cycle?.deploymentPlan?.candidates?.take(4)?.mapTo(this) { it.pairId }
+            balances
+                .filterNot { it.asset.equals("idr", ignoreCase = true) }
+                .forEach { balance ->
+                    listOf("idr", "usdt", "btc", "eth")
+                        .asSequence()
+                        .map { quoteAsset -> com.kibot.shared.models.PairId("${balance.asset.lowercase()}_$quoteAsset") }
+                        .firstOrNull { it in quotePairs }
+                        ?.let(::add)
+                }
+        }.take(10)
+    }
+
+    private fun mergeRecentOrders(
+        base: List<com.kibot.shared.models.OrderSnapshot>,
+        updates: List<com.kibot.shared.models.OrderSnapshot>,
+    ): List<com.kibot.shared.models.OrderSnapshot> {
+        if (updates.isEmpty()) return base
+        val merged = linkedMapOf<String, com.kibot.shared.models.OrderSnapshot>()
+        (base + updates)
+            .sortedByDescending { it.updatedAt }
+            .forEach { merged[it.clientOrderId.value] = it }
+        return merged.values.toList()
+    }
+
     private fun estimatePortfolioValue(balances: List<BalanceSnapshot>): DecimalValue {
         val total = balances.sumOf { balance ->
             balance.totalValueInIdr?.toDoubleOrZero()
                 ?: (balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero())
         }
         return DecimalValue.fromDouble(total.coerceAtLeast(0.0))
+    }
+
+    private fun deriveDailyRiskSnapshot(
+        previous: DailyRiskSnapshot?,
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    ): DailyRiskSnapshot? {
+        if (balances.isEmpty() || marketQuotes.isEmpty()) return previous
+        val currentEquity = balances.sumOf { balance ->
+            val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+            when {
+                quantity <= 0.0 -> 0.0
+                balance.asset.equals("idr", ignoreCase = true) -> quantity
+                else -> quantity * (quoteAssetPriceIdr(balance.asset, marketQuotes) ?: 0.0)
+            }
+        }
+        if (currentEquity <= 0.0) return previous
+
+        val openingEquity = previous?.openingEquityIdr?.toDoubleOrZero()?.takeIf { it > 0.0 } ?: currentEquity
+        val totalPnl = currentEquity - openingEquity
+        val hasTrackedNonIdrHolding = balances.any { balance ->
+            if (balance.asset.equals("idr", ignoreCase = true)) return@any false
+            val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+            if (quantity <= 0.0) return@any false
+            val value = quantity * (quoteAssetPriceIdr(balance.asset, marketQuotes) ?: 0.0)
+            value >= 1_000.0
+        }
+        val realizedPnl = if (hasTrackedNonIdrHolding) 0.0 else totalPnl
+        val unrealizedPnl = totalPnl - realizedPnl
+        val highWatermark = max(
+            previous?.highWatermarkEquityIdr?.toDoubleOrZero() ?: openingEquity,
+            currentEquity,
+        )
+        val profitableRange = (highWatermark - openingEquity).coerceAtLeast(0.0)
+        val givebackPct = when {
+            profitableRange <= 0.0 || currentEquity >= highWatermark -> 0.0
+            else -> ((highWatermark - currentEquity) / profitableRange).coerceIn(0.0, 1.0)
+        }
+        val hardLimitPct = previous?.hardDailyLossLimitPct ?: 0.25
+        val drawdownPct = if (openingEquity > 0.0 && currentEquity < openingEquity) {
+            ((openingEquity - currentEquity) / openingEquity).coerceIn(0.0, 1.0)
+        } else {
+            0.0
+        }
+        return DailyRiskSnapshot(
+            openingEquityIdr = DecimalValue.fromDouble(openingEquity),
+            currentEquityIdr = DecimalValue.fromDouble(currentEquity),
+            realizedPnlIdr = DecimalValue.fromDouble(realizedPnl),
+            unrealizedPnlIdr = DecimalValue.fromDouble(unrealizedPnl),
+            drawdownPct = drawdownPct,
+            hardDailyLossLimitPct = hardLimitPct,
+            hardStopTriggered = previous?.hardStopTriggered == true || drawdownPct >= hardLimitPct,
+            rebasePending = previous?.rebasePending == true,
+            riskLadderLevel = previous?.riskLadderLevel ?: com.kibot.shared.models.RiskLadderLevel.NORMAL,
+            weeklyDrawdownPct = previous?.weeklyDrawdownPct ?: 0.0,
+            lossStreakCount = previous?.lossStreakCount ?: 0,
+            performanceDecayDetected = previous?.performanceDecayDetected == true,
+            highWatermarkEquityIdr = DecimalValue.fromDouble(highWatermark),
+            givebackPct = givebackPct,
+            profitProtectionStatus = previous?.profitProtectionStatus ?: com.kibot.shared.models.ProfitProtectionStatus.INACTIVE,
+        )
+    }
+
+    private fun quoteAssetPriceIdr(
+        asset: String,
+        quotes: List<com.kibot.shared.models.MarketQuote>,
+    ): Double? {
+        if (asset.equals("idr", ignoreCase = true)) return 1.0
+        val direct = quotes.firstOrNull { it.pairId.value.equals("${asset.lowercase()}_idr", ignoreCase = true) }
+        if (direct != null) return direct.midPrice.toDoubleOrZero()
+        val usdtAsset = quotes.firstOrNull { it.pairId.value.equals("${asset.lowercase()}_usdt", ignoreCase = true) }
+        val usdtIdr = quotes.firstOrNull { it.pairId.value.equals("usdt_idr", ignoreCase = true) }
+        if (usdtAsset != null && usdtIdr != null) {
+            return usdtAsset.midPrice.toDoubleOrZero() * usdtIdr.midPrice.toDoubleOrZero()
+        }
+        return null
     }
 
     private fun jakartaNowDate(now: Instant): kotlinx.datetime.LocalDate {
@@ -831,7 +1388,41 @@ class MacEngineDaemon(
         val prefix = if (value >= 0.0) "+" else "-"
         return prefix + formatIdr(kotlin.math.abs(value))
     }
+
+    private fun formatDecimal(value: Double, digits: Int): String = "%.${digits}f".format(java.util.Locale.US, value)
+
+    private fun latencyLabel(latencyMs: Long?): String = when {
+        latencyMs == null -> "--"
+        else -> "${latencyMs}ms"
+    }
+
+    private companion object {
+        private const val staleEntryOrderMaxAgeMinutes = 6.0
+        private const val staleEntryOrderPairFlipGraceMinutes = 2.5
+        private const val staleEntryOrderMaxDriftPct = 0.70
+        private const val staleExitOrderMaxAgeMinutes = 4.5
+        private const val staleExitOrderMaxDriftPct = 0.55
+        private const val staleExitRepriceLossFloorPct = -0.35
+        private const val makerFirstMaxLatencyMs = 260L
+        private const val aggressiveLimitFallbackLatencyMs = 650L
+        private const val entryBlockLatencyMs = 900L
+        private const val executionPolicyLogCooldownMinutes = 2L
+        private val activeOrderStatuses = setOf(
+            com.kibot.shared.models.OrderStatus.CREATED,
+            com.kibot.shared.models.OrderStatus.SUBMITTING,
+            com.kibot.shared.models.OrderStatus.OPEN,
+            com.kibot.shared.models.OrderStatus.PARTIALLY_FILLED,
+            com.kibot.shared.models.OrderStatus.CANCEL_REQUESTED,
+            com.kibot.shared.models.OrderStatus.UNKNOWN,
+        )
+    }
 }
+
+private data class EntryRoutingDecision(
+    val executionPlan: com.kibot.shared.models.ExecutionPlan?,
+    val message: String? = null,
+    val blockedReason: String? = null,
+)
 
 private fun EngineLeaseSnapshot?.isHeldBy(deviceId: DeviceId, now: Instant): Boolean {
     return this != null &&

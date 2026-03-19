@@ -96,7 +96,7 @@ object MacRuntimeConfigLoader {
                 privateBaseUrl = optional("INDODAX_PRIVATE_BASE_URL") ?: "https://indodax.com/tapi",
                 tradeApiV2BaseUrl = optional("INDODAX_TRADE_API_V2_BASE_URL") ?: "https://tapi.indodax.com",
                 publicWebSocketUrl = optional("INDODAX_WS_PUBLIC_URL") ?: "wss://ws1.indodax.com/ws",
-                privateWebSocketUrl = optional("INDODAX_WS_PRIVATE_URL") ?: "wss://ws1.indodax.com/ws/private",
+                privateWebSocketUrl = optional("INDODAX_WS_PRIVATE_URL") ?: "wss://pws.indodax.com/ws/?cf_ws_frame_ping_pong=true",
             ),
         )
     }

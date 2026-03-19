@@ -284,6 +284,87 @@ class MacEngineDaemonTest {
         assertTrue(repository.state.value.statusMessage.contains("safe mode", ignoreCase = true))
     }
 
+    @Test
+    fun `master submits automatic sell exit when held asset hits take profit`() = runBlocking {
+        val controlPlane = FakeControlPlaneGateway(botId = botId)
+        controlPlane.botState = BotStateSnapshot(
+            botId = botId,
+            desiredState = BotDesiredState.ON,
+            effectiveState = BotEffectiveState.RUNNING,
+            activeDeviceId = macId,
+            standbyDeviceId = androidId,
+            currentTerm = LeaseTerm(6),
+            syncHealth = SyncHealth.HEALTHY,
+            strategyMode = StrategyMode.GROWTH,
+            operatingMode = BotMode.GROWTH,
+            edgeConfidence = EdgeConfidence.HIGH,
+            marketRegime = MarketRegime.HEALTHY_UPTREND,
+            lastHeartbeatAt = Instant.parse("2026-03-15T00:00:00Z"),
+        )
+        controlPlane.registerDevice(androidRegistration())
+        controlPlane.seedLease(
+            EngineLeaseSnapshot(
+                botId = botId,
+                currentHolder = macId,
+                term = LeaseTerm(6),
+                state = LeaseState.HELD,
+                expiresAt = Instant.parse("2030-01-01T00:00:05Z"),
+                lastHeartbeatAt = Instant.parse("2030-01-01T00:00:00Z"),
+                conflictDetected = false,
+            ),
+        )
+        controlPlane.dailyRisk = com.kibot.shared.models.DailyRiskSnapshot(
+            openingEquityIdr = DecimalValue("100000"),
+            currentEquityIdr = DecimalValue("104000"),
+            realizedPnlIdr = DecimalValue("4000"),
+            unrealizedPnlIdr = DecimalValue.Zero,
+            drawdownPct = 0.01,
+            hardDailyLossLimitPct = 0.25,
+            hardStopTriggered = false,
+            rebasePending = false,
+            highWatermarkEquityIdr = DecimalValue("104000"),
+        )
+        controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
+        controlPlane.seedPersistedOrders(
+            OrderSnapshot(
+                orderId = OrderId("entry-1"),
+                clientOrderId = com.kibot.shared.models.ClientOrderId("entry-1"),
+                pairId = PairId("btc_idr"),
+                side = OrderSide.BUY,
+                orderType = OrderType.LIMIT,
+                status = OrderStatus.FILLED,
+                price = DecimalValue("100000"),
+                originalQuantity = DecimalValue("0.2"),
+                executedQuantity = DecimalValue("0.2"),
+                remainingQuantity = DecimalValue.Zero,
+                createdAt = Instant.parse("2026-03-15T00:00:00Z"),
+                updatedAt = Instant.parse("2026-03-15T00:00:00Z"),
+            ),
+        )
+
+        val exchange = FakeExchangeGateway(
+            marketQuotes = mutableListOf(
+                marketQuote("btc_idr", 180_000_000.0, 0.86).copy(
+                    bestBid = DecimalValue("106500"),
+                    bestAsk = DecimalValue("106700"),
+                    midPrice = DecimalValue("106600"),
+                ),
+            ),
+            balances = mutableListOf(BalanceSnapshot("btc", DecimalValue("0.2"))),
+        )
+        val daemon = MacEngineDaemon(
+            repository = MacStateRepository(),
+            controlPlane = controlPlane,
+            exchange = exchange,
+            config = runtimeConfig(enableLiveExecution = true),
+        )
+
+        daemon.syncOnce()
+
+        assertTrue(exchange.currentOrders().any { it.side == OrderSide.SELL && it.pairId == PairId("btc_idr") })
+        assertTrue(controlPlane.fetchRecentOrders(botId).any { it.side == OrderSide.SELL && it.pairId == PairId("btc_idr") })
+    }
+
     private fun runtimeConfig(enableLiveExecution: Boolean = false): MacRuntimeConfig = MacRuntimeConfig(
         port = 8787,
         bindHost = "127.0.0.1",

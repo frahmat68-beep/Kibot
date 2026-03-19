@@ -1,5 +1,6 @@
 package com.kibot.android.ui
 
+import com.kibot.android.runtime.LiveLogEntry
 import com.kibot.shared.models.BotEffectiveState
 
 enum class EngineAction {
@@ -25,6 +26,7 @@ data class TradeUi(
     val pair: String,
     val side: String,
     val pnl: String,
+    val detail: String,
 )
 
 data class DeviceStatusUi(
@@ -64,6 +66,7 @@ data class KiBotUiState(
     val weeklyLearningSummary: String,
     val weeklyAdaptationSummary: String,
     val positions: List<PositionCardUi>,
+    val liveLogEntries: List<LiveLogEntry>,
     val logs: List<LogUi>,
     val trades: List<TradeUi>,
     val devices: List<DeviceStatusUi>,
@@ -98,6 +101,7 @@ data class KiBotUiState(
             weeklyLearningSummary = "Belum ada review mingguan.",
             weeklyAdaptationSummary = "Adaptasi mingguan akan muncul setelah data cukup.",
             positions = emptyList(),
+            liveLogEntries = emptyList(),
             logs = emptyList(),
             trades = emptyList(),
             devices = emptyList(),

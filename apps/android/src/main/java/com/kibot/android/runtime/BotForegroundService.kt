@@ -77,9 +77,8 @@ class BotForegroundService : Service() {
         val pairLabel = currentPair?.takeIf { it.isNotBlank() }
             ?: snapshot.activePair.takeIf { it.isNotBlank() && it != "-" }
             ?: "scan"
-        val stateLabel = if (isRunning) "ON" else "OFF"
-        val balanceLine = "${snapshot.totalEquityIdr} • ${snapshot.pnlTodayIdr}"
-        val detailLine = buildNotificationDetail(snapshot, stateLabel)
+        val balanceLine = "${snapshot.totalEquityIdr} • ${snapshot.pnlTodayIdr} ${snapshot.derivedPnlPctLabel()}".trim()
+        val detailLine = buildNotificationDetail(snapshot, isRunning)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("KiBot • ${pairLabel.lowercase()}")
             .setContentText(balanceLine)
@@ -113,7 +112,7 @@ class BotForegroundService : Service() {
                 }
 
                 val tick = daemon.syncOnce()
-                publishLiveStatus(app, tick.liveStatusSnapshot)
+                publishLiveStatus(app, tick.liveStatusSnapshot, tick.liveLogEntry)
                 val pairLabel = tick.currentPair?.takeIf { it.isNotBlank() }?.lowercase()
                 val isRunning = app.container.repository.isDesiredOn()
                 Log.i(loggerTag, "tick ok: ${pairLabel ?: "menunggu pair"} • ${if (isRunning) "ON" else "OFF"}")
@@ -177,18 +176,46 @@ class BotForegroundService : Service() {
     private fun publishLiveStatus(
         app: com.kibot.android.KiBotApplication,
         snapshot: LiveStatusSnapshot?,
+        event: LiveLogEntry?,
     ) {
         if (snapshot == null) return
-        app.container.liveStatusStore.update(snapshot)
-        KiBotWidgetProvider.updateAll(this, snapshot)
+        app.container.liveStatusStore.publish(snapshot, event)
+        KiBotWidgetProvider.updateAll(this, app.container.liveStatusStore.current())
     }
 
-    private fun buildNotificationDetail(snapshot: LiveStatusSnapshot, stateLabel: String): String {
+    private fun buildNotificationDetail(snapshot: LiveStatusSnapshot, isRunning: Boolean): String {
+        val liveEvent = snapshot.liveLogEntries.firstOrNull()
+        if (liveEvent != null) {
+            return "${liveEvent.category} • ${formatTime(liveEvent.timestampEpochMs)} • ${liveEvent.message}".take(120)
+        }
+        val stateLabel = if (isRunning) "ON" else "OFF"
         val updated = formatTime(snapshot.updatedAtEpochMs)
-        val holdings = snapshot.holdings.take(2)
-            .joinToString(" • ") { holding -> holding.asset.uppercase() }
-            .ifBlank { "tidak ada aset aktif" }
-        return "$stateLabel • $updated • $holdings"
+        val fallback = snapshot.statusMessage.ifBlank {
+            snapshot.holdings.take(2)
+                .joinToString(" • ") { holding -> holding.asset.uppercase() }
+                .ifBlank { "tidak ada aset aktif" }
+        }
+        return "$stateLabel • $updated • $fallback".take(120)
+    }
+
+    private fun LiveStatusSnapshot.derivedPnlPctLabel(): String {
+        val equity = totalEquityIdr.parseRupiahLabel() ?: return "+0.0%"
+        val pnl = pnlTodayIdr.parseRupiahLabel() ?: return "+0.0%"
+        val opening = (equity - pnl).takeIf { it > 0.0 } ?: return "+0.0%"
+        val pct = (pnl / opening) * 100.0
+        val prefix = if (pct >= 0.0) "+" else "-"
+        return "$prefix${"%.1f".format(kotlin.math.abs(pct))}%"
+    }
+
+    private fun String.parseRupiahLabel(): Double? {
+        val cleaned = trim()
+            .replace("~", "")
+            .replace("Rp", "")
+            .replace(".", "")
+            .replace(",", ".")
+            .replace("+", "")
+        val numeric = cleaned.toDoubleOrNull() ?: return null
+        return if (trim().startsWith("-")) -numeric else numeric
     }
 
     private fun formatTime(epochMs: Long): String {

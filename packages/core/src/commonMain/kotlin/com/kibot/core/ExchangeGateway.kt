@@ -26,3 +26,18 @@ interface ExchangeGateway {
 
     suspend fun cancelOrder(clientOrderId: ClientOrderId): Boolean
 }
+
+open class ExchangeExecutionException(
+    message: String,
+    cause: Throwable? = null,
+) : RuntimeException(message, cause)
+
+class ExchangeRejectedException(
+    message: String,
+    cause: Throwable? = null,
+) : ExchangeExecutionException(message, cause)
+
+class ExchangeOrderVisibilityException(
+    message: String,
+    cause: Throwable? = null,
+) : ExchangeExecutionException(message, cause)

@@ -47,6 +47,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import kotlin.math.absoluteValue
 
 private enum class RootTab(val title: String) {
@@ -121,6 +123,10 @@ private fun DashboardScreen(
     ) {
         HeroCard(state = state, onToggleBot = onToggleBot)
         HoldingsPreviewCard(
+            modifier = Modifier.fillMaxWidth(),
+            state = state,
+        )
+        LiveActivityCard(
             modifier = Modifier.fillMaxWidth(),
             state = state,
         )
@@ -302,7 +308,7 @@ private fun HoldingsPreviewCard(
                 )
             }
         } else {
-            state.positions.take(3).forEach { position ->
+            state.positions.take(2).forEach { position ->
                 Surface(
                     color = Color.White.copy(alpha = 0.04f),
                     shape = RoundedCornerShape(18.dp),
@@ -339,6 +345,83 @@ private fun HoldingsPreviewCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveActivityCard(
+    modifier: Modifier = Modifier,
+    state: KiBotUiState,
+) {
+    SurfaceCard(modifier = modifier) {
+        Text("Live Log", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        val entries = state.liveLogEntries.take(3)
+        if (entries.isEmpty()) {
+            Surface(
+                color = Color.White.copy(alpha = 0.04f),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        state.statusMessage,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        state.lastUpdatedLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else {
+            entries.forEach { entry ->
+                Surface(
+                    color = Color.White.copy(alpha = 0.04f),
+                    shape = RoundedCornerShape(18.dp),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            color = liveLogTint(entry.category).copy(alpha = 0.14f),
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Text(
+                                entry.category,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                color = liveLogTint(entry.category),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                entry.message,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                formatLogTime(entry.timestampEpochMs),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -412,8 +495,13 @@ private fun LogsScreen(state: KiBotUiState) {
                         Column {
                             Text(trade.pair, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                             Text(trade.side, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                trade.detail,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
-                        Text(trade.pnl, color = MaterialTheme.colorScheme.primary)
+                        Text(trade.pnl, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -491,6 +579,22 @@ private fun pnlColor(label: String): Color {
         label.trim() == "+Rp0" || label.trim() == "Rp0" -> Color(0xFFE5E7EB)
         else -> Color(0xFF2DD881)
     }
+}
+
+private fun liveLogTint(category: String): Color = when (category.uppercase()) {
+    "BUY" -> Color(0xFF2DD881)
+    "SELL" -> Color(0xFF60A5FA)
+    "RISK" -> Color(0xFFF97316)
+    else -> Color(0xFF9EC5FF)
+}
+
+private fun formatLogTime(epochMs: Long): String {
+    if (epochMs <= 0L) return "--:--"
+    val local = kotlinx.datetime.Instant.fromEpochMilliseconds(epochMs)
+        .toLocalDateTime(kotlinx.datetime.TimeZone.of("Asia/Jakarta"))
+    val hh = local.hour.toString().padStart(2, '0')
+    val mm = local.minute.toString().padStart(2, '0')
+    return "$hh:$mm"
 }
 
 private fun radarSummary(state: KiBotUiState): String {

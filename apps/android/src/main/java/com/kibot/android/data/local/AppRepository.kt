@@ -259,7 +259,8 @@ class AppRepository(
             syncLagLabel = formatSyncLag(syncLagMillis),
             syncPathLabel = resolveSyncPathLabel(lanSnapshot),
             lastUpdatedLabel = formatLastUpdated(now),
-            statusMessage = botState.safeModeReason
+            statusMessage = uiPreferredSnapshot?.statusMessage?.takeIf { it.isNotBlank() }
+                ?: botState.safeModeReason
                 ?: candidateSummary?.let { "Radar aktif: $it" }
                 ?: defaultStatusMessage(botState.effectiveState),
             weeklyLearningSummary = weeklyReview?.let {
@@ -269,6 +270,7 @@ class AppRepository(
                 ?.takeIf { it.isNotBlank() }
                 ?: "Adaptasi mingguan belum tersedia.",
             positions = livePositions.ifEmpty { emptyList() },
+            liveLogEntries = uiPreferredSnapshot?.liveLogEntries ?: _uiState.value.liveLogEntries,
             logs = logs.map {
                 LogUi(
                     level = it.level.name,
@@ -276,11 +278,18 @@ class AppRepository(
                     message = it.message,
                 )
             },
-            trades = orders.map {
+            trades = orders
+                .filter {
+                    it.executedQuantity.toDoubleOrZero() > 0.0 ||
+                        it.status == com.kibot.shared.models.OrderStatus.FILLED ||
+                        it.status == com.kibot.shared.models.OrderStatus.PARTIALLY_FILLED
+                }
+                .map {
                 TradeUi(
                     pair = it.pairId.value,
-                    side = it.side.name,
-                    pnl = "${it.status.name} • ${formatIdr(max(it.executedQuantity.toDoubleOrZero(), 0.0) * max(it.price.toDoubleOrZero(), 0.0))}",
+                    side = "${it.side.name} • ${it.orderType.name}",
+                    pnl = it.status.name,
+                    detail = "${formatQuantity(max(it.executedQuantity.toDoubleOrZero(), it.originalQuantity.toDoubleOrZero()))} @ ${formatIdr(max(it.price.toDoubleOrZero(), 0.0))}",
                 )
             },
             devices = devices.map {
@@ -313,6 +322,7 @@ class AppRepository(
                         valueIdr = it.value,
                     )
                 },
+                statusMessage = _uiState.value.statusMessage,
             )
         } else {
             null
