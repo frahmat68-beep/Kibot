@@ -1,6 +1,7 @@
 package com.kibot.core
 
 import com.kibot.shared.models.AuditLogRecord
+import com.kibot.shared.models.BotUpdateRecommendation
 import com.kibot.shared.models.BotDesiredState
 import com.kibot.shared.models.BotId
 import com.kibot.shared.models.CommandEnvelope
@@ -63,6 +64,10 @@ interface ControlPlaneGateway {
     suspend fun upsertWeeklyLearningSummary(summary: WeeklyLearningSummary)
 
     suspend fun fetchLatestWeeklyLearningSummary(botId: BotId): WeeklyLearningSummary?
+
+    suspend fun upsertUpdateRecommendation(recommendation: BotUpdateRecommendation)
+
+    suspend fun fetchLatestUpdateRecommendations(botId: BotId, limit: Int = 10): List<BotUpdateRecommendation>
 
     suspend fun enqueueCommand(
         botId: BotId,

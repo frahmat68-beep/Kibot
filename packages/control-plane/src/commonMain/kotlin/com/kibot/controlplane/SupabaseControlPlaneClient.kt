@@ -2,12 +2,14 @@ package com.kibot.controlplane
 
 import com.kibot.core.ControlPlaneGateway
 import com.kibot.core.DeviceRegistration
+import com.kibot.shared.models.AdvisorySeverity
 import com.kibot.shared.models.AuditLogRecord
 import com.kibot.shared.models.BotDesiredState
 import com.kibot.shared.models.BotEffectiveState
 import com.kibot.shared.models.BotId
 import com.kibot.shared.models.BotMode
 import com.kibot.shared.models.BotStateSnapshot
+import com.kibot.shared.models.BotUpdateRecommendation
 import com.kibot.shared.models.CommandEnvelope
 import com.kibot.shared.models.CommandId
 import com.kibot.shared.models.CommandStatus
@@ -75,6 +77,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.put
 
 class SupabaseControlPlaneClient internal constructor(
@@ -335,6 +339,47 @@ class SupabaseControlPlaneClient internal constructor(
             orderBy = "period_end.desc",
             limit = 1,
         ).firstOrNull()?.toWeeklyLearningSummary()
+    }
+
+    override suspend fun upsertUpdateRecommendation(recommendation: BotUpdateRecommendation) {
+        upsertTable(
+            table = "parameter_versions",
+            body = buildJsonObject {
+                put("bot_id", recommendation.botId.value)
+                put("scope", recommendation.scope)
+                put("version_tag", recommendation.versionTag)
+                put("is_active", false)
+                put("created_by_device_id", recommendation.createdByDeviceId?.value?.let(::JsonPrimitive) ?: JsonNull)
+                put("parameters", buildJsonObject {
+                    recommendation.evidence.forEach { (key, value) -> put(key, value) }
+                })
+                put("change_summary", buildJsonObject {
+                    put("reason_code", recommendation.reasonCode)
+                    put("title", recommendation.title)
+                    put("summary", recommendation.summary)
+                    put("source", recommendation.source)
+                    put("severity", recommendation.severity.name)
+                    put("confidence_score", recommendation.confidenceScore)
+                    put("recommended_actions", buildJsonArray {
+                        recommendation.recommendedActions.forEach { add(JsonPrimitive(it)) }
+                    })
+                })
+                put("created_at", recommendation.createdAt.toString())
+            },
+            onConflict = "bot_id,scope,version_tag",
+        )
+    }
+
+    override suspend fun fetchLatestUpdateRecommendations(botId: BotId, limit: Int): List<BotUpdateRecommendation> {
+        return selectList<ParameterVersionRow>(
+            table = "parameter_versions",
+            filters = mapOf(
+                "bot_id" to "eq.${botId.value}",
+                "scope" to "eq.update_recommendation",
+            ),
+            orderBy = "created_at.desc",
+            limit = limit,
+        ).map(ParameterVersionRow::toBotUpdateRecommendation)
     }
 
     override suspend fun enqueueCommand(
@@ -1072,6 +1117,48 @@ private fun WeeklyLearningReviewRow.toWeeklyLearningSummary(): WeeklyLearningSum
 )
 
 @Serializable
+private data class ParameterVersionRow(
+    @SerialName("bot_id") val botId: String,
+    val scope: String,
+    @SerialName("version_tag") val versionTag: String,
+    @SerialName("created_by_device_id") val createdByDeviceId: String? = null,
+    val parameters: JsonElement? = null,
+    @SerialName("change_summary") val changeSummary: JsonElement? = null,
+    @SerialName("created_at") val createdAt: Instant,
+)
+
+private fun ParameterVersionRow.toBotUpdateRecommendation(): BotUpdateRecommendation {
+    val summaryObject = changeSummary as? JsonObject
+    val parameterObject = parameters as? JsonObject
+    val actions = (summaryObject?.get("recommended_actions") as? JsonArray)
+        ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+        .orEmpty()
+    val evidence = parameterObject
+        ?.mapNotNull { (key, value) ->
+            val parsed = (value as? JsonPrimitive)?.doubleOrNull ?: return@mapNotNull null
+            key to parsed
+        }
+        ?.toMap()
+        .orEmpty()
+
+    return BotUpdateRecommendation(
+        botId = BotId(botId),
+        scope = scope,
+        versionTag = versionTag,
+        reasonCode = summaryObject.stringValue("reason_code").ifBlank { versionTag.substringAfter('-', versionTag) },
+        severity = summaryObject.stringValue("severity").toAdvisorySeverity(),
+        title = summaryObject.stringValue("title").ifBlank { "Update recommendation" },
+        summary = summaryObject.stringValue("summary"),
+        source = summaryObject.stringValue("source").ifBlank { "control_plane" },
+        confidenceScore = summaryObject.doubleValue("confidence_score"),
+        evidence = evidence,
+        recommendedActions = actions,
+        createdByDeviceId = createdByDeviceId?.let(::DeviceId),
+        createdAt = createdAt,
+    )
+}
+
+@Serializable
 private data class EncryptedCredentialRow(
     @SerialName("bot_id") val botId: String,
     @SerialName("cipher_version") val cipherVersion: String,
@@ -1093,6 +1180,18 @@ private fun EncryptedCredentialRow.toEncryptedCredentialBundle(): EncryptedCrede
     secretBundleSalt = secretBundleSalt,
     updatedAt = updatedAt,
 )
+
+private fun JsonObject?.stringValue(key: String): String {
+    return ((this?.get(key) as? JsonPrimitive)?.contentOrNull).orEmpty()
+}
+
+private fun JsonObject?.doubleValue(key: String): Double {
+    return ((this?.get(key) as? JsonPrimitive)?.doubleOrNull) ?: 0.0
+}
+
+private fun String.toAdvisorySeverity(): AdvisorySeverity = runCatching {
+    AdvisorySeverity.valueOf(this)
+}.getOrDefault(AdvisorySeverity.MEDIUM)
 
 private fun JsonElement?.decodeEnumListOrEmpty(): List<DistrustLabel> {
     if (this == null || this is JsonNull) return emptyList()

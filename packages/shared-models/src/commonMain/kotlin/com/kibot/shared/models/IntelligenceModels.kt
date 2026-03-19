@@ -5,6 +5,13 @@ import kotlinx.datetime.LocalDate
 import kotlinx.serialization.Serializable
 
 @Serializable
+enum class AdvisorySeverity {
+    LOW,
+    MEDIUM,
+    HIGH,
+}
+
+@Serializable
 data class MarketOpportunitySnapshot(
     val regime: MarketRegime,
     val marketOpportunityScore: Double,
@@ -144,6 +151,33 @@ data class WeeklyLearningSummary(
     val swingExpectancy: Double,
     val adaptationPlan: WeeklyAdaptationPlan,
     val notes: List<String> = emptyList(),
+)
+
+@Serializable
+data class LearningHint(
+    val hintCode: String,
+    val severity: AdvisorySeverity,
+    val source: String,
+    val summary: String,
+    val rationale: List<String> = emptyList(),
+    val generatedAt: Instant,
+)
+
+@Serializable
+data class BotUpdateRecommendation(
+    val botId: BotId,
+    val scope: String = "update_recommendation",
+    val versionTag: String,
+    val reasonCode: String,
+    val severity: AdvisorySeverity,
+    val title: String,
+    val summary: String,
+    val source: String,
+    val confidenceScore: Double,
+    val evidence: Map<String, Double> = emptyMap(),
+    val recommendedActions: List<String> = emptyList(),
+    val createdByDeviceId: DeviceId? = null,
+    val createdAt: Instant,
 )
 
 @Serializable

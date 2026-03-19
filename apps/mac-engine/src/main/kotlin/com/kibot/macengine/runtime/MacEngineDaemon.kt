@@ -10,6 +10,7 @@ import com.kibot.core.LeaseProtocolConfig
 import com.kibot.core.LiveExecutionCoordinator
 import com.kibot.core.ReconciliationService
 import com.kibot.core.RiskConfig
+import com.kibot.core.SituationalLearningEngine
 import com.kibot.macengine.config.MacRuntimeConfig
 import com.kibot.macengine.state.MacStateRepository
 import com.kibot.shared.models.AuditLogRecord
@@ -41,12 +42,13 @@ import kotlinx.coroutines.delay
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.plus
-import kotlin.time.Duration.Companion.seconds
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import org.slf4j.LoggerFactory
 import java.text.NumberFormat
 import java.util.Locale
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.seconds
 
 class MacEngineDaemon(
     private val repository: MacStateRepository,
@@ -63,6 +65,7 @@ class MacEngineDaemon(
     private val healthAdvisor: HealthAdvisor = HealthAdvisor(RiskConfig()),
     private val strategyOrchestrator: StrategyOrchestrator = StrategyOrchestrator(),
     private val liveExecutionCoordinator: LiveExecutionCoordinator = LiveExecutionCoordinator(),
+    private val situationalLearningEngine: SituationalLearningEngine = SituationalLearningEngine(),
     private val aiSupportCoordinator: GeminiSupportCoordinator? = null,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -70,6 +73,8 @@ class MacEngineDaemon(
     private var lastAnalysisPublishedAt: Instant? = null
     private var lastStrategyMetricsPublishedAt: Instant? = null
     private var lastCandidateSignature: String? = null
+    private var lastLearningSignature: String? = null
+    private var lastLearningPublishedAt: Instant? = null
     private var releaseCooldownUntil: Instant? = null
 
     suspend fun run() {
@@ -155,20 +160,21 @@ class MacEngineDaemon(
         }
         val finalHealth = buildLocalHealth(exchangeReachable, healthWarnings)
         val healthDecision = healthAdvisor.evaluate(finalHealth)
-        val aiSupportHints = if (isMaster && marketQuotes.isNotEmpty()) {
+        val aiSupportEvaluation = if (isMaster && marketQuotes.isNotEmpty()) {
             val shortlist = strategyOrchestrator.shortlistForSupport(marketQuotes)
-            val evaluation = aiSupportCoordinator
-                ?.evaluate(
-                    candidates = shortlist,
-                    now = now,
-                )
-            if (evaluation?.usedNetwork == true) {
+            aiSupportCoordinator?.evaluate(
+                candidates = shortlist,
+                now = now,
+            )
+        } else {
+            null
+        }
+        val aiSupportHints = aiSupportEvaluation?.let { evaluation ->
+            if (evaluation.usedNetwork) {
                 appendAuditLog(LogLevel.INFO, "AI_SUPPORT", "REQUEST")
             }
-            evaluation?.hints.orEmpty()
-        } else {
-            emptyList()
-        }
+            evaluation.hints
+        }.orEmpty()
         val strategyCycle = if (marketQuotes.isNotEmpty()) {
             strategyOrchestrator.analyze(
                 botId = config.controlPlane.botId,
@@ -196,6 +202,13 @@ class MacEngineDaemon(
                 now = now,
                 lease = runtimeLease,
                 cycle = strategyCycle,
+            )
+            publishLearningSignalsIfNeeded(
+                now = now,
+                cycle = strategyCycle,
+                weeklyReview = weeklyReview,
+                aiBlockedReason = aiSupportEvaluation?.blockedReason,
+                aiUsedNetwork = aiSupportEvaluation?.usedNetwork == true,
             )
             runtimeBotState = controlPlane.fetchBotState(config.controlPlane.botId) ?: runtimeBotState
             runtimeLease = controlPlane.fetchLease(config.controlPlane.botId)
@@ -538,6 +551,53 @@ class MacEngineDaemon(
         } else if (result.failSafeTriggered) {
             logger.error("Live order submit became ambiguous, safe mode triggered.")
         }
+    }
+
+    private suspend fun publishLearningSignalsIfNeeded(
+        now: Instant,
+        cycle: com.kibot.core.StrategyCycleResult,
+        weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
+        aiBlockedReason: String?,
+        aiUsedNetwork: Boolean,
+    ) {
+        val decision = situationalLearningEngine.evaluate(
+            botId = config.controlPlane.botId,
+            deviceId = config.device.deviceId,
+            now = now,
+            cycle = cycle,
+            weeklySummary = weeklyReview,
+            aiBlockedReason = aiBlockedReason,
+            aiUsedNetwork = aiUsedNetwork,
+        )
+        if (decision.learningHints.isEmpty() && decision.updateRecommendations.isEmpty()) return
+
+        val shouldPublish = lastLearningPublishedAt == null ||
+            decision.signature != lastLearningSignature ||
+            (now - lastLearningPublishedAt!!).inWholeHours >= 6
+        if (!shouldPublish) return
+
+        decision.learningHints.take(2).forEach { hint ->
+            appendAuditLog(
+                level = when (hint.severity) {
+                    com.kibot.shared.models.AdvisorySeverity.HIGH -> LogLevel.WARN
+                    com.kibot.shared.models.AdvisorySeverity.MEDIUM -> LogLevel.INFO
+                    com.kibot.shared.models.AdvisorySeverity.LOW -> LogLevel.INFO
+                },
+                category = "LEARNING_HINT",
+                message = hint.summary,
+            )
+        }
+        decision.updateRecommendations.forEach { recommendation ->
+            controlPlane.upsertUpdateRecommendation(recommendation)
+            appendAuditLog(
+                level = LogLevel.INFO,
+                category = "UPDATE_HINT",
+                message = "${recommendation.title}: ${recommendation.summary}",
+            )
+        }
+
+        lastLearningSignature = decision.signature
+        lastLearningPublishedAt = now
     }
 
     private suspend fun appendAuditLog(level: LogLevel, category: String, message: String) {

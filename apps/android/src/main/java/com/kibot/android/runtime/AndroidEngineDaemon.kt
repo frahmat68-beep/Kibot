@@ -15,6 +15,7 @@ import com.kibot.core.LeaseProtocolConfig
 import com.kibot.core.LiveExecutionCoordinator
 import com.kibot.core.ReconciliationService
 import com.kibot.core.RiskConfig
+import com.kibot.core.SituationalLearningEngine
 import com.kibot.core.StrategyCycleResult
 import com.kibot.core.StrategyOrchestrator
 import com.kibot.aisupport.GeminiSupportCoordinator
@@ -43,6 +44,7 @@ import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Duration.Companion.hours
 
 data class AndroidEngineTickResult(
     val effectiveState: BotEffectiveState,
@@ -66,6 +68,7 @@ class AndroidEngineDaemon(
     private val healthAdvisor: HealthAdvisor = HealthAdvisor(RiskConfig()),
     private val strategyOrchestrator: StrategyOrchestrator = StrategyOrchestrator(),
     private val liveExecutionCoordinator: LiveExecutionCoordinator = LiveExecutionCoordinator(),
+    private val situationalLearningEngine: SituationalLearningEngine = SituationalLearningEngine(),
     private val aiSupportCoordinator: GeminiSupportCoordinator? = null,
 ) {
     private val controlPlaneConfig = requireNotNull(config.controlPlane) {
@@ -75,6 +78,8 @@ class AndroidEngineDaemon(
     private var lastAnalysisPublishedAt: Instant? = null
     private var lastStrategyMetricsPublishedAt: Instant? = null
     private var lastCandidateSignature: String? = null
+    private var lastLearningSignature: String? = null
+    private var lastLearningPublishedAt: Instant? = null
 
     suspend fun syncOnce(): AndroidEngineTickResult {
         ensureRegistered()
@@ -86,6 +91,9 @@ class AndroidEngineDaemon(
         val devices = controlPlane.fetchDevices(controlPlaneConfig.botId)
         val dailyRisk = controlPlane.fetchDailyRisk(controlPlaneConfig.botId, jakartaNowDate(now))
         val commands = controlPlane.fetchPendingCommands(controlPlaneConfig.botId, config.device.deviceId)
+        val weeklyReview = runCatching {
+            controlPlane.fetchLatestWeeklyLearningSummary(controlPlaneConfig.botId)
+        }.getOrNull()
 
         val exchangeReachable = runCatching { exchange.ping() }.getOrElse { false }
         val warnings = mutableListOf<String>()
@@ -126,13 +134,16 @@ class AndroidEngineDaemon(
         if (exchangeReachable && marketQuotes.isEmpty()) warnings += "Feed market kosong."
         val finalHealth = buildLocalHealth(exchangeReachable, warnings)
         val healthDecision = healthAdvisor.evaluate(finalHealth)
-        val aiSupportHints = if (isMaster && marketQuotes.isNotEmpty()) {
+        val aiSupportEvaluation = if (isMaster && marketQuotes.isNotEmpty()) {
             val shortlist = strategyOrchestrator.shortlistForSupport(marketQuotes)
-            val evaluation = aiSupportCoordinator
-                ?.evaluate(
-                    candidates = shortlist,
-                    now = now,
-                )
+            aiSupportCoordinator?.evaluate(
+                candidates = shortlist,
+                now = now,
+            )
+        } else {
+            null
+        }
+        val aiSupportHints = aiSupportEvaluation?.let { evaluation ->
             if (evaluation?.usedNetwork == true) {
                 appendAuditLog(
                     LogLevel.INFO,
@@ -141,9 +152,7 @@ class AndroidEngineDaemon(
                 )
             }
             evaluation?.hints.orEmpty()
-        } else {
-            emptyList()
-        }
+        } ?: emptyList()
         val strategyCycle = if (marketQuotes.isNotEmpty()) {
             strategyOrchestrator.analyze(
                 botId = controlPlaneConfig.botId,
@@ -163,6 +172,13 @@ class AndroidEngineDaemon(
         if (isMaster && runtimeLease != null && strategyCycle != null) {
             publishAnalysisIfNeeded(now, runtimeLease, strategyCycle)
             maybeExecuteLiveOrder(now, runtimeLease, strategyCycle)
+            publishLearningSignalsIfNeeded(
+                now = now,
+                cycle = strategyCycle,
+                weeklyReview = weeklyReview,
+                aiBlockedReason = aiSupportEvaluation?.blockedReason,
+                aiUsedNetwork = aiSupportEvaluation?.usedNetwork == true,
+            )
             runtimeBotState = controlPlane.fetchBotState(controlPlaneConfig.botId) ?: runtimeBotState
             runtimeLease = controlPlane.fetchLease(controlPlaneConfig.botId)
         }
@@ -402,6 +418,52 @@ class AndroidEngineDaemon(
         if (result.submitted) {
             lastAnalysisPublishedAt = now
         }
+    }
+
+    private suspend fun publishLearningSignalsIfNeeded(
+        now: Instant,
+        cycle: StrategyCycleResult,
+        weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
+        aiBlockedReason: String?,
+        aiUsedNetwork: Boolean,
+    ) {
+        val decision = situationalLearningEngine.evaluate(
+            botId = controlPlaneConfig.botId,
+            deviceId = config.device.deviceId,
+            now = now,
+            cycle = cycle,
+            weeklySummary = weeklyReview,
+            aiBlockedReason = aiBlockedReason,
+            aiUsedNetwork = aiUsedNetwork,
+        )
+        if (decision.learningHints.isEmpty() && decision.updateRecommendations.isEmpty()) return
+
+        val shouldPublish = lastLearningPublishedAt == null ||
+            decision.signature != lastLearningSignature ||
+            (now - lastLearningPublishedAt!!).inWholeHours >= 6
+        if (!shouldPublish) return
+
+        decision.learningHints.take(2).forEach { hint ->
+            appendAuditLog(
+                level = when (hint.severity) {
+                    com.kibot.shared.models.AdvisorySeverity.HIGH -> LogLevel.WARN
+                    com.kibot.shared.models.AdvisorySeverity.MEDIUM -> LogLevel.INFO
+                    com.kibot.shared.models.AdvisorySeverity.LOW -> LogLevel.INFO
+                },
+                category = "LEARNING_HINT",
+                message = hint.summary,
+            )
+        }
+        decision.updateRecommendations.forEach { recommendation ->
+            controlPlane.upsertUpdateRecommendation(recommendation)
+            appendAuditLog(
+                level = LogLevel.INFO,
+                category = "UPDATE_HINT",
+                message = "${recommendation.title}: ${recommendation.summary}",
+            )
+        }
+        lastLearningSignature = decision.signature
+        lastLearningPublishedAt = now
     }
 
     private fun buildLocalHealth(

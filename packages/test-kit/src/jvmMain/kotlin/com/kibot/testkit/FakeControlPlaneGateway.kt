@@ -7,6 +7,7 @@ import com.kibot.shared.models.BotDesiredState
 import com.kibot.shared.models.BotEffectiveState
 import com.kibot.shared.models.BotId
 import com.kibot.shared.models.BotStateSnapshot
+import com.kibot.shared.models.BotUpdateRecommendation
 import com.kibot.shared.models.CommandEnvelope
 import com.kibot.shared.models.CommandId
 import com.kibot.shared.models.CommandStatus
@@ -43,6 +44,7 @@ class FakeControlPlaneGateway(
     private val logs = mutableListOf<AuditLogRecord>()
     private val recentOrders = mutableListOf<OrderSnapshot>()
     val strategyMetrics = mutableListOf<PairScore>()
+    val updateRecommendations = mutableListOf<BotUpdateRecommendation>()
     var runtimeIntelligence: RuntimeIntelligenceUpdate? = null
     var latestWeeklyLearningSummary: WeeklyLearningSummary? = null
 
@@ -198,6 +200,26 @@ class FakeControlPlaneGateway(
 
     override suspend fun fetchLatestWeeklyLearningSummary(botId: BotId): WeeklyLearningSummary? {
         return latestWeeklyLearningSummary?.takeIf { it.botId == botId }
+    }
+
+    override suspend fun upsertUpdateRecommendation(recommendation: BotUpdateRecommendation) {
+        val existingIndex = updateRecommendations.indexOfFirst {
+            it.botId == recommendation.botId &&
+                it.scope == recommendation.scope &&
+                it.versionTag == recommendation.versionTag
+        }
+        if (existingIndex >= 0) {
+            updateRecommendations[existingIndex] = recommendation
+        } else {
+            updateRecommendations += recommendation
+        }
+    }
+
+    override suspend fun fetchLatestUpdateRecommendations(botId: BotId, limit: Int): List<BotUpdateRecommendation> {
+        return updateRecommendations
+            .filter { it.botId == botId }
+            .sortedByDescending { it.createdAt }
+            .take(limit)
     }
 
     override suspend fun enqueueCommand(
