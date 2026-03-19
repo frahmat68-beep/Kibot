@@ -272,6 +272,9 @@ class StrategyOrchestrator(
                 if (dominantPairId == chosenCandidate.pairScore.pairId) {
                     add("Kandidat ini unggul cukup jauh dari alternatif terdekat, jadi modal tidak dipaksa menyebar.")
                 }
+                if (pairScore.speculativePocket) {
+                    add("Trade ini masuk sleeve spekulatif, jadi eksposurnya dibatasi keras dan tidak boleh jadi posisi utama.")
+                }
                 if (heldPairs.isEmpty() && thresholds.productiveIdleBiasActive) {
                     add("Modal sedang idle, jadi threshold entry sedikit dilonggarkan pada kandidat yang benar-benar kuat.")
                 }
@@ -279,15 +282,24 @@ class StrategyOrchestrator(
             entryPrice = quote.bestBid,
             takeProfitPrice = DecimalValue.fromDouble(
                 quote.bestBid.toDoubleOrZero() *
-                    if (pairScore.preferredHorizon == TradingHorizon.SWING) 1.05 else 1.02,
+                    when {
+                        pairScore.speculativePocket -> 1.03
+                        pairScore.preferredHorizon == TradingHorizon.SWING -> 1.05
+                        else -> 1.02
+                    },
             ),
             stopPrice = DecimalValue.fromDouble(
                 quote.bestBid.toDoubleOrZero() *
-                    if (pairScore.preferredHorizon == TradingHorizon.SWING) 0.96 else 0.985,
+                    when {
+                        pairScore.speculativePocket -> 0.972
+                        pairScore.preferredHorizon == TradingHorizon.SWING -> 0.96
+                        else -> 0.985
+                    },
             ),
             setupType = chosenCandidate.setupReadiness.setupType,
             horizon = pairScore.preferredHorizon,
             pairTier = pairScore.pairTier,
+            speculativePocket = pairScore.speculativePocket,
             marketRegime = marketSnapshot.regime,
             edgeConfidence = modeSnapshot.edgeConfidence,
             expectedHoldingHours = chosenCandidate.setupReadiness.expectedHoldingHours,
@@ -334,6 +346,17 @@ class StrategyOrchestrator(
         val rationale: String
 
         when {
+            pairScore.speculativePocket &&
+                marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC &&
+                speculativePocketAllowed(marketSnapshot) &&
+                quote.shortTermReturnPct <= 18.0 -> {
+                setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION
+                signalType = StrategySignalType.BREAKOUT_ENTRY
+                adjustedOpportunityFloor = (baseOpportunityFloor + 0.01).coerceAtMost(1.0)
+                expectedHoldingHours = 3.5
+                rationale = "Sleeve spekulatif aktif: momentum meledak masih sehat, tapi budget dan durasi entry dipersempit."
+            }
+
             pairScore.preferredHorizon == TradingHorizon.SWING &&
                 marketSnapshot.regime == MarketRegime.HEALTHY_UPTREND &&
                 pairScore.holdabilityScore >= 0.64 &&
@@ -462,6 +485,7 @@ class StrategyOrchestrator(
             botMode = modeSnapshot.mode,
             riskLadderLevel = modeSnapshot.riskLadderLevel,
             pairRankingScore = confidence,
+            speculativePocket = speculativePocket,
         )
     }
 
@@ -641,6 +665,14 @@ class StrategyOrchestrator(
         val pairQuality = rankedPairs.take(3).map { it.marketOpportunityScore }.average().takeIf { !it.isNaN() } ?: 0.5
         val givebackPenalty = dailyRisk.givebackPct.coerceIn(0.0, 1.0) * 0.5
         return (pairQuality - drawdownPenalty - givebackPenalty + 0.35).coerceIn(0.0, 1.0)
+    }
+
+    private fun speculativePocketAllowed(
+        marketSnapshot: MarketOpportunitySnapshot,
+    ): Boolean {
+        return marketSnapshot.regime in setOf(MarketRegime.HEALTHY_UPTREND, MarketRegime.HEALTHY_SIDEWAYS) &&
+            marketSnapshot.edgeConfidence != EdgeConfidence.LOW &&
+            marketSnapshot.botHealthScore >= 0.62
     }
 
     private fun weightedAverage(vararg entries: Pair<Double, Double>): Double {

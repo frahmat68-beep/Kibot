@@ -27,6 +27,12 @@ data class PairSelectionPolicy(
     val minFeeAdjustedEdgeScore: Double = 0.30,
     val shortlistSize: Int = 10,
     val prefilterCandidatePoolSize: Int = 22,
+    val speculativeMinShortTermReturnPct: Double = 1.8,
+    val speculativeMaxShortTermReturnPct: Double = 18.0,
+    val speculativeMinMediumTermReturnPct: Double = 4.0,
+    val speculativeMinTradeActivityScore: Double = 0.72,
+    val speculativeMinDepthScore: Double = 0.58,
+    val speculativeMinHistoricalExpectancyScore: Double = 0.45,
 )
 
 data class RiskConfig(
@@ -50,6 +56,7 @@ data class RiskConfig(
     val attackSizeMultiplier: Double = 1.10,
     val dominantTierAReserveReliefPct: Double = 0.03,
     val dominantTierAMinCashReservePct: Double = 0.10,
+    val speculativePocketMaxEquityPct: Double = 0.25,
     val blockEntriesBelowBatteryPct: Int = 18,
     val suggestTakeoverBelowBatteryPct: Int = 30,
 )

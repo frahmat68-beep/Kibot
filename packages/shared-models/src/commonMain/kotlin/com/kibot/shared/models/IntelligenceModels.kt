@@ -58,6 +58,7 @@ data class CandidateOpportunity(
     val marketOpportunityScore: Double,
     val expectedNetProfitabilityPct: Double,
     val holdabilityScore: Double,
+    val speculativePocket: Boolean = false,
     val rationale: List<String> = emptyList(),
 )
 

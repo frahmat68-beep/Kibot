@@ -30,6 +30,7 @@ class CapitalDeploymentEngine(
                     marketOpportunityScore = it.marketOpportunityScore,
                     expectedNetProfitabilityPct = (it.feeAdjustedEdgeScore * 100.0).coerceAtLeast(0.0),
                     holdabilityScore = it.holdabilityScore,
+                    speculativePocket = it.speculativePocket,
                     rationale = it.rejectionReasons.ifEmpty {
                         listOf("Pair ${it.pairId.value} lolos filter dan masuk shortlist.")
                     },
@@ -58,6 +59,11 @@ class CapitalDeploymentEngine(
             firstCandidate.rankingScore >= 0.82 &&
             firstCandidate.marketOpportunityScore >= 0.72 &&
             topCandidateGap >= 0.08
+        val speculativePocketReady = openPositions == 0 &&
+            risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) &&
+            firstCandidate?.speculativePocket == true &&
+            firstCandidate.rankingScore >= 0.62 &&
+            firstCandidate.marketOpportunityScore >= 0.60
         val secondSlotReady = risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) &&
             firstCandidate?.rankingScore?.let { it >= config.minSecondSlotRankingScore } == true &&
             secondCandidate?.let {
@@ -74,6 +80,7 @@ class CapitalDeploymentEngine(
         val capitalUtilizationTargetPct = (1.0 - effectiveReservePct).coerceIn(0.0, 1.0)
         val maxActivePositions = when {
             !risk.allowNewEntries || !mode.tradingAllowed -> openPositions
+            speculativePocketReady -> maxOf(openPositions, 1)
             secondSlotReady -> baseTotalCap
             else -> maxOf(openPositions, if (risk.maxAllowedAdditionalPositions > 0) 1 else openPositions)
                 .coerceAtMost(config.maxConcurrentPositions)
@@ -92,8 +99,10 @@ class CapitalDeploymentEngine(
         val perPositionBudget = minOf(
             risk.suggestedPerPositionBudgetIdr * budgetMultiplier,
             currentEquity * (1.0 - effectiveReservePct).coerceIn(0.0, 1.0) * config.maxPerPositionBudgetPct,
+            if (speculativePocketReady) currentEquity * config.speculativePocketMaxEquityPct else Double.MAX_VALUE,
         ).coerceAtLeast(0.0)
         val allowRotation = mode.mode != BotMode.SAFE &&
+            !speculativePocketReady &&
             openPositions > 0 &&
             candidates.firstOrNull()?.rankingScore?.let { it >= 0.78 } == true &&
             topCandidateGap >= 0.05
@@ -104,6 +113,7 @@ class CapitalDeploymentEngine(
             if (mode.mode == BotMode.DEFENSIVE) add("Modal disebar lebih konservatif karena mode DEFENSIVE.")
             if (mode.mode == BotMode.ATTACK) add("Modal boleh sedikit lebih aktif karena market sangat sehat.")
             if (candidates.isEmpty()) add("Belum ada kandidat yang layak memakai modal.")
+            if (speculativePocketReady) add("Sleeve spekulatif aktif: pair agresif boleh dimainkan, tapi maksimal 25% equity harian.")
             if (secondSlotReady) add("Slot kedua boleh dibuka karena dua kandidat teratas sama-sama kuat.")
             if (!secondSlotReady && topCandidateGap > 0.12) add("Kandidat teratas terlalu dominan, jadi modal lebih baik difokuskan dulu.")
             if (dominantTierAReady) add("Cash reserve diringankan sedikit karena kandidat tier A terlihat dominan dan market masih sehat.")

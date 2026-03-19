@@ -56,6 +56,7 @@ data class PairScore(
     val rankingScore: Double = 0.0,
     val pairTier: PairTier = PairTier.TIER_C,
     val preferredHorizon: TradingHorizon = TradingHorizon.TACTICAL,
+    val speculativePocket: Boolean = false,
     val allowed: Boolean = false,
     val rejectionReasons: List<String> = emptyList(),
 )
@@ -72,6 +73,7 @@ data class StrategySignal(
     val setupType: SetupType = SetupType.NO_TRADE,
     val horizon: TradingHorizon = TradingHorizon.TACTICAL,
     val pairTier: PairTier = PairTier.TIER_C,
+    val speculativePocket: Boolean = false,
     val marketRegime: MarketRegime = MarketRegime.HIGH_VOLATILITY_UNCLEAR,
     val edgeConfidence: EdgeConfidence = EdgeConfidence.MEDIUM,
     val expectedHoldingHours: Double = 0.0,
@@ -92,6 +94,7 @@ data class ExecutionPlan(
     val botMode: BotMode = BotMode.GROWTH,
     val riskLadderLevel: RiskLadderLevel = RiskLadderLevel.NORMAL,
     val pairRankingScore: Double = 0.0,
+    val speculativePocket: Boolean = false,
 )
 
 @Serializable

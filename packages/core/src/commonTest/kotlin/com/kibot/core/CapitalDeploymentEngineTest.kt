@@ -94,6 +94,23 @@ class CapitalDeploymentEngineTest {
         assertTrue(plan.suggestedPerPositionBudgetIdr > 44_000.0)
     }
 
+    @Test
+    fun `speculative sleeve caps exposure to 25 percent equity`() {
+        val plan = engine.plan(
+            portfolio = portfolio(),
+            rankedPairs = listOf(
+                pairScore("nxa_idr", ranking = 0.68, opportunity = 0.64, speculativePocket = true),
+                pairScore("btc_idr", ranking = 0.61, opportunity = 0.56),
+            ),
+            risk = risk,
+            mode = mode,
+        )
+
+        assertEquals(1, plan.maxActivePositions)
+        assertTrue(plan.suggestedPerPositionBudgetIdr <= 25_000.0)
+        assertTrue(plan.candidates.first().speculativePocket)
+    }
+
     private fun portfolio() = PortfolioSnapshot(
         botId = BotId("main"),
         balances = listOf(BalanceSnapshot("idr", DecimalValue("100000"))),
@@ -103,7 +120,7 @@ class CapitalDeploymentEngineTest {
         lastSyncedAt = Instant.parse("2026-03-19T00:00:00Z"),
     )
 
-    private fun pairScore(pair: String, ranking: Double, opportunity: Double) = PairScore(
+    private fun pairScore(pair: String, ranking: Double, opportunity: Double, speculativePocket: Boolean = false) = PairScore(
         pairId = PairId(pair),
         liquidityScore = 0.82,
         spreadScore = 0.88,
@@ -121,6 +138,7 @@ class CapitalDeploymentEngineTest {
         rankingScore = ranking,
         pairTier = PairTier.TIER_A,
         preferredHorizon = TradingHorizon.TACTICAL,
+        speculativePocket = speculativePocket,
         allowed = true,
         rejectionReasons = emptyList(),
     )

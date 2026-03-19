@@ -98,6 +98,14 @@ class PairSelector(
             volumeConsistencyScore = volumeConsistencyScore,
             fillQualityScore = fillQualityScore,
         )
+        val speculativePocket = isSpeculativePocketEligible(
+            quote = quote,
+            depthScore = depthScore,
+            stabilityScore = stabilityScore,
+            volumeConsistencyScore = volumeConsistencyScore,
+            historicalExpectancyScore = historicalExpectancyScore,
+            fillQualityScore = fillQualityScore,
+        )
         val rankingScore = weightedAverage(
             liquidityScore to 0.10,
             depthScore to 0.10,
@@ -145,6 +153,7 @@ class PairSelector(
 
         val pairTier = when {
             rejectionReasons.isNotEmpty() -> PairTier.TIER_C
+            speculativePocket -> PairTier.TIER_B
             smallCapitalEligible -> PairTier.TIER_B
             rankingScore >= policy.minTierAScore -> PairTier.TIER_A
             rankingScore >= policy.minTierBScore -> PairTier.TIER_B
@@ -170,6 +179,7 @@ class PairSelector(
             rankingScore = rankingScore,
             pairTier = pairTier,
             preferredHorizon = preferredHorizon,
+            speculativePocket = speculativePocket,
             allowed = allowed,
             rejectionReasons = rejectionReasons,
         )
@@ -269,6 +279,26 @@ class PairSelector(
             stabilityScore >= maxOf(0.55, policy.minOrderBookStabilityScore) &&
             volumeConsistencyScore >= maxOf(0.58, policy.minRecentTradeActivityScore) &&
             fillQualityScore >= maxOf(0.58, policy.minFillQualityScore)
+    }
+
+    private fun isSpeculativePocketEligible(
+        quote: MarketQuote,
+        depthScore: Double,
+        stabilityScore: Double,
+        volumeConsistencyScore: Double,
+        historicalExpectancyScore: Double,
+        fillQualityScore: Double,
+    ): Boolean {
+        return quote.shortTermReturnPct in policy.speculativeMinShortTermReturnPct..policy.speculativeMaxShortTermReturnPct &&
+            quote.mediumTermReturnPct >= policy.speculativeMinMediumTermReturnPct &&
+            quote.recentTradeActivityScore >= policy.speculativeMinTradeActivityScore &&
+            depthScore >= policy.speculativeMinDepthScore &&
+            stabilityScore >= 0.62 &&
+            volumeConsistencyScore >= 0.65 &&
+            historicalExpectancyScore >= policy.speculativeMinHistoricalExpectancyScore &&
+            fillQualityScore >= 0.65 &&
+            quote.spreadPct <= policy.smallCapitalMaxSpreadPct &&
+            quote.estimatedSlippagePct <= policy.smallCapitalMaxSlippagePct
     }
 
     private fun inverseThresholdScore(value: Double, maxAllowed: Double): Double {
