@@ -187,10 +187,7 @@ class AppRepository(
             pairAktif = botState.currentPair?.value ?: "-",
             leaseTerm = lease?.term?.value ?: botState.currentTerm.value,
             syncLagLabel = "${(System.currentTimeMillis() - lastHeartbeatMillis).coerceAtLeast(0)} ms",
-            statusMessage = botState.safeModeReason ?: when (botState.effectiveState) {
-                BotEffectiveState.SAFE_MODE -> "Safe mode active. Review status before resuming."
-                else -> _uiState.value.statusMessage
-            },
+            statusMessage = botState.safeModeReason ?: defaultStatusMessage(botState.effectiveState),
             weeklyLearningSummary = weeklyReview?.let {
                 "Week ${it.periodStart} - ${it.periodEnd} • no-trade ${(it.noTradeQualityScore * 100).toInt()}% • util ${(it.productiveUtilizationPct * 100).toInt()}%"
             } ?: "Belum ada review mingguan.",
@@ -257,10 +254,6 @@ class AppRepository(
             )
         }
         persistState()
-
-        logs.firstOrNull { it.level == LogLevel.ERROR }?.let { errorLog ->
-            _uiState.value = _uiState.value.copy(statusMessage = errorLog.message)
-        }
     }
 
     fun isDesiredOn(): Boolean = runtimePreferenceStore.isDesiredOn()
@@ -323,7 +316,7 @@ class AppRepository(
                 val valueIdr = quoteAssetPriceIdr(balance.asset, quotes)?.let { units * it } ?: 0.0
                 if (valueIdr < MIN_VISIBLE_HOLDING_IDR) return@mapNotNull null
                 PositionCardUi(
-                    pair = "${balance.asset.lowercase()}_idr",
+                    pair = balance.asset.uppercase(),
                     quantity = "${formatQuantity(units)} ${balance.asset.uppercase()}",
                     pnl = "~${formatIdr(valueIdr)}",
                 )
@@ -381,5 +374,15 @@ class AppRepository(
 
     companion object {
         private const val MIN_VISIBLE_HOLDING_IDR = 1_000.0
+    }
+
+    private fun defaultStatusMessage(state: BotEffectiveState): String {
+        return when (state) {
+            BotEffectiveState.STOPPED -> "Bot sedang berhenti."
+            BotEffectiveState.STARTING -> "Sinkronisasi engine berjalan."
+            BotEffectiveState.RUNNING -> "Sync live Indodax aktif."
+            BotEffectiveState.DEGRADED -> "Engine degraded. Menunggu sync pulih."
+            BotEffectiveState.SAFE_MODE -> "Safe mode active. Review status before resuming."
+        }
     }
 }

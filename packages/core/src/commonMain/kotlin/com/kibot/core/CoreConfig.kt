@@ -30,7 +30,7 @@ data class RiskConfig(
     val defensiveDrawdownPct: Double = 0.12,
     val restrictedEntriesDrawdownPct: Double = 0.15,
     val stopNewEntriesDrawdownPct: Double = 0.18,
-    val maxConcurrentPositions: Int = 1,
+    val maxConcurrentPositions: Int = 2,
     val minimumCashReservePct: Double = 0.25,
     val defensiveCashReservePct: Double = 0.40,
     val attackCashReservePct: Double = 0.18,

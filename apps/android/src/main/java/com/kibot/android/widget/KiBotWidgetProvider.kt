@@ -35,14 +35,20 @@ class KiBotWidgetProvider : AppWidgetProvider() {
             snapshot: LiveStatusSnapshot,
         ) {
             if (appWidgetIds.isEmpty()) return
+            val visibleHoldings = snapshot.holdings.filterNot {
+                when (it.valueIdr.trim()) {
+                    "Rp0", "+Rp0", "-Rp0", "~Rp0" -> true
+                    else -> false
+                }
+            }
             appWidgetIds.forEach { widgetId ->
                 val views = RemoteViews(context.packageName, R.layout.widget_kibot_status).apply {
-                    setTextViewText(R.id.widget_title, "KiBot Live")
+                    setTextViewText(R.id.widget_title, "KiBot")
                     setTextViewText(R.id.widget_pair, snapshot.activePair.lowercase())
-                    setTextViewText(R.id.widget_count, "${snapshot.holdings.size} aset")
+                    setTextViewText(R.id.widget_count, "${visibleHoldings.size} aset")
                     setTextViewText(R.id.widget_equity, snapshot.totalEquityIdr)
                     setTextViewText(R.id.widget_pnl, snapshot.pnlTodayIdr)
-                    setTextViewText(R.id.widget_holdings, formatHoldings(snapshot))
+                    setTextViewText(R.id.widget_holdings, formatHoldings(visibleHoldings))
                     setOnClickPendingIntent(R.id.widget_root, openAppIntent(context))
                 }
                 appWidgetManager.updateAppWidget(widgetId, views)
@@ -59,10 +65,10 @@ class KiBotWidgetProvider : AppWidgetProvider() {
             )
         }
 
-        private fun formatHoldings(snapshot: LiveStatusSnapshot): String {
-            if (snapshot.holdings.isEmpty()) return "Tidak ada holdings yang aktif."
-            val lines = snapshot.holdings.take(3).map { holding ->
-                "${holding.asset.uppercase()} ${holding.amount} • ${holding.valueIdr}"
+        private fun formatHoldings(holdings: List<com.kibot.android.runtime.LiveHoldingUi>): String {
+            if (holdings.isEmpty()) return "Tidak ada aset aktif."
+            val lines = holdings.take(3).map { holding ->
+                "${holding.amount} • ${holding.valueIdr}"
             }
             return lines.joinToString("\n")
         }

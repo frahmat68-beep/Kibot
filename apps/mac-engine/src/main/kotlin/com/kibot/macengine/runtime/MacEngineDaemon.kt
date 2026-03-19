@@ -22,6 +22,7 @@ import com.kibot.shared.models.CommandType
 import com.kibot.shared.models.DecimalValue
 import com.kibot.shared.models.DeviceDescriptor
 import com.kibot.shared.models.DeviceId
+import com.kibot.shared.models.DeviceRole
 import com.kibot.shared.models.DailyRiskSnapshot
 import com.kibot.shared.models.EngineHealthSnapshot
 import com.kibot.shared.models.EngineHeartbeatSnapshot
@@ -114,7 +115,7 @@ class MacEngineDaemon(
         val localHealth = buildLocalHealth(exchangeReachable, healthWarnings)
         val masterBeforeTakeover = leaseAfterCommands.isHeldBy(config.device.deviceId, now)
 
-        if (botStateAfterCommands.desiredState == BotDesiredState.ON && !masterBeforeTakeover) {
+        if (botStateAfterCommands.desiredState == BotDesiredState.ON && !masterBeforeTakeover && !shouldYieldToPrimary(botStateAfterCommands, now)) {
             maybeTakeOver(
                 now = now,
                 botState = botStateAfterCommands,
@@ -366,6 +367,19 @@ class MacEngineDaemon(
             message = "Mac acquired master lease term ${acquiredLease.term.value} after safe reconciliation.",
         )
         return true
+    }
+
+    private fun shouldYieldToPrimary(
+        botState: BotStateSnapshot,
+        now: Instant,
+    ): Boolean {
+        if (config.device.role != DeviceRole.STANDBY) return false
+        val activeDeviceId = botState.activeDeviceId ?: return false
+        if (activeDeviceId == config.device.deviceId) return false
+        val lastHeartbeatAt = botState.lastHeartbeatAt ?: return false
+        val heartbeatAgeMs = now.toEpochMilliseconds() - lastHeartbeatAt.toEpochMilliseconds()
+        val graceWindowMs = maxOf(config.leaseTtlSeconds * 2_000L, 45_000L)
+        return heartbeatAgeMs in 0..graceWindowMs && botState.syncHealth != SyncHealth.BROKEN
     }
 
     private fun buildLocalHealth(exchangeReachable: Boolean, warnings: List<String>): EngineHealthSnapshot {

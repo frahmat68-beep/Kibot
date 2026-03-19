@@ -18,6 +18,9 @@ import com.kibot.shared.models.OrderType
 import com.kibot.shared.models.PairId
 import com.kibot.shared.models.PairScore
 import com.kibot.shared.models.PortfolioSnapshot
+import com.kibot.shared.models.PositionId
+import com.kibot.shared.models.PositionSnapshot
+import com.kibot.shared.models.PositionState
 import com.kibot.shared.models.RiskLadderLevel
 import com.kibot.shared.models.StrategySignal
 import com.kibot.shared.models.StrategySignalType
@@ -58,11 +61,12 @@ class StrategyOrchestrator(
         marketQuotes: List<MarketQuote>,
     ): StrategyCycleResult {
         val equity = estimatePortfolioValueIdr(balances, marketQuotes)
+        val syntheticPositions = deriveSyntheticPositions(balances, marketQuotes)
         val portfolio = PortfolioSnapshot(
             botId = botId,
             balances = balances,
             openOrders = openOrders,
-            positions = emptyList(),
+            positions = syntheticPositions,
             totalEquityIdr = DecimalValue.fromDouble(equity),
             lastSyncedAt = kotlinx.datetime.Clock.System.now(),
         )
@@ -96,6 +100,7 @@ class StrategyOrchestrator(
             rankedPairs = rankedPairs,
             marketQuotes = marketQuotes,
             balances = balances,
+            positions = syntheticPositions,
             modeSnapshot = modeSnapshot,
             deploymentPlan = deploymentPlan,
             openOrders = openOrders,
@@ -143,17 +148,16 @@ class StrategyOrchestrator(
         rankedPairs: List<PairScore>,
         marketQuotes: List<MarketQuote>,
         balances: List<BalanceSnapshot>,
+        positions: List<PositionSnapshot>,
         modeSnapshot: BotModeSnapshot,
         deploymentPlan: com.kibot.shared.models.CapitalDeploymentPlan,
         openOrders: List<com.kibot.shared.models.OrderSnapshot>,
     ): StrategySignal? {
         if (!modeSnapshot.tradingAllowed || openOrders.isNotEmpty()) return null
-        val topCandidate = deploymentPlan.candidates.firstOrNull() ?: return null
-        val pairScore = rankedPairs.firstOrNull { it.pairId == topCandidate.pairId } ?: return null
-        val quote = marketQuotes.firstOrNull { it.pairId == topCandidate.pairId } ?: return null
-        if (!hasFundedQuoteAsset(topCandidate.pairId, balances, marketQuotes, deploymentPlan.suggestedPerPositionBudgetIdr)) {
-            return null
-        }
+        val heldPairs = positions
+            .filter { it.state != PositionState.CLOSED }
+            .map { it.pairId }
+            .toSet()
 
         val minRankingScore = when (modeSnapshot.mode) {
             BotMode.SAFE -> Double.MAX_VALUE
@@ -161,8 +165,17 @@ class StrategyOrchestrator(
             BotMode.GROWTH -> executionConfig.growthMinRankingScore
             BotMode.ATTACK -> executionConfig.attackMinRankingScore
         }
-        if (pairScore.rankingScore < minRankingScore) return null
-        if (pairScore.marketOpportunityScore < executionConfig.minExpectedOpportunityScore) return null
+        val chosenCandidate = deploymentPlan.candidates.firstOrNull { candidate ->
+            val pairScore = rankedPairs.firstOrNull { it.pairId == candidate.pairId } ?: return@firstOrNull false
+            val hasFunding = hasFundedQuoteAsset(candidate.pairId, balances, marketQuotes, deploymentPlan.suggestedPerPositionBudgetIdr)
+            candidate.pairId !in heldPairs &&
+                hasFunding &&
+                pairScore.rankingScore >= minRankingScore &&
+                pairScore.marketOpportunityScore >= executionConfig.minExpectedOpportunityScore
+        } ?: return null
+
+        val pairScore = rankedPairs.firstOrNull { it.pairId == chosenCandidate.pairId } ?: return null
+        val quote = marketQuotes.firstOrNull { it.pairId == chosenCandidate.pairId } ?: return null
 
         val signalType = when {
             pairScore.preferredHorizon == TradingHorizon.SWING &&
@@ -180,11 +193,11 @@ class StrategyOrchestrator(
         }
 
         return StrategySignal(
-            pairId = topCandidate.pairId,
+            pairId = chosenCandidate.pairId,
             signalType = signalType,
             confidence = pairScore.rankingScore,
             rationale = listOf(
-                "Pair ${topCandidate.pairId.value} masuk kandidat terbaik.",
+                "Pair ${chosenCandidate.pairId.value} masuk kandidat terbaik yang belum sedang dipegang.",
                 "Mode ${modeSnapshot.mode.name} dan regime ${modeSnapshot.edgeConfidence.name} mendukung entry selektif.",
             ),
             entryPrice = quote.bestBid,
@@ -304,6 +317,36 @@ class StrategyOrchestrator(
                 totalUnits * (quoteAssetPriceIdr(balance.asset.lowercase(), marketQuotes) ?: 0.0)
             }
         }.coerceAtLeast(0.0)
+    }
+
+    private fun deriveSyntheticPositions(
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<MarketQuote>,
+    ): List<PositionSnapshot> {
+        val now = kotlinx.datetime.Clock.System.now()
+        return balances.mapNotNull { balance ->
+            if (balance.asset.equals("idr", ignoreCase = true)) return@mapNotNull null
+            val totalUnits = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+            if (totalUnits <= 0.0) return@mapNotNull null
+            val pairId = PairId("${balance.asset.lowercase()}_idr")
+            val quote = marketQuotes.firstOrNull { it.pairId == pairId } ?: return@mapNotNull null
+            val markValue = totalUnits * quote.midPrice.toDoubleOrZero()
+            if (markValue < executionConfig.minOrderNotionalIdr) return@mapNotNull null
+            PositionSnapshot(
+                positionId = PositionId("synthetic-${balance.asset.lowercase()}"),
+                pairId = pairId,
+                baseAsset = balance.asset.lowercase(),
+                quoteAsset = "idr",
+                state = PositionState.OPEN,
+                quantity = DecimalValue.fromDouble(totalUnits),
+                averageEntryPrice = quote.midPrice,
+                realizedPnlIdr = DecimalValue.Zero,
+                unrealizedPnlIdr = DecimalValue.Zero,
+                horizon = if (quote.mediumTermReturnPct >= 1.0) TradingHorizon.SWING else TradingHorizon.TACTICAL,
+                openedAt = now,
+                updatedAt = now,
+            )
+        }
     }
 
     private fun fallbackDailyRisk(equityIdr: Double): DailyRiskSnapshot = DailyRiskSnapshot(

@@ -49,7 +49,7 @@ class LeaseCoordinator(
             reasons += "Current lease is still valid."
         }
 
-        if (currentLease?.conflictDetected == true) {
+        if (currentLease?.conflictDetected == true && !leaseExpired && !isAlreadyHolder) {
             reasons += "Conflict detected on current lease."
         }
 
@@ -71,4 +71,3 @@ class LeaseCoordinator(
             !currentLease.conflictDetected
     }
 }
-

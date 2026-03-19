@@ -10,20 +10,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Sync
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -95,9 +91,9 @@ fun KiBotRoot(
                 .padding(padding),
         ) {
             when (currentTab) {
-                RootTab.Dashboard -> DashboardScreen(state, onToggleBot)
-                RootTab.Control -> EngineControlScreen(state, onCommand)
-                RootTab.Logs -> LogsScreen(state)
+                RootTab.Dashboard -> DashboardScreen(state = state, onToggleBot = onToggleBot)
+                RootTab.Control -> EngineControlScreen(state = state, onCommand = onCommand)
+                RootTab.Logs -> LogsScreen(state = state)
             }
         }
     }
@@ -113,44 +109,26 @@ private fun DashboardScreen(
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        item { HeroCard(state = state, onToggleBot = onToggleBot) }
         item {
-            HeroCard(state = state, onToggleBot = onToggleBot)
+            SurfaceCard {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    StatusLine("Engine", state.activeEngine)
+                    StatusLine("Standby", state.standbyEngine)
+                    StatusLine("Mode", "${state.operatingMode} • ${state.edgeConfidence}")
+                    StatusLine("Sync", state.syncHealth)
+                }
+            }
         }
-        item {
-            MetricRow(
-                leftTitle = "Modal Saat Ini",
-                leftValue = state.modalSaatIniIdr,
-                rightTitle = "PnL Hari Ini",
-                rightValue = state.pnlTodayIdr,
-            )
-        }
-        item {
-            MetricRow(
-                leftTitle = "Open Posisi",
-                leftValue = state.positions.size.toString(),
-                rightTitle = "Sync",
-                rightValue = state.syncHealth,
-            )
-        }
-        item {
-            MetricRow(
-                leftTitle = "Drawdown",
-                leftValue = "${(state.drawdownPct * 100).toInt()}%",
-                rightTitle = "Risk",
-                rightValue = if (state.riskBlocked) "BLOCKED" else "ALLOWED",
-            )
-        }
-        item {
-            SectionTitle("Holdings")
-        }
+        item { SectionTitle("Holdings") }
         if (state.positions.isEmpty()) {
             item {
                 SurfaceCard {
-                    Text("Belum ada posisi live yang aktif.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Belum ada aset aktif di akun Indodax.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         } else {
-            items(state.positions.take(3)) { position ->
+            items(state.positions.take(4)) { position ->
                 SurfaceCard {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -158,7 +136,7 @@ private fun DashboardScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column {
-                            Text(position.pair, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(position.pair.uppercase(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                             Text(position.quantity, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Text(position.pnl, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
@@ -169,12 +147,15 @@ private fun DashboardScreen(
         item {
             SurfaceCard {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Status Engine", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("Active: ${state.activeEngine}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("Standby: ${state.standbyEngine}")
-                    Text("Pair: ${state.pairAktif}")
-                    Text("Mode: ${state.operatingMode} • Edge: ${state.edgeConfidence}")
-                    Text("Regime: ${state.marketRegime} • Profit: ${state.profitProtectionStatus}")
+                    Text("Status Bot", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (state.isBotRunning) "Bot sedang aktif." else "Bot sedang berhenti.",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text("Pair aktif: ${state.pairAktif.lowercase()}")
+                    Text("Risk: ${state.riskLadderLevel} • ${if (state.riskBlocked) "entry diblokir" else "entry diizinkan"}")
+                    Text("Regime: ${state.marketRegime}")
                 }
             }
         }
@@ -187,9 +168,7 @@ private fun HeroCard(
     onToggleBot: () -> Unit,
 ) {
     Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
         shape = RoundedCornerShape(28.dp),
     ) {
         Column(
@@ -198,26 +177,34 @@ private fun HeroCard(
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("KiBot Control", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            Text(state.statusMessage, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatusChip(if (state.isBotRunning) "RUNNING" else "STOPPED", if (state.isBotRunning) Color(0xFF0E8A4C) else Color(0xFFB43F3F))
-                StatusChip("PAIR ${state.pairAktif.uppercase()}", Color(0xFF0A6FD6))
-                StatusChip("SYNC ${state.syncHealth}", Color(0xFF6B5B00))
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatusChip("MODE ${state.operatingMode}", Color(0xFF1D4ED8))
-                StatusChip("EDGE ${state.edgeConfidence}", Color(0xFF0F766E))
-                StatusChip("RISK ${state.riskLadderLevel}", Color(0xFFB45309))
-            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column {
-                    Text("Pair Aktif", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(state.pairAktif, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("KiBot", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                StatusChip(state.pairAktif.lowercase(), Color(0xFF1D4ED8))
+            }
+            Text(state.modalSaatIniIdr, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+            Text(
+                state.pnlTodayIdr,
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                heroSubtitle(state),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    StatusChip(if (state.isBotRunning) "ON" else "OFF", if (state.isBotRunning) Color(0xFF0E8A4C) else Color(0xFFB43F3F))
+                    StatusChip(state.syncHealth, Color(0xFF6B5B00))
                 }
                 FilledTonalButton(onClick = onToggleBot) {
                     Text(if (state.isBotRunning) "Turn OFF" else "Turn ON")
@@ -237,9 +224,7 @@ private fun EngineControlScreen(
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item {
-            SectionTitle("Engine Control")
-        }
+        item { SectionTitle("Engine Control") }
         item {
             SurfaceCard {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -315,39 +300,13 @@ private fun LogsScreen(state: KiBotUiState) {
 }
 
 @Composable
-private fun MetricRow(
-    leftTitle: String,
-    leftValue: String,
-    rightTitle: String,
-    rightValue: String,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        SurfaceCard(modifier = Modifier.weight(1f)) {
-            Text(leftTitle, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(8.dp))
-            Text(leftValue, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        }
-        SurfaceCard(modifier = Modifier.weight(1f)) {
-            Text(rightTitle, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(8.dp))
-            Text(rightValue, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        }
-    }
-}
-
-@Composable
 private fun SurfaceCard(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Card(
         modifier = modifier,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
         shape = RoundedCornerShape(22.dp),
     ) {
         Column(
@@ -361,27 +320,49 @@ private fun SurfaceCard(
 }
 
 @Composable
-private fun SectionTitle(title: String) {
+private fun StatusChip(
+    label: String,
+    tint: Color,
+) {
+    Surface(
+        color = tint.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            color = tint,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+@Composable
+private fun SectionTitle(text: String) {
     Text(
-        text = title,
-        style = MaterialTheme.typography.titleLarge,
+        text,
+        style = MaterialTheme.typography.headlineSmall,
         fontWeight = FontWeight.SemiBold,
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun StatusChip(
-    label: String,
-    color: Color,
-) {
-    AssistChip(
-        onClick = {},
-        label = { Text(label) },
-        colors = AssistChipDefaults.assistChipColors(
-            containerColor = color.copy(alpha = 0.14f),
-            labelColor = color,
-        ),
-        modifier = Modifier.height(32.dp),
-    )
+private fun StatusLine(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(modifier = Modifier.width(12.dp))
+        Text(value, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+private fun heroSubtitle(state: KiBotUiState): String {
+    return when {
+        !state.isBotRunning -> "Bot sedang berhenti."
+        state.syncHealth == "BROKEN" -> "Sync bermasalah. Cek tab Logs."
+        else -> "${state.activeEngine} aktif • memantau ${state.pairAktif.lowercase()}."
+    }
 }
