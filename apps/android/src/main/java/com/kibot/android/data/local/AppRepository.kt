@@ -12,6 +12,9 @@ import com.kibot.android.ui.DeviceStatusUi
 import com.kibot.android.ui.EngineAction
 import com.kibot.android.ui.KiBotUiState
 import com.kibot.android.ui.LogUi
+import com.kibot.android.ui.PortfolioAllocationUi
+import com.kibot.android.ui.PortfolioSectionUi
+import com.kibot.android.ui.PortfolioTrendPointUi
 import com.kibot.android.ui.PositionCardUi
 import com.kibot.android.ui.TradeUi
 import com.kibot.android.widget.KiBotWidgetProvider
@@ -23,6 +26,7 @@ import com.kibot.shared.models.BotEffectiveState
 import com.kibot.shared.models.BotId
 import com.kibot.shared.models.BotDesiredState
 import com.kibot.shared.models.CommandType
+import com.kibot.shared.models.DailyEquityHistoryPoint
 import com.kibot.shared.models.LogLevel
 import com.kibot.shared.models.MarketQuote
 import kotlinx.coroutines.CoroutineScope
@@ -161,6 +165,12 @@ class AppRepository(
                 date = jakartaDate,
             )
         }
+        val riskHistoryDeferred = scope.async {
+            gateway.fetchDailyRiskHistory(
+                botId = botId,
+                days = 7,
+            )
+        }
         val lanSnapshotDeferred = scope.async { fetchLanMacSnapshot() }
         val liveBalancesDeferred: kotlinx.coroutines.Deferred<List<BalanceSnapshot>>? = if (uiPreferredSnapshot == null) {
             scope.async { runCatching { exchangeGateway.fetchBalances() }.getOrDefault(emptyList()) }
@@ -177,6 +187,7 @@ class AppRepository(
         val lease = leaseDeferred.await()
         val devices = devicesDeferred.await()
         val risk = riskDeferred.await()
+        val riskHistory = riskHistoryDeferred.await()
         val liveBalances = liveBalancesDeferred?.await().orEmpty()
         val liveQuotes = liveQuotesDeferred?.await().orEmpty()
         val lanSnapshot = lanSnapshotDeferred.await()
@@ -214,6 +225,17 @@ class AppRepository(
         }
         val livePositions = uiPreferredSnapshot?.toPositionCards()
             ?: buildLivePositions(liveBalances, liveQuotes)
+        val portfolioSection = buildPortfolioSection(
+            now = now,
+            history = riskHistory,
+            totalEquityLabel = modalSaatIniLabel,
+            totalEquityIdr = liveEquityIdr ?: modalSaatIniLabel.parseRupiahLabel(),
+            pnlTodayLabel = pnlTodayLabel,
+            pnlTodayPctLabel = pnlTodayPctLabel,
+            risk = risk,
+            positions = livePositions,
+            liveSnapshot = uiPreferredSnapshot,
+        )
 
         val activeDeviceId = lease?.currentHolder ?: botState.activeDeviceId
         val activeEngine = devices.firstOrNull { it.deviceId == activeDeviceId }?.displayName ?: "Unknown"
@@ -270,6 +292,7 @@ class AppRepository(
                 ?.takeIf { it.isNotBlank() }
                 ?: "Adaptasi mingguan belum tersedia.",
             positions = livePositions.ifEmpty { emptyList() },
+            portfolio = portfolioSection,
             liveLogEntries = uiPreferredSnapshot?.liveLogEntries ?: _uiState.value.liveLogEntries,
             logs = logs.map {
                 LogUi(
@@ -431,6 +454,143 @@ class AppRepository(
             }
             .sortedByDescending { extractCurrencyValue(it.value) }
             .toList()
+    }
+
+    private fun buildPortfolioSection(
+        now: Instant,
+        history: List<DailyEquityHistoryPoint>,
+        totalEquityLabel: String,
+        totalEquityIdr: Double?,
+        pnlTodayLabel: String,
+        pnlTodayPctLabel: String,
+        risk: com.kibot.shared.models.DailyRiskSnapshot?,
+        positions: List<PositionCardUi>,
+        liveSnapshot: LiveStatusSnapshot?,
+    ): PortfolioSectionUi {
+        val currentEquity = totalEquityIdr ?: totalEquityLabel.parseRupiahLabel() ?: 0.0
+        val allocationSource = if (!liveSnapshot?.holdings.isNullOrEmpty()) {
+            liveSnapshot!!.holdings.map {
+                AllocationSource(
+                    label = it.asset.uppercase(),
+                    valueIdr = it.valueIdr.parseRupiahLabel() ?: 0.0,
+                )
+            }
+        } else {
+            positions.map {
+                AllocationSource(
+                    label = it.pair.uppercase(),
+                    valueIdr = extractCurrencyValue(it.value),
+                )
+            }
+        }.filter { it.valueIdr > 0.0 }
+
+        val investedValue = allocationSource.sumOf { it.valueIdr }
+        val cashReadyIdr = (currentEquity - investedValue).coerceAtLeast(0.0)
+        val cashReadyPct = if (currentEquity > 0.0) cashReadyIdr / currentEquity else 0.0
+        val totalUnrealized = risk?.unrealizedPnlIdr?.toDoubleOrZero()
+            ?: liveSnapshot?.holdings?.sumOf { it.pnlIdr.parseRupiahLabel() ?: 0.0 }
+            ?: 0.0
+        val topConcentrationPct = allocationSource.maxOfOrNull { it.valueIdr }
+            ?.let { largest -> if (currentEquity > 0.0) largest / currentEquity else 0.0 }
+            ?: 0.0
+        val chartPoints = buildPortfolioChartPoints(
+            history = history,
+            currentEquityIdr = currentEquity,
+            now = now,
+        )
+        val oldestEquity = chartPoints.firstOrNull()?.valueIdr?.takeIf { it > 0.0 } ?: currentEquity
+        val sevenDayDelta = currentEquity - oldestEquity
+        val sevenDayPct = if (oldestEquity > 0.0) sevenDayDelta / oldestEquity else 0.0
+
+        return PortfolioSectionUi(
+            oneDayReturnLabel = pnlTodayLabel,
+            oneDayReturnPctLabel = pnlTodayPctLabel,
+            sevenDayReturnLabel = formatSignedIdr(sevenDayDelta),
+            sevenDayReturnPctLabel = formatSignedPercent(sevenDayPct),
+            cashReadyLabel = formatIdr(cashReadyIdr),
+            cashReadyPctLabel = "%.0f%%".format(Locale.US, cashReadyPct * 100.0),
+            totalUnrealizedLabel = formatSignedIdr(totalUnrealized),
+            concentrationLabel = "Top 1 %.0f%%".format(Locale.US, topConcentrationPct * 100.0),
+            chartPoints = chartPoints,
+            allocations = buildAllocationItems(
+                currentEquityIdr = currentEquity,
+                cashReadyIdr = cashReadyIdr,
+                holdings = allocationSource,
+            ),
+            lastUpdatedLabel = formatLastUpdated(now),
+        )
+    }
+
+    private fun buildPortfolioChartPoints(
+        history: List<DailyEquityHistoryPoint>,
+        currentEquityIdr: Double,
+        now: Instant,
+    ): List<PortfolioTrendPointUi> {
+        val points = history
+            .sortedBy { it.date }
+            .map {
+                PortfolioTrendPointUi(
+                    label = "${it.date.dayOfMonth}/${it.date.monthNumber}",
+                    valueIdr = it.currentEquityIdr.toDoubleOrZero(),
+                )
+            }
+            .toMutableList()
+        val localDate = now.toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
+        val todayLabel = "${localDate.dayOfMonth}/${localDate.monthNumber}"
+        if (points.none { it.label == todayLabel }) {
+            points += PortfolioTrendPointUi(
+                label = todayLabel,
+                valueIdr = currentEquityIdr,
+            )
+        }
+        return points.takeLast(7).ifEmpty {
+            listOf(PortfolioTrendPointUi("Hari ini", currentEquityIdr))
+        }
+    }
+
+    private fun buildAllocationItems(
+        currentEquityIdr: Double,
+        cashReadyIdr: Double,
+        holdings: List<AllocationSource>,
+    ): List<PortfolioAllocationUi> {
+        val ranked = holdings.sortedByDescending { it.valueIdr }
+        val topHoldings = ranked.take(3)
+        val othersValue = ranked.drop(3).sumOf { it.valueIdr }
+        return buildList {
+            if (cashReadyIdr > 0.0) {
+                val pct = if (currentEquityIdr > 0.0) cashReadyIdr / currentEquityIdr else 0.0
+                add(
+                    PortfolioAllocationUi(
+                        label = "Cash",
+                        valueLabel = formatIdr(cashReadyIdr),
+                        pct = pct,
+                        pctLabel = "%.0f%%".format(Locale.US, pct * 100.0),
+                    ),
+                )
+            }
+            topHoldings.forEach { holding ->
+                val pct = if (currentEquityIdr > 0.0) holding.valueIdr / currentEquityIdr else 0.0
+                add(
+                    PortfolioAllocationUi(
+                        label = holding.label,
+                        valueLabel = formatIdr(holding.valueIdr),
+                        pct = pct,
+                        pctLabel = "%.0f%%".format(Locale.US, pct * 100.0),
+                    ),
+                )
+            }
+            if (othersValue > 0.0) {
+                val pct = if (currentEquityIdr > 0.0) othersValue / currentEquityIdr else 0.0
+                add(
+                    PortfolioAllocationUi(
+                        label = "Others",
+                        valueLabel = formatIdr(othersValue),
+                        pct = pct,
+                        pctLabel = "%.0f%%".format(Locale.US, pct * 100.0),
+                    ),
+                )
+            }
+        }
     }
 
     private fun quoteAssetPriceIdr(asset: String, quotes: List<MarketQuote>): Double? {
@@ -668,4 +828,9 @@ private data class AuxiliarySyncCache(
 private data class CachedLanEndpoint(
     val baseUrl: String,
     val verifiedAtEpochMs: Long,
+)
+
+private data class AllocationSource(
+    val label: String,
+    val valueIdr: Double,
 )

@@ -7,6 +7,7 @@ import com.kibot.shared.models.PortfolioSnapshot
 import com.kibot.shared.models.PositionState
 import com.kibot.shared.models.ProfitProtectionStatus
 import com.kibot.shared.models.RiskLadderLevel
+import kotlin.math.absoluteValue
 
 data class RiskDecision(
     val allowNewEntries: Boolean,
@@ -33,6 +34,7 @@ class RiskEngine(
         val reasons = mutableListOf<String>()
         val openPositions = portfolio.positions.count { it.state != PositionState.CLOSED }
         val currentEquity = portfolio.totalEquityIdr.toDoubleOrZero()
+        val heat = derivePortfolioHeat(portfolio, currentEquity)
         val ladderLevel = deriveRiskLadder(dailyRisk)
         val hardStopTriggered = dailyRisk.hardStopTriggered || ladderLevel == RiskLadderLevel.HARD_STOP
         val profitProtection = profitProtectionEngine.evaluate(dailyRisk)
@@ -54,6 +56,12 @@ class RiskEngine(
         }
         if (health.anomalyCount >= 3) {
             reasons += "Anomali operasional meningkat."
+        }
+        if (heat.loserHeatPct >= config.loserHeatCautionPct && heat.loserHeatPct > heat.winnerHeatPct) {
+            reasons += "Loser heat portofolio lebih besar dari winner heat, jadi entry baru perlu lebih disiplin."
+        }
+        if (heat.top1ConcentrationPct >= config.top1DeployableConcentrationMaxPct) {
+            reasons += "Satu aset sudah terlalu dominan di modal aktif."
         }
         if (openPositions >= config.maxConcurrentPositions) {
             reasons += "Batas posisi aktif sudah penuh."
@@ -96,8 +104,21 @@ class RiskEngine(
             RiskLadderLevel.HARD_STOP,
             -> 0.0
         }
-        val sizeMultiplier = (riskSizeMultiplier * profitProtection.sizeMultiplier).coerceIn(0.0, config.attackSizeMultiplier)
-        val deploymentMultiplier = (riskSizeMultiplier * profitProtection.aggressionMultiplier).coerceIn(0.0, 1.0)
+        val heatPenalty = when {
+            heat.loserHeatPct >= config.loserHeatHardBrakePct && heat.loserHeatPct > heat.winnerHeatPct -> 0.72
+            heat.loserHeatPct >= config.loserHeatCautionPct -> 0.86
+            else -> 1.0
+        }
+        val concentrationPenalty = when {
+            heat.top2ConcentrationPct >= config.top2DeployableConcentrationMaxPct -> 0.82
+            heat.top1ConcentrationPct >= config.top1DeployableConcentrationMaxPct -> 0.90
+            else -> 1.0
+        }
+        val portfolioPenalty = minOf(heatPenalty, concentrationPenalty)
+        val sizeMultiplier = (riskSizeMultiplier * profitProtection.sizeMultiplier * portfolioPenalty)
+            .coerceIn(0.0, config.attackSizeMultiplier)
+        val deploymentMultiplier = (riskSizeMultiplier * profitProtection.aggressionMultiplier * portfolioPenalty)
+            .coerceIn(0.0, 1.0)
         val desiredActiveSlots = when {
             availableBudget < config.targetMinPositionBudgetIdr -> 1
             else -> kotlin.math.floor(availableBudget / config.targetMinPositionBudgetIdr)
@@ -127,6 +148,37 @@ class RiskEngine(
             sizeMultiplier = sizeMultiplier,
             deploymentMultiplier = deploymentMultiplier,
             reasons = reasons,
+        )
+    }
+
+    private fun derivePortfolioHeat(
+        portfolio: PortfolioSnapshot,
+        currentEquity: Double,
+    ): PortfolioHeat {
+        if (currentEquity <= 0.0) return PortfolioHeat()
+        val openPositions = portfolio.positions.filter { it.state != PositionState.CLOSED }
+        if (openPositions.isEmpty()) return PortfolioHeat()
+        val positionValues = openPositions.map { position ->
+            val currentValue = (
+                (position.quantity.toDoubleOrZero() * position.averageEntryPrice.toDoubleOrZero()) +
+                    position.unrealizedPnlIdr.toDoubleOrZero()
+                ).coerceAtLeast(0.0)
+            PositionHeatValue(
+                currentValueIdr = currentValue,
+                unrealizedPnlIdr = position.unrealizedPnlIdr.toDoubleOrZero(),
+            )
+        }
+        val winnerHeat = positionValues
+            .sumOf { value -> value.unrealizedPnlIdr.takeIf { it > 0.0 } ?: 0.0 }
+            .absoluteValue / currentEquity
+        val loserHeat = positionValues
+            .sumOf { value -> value.unrealizedPnlIdr.takeIf { it < 0.0 }?.absoluteValue ?: 0.0 } / currentEquity
+        val sortedValues = positionValues.map { it.currentValueIdr }.sortedDescending()
+        return PortfolioHeat(
+            winnerHeatPct = winnerHeat,
+            loserHeatPct = loserHeat,
+            top1ConcentrationPct = sortedValues.firstOrNull().orZero() / currentEquity,
+            top2ConcentrationPct = sortedValues.take(2).sum() / currentEquity,
         )
     }
 
@@ -164,3 +216,17 @@ class RiskEngine(
         }
     }
 }
+
+private data class PositionHeatValue(
+    val currentValueIdr: Double,
+    val unrealizedPnlIdr: Double,
+)
+
+private data class PortfolioHeat(
+    val winnerHeatPct: Double = 0.0,
+    val loserHeatPct: Double = 0.0,
+    val top1ConcentrationPct: Double = 0.0,
+    val top2ConcentrationPct: Double = 0.0,
+)
+
+private fun Double?.orZero(): Double = this ?: 0.0

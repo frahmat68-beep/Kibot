@@ -58,6 +58,11 @@ data class RiskConfig(
     val dominantTierAReserveReliefPct: Double = 0.03,
     val dominantTierAMinCashReservePct: Double = 0.10,
     val speculativePocketMaxEquityPct: Double = 0.25,
+    val loserHeatCautionPct: Double = 0.010,
+    val loserHeatHardBrakePct: Double = 0.018,
+    val top1DeployableConcentrationMaxPct: Double = 0.45,
+    val top2DeployableConcentrationMaxPct: Double = 0.70,
+    val rotationRankingGapMin: Double = 0.08,
     val blockEntriesBelowBatteryPct: Int = 18,
     val suggestTakeoverBelowBatteryPct: Int = 30,
 )

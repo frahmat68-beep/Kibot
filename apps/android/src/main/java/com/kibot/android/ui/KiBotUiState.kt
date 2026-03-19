@@ -17,6 +17,48 @@ data class PositionCardUi(
     val pnl: String = "",
 )
 
+data class PortfolioTrendPointUi(
+    val label: String,
+    val valueIdr: Double,
+)
+
+data class PortfolioAllocationUi(
+    val label: String,
+    val valueLabel: String,
+    val pct: Double,
+    val pctLabel: String,
+)
+
+data class PortfolioSectionUi(
+    val oneDayReturnLabel: String,
+    val oneDayReturnPctLabel: String,
+    val sevenDayReturnLabel: String,
+    val sevenDayReturnPctLabel: String,
+    val cashReadyLabel: String,
+    val cashReadyPctLabel: String,
+    val totalUnrealizedLabel: String,
+    val concentrationLabel: String,
+    val chartPoints: List<PortfolioTrendPointUi>,
+    val allocations: List<PortfolioAllocationUi>,
+    val lastUpdatedLabel: String,
+) {
+    companion object {
+        fun preview(): PortfolioSectionUi = PortfolioSectionUi(
+            oneDayReturnLabel = "+Rp0",
+            oneDayReturnPctLabel = "+0.0%",
+            sevenDayReturnLabel = "+Rp0",
+            sevenDayReturnPctLabel = "+0.0%",
+            cashReadyLabel = "Rp0",
+            cashReadyPctLabel = "0%",
+            totalUnrealizedLabel = "+Rp0",
+            concentrationLabel = "Top 1 0%",
+            chartPoints = listOf(PortfolioTrendPointUi("Hari ini", 0.0)),
+            allocations = emptyList(),
+            lastUpdatedLabel = "--:-- WIB",
+        )
+    }
+}
+
 data class LogUi(
     val level: String,
     val category: String,
@@ -69,6 +111,7 @@ data class KiBotUiState(
     val weeklyLearningSummary: String,
     val weeklyAdaptationSummary: String,
     val positions: List<PositionCardUi>,
+    val portfolio: PortfolioSectionUi,
     val liveLogEntries: List<LiveLogEntry>,
     val logs: List<LogUi>,
     val trades: List<TradeUi>,
@@ -104,6 +147,7 @@ data class KiBotUiState(
             weeklyLearningSummary = "Belum ada review mingguan.",
             weeklyAdaptationSummary = "Adaptasi mingguan akan muncul setelah data cukup.",
             positions = emptyList(),
+            portfolio = PortfolioSectionUi.preview(),
             liveLogEntries = emptyList(),
             logs = emptyList(),
             trades = emptyList(),

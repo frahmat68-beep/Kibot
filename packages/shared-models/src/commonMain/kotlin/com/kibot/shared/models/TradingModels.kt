@@ -1,6 +1,7 @@
 package com.kibot.shared.models
 
 import kotlinx.datetime.Instant
+import kotlinx.datetime.LocalDate
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -173,6 +174,15 @@ data class DailyRiskSnapshot(
     val highWatermarkEquityIdr: DecimalValue = currentEquityIdr,
     val givebackPct: Double = 0.0,
     val profitProtectionStatus: ProfitProtectionStatus = ProfitProtectionStatus.INACTIVE,
+)
+
+@Serializable
+data class DailyEquityHistoryPoint(
+    val date: LocalDate,
+    val openingEquityIdr: DecimalValue,
+    val currentEquityIdr: DecimalValue,
+    val realizedPnlIdr: DecimalValue,
+    val unrealizedPnlIdr: DecimalValue,
 )
 
 @Serializable

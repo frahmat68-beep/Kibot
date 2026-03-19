@@ -1,5 +1,6 @@
 package com.kibot.android.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -44,9 +46,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -125,6 +131,7 @@ private fun DashboardScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item { HeroCard(state = state, onToggleBot = onToggleBot) }
+        item { PortfolioSectionCard(modifier = Modifier.fillMaxWidth(), state = state) }
         item {
             HoldingsPreviewCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -136,6 +143,251 @@ private fun DashboardScreen(
                 modifier = Modifier.fillMaxWidth(),
                 state = state,
             )
+        }
+    }
+}
+
+@Composable
+private fun PortfolioSectionCard(
+    modifier: Modifier = Modifier,
+    state: KiBotUiState,
+) {
+    val portfolio = state.portfolio
+    SurfaceCard(modifier = modifier) {
+        Text("Portfolio", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            PortfolioMetricTile(
+                modifier = Modifier.weight(1f),
+                label = "Return 1D",
+                value = portfolio.oneDayReturnLabel,
+                caption = portfolio.oneDayReturnPctLabel,
+                tint = pnlColor(portfolio.oneDayReturnLabel),
+            )
+            PortfolioMetricTile(
+                modifier = Modifier.weight(1f),
+                label = "Return 7D",
+                value = portfolio.sevenDayReturnLabel,
+                caption = portfolio.sevenDayReturnPctLabel,
+                tint = pnlColor(portfolio.sevenDayReturnLabel),
+            )
+            PortfolioMetricTile(
+                modifier = Modifier.weight(1f),
+                label = "Cash Ready",
+                value = portfolio.cashReadyLabel,
+                caption = portfolio.cashReadyPctLabel,
+                tint = Color(0xFF60A5FA),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StatusChip("Unrealized ${portfolio.totalUnrealizedLabel}", pnlColor(portfolio.totalUnrealizedLabel))
+            StatusChip(portfolio.concentrationLabel, Color(0xFF38BDF8))
+        }
+        Surface(
+            color = Color.White.copy(alpha = 0.04f),
+            shape = RoundedCornerShape(18.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Asset Net Worth",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        portfolio.lastUpdatedLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                PortfolioSparkline(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(132.dp),
+                    points = portfolio.chartPoints,
+                    tint = pnlColor(portfolio.sevenDayReturnLabel),
+                )
+            }
+        }
+        if (portfolio.allocations.isNotEmpty()) {
+            Text("Asset Allocation", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            AllocationStrip(items = portfolio.allocations)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 180.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                portfolio.allocations.forEach { allocation ->
+                    Surface(
+                        color = Color.White.copy(alpha = 0.04f),
+                        shape = RoundedCornerShape(16.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .background(assetAccent(allocation.label), CircleShape),
+                                )
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(allocation.label, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        allocation.valueLabel,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            Text(
+                                allocation.pctLabel,
+                                color = assetAccent(allocation.label),
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PortfolioMetricTile(
+    modifier: Modifier = Modifier,
+    label: String,
+    value: String,
+    caption: String,
+    tint: Color,
+) {
+    Surface(
+        modifier = modifier,
+        color = Color.White.copy(alpha = 0.04f),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                value,
+                color = tint,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                caption,
+                style = MaterialTheme.typography.bodySmall,
+                color = tint.copy(alpha = 0.9f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PortfolioSparkline(
+    modifier: Modifier = Modifier,
+    points: List<PortfolioTrendPointUi>,
+    tint: Color,
+) {
+    val safePoints = points.ifEmpty { listOf(PortfolioTrendPointUi("Hari ini", 0.0)) }
+    val values = safePoints.map { it.valueIdr }
+    val min = values.minOrNull() ?: 0.0
+    val max = values.maxOrNull() ?: 0.0
+    val range = (max - min).takeIf { it > 0.0 } ?: 1.0
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Canvas(modifier = modifier) {
+            val path = Path()
+            val stepX = if (safePoints.size > 1) size.width / safePoints.lastIndex else 0f
+            safePoints.forEachIndexed { index, point ->
+                val x = if (safePoints.size > 1) stepX * index else size.width / 2f
+                val normalized = ((point.valueIdr - min) / range).toFloat()
+                val y = size.height - (normalized * (size.height * 0.78f)) - (size.height * 0.10f)
+                if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                drawCircle(
+                    color = tint,
+                    radius = if (index == safePoints.lastIndex) 8f else 5f,
+                    center = Offset(x, y),
+                )
+            }
+            drawPath(
+                path = path,
+                color = tint,
+                style = Stroke(width = 5f, cap = StrokeCap.Round),
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            listOf(
+                safePoints.firstOrNull()?.label.orEmpty(),
+                safePoints.getOrNull(safePoints.lastIndex / 2)?.label.orEmpty(),
+                safePoints.lastOrNull()?.label.orEmpty(),
+            ).forEach { label ->
+                Text(
+                    label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AllocationStrip(items: List<PortfolioAllocationUi>) {
+    val visibleItems = items.filter { it.pct > 0.0 }
+    if (visibleItems.isEmpty()) return
+    Surface(
+        color = Color.White.copy(alpha = 0.04f),
+        shape = RoundedCornerShape(999.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(18.dp),
+        ) {
+            visibleItems.forEach { item ->
+                Box(
+                    modifier = Modifier
+                        .weight(item.pct.toFloat().coerceAtLeast(0.05f))
+                        .fillMaxHeight()
+                        .background(assetAccent(item.label)),
+                )
+            }
         }
     }
 }

@@ -8,6 +8,7 @@ import com.kibot.shared.models.CommandEnvelope
 import com.kibot.shared.models.CommandId
 import com.kibot.shared.models.CommandStatus
 import com.kibot.shared.models.CommandType
+import com.kibot.shared.models.DailyEquityHistoryPoint
 import com.kibot.shared.models.DailyRiskSnapshot
 import com.kibot.shared.models.DeviceDescriptor
 import com.kibot.shared.models.DeviceId
@@ -41,6 +42,8 @@ interface ControlPlaneGateway {
     suspend fun fetchDevices(botId: BotId): List<DeviceDescriptor>
 
     suspend fun fetchDailyRisk(botId: BotId, date: LocalDate): DailyRiskSnapshot?
+
+    suspend fun fetchDailyRiskHistory(botId: BotId, days: Int = 7): List<DailyEquityHistoryPoint>
 
     suspend fun upsertDailyRisk(
         botId: BotId,

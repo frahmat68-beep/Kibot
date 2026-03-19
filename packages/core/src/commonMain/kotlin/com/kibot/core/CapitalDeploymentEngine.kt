@@ -8,6 +8,7 @@ import com.kibot.shared.models.PairScore
 import com.kibot.shared.models.PortfolioSnapshot
 import com.kibot.shared.models.PositionState
 import com.kibot.shared.models.RiskLadderLevel
+import kotlin.math.absoluteValue
 
 class CapitalDeploymentEngine(
     private val config: RiskConfig = RiskConfig(),
@@ -45,7 +46,32 @@ class CapitalDeploymentEngine(
         }
         val currentEquity = portfolio.totalEquityIdr.toDoubleOrZero()
         val openPositions = portfolio.positions.count { it.state != PositionState.CLOSED }
+        val openPositionValues = portfolio.positions
+            .filter { it.state != PositionState.CLOSED }
+            .map { position ->
+                ((position.quantity.toDoubleOrZero() * position.averageEntryPrice.toDoubleOrZero()) +
+                    position.unrealizedPnlIdr.toDoubleOrZero()).coerceAtLeast(0.0)
+            }
+            .sortedDescending()
         val baseCapitalUtilizationTargetPct = (1.0 - reservePct).coerceIn(0.0, 1.0)
+        val deployableEquity = (currentEquity * baseCapitalUtilizationTargetPct).coerceAtLeast(0.0)
+        val top1DeployableConcentration = if (deployableEquity > 0.0) {
+            openPositionValues.firstOrNull().orZero() / deployableEquity
+        } else {
+            0.0
+        }
+        val top2DeployableConcentration = if (deployableEquity > 0.0) {
+            openPositionValues.take(2).sum() / deployableEquity
+        } else {
+            0.0
+        }
+        val loserHeatPct = if (currentEquity > 0.0) {
+            portfolio.positions
+                .filter { it.state != PositionState.CLOSED }
+                .sumOf { position -> position.unrealizedPnlIdr.toDoubleOrZero().takeIf { it < 0.0 }?.absoluteValue ?: 0.0 } / currentEquity
+        } else {
+            0.0
+        }
         val affordableSlotCap = when {
             currentEquity <= 0.0 -> 1
             else -> kotlin.math.floor(
@@ -120,7 +146,11 @@ class CapitalDeploymentEngine(
             !speculativePocketReady &&
             openPositions > 0 &&
             candidates.firstOrNull()?.rankingScore?.let { it >= 0.78 } == true &&
-            topCandidateGap >= 0.05
+            (
+                topCandidateGap >= config.rotationRankingGapMin ||
+                    top1DeployableConcentration >= config.top1DeployableConcentrationMaxPct ||
+                    loserHeatPct >= config.loserHeatCautionPct
+                )
 
         val rationale = buildList {
             if (!risk.allowNewEntries) add("Entry baru diblokir oleh risk engine.")
@@ -132,6 +162,9 @@ class CapitalDeploymentEngine(
             if (secondSlotReady) add("Slot kedua boleh dibuka karena dua kandidat teratas sama-sama kuat.")
             if (multiSlotReadyCount >= 3) add("$multiSlotReadyCount kandidat terlihat sama-sama executable, jadi bot boleh menyebar modal lebih aktif.")
             if (!secondSlotReady && topCandidateGap > 0.12) add("Kandidat teratas terlalu dominan, jadi modal lebih baik difokuskan dulu.")
+            if (top1DeployableConcentration >= config.top1DeployableConcentrationMaxPct) add("Konsentrasi top-1 sudah tinggi, jadi rotasi lebih diprioritaskan daripada menambah ukuran posisi lama.")
+            if (top2DeployableConcentration >= config.top2DeployableConcentrationMaxPct) add("Dua aset teratas sudah mendominasi modal aktif, jadi penyebaran modal harus lebih disiplin.")
+            if (loserHeatPct >= config.loserHeatCautionPct) add("Loser heat portofolio sedang naik, jadi entry baru harus benar-benar mengalahkan posisi yang lemah.")
             if (dominantTierAReady) add("Cash reserve diringankan sedikit karena kandidat tier A terlihat dominan dan market masih sehat.")
             if (allowRotation) add("Boleh pertimbangkan rotasi jika kandidat baru jauh lebih unggul.")
         }
@@ -148,4 +181,6 @@ class CapitalDeploymentEngine(
             rationale = rationale,
         )
     }
+
+    private fun Double?.orZero(): Double = this ?: 0.0
 }

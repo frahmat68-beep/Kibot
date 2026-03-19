@@ -12,6 +12,7 @@ import com.kibot.shared.models.CommandEnvelope
 import com.kibot.shared.models.CommandId
 import com.kibot.shared.models.CommandStatus
 import com.kibot.shared.models.CommandType
+import com.kibot.shared.models.DailyEquityHistoryPoint
 import com.kibot.shared.models.DailyRiskSnapshot
 import com.kibot.shared.models.DeviceDescriptor
 import com.kibot.shared.models.DeviceId
@@ -62,6 +63,7 @@ class FakeControlPlaneGateway(
 
     var lease: EngineLeaseSnapshot? = null
     var dailyRisk: DailyRiskSnapshot? = null
+    private val dailyRiskHistory = linkedMapOf<LocalDate, DailyRiskSnapshot>()
     var encryptedCredentialBundle: EncryptedCredentialBundle? = null
 
     override suspend fun registerDevice(registration: DeviceRegistration): DeviceDescriptor {
@@ -86,10 +88,26 @@ class FakeControlPlaneGateway(
 
     override suspend fun fetchDevices(botId: BotId): List<DeviceDescriptor> = devices.values.toList()
 
-    override suspend fun fetchDailyRisk(botId: BotId, date: LocalDate): DailyRiskSnapshot? = dailyRisk
+    override suspend fun fetchDailyRisk(botId: BotId, date: LocalDate): DailyRiskSnapshot? = dailyRiskHistory[date] ?: dailyRisk
+
+    override suspend fun fetchDailyRiskHistory(botId: BotId, days: Int): List<DailyEquityHistoryPoint> {
+        return dailyRiskHistory.entries
+            .sortedBy { it.key }
+            .takeLast(days)
+            .map { (date, snapshot) ->
+                DailyEquityHistoryPoint(
+                    date = date,
+                    openingEquityIdr = snapshot.openingEquityIdr,
+                    currentEquityIdr = snapshot.currentEquityIdr,
+                    realizedPnlIdr = snapshot.realizedPnlIdr,
+                    unrealizedPnlIdr = snapshot.unrealizedPnlIdr,
+                )
+            }
+    }
 
     override suspend fun upsertDailyRisk(botId: BotId, date: LocalDate, snapshot: DailyRiskSnapshot) {
         dailyRisk = snapshot
+        dailyRiskHistory[date] = snapshot
     }
 
     override suspend fun fetchPendingCommands(botId: BotId, deviceId: DeviceId, limit: Int): List<CommandEnvelope> {

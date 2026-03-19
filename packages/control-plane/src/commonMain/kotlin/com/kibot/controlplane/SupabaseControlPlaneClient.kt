@@ -14,6 +14,7 @@ import com.kibot.shared.models.CommandEnvelope
 import com.kibot.shared.models.CommandId
 import com.kibot.shared.models.CommandStatus
 import com.kibot.shared.models.CommandType
+import com.kibot.shared.models.DailyEquityHistoryPoint
 import com.kibot.shared.models.DailyRiskSnapshot
 import com.kibot.shared.models.DecimalValue
 import com.kibot.shared.models.DistrustLabel
@@ -133,6 +134,16 @@ class SupabaseControlPlaneClient internal constructor(
                 "equity_date" to "eq.$date",
             ),
         )?.toDailyRiskSnapshot()
+    }
+
+    override suspend fun fetchDailyRiskHistory(botId: BotId, days: Int): List<DailyEquityHistoryPoint> {
+        return selectList<DailyEquityRow>(
+            table = "daily_equity",
+            filters = mapOf("bot_id" to "eq.${botId.value}"),
+            orderBy = "equity_date.desc",
+            limit = days,
+        ).mapNotNull { it.toDailyEquityHistoryPoint() }
+            .sortedBy { it.date }
     }
 
     override suspend fun upsertDailyRisk(
@@ -976,6 +987,7 @@ private fun LeaseRow.toLeaseSnapshot(): EngineLeaseSnapshot = EngineLeaseSnapsho
 
 @Serializable
 private data class DailyEquityRow(
+    @SerialName("equity_date") val equityDate: LocalDate? = null,
     @SerialName("opening_equity_idr") val openingEquityIdr: JsonElement,
     @SerialName("current_equity_idr") val currentEquityIdr: JsonElement,
     @SerialName("realized_pnl_idr") val realizedPnlIdr: JsonElement,
@@ -1010,6 +1022,17 @@ private fun DailyEquityRow.toDailyRiskSnapshot(): DailyRiskSnapshot = DailyRiskS
     givebackPct = givebackPct ?: 0.0,
     profitProtectionStatus = profitProtectionStatus?.let(ProfitProtectionStatus::valueOf) ?: ProfitProtectionStatus.INACTIVE,
 )
+
+private fun DailyEquityRow.toDailyEquityHistoryPoint(): DailyEquityHistoryPoint? {
+    val date = equityDate ?: return null
+    return DailyEquityHistoryPoint(
+        date = date,
+        openingEquityIdr = openingEquityIdr.toDecimalValue(),
+        currentEquityIdr = currentEquityIdr.toDecimalValue(),
+        realizedPnlIdr = realizedPnlIdr.toDecimalValue(),
+        unrealizedPnlIdr = unrealizedPnlIdr.toDecimalValue(),
+    )
+}
 
 private fun JsonElement.toDecimalValue(): DecimalValue = when (this) {
     is JsonPrimitive -> DecimalValue(contentOrNull ?: toString())
