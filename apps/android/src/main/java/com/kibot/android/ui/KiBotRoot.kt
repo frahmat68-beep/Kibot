@@ -585,15 +585,6 @@ private fun PairRadarCard(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        if (radarPairs.isNotEmpty()) {
-                            Text(
-                                radarPairs.take(4).joinToString(" • "),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
                     }
                 }
                 if (radarPairs.isNotEmpty()) {

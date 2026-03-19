@@ -6,7 +6,6 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.view.View
 import android.widget.RemoteViews
 import com.kibot.android.MainActivity
 import com.kibot.android.R
@@ -37,49 +36,24 @@ class KiBotWidgetProvider : AppWidgetProvider() {
             snapshot: LiveStatusSnapshot,
         ) {
             if (appWidgetIds.isEmpty()) return
-            val visibleHoldings = snapshot.holdings.filterNot {
-                when (it.valueIdr.trim()) {
-                    "Rp0", "+Rp0", "-Rp0", "~Rp0" -> true
-                    else -> false
-                }
-            }
             appWidgetIds.forEach { widgetId ->
                 val views = RemoteViews(context.packageName, R.layout.widget_kibot_status).apply {
-                    val hasActivePair = snapshot.activePair.isNotBlank() && snapshot.activePair != "-"
-                    val radarLabel = formatRadar(snapshot)
                     val dailyReturnPct = derivePnlPct(snapshot)
                     setTextViewText(R.id.widget_title, "KiBot")
-                    setTextViewText(R.id.widget_pair, snapshot.activePair.uppercase())
-                    setTextViewText(R.id.widget_pair_label, if (hasActivePair) "PAIR LIVE" else "RADAR NOW")
-                    setTextViewText(R.id.widget_radar, radarLabel)
                     setTextViewText(R.id.widget_meta, "Update ${formatUpdated(snapshot.updatedAtEpochMs)}")
                     setTextViewText(R.id.widget_equity, snapshot.totalEquityIdr)
-                    setTextViewText(R.id.widget_daily_return, dailyReturnPct)
-                    setTextViewText(R.id.widget_pnl, snapshot.pnlTodayIdr)
-                    setTextColor(R.id.widget_daily_return, pnlTextColor(snapshot.pnlTodayIdr))
-                    setTextColor(R.id.widget_pnl, pnlTextColor(snapshot.pnlTodayIdr))
-                    setInt(R.id.widget_daily_return, "setBackgroundResource", pnlBadgeBackground(snapshot.pnlTodayIdr))
-                    setInt(R.id.widget_pnl, "setBackgroundResource", pnlBadgeBackground(snapshot.pnlTodayIdr))
-                    bindHoldingRow(
-                        rowId = R.id.widget_holding_1,
-                        assetId = R.id.widget_holding_1_asset,
-                        valueId = R.id.widget_holding_1_value,
-                        pnlId = R.id.widget_holding_1_pnl,
-                        holding = visibleHoldings.getOrNull(0),
-                    )
-                    bindHoldingRow(
-                        rowId = R.id.widget_holding_2,
-                        assetId = R.id.widget_holding_2_asset,
-                        valueId = R.id.widget_holding_2_value,
-                        pnlId = R.id.widget_holding_2_pnl,
-                        holding = visibleHoldings.getOrNull(1),
-                    )
-                    bindHoldingRow(
-                        rowId = R.id.widget_holding_3,
-                        assetId = R.id.widget_holding_3_asset,
-                        valueId = R.id.widget_holding_3_value,
-                        pnlId = R.id.widget_holding_3_pnl,
-                        holding = visibleHoldings.getOrNull(2),
+                    setTextViewText(R.id.widget_daily_return_value, dailyReturnPct)
+                    setTextViewText(R.id.widget_pnl_value, snapshot.pnlTodayIdr)
+                    setTextColor(R.id.widget_daily_return_value, pnlTextColor(snapshot.pnlTodayIdr))
+                    setTextColor(R.id.widget_pnl_value, pnlTextColor(snapshot.pnlTodayIdr))
+                    setInt(R.id.widget_daily_return_container, "setBackgroundResource", pnlBadgeBackground(snapshot.pnlTodayIdr))
+                    setInt(R.id.widget_pnl_container, "setBackgroundResource", pnlBadgeBackground(snapshot.pnlTodayIdr))
+                    setTextViewText(
+                        R.id.widget_pair,
+                        snapshot.activePair
+                            .takeIf { it.isNotBlank() && it != "-" }
+                            ?.uppercase()
+                            ?: "-",
                     )
                     setOnClickPendingIntent(R.id.widget_root, openAppIntent(context))
                 }
@@ -95,40 +69,6 @@ class KiBotWidgetProvider : AppWidgetProvider() {
                 intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
-        }
-
-        private fun formatRadar(snapshot: LiveStatusSnapshot): String {
-            val radarPairs = snapshot.radarPairs
-                .map { it.lowercase() }
-                .filter { it.isNotBlank() && it != "-" && it != snapshot.activePair.lowercase() }
-                .take(6)
-            return if (radarPairs.isEmpty()) {
-                snapshot.activePair.lowercase().takeIf { it.isNotBlank() && it != "-" } ?: "-"
-            } else {
-                radarPairs.joinToString(" • ")
-            }
-        }
-
-        private fun RemoteViews.bindHoldingRow(
-            rowId: Int,
-            assetId: Int,
-            valueId: Int,
-            pnlId: Int,
-            holding: com.kibot.android.runtime.LiveHoldingUi?,
-        ) {
-            if (holding == null) {
-                setViewVisibility(rowId, View.GONE)
-                return
-            }
-            setViewVisibility(rowId, View.VISIBLE)
-            setTextViewText(assetId, holding.asset.uppercase())
-            setTextViewText(valueId, holding.valueIdr)
-            val pnlText = listOf(holding.pnlIdr, holding.pnlPctLabel)
-                .filter { it.isNotBlank() }
-                .joinToString(" ")
-                .ifBlank { "+Rp0" }
-            setTextViewText(pnlId, pnlText)
-            setTextColor(pnlId, pnlTextColor(holding.pnlIdr.ifBlank { pnlText }))
         }
 
         private fun pnlTextColor(label: String): Int {
