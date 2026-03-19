@@ -349,11 +349,13 @@ private fun HoldingsPreviewCard(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
-                                    Text(
-                                        "Unrealized P&L",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
+                                    if (perCoinPnl != null) {
+                                        Text(
+                                            "Unrealized P&L",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
                                 }
                             }
                             Column(horizontalAlignment = Alignment.End) {
@@ -395,7 +397,7 @@ private fun LiveActivityCard(
 ) {
     SurfaceCard(modifier = modifier) {
         Text("Timeline Hari Ini", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        val entries = state.liveLogEntries.take(8)
+        val entries = dashboardTimelineEntries(state)
         if (entries.isEmpty()) {
             Surface(
                 color = Color.White.copy(alpha = 0.04f),
@@ -517,6 +519,12 @@ private fun EngineControlScreen(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
+                Text(
+                    "Aksi Aman",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Bold,
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     FilledTonalButton(
                         onClick = { onCommand(EngineAction.RequestTakeover) },
@@ -531,6 +539,12 @@ private fun EngineControlScreen(
                         Text("Sync Now")
                     }
                 }
+                Text(
+                    "Aksi Berisiko",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Bold,
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     FilledTonalButton(
                         onClick = { onCommand(EngineAction.ForceSafeTakeover) },
@@ -804,6 +818,20 @@ private fun formatLogTime(epochMs: Long): String {
 
 private fun scanCountLabel(state: KiBotUiState): String {
     return state.scanUniverseCount.takeIf { it > 0 }?.let { "Scan $it pair" } ?: "Scan berjalan"
+}
+
+private fun dashboardTimelineEntries(state: KiBotUiState): List<com.kibot.android.runtime.LiveLogEntry> {
+    val priorityCategories = setOf("BUY", "SELL", "LOSS", "PROFIT", "RISK", "ROTASI")
+    val displayEntries = state.liveLogEntries.map { entry ->
+        displayLiveLogCategory(entry.category, entry.message) to entry
+    }
+    val priority = displayEntries
+        .filter { (category, _) -> category in priorityCategories }
+        .map { it.second }
+    val chatter = displayEntries
+        .filterNot { (category, _) -> category in priorityCategories }
+        .map { it.second }
+    return (priority + chatter).take(8)
 }
 
 private fun radarPairs(state: KiBotUiState): List<String> {
