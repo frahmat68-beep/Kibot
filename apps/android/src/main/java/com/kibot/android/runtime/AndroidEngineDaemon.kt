@@ -17,6 +17,7 @@ import com.kibot.core.ReconciliationService
 import com.kibot.core.RiskConfig
 import com.kibot.core.StrategyCycleResult
 import com.kibot.core.StrategyOrchestrator
+import com.kibot.aisupport.GeminiSupportCoordinator
 import com.kibot.shared.models.AuditLogRecord
 import com.kibot.shared.models.BalanceSnapshot
 import com.kibot.shared.models.BotDesiredState
@@ -65,6 +66,7 @@ class AndroidEngineDaemon(
     private val healthAdvisor: HealthAdvisor = HealthAdvisor(RiskConfig()),
     private val strategyOrchestrator: StrategyOrchestrator = StrategyOrchestrator(),
     private val liveExecutionCoordinator: LiveExecutionCoordinator = LiveExecutionCoordinator(),
+    private val aiSupportCoordinator: GeminiSupportCoordinator? = null,
 ) {
     private val controlPlaneConfig = requireNotNull(config.controlPlane) {
         "Android engine butuh control-plane config yang valid."
@@ -124,6 +126,13 @@ class AndroidEngineDaemon(
         if (exchangeReachable && marketQuotes.isEmpty()) warnings += "Feed market kosong."
         val finalHealth = buildLocalHealth(exchangeReachable, warnings)
         val healthDecision = healthAdvisor.evaluate(finalHealth)
+        val aiSupportHints = if (marketQuotes.isNotEmpty()) {
+            aiSupportCoordinator
+                ?.evaluate(strategyOrchestrator.shortlistForSupport(marketQuotes))
+                .orEmpty()
+        } else {
+            emptyList()
+        }
         val strategyCycle = if (marketQuotes.isNotEmpty()) {
             strategyOrchestrator.analyze(
                 botId = controlPlaneConfig.botId,
@@ -132,6 +141,7 @@ class AndroidEngineDaemon(
                 dailyRisk = dailyRisk,
                 health = finalHealth,
                 marketQuotes = marketQuotes,
+                pairSupportHints = aiSupportHints,
             )
         } else {
             null

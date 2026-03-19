@@ -62,6 +62,12 @@ android {
         buildConfigField("String", "KIBOT_INDODAX_TRADE_API_V2_BASE_URL", envOrDefault("INDODAX_TRADE_API_V2_BASE_URL", "https://tapi.indodax.com").asBuildConfigString())
         buildConfigField("String", "KIBOT_INDODAX_WS_PUBLIC_URL", envOrDefault("INDODAX_WS_PUBLIC_URL", "wss://ws1.indodax.com/ws").asBuildConfigString())
         buildConfigField("String", "KIBOT_INDODAX_WS_PRIVATE_URL", envOrDefault("INDODAX_WS_PRIVATE_URL", "wss://ws1.indodax.com/ws/private").asBuildConfigString())
+        buildConfigField("boolean", "KIBOT_GEMINI_SUPPORT_ENABLED", envOrDefault("GEMINI_SUPPORT_ENABLED", "false"))
+        buildConfigField("String", "KIBOT_GEMINI_SUPPORT_API_KEY", envOrDefault("GEMINI_SUPPORT_API_KEY").asBuildConfigString())
+        buildConfigField("String", "KIBOT_GEMINI_SUPPORT_MODEL", envOrDefault("GEMINI_SUPPORT_MODEL", "gemini-2.0-flash-lite").asBuildConfigString())
+        buildConfigField("int", "KIBOT_GEMINI_SUPPORT_MAX_CANDIDATES", envOrDefault("GEMINI_SUPPORT_MAX_CANDIDATES", "6"))
+        buildConfigField("int", "KIBOT_GEMINI_SUPPORT_MIN_INTERVAL_MINUTES", envOrDefault("GEMINI_SUPPORT_MIN_INTERVAL_MINUTES", "240"))
+        buildConfigField("long", "KIBOT_GEMINI_SUPPORT_TIMEOUT_MS", envOrDefault("GEMINI_SUPPORT_TIMEOUT_MS", "15000") + "L")
         buildConfigField("boolean", "KIBOT_ENABLE_LIVE_EXECUTION", envOrDefault("BOT_ENABLE_LIVE_EXECUTION", "false"))
         buildConfigField("long", "KIBOT_POLL_INTERVAL_MS", envOrDefault("BOT_POLL_INTERVAL_MS", "5000") + "L")
         buildConfigField("int", "KIBOT_LEASE_TTL_SECONDS", envOrDefault("BOT_DEFAULT_LEASE_TTL_SECONDS", "30"))
@@ -116,6 +122,7 @@ room {
 dependencies {
     implementation(project(":packages:shared-models"))
     implementation(project(":packages:core"))
+    implementation(project(":packages:ai-support"))
     implementation(project(":packages:control-plane"))
     implementation(project(":packages:indodax-client"))
 

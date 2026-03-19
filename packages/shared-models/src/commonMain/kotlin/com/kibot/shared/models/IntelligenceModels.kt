@@ -55,6 +55,31 @@ data class CandidateOpportunity(
 )
 
 @Serializable
+data class AiSupportCandidate(
+    val pairId: PairId,
+    val pairTier: PairTier,
+    val preferredHorizon: TradingHorizon,
+    val rankingScore: Double,
+    val marketOpportunityScore: Double,
+    val liquidityScore: Double,
+    val spreadPct: Double,
+    val estimatedSlippagePct: Double,
+    val trendQualityScore: Double,
+    val holdabilityScore: Double,
+    val lastPrice: DecimalValue,
+)
+
+@Serializable
+data class AiPairSupportHint(
+    val pairId: PairId,
+    val supportBias: Double = 0.0,
+    val cautionBias: Double = 0.0,
+    val cheapNominalWatch: Boolean = false,
+    val rationale: String = "",
+    val generatedAt: Instant,
+)
+
+@Serializable
 data class CapitalDeploymentPlan(
     val allowNewEntries: Boolean,
     val allowRotation: Boolean,

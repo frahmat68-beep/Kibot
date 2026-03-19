@@ -15,6 +15,7 @@ application {
 dependencies {
     implementation(project(":packages:shared-models"))
     implementation(project(":packages:core"))
+    implementation(project(":packages:ai-support"))
     implementation(project(":packages:control-plane"))
     implementation(project(":packages:indodax-client"))
 

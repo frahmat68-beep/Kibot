@@ -1,5 +1,7 @@
 package com.kibot.macengine
 
+import com.kibot.aisupport.GeminiSupportClient
+import com.kibot.aisupport.GeminiSupportCoordinator
 import com.kibot.controlplane.SupabaseControlPlaneClient
 import com.kibot.indodax.IndodaxGateway
 import com.kibot.macengine.config.MacRuntimeConfigLoader
@@ -36,6 +38,7 @@ fun main(args: Array<String>) {
         controlPlane = controlPlane,
         exchange = exchange,
         config = config,
+        aiSupportCoordinator = config.aiSupportConfig?.let { GeminiSupportCoordinator(it, GeminiSupportClient(it)) },
     )
 
     if (args.isNotEmpty()) {

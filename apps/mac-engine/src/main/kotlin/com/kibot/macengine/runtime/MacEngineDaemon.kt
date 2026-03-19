@@ -1,5 +1,6 @@
 package com.kibot.macengine.runtime
 
+import com.kibot.aisupport.GeminiSupportCoordinator
 import com.kibot.core.ControlPlaneGateway
 import com.kibot.core.StrategyOrchestrator
 import com.kibot.core.ExchangeGateway
@@ -39,6 +40,8 @@ import com.kibot.shared.models.SyncHealth
 import kotlinx.coroutines.delay
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
+import kotlinx.datetime.plus
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import org.slf4j.LoggerFactory
@@ -58,12 +61,14 @@ class MacEngineDaemon(
     private val healthAdvisor: HealthAdvisor = HealthAdvisor(RiskConfig()),
     private val strategyOrchestrator: StrategyOrchestrator = StrategyOrchestrator(),
     private val liveExecutionCoordinator: LiveExecutionCoordinator = LiveExecutionCoordinator(),
+    private val aiSupportCoordinator: GeminiSupportCoordinator? = null,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private var registered = false
     private var lastAnalysisPublishedAt: Instant? = null
     private var lastStrategyMetricsPublishedAt: Instant? = null
     private var lastCandidateSignature: String? = null
+    private var releaseCooldownUntil: Instant? = null
 
     suspend fun run() {
         logger.info("Mac engine daemon loop started.")
@@ -115,7 +120,12 @@ class MacEngineDaemon(
         val localHealth = buildLocalHealth(exchangeReachable, healthWarnings)
         val masterBeforeTakeover = leaseAfterCommands.isHeldBy(config.device.deviceId, now)
 
-        if (botStateAfterCommands.desiredState == BotDesiredState.ON && !masterBeforeTakeover && !shouldYieldToPrimary(botStateAfterCommands, now)) {
+        if (
+            botStateAfterCommands.desiredState == BotDesiredState.ON &&
+            !masterBeforeTakeover &&
+            !shouldYieldToPrimary(botStateAfterCommands, now) &&
+            !isInReleaseCooldown(now)
+        ) {
             maybeTakeOver(
                 now = now,
                 botState = botStateAfterCommands,
@@ -143,6 +153,13 @@ class MacEngineDaemon(
         }
         val finalHealth = buildLocalHealth(exchangeReachable, healthWarnings)
         val healthDecision = healthAdvisor.evaluate(finalHealth)
+        val aiSupportHints = if (marketQuotes.isNotEmpty()) {
+            aiSupportCoordinator
+                ?.evaluate(strategyOrchestrator.shortlistForSupport(marketQuotes))
+                .orEmpty()
+        } else {
+            emptyList()
+        }
         val strategyCycle = if (marketQuotes.isNotEmpty()) {
             strategyOrchestrator.analyze(
                 botId = config.controlPlane.botId,
@@ -151,6 +168,7 @@ class MacEngineDaemon(
                 dailyRisk = dailyRisk,
                 health = finalHealth,
                 marketQuotes = marketQuotes,
+                pairSupportHints = aiSupportHints,
             )
         } else {
             null
@@ -226,6 +244,7 @@ class MacEngineDaemon(
         return when (command.commandType) {
             CommandType.REQUEST_TAKEOVER -> {
                 if (lease.isHeldBy(config.device.deviceId, Clock.System.now())) {
+                    enterReleaseCooldown()
                     controlPlane.releaseLease(
                         botId = config.controlPlane.botId,
                         deviceId = config.device.deviceId,
@@ -264,6 +283,7 @@ class MacEngineDaemon(
 
             CommandType.RELEASE_CONTROL -> {
                 if (lease.isHeldBy(config.device.deviceId, Clock.System.now())) {
+                    enterReleaseCooldown()
                     controlPlane.releaseLease(
                         botId = config.controlPlane.botId,
                         deviceId = config.device.deviceId,
@@ -378,8 +398,17 @@ class MacEngineDaemon(
         if (activeDeviceId == config.device.deviceId) return false
         val lastHeartbeatAt = botState.lastHeartbeatAt ?: return false
         val heartbeatAgeMs = now.toEpochMilliseconds() - lastHeartbeatAt.toEpochMilliseconds()
-        val graceWindowMs = maxOf(config.leaseTtlSeconds * 2_000L, 45_000L)
+        val graceWindowMs = (config.leaseTtlSeconds * 1_000L) + 8_000L
         return heartbeatAgeMs in 0..graceWindowMs && botState.syncHealth != SyncHealth.BROKEN
+    }
+
+    private fun isInReleaseCooldown(now: Instant): Boolean {
+        val until = releaseCooldownUntil ?: return false
+        return now < until
+    }
+
+    private fun enterReleaseCooldown() {
+        releaseCooldownUntil = Clock.System.now().plus((config.leaseTtlSeconds + 12).seconds)
     }
 
     private fun buildLocalHealth(exchangeReachable: Boolean, warnings: List<String>): EngineHealthSnapshot {

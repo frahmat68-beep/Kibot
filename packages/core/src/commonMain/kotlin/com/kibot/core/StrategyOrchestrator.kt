@@ -1,5 +1,7 @@
 package com.kibot.core
 
+import com.kibot.shared.models.AiPairSupportHint
+import com.kibot.shared.models.AiSupportCandidate
 import com.kibot.shared.models.BalanceSnapshot
 import com.kibot.shared.models.BotId
 import com.kibot.shared.models.BotMode
@@ -59,6 +61,7 @@ class StrategyOrchestrator(
         dailyRisk: DailyRiskSnapshot?,
         health: EngineHealthSnapshot,
         marketQuotes: List<MarketQuote>,
+        pairSupportHints: List<AiPairSupportHint> = emptyList(),
     ): StrategyCycleResult {
         val equity = estimatePortfolioValueIdr(balances, marketQuotes)
         val syntheticPositions = deriveSyntheticPositions(balances, marketQuotes)
@@ -71,7 +74,10 @@ class StrategyOrchestrator(
             lastSyncedAt = kotlinx.datetime.Clock.System.now(),
         )
         val resolvedRisk = dailyRisk ?: fallbackDailyRisk(equity)
-        val rankedPairs = pairSelector.rank(marketQuotes)
+        val rankedPairs = applySupportHints(
+            rankedPairs = pairSelector.rank(marketQuotes),
+            pairSupportHints = pairSupportHints,
+        )
         val healthDecision = healthAdvisor.evaluate(health)
         val marketSnapshot = regimeAnalyzer.analyze(
             quotes = marketQuotes,
@@ -142,6 +148,30 @@ class StrategyOrchestrator(
             distrustLabels = distrustLabels,
             summary = summary,
         )
+    }
+
+    fun shortlistForSupport(
+        marketQuotes: List<MarketQuote>,
+        maxCandidates: Int = 6,
+    ): List<AiSupportCandidate> {
+        return pairSelector.shortlist(marketQuotes)
+            .take(maxCandidates)
+            .mapNotNull { pairScore ->
+                val quote = marketQuotes.firstOrNull { it.pairId == pairScore.pairId } ?: return@mapNotNull null
+                AiSupportCandidate(
+                    pairId = pairScore.pairId,
+                    pairTier = pairScore.pairTier,
+                    preferredHorizon = pairScore.preferredHorizon,
+                    rankingScore = pairScore.rankingScore,
+                    marketOpportunityScore = pairScore.marketOpportunityScore,
+                    liquidityScore = pairScore.liquidityScore,
+                    spreadPct = quote.spreadPct,
+                    estimatedSlippagePct = quote.estimatedSlippagePct,
+                    trendQualityScore = pairScore.trendQualityScore,
+                    holdabilityScore = pairScore.holdabilityScore,
+                    lastPrice = quote.midPrice,
+                )
+            }
     }
 
     private fun buildSignal(
@@ -288,6 +318,29 @@ class StrategyOrchestrator(
         if (!liveGateReady) add("Gate eksekusi live masih tertutup atau belum cukup aman.")
     }
 
+    private fun applySupportHints(
+        rankedPairs: List<PairScore>,
+        pairSupportHints: List<AiPairSupportHint>,
+    ): List<PairScore> {
+        if (pairSupportHints.isEmpty()) return rankedPairs
+        val hintsByPair = pairSupportHints.associateBy { it.pairId }
+        return rankedPairs
+            .map { pairScore ->
+                val hint = hintsByPair[pairScore.pairId] ?: return@map pairScore
+                if (!pairScore.allowed) return@map pairScore
+                val netBias = (hint.supportBias - hint.cautionBias)
+                    .coerceIn(-MAX_EXTERNAL_SUPPORT_BIAS, MAX_EXTERNAL_SUPPORT_BIAS)
+                pairScore.copy(
+                    rankingScore = (pairScore.rankingScore + netBias).coerceIn(0.0, 1.0),
+                    marketOpportunityScore = (pairScore.marketOpportunityScore + (netBias * 0.8)).coerceIn(0.0, 1.0),
+                )
+            }
+            .sortedWith(
+                compareByDescending<PairScore> { it.pairTier == com.kibot.shared.models.PairTier.TIER_A }
+                    .thenByDescending { it.rankingScore },
+            )
+    }
+
     private fun hasFundedQuoteAsset(
         pairId: PairId,
         balances: List<BalanceSnapshot>,
@@ -396,3 +449,5 @@ private fun PairId.assets(): PairParts {
         PairParts(value.lowercase().removeSuffix(quote), quote)
     }
 }
+
+private const val MAX_EXTERNAL_SUPPORT_BIAS = 0.04

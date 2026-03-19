@@ -5,6 +5,8 @@ import android.content.Context
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import com.kibot.aisupport.GeminiSupportClient
+import com.kibot.aisupport.GeminiSupportCoordinator
 import com.kibot.android.data.local.AppDatabase
 import com.kibot.android.data.local.AppRepository
 import com.kibot.android.runtime.AndroidEngineDaemon
@@ -71,6 +73,10 @@ data class AppContainer(
         } ?: AndroidPassiveExchangeGateway()
     }
 
+    val aiSupportCoordinator by lazy {
+        runtimeConfig.aiSupportConfig?.let { GeminiSupportCoordinator(it, GeminiSupportClient(it)) }
+    }
+
     val repository: AppRepository by lazy {
         AppRepository(
             appContext = appContext,
@@ -92,6 +98,7 @@ data class AppContainer(
                 controlPlane = controlPlane,
                 exchange = exchangeGateway,
                 config = runtimeConfig,
+                aiSupportCoordinator = aiSupportCoordinator,
             )
         }
     }

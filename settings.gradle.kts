@@ -19,6 +19,7 @@ rootProject.name = "kibot"
 include(
     ":apps:android",
     ":apps:mac-engine",
+    ":packages:ai-support",
     ":packages:shared-models",
     ":packages:core",
     ":packages:control-plane",

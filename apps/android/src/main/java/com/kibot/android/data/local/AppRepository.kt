@@ -167,6 +167,7 @@ class AppRepository(
         val activeEngine = devices.firstOrNull { it.deviceId == activeDeviceId }?.displayName ?: "Unknown"
         val standbyEngine = devices.firstOrNull { it.deviceId != activeDeviceId && !it.isRevoked }?.displayName ?: "Waiting"
         val lastHeartbeatMillis = botState.lastHeartbeatAt?.toEpochMilliseconds() ?: System.currentTimeMillis()
+        runtimePreferenceStore.setDesiredOn(botState.desiredState == BotDesiredState.ON)
 
         _uiState.value = _uiState.value.copy(
             isBotRunning = botState.desiredState == BotDesiredState.ON,

@@ -2,6 +2,7 @@ package com.kibot.android.runtime
 
 import android.os.Build
 import com.kibot.android.BuildConfig
+import com.kibot.aisupport.GeminiSupportConfig
 import com.kibot.controlplane.ControlPlaneConfig
 import com.kibot.core.DeviceRegistration
 import com.kibot.indodax.IndodaxClientConfig
@@ -17,6 +18,7 @@ data class AndroidRuntimeConfig(
     val pollIntervalMillis: Long,
     val leaseTtlSeconds: Int,
     val enableLiveExecution: Boolean,
+    val aiSupportConfig: GeminiSupportConfig?,
     val indodaxCredentials: IndodaxCredentials?,
     val indodaxClientConfig: IndodaxClientConfig,
 ) {
@@ -56,6 +58,22 @@ object AndroidRuntimeConfigLoader {
             null
         }
 
+        val aiSupportConfig = if (
+            BuildConfig.KIBOT_GEMINI_SUPPORT_ENABLED &&
+            BuildConfig.KIBOT_GEMINI_SUPPORT_API_KEY.isNotBlank()
+        ) {
+            GeminiSupportConfig(
+                enabled = true,
+                apiKey = BuildConfig.KIBOT_GEMINI_SUPPORT_API_KEY,
+                model = BuildConfig.KIBOT_GEMINI_SUPPORT_MODEL,
+                maxCandidates = BuildConfig.KIBOT_GEMINI_SUPPORT_MAX_CANDIDATES,
+                minIntervalMinutes = BuildConfig.KIBOT_GEMINI_SUPPORT_MIN_INTERVAL_MINUTES,
+                timeoutMillis = BuildConfig.KIBOT_GEMINI_SUPPORT_TIMEOUT_MS,
+            )
+        } else {
+            null
+        }
+
         return AndroidRuntimeConfig(
             controlPlane = controlPlane,
             device = DeviceRegistration(
@@ -67,6 +85,7 @@ object AndroidRuntimeConfigLoader {
             pollIntervalMillis = BuildConfig.KIBOT_POLL_INTERVAL_MS,
             leaseTtlSeconds = BuildConfig.KIBOT_LEASE_TTL_SECONDS,
             enableLiveExecution = BuildConfig.KIBOT_ENABLE_LIVE_EXECUTION,
+            aiSupportConfig = aiSupportConfig,
             indodaxCredentials = credentials,
             indodaxClientConfig = IndodaxClientConfig(
                 publicBaseUrl = BuildConfig.KIBOT_INDODAX_PUBLIC_BASE_URL,

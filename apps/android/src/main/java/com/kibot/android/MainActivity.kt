@@ -22,6 +22,9 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             repository.syncNow()
+            if (repository.uiState.value.isBotRunning) {
+                BotForegroundService.start(this@MainActivity)
+            }
         }
         if (repository.isDesiredOn()) {
             BotForegroundService.start(this)

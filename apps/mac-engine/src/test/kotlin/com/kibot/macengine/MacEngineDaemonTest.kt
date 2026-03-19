@@ -298,6 +298,7 @@ class MacEngineDaemonTest {
         pollIntervalMillis = 1_000,
         leaseTtlSeconds = 30,
         enableLiveExecution = enableLiveExecution,
+        aiSupportConfig = null,
         analysisPublishIntervalMillis = 1_000,
         strategyMetricsPublishIntervalMillis = 1_000,
         indodaxCredentials = null,

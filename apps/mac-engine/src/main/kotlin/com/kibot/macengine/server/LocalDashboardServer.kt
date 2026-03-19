@@ -26,7 +26,6 @@ import kotlinx.html.body
 import kotlinx.html.button
 import kotlinx.html.classes
 import kotlinx.html.div
-import kotlinx.html.form
 import kotlinx.html.h1
 import kotlinx.html.h2
 import kotlinx.html.head
@@ -97,6 +96,28 @@ class LocalDashboardServer(
                                       document.getElementById('bot-running').textContent = state.isBotRunning ? 'RUNNING' : 'STOPPED';
                                     });
                                 }, 5000);
+                                document.addEventListener('click', async (event) => {
+                                  const button = event.target.closest('[data-command-action]');
+                                  if (!button) return;
+                                  event.preventDefault();
+                                  const action = button.dataset.commandAction;
+                                  const form = new URLSearchParams();
+                                  form.set('action', action);
+                                  const statusNode = document.getElementById('command-status');
+                                  button.disabled = true;
+                                  try {
+                                    await fetch('/command', {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                      body: form.toString(),
+                                    });
+                                    statusNode.textContent = 'Command terkirim: ' + action;
+                                  } catch (error) {
+                                    statusNode.textContent = 'Command gagal: ' + action;
+                                  } finally {
+                                    setTimeout(() => { button.disabled = false; }, 700);
+                                  }
+                                });
                                 """.trimIndent()
                             }
                         }
@@ -170,6 +191,10 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState) {
                 commandButton("Force Safe Takeover", "FORCE_SAFE_TAKEOVER")
                 commandButton("Release Control", "RELEASE_CONTROL")
                 commandButton("Sync Status Now", "SYNC_NOW")
+                p("command-status") {
+                    attributes["id"] = "command-status"
+                    +"Mac standby siap. Tombol di sini mengirim command ke control plane."
+                }
             }
         }
 
@@ -201,9 +226,10 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState) {
                 statusLine("Adaptation", state.weeklyAdaptationSummary, "weekly-adaptation")
             }
             div("card") {
-                h2 { +"Safety Notes" }
-                p { +"Mac engine only takes control after lease expiry, term validation, and reconciliation." }
-                p { +"If conflict or ambiguous order state is detected, the design requires safe mode and blocks new entries." }
+                h2 { +"Backup Flow" }
+                p { +"Biarkan daemon Mac tetap jalan di laptop. Saat HP mati atau service HP berhenti, lease Android akan habis lalu Mac bisa takeover aman." }
+                p { +"Halaman web ini hanya panel kontrol. Yang menjadi backup engine adalah proses daemon Mac, bukan tab browser." }
+                p { +"Jika conflict atau status order ambigu terdeteksi, Mac tidak akan entry baru dan bot dipaksa ke safe mode." }
             }
             div("card") {
                 h2 { +"Android Update Feed" }
@@ -226,12 +252,9 @@ private fun FlowContent.statusLine(label: String, value: String, idValue: String
 }
 
 private fun FlowContent.commandButton(label: String, action: String) {
-    form(action = "/command", method = kotlinx.html.FormMethod.post, classes = "command-form") {
-        button(type = kotlinx.html.ButtonType.submit, classes = "command-button") {
-            attributes["name"] = "action"
-            attributes["value"] = action
-            +label
-        }
+    button(type = kotlinx.html.ButtonType.button, classes = "command-button") {
+        attributes["data-command-action"] = action
+        +label
     }
 }
 
@@ -293,7 +316,6 @@ private fun dashboardStyles(): String = """
       gap: 12px;
       align-content: start;
     }
-    .command-form { margin: 0; }
     .command-button {
       width: 100%;
       border: 0;
@@ -304,6 +326,14 @@ private fun dashboardStyles(): String = """
       cursor: pointer;
       color: #07111f;
       background: linear-gradient(135deg, var(--accent), #9fb7ff);
+    }
+    .command-button:disabled { opacity: 0.72; cursor: wait; }
+    .command-status {
+      margin: 8px 0 0;
+      min-height: 22px;
+      color: var(--muted);
+      font-size: 14px;
+      grid-column: 1 / -1;
     }
     .grid {
       display: grid;

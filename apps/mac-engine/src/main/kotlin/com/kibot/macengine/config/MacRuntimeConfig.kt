@@ -1,5 +1,6 @@
 package com.kibot.macengine.config
 
+import com.kibot.aisupport.GeminiSupportConfig
 import com.kibot.controlplane.ControlPlaneConfig
 import com.kibot.core.DeviceRegistration
 import com.kibot.indodax.IndodaxClientConfig
@@ -20,6 +21,7 @@ data class MacRuntimeConfig(
     val pollIntervalMillis: Long,
     val leaseTtlSeconds: Int,
     val enableLiveExecution: Boolean,
+    val aiSupportConfig: GeminiSupportConfig?,
     val analysisPublishIntervalMillis: Long,
     val strategyMetricsPublishIntervalMillis: Long,
     val indodaxCredentials: IndodaxCredentials?,
@@ -64,6 +66,18 @@ object MacRuntimeConfigLoader {
             pollIntervalMillis = optional("BOT_POLL_INTERVAL_MS")?.toLongOrNull() ?: 5_000L,
             leaseTtlSeconds = optional("BOT_DEFAULT_LEASE_TTL_SECONDS")?.toIntOrNull() ?: 30,
             enableLiveExecution = optional("BOT_ENABLE_LIVE_EXECUTION")?.equals("true", ignoreCase = true) == true,
+            aiSupportConfig = optional("GEMINI_SUPPORT_API_KEY")
+                ?.takeIf { optional("GEMINI_SUPPORT_ENABLED")?.equals("true", ignoreCase = true) == true }
+                ?.let { apiKey ->
+                    GeminiSupportConfig(
+                        enabled = true,
+                        apiKey = apiKey,
+                        model = optional("GEMINI_SUPPORT_MODEL") ?: "gemini-2.0-flash-lite",
+                        maxCandidates = optional("GEMINI_SUPPORT_MAX_CANDIDATES")?.toIntOrNull() ?: 6,
+                        minIntervalMinutes = optional("GEMINI_SUPPORT_MIN_INTERVAL_MINUTES")?.toIntOrNull() ?: 240,
+                        timeoutMillis = optional("GEMINI_SUPPORT_TIMEOUT_MS")?.toLongOrNull() ?: 15_000L,
+                    )
+                },
             analysisPublishIntervalMillis = optional("BOT_ANALYSIS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 30_000L,
             strategyMetricsPublishIntervalMillis = optional("BOT_STRATEGY_METRICS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 300_000L,
             indodaxCredentials = when {
