@@ -206,6 +206,7 @@ class MacEngineDaemon(
                 health = finalHealth,
                 marketQuotes = resolvedMarketQuotes,
                 pairSupportHints = aiSupportHints,
+                weeklySummary = weeklyReview,
             )
         } else {
             null

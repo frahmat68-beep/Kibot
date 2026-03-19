@@ -28,6 +28,8 @@ import com.kibot.shared.models.StrategySignal
 import com.kibot.shared.models.StrategySignalType
 import com.kibot.shared.models.SyncHealth
 import com.kibot.shared.models.TradingHorizon
+import com.kibot.shared.models.WeeklyLearningSummary
+import kotlinx.datetime.Clock
 
 data class StrategyCycleResult(
     val portfolio: PortfolioSnapshot,
@@ -62,6 +64,7 @@ class StrategyOrchestrator(
         health: EngineHealthSnapshot,
         marketQuotes: List<MarketQuote>,
         pairSupportHints: List<AiPairSupportHint> = emptyList(),
+        weeklySummary: WeeklyLearningSummary? = null,
     ): StrategyCycleResult {
         val quoteByPair = marketQuotes.associateBy { it.pairId }
         val equity = estimatePortfolioValueIdr(balances, marketQuotes)
@@ -75,9 +78,13 @@ class StrategyOrchestrator(
             lastSyncedAt = kotlinx.datetime.Clock.System.now(),
         )
         val resolvedRisk = dailyRisk ?: fallbackDailyRisk(equity)
-        val rankedPairs = applySupportHints(
-            rankedPairs = pairSelector.rank(marketQuotes),
-            pairSupportHints = pairSupportHints,
+        val rankedPairs = applyWeeklyLearningBias(
+            rankedPairs = applySupportHints(
+                rankedPairs = pairSelector.rank(marketQuotes),
+                pairSupportHints = pairSupportHints,
+            ),
+            weeklySummary = weeklySummary,
+            observedAt = Clock.System.now(),
         )
         val healthDecision = healthAdvisor.evaluate(health)
         val marketSnapshot = regimeAnalyzer.analyze(
@@ -109,6 +116,7 @@ class StrategyOrchestrator(
             marketQuotes = marketQuotes,
             balances = balances,
             positions = syntheticPositions,
+            marketSnapshot = marketSnapshot,
             modeSnapshot = modeSnapshot,
             deploymentPlan = deploymentPlan,
             openOrders = openOrders,
@@ -183,6 +191,7 @@ class StrategyOrchestrator(
         marketQuotes: List<MarketQuote>,
         balances: List<BalanceSnapshot>,
         positions: List<PositionSnapshot>,
+        marketSnapshot: MarketOpportunitySnapshot,
         modeSnapshot: BotModeSnapshot,
         deploymentPlan: com.kibot.shared.models.CapitalDeploymentPlan,
         openOrders: List<com.kibot.shared.models.OrderSnapshot>,
@@ -193,58 +202,222 @@ class StrategyOrchestrator(
             .map { it.pairId }
             .toSet()
 
-        val minRankingScore = when (modeSnapshot.mode) {
+        val thresholds = resolveEntryThresholds(
+            modeSnapshot = modeSnapshot,
+            marketSnapshot = marketSnapshot,
+            heldPairs = heldPairs,
+        )
+        val dominantPairId = deploymentPlan.candidates
+            .take(2)
+            .let { topCandidates ->
+                val first = topCandidates.firstOrNull()
+                val second = topCandidates.getOrNull(1)
+                if (first != null && (second == null || (first.rankingScore - second.rankingScore) >= 0.07)) {
+                    first.pairId
+                } else {
+                    null
+                }
+            }
+
+        val chosenCandidate = deploymentPlan.candidates
+            .take(executionConfig.candidateCount)
+            .mapNotNull { candidate ->
+                val pairScore = rankedPairs.firstOrNull { it.pairId == candidate.pairId } ?: return@mapNotNull null
+                val quote = quoteByPair[candidate.pairId] ?: return@mapNotNull null
+                val hasFunding = hasFundedQuoteAsset(
+                    pairId = candidate.pairId,
+                    balances = balances,
+                    marketQuotes = marketQuotes,
+                    targetBudgetIdr = deploymentPlan.suggestedPerPositionBudgetIdr,
+                )
+                if (candidate.pairId in heldPairs || !hasFunding) return@mapNotNull null
+
+                val setupReadiness = deriveSetupReadiness(
+                    pairScore = pairScore,
+                    quote = quote,
+                    marketSnapshot = marketSnapshot,
+                    baseOpportunityFloor = thresholds.minOpportunityScore,
+                ) ?: return@mapNotNull null
+
+                if (pairScore.rankingScore < thresholds.minRankingScore) return@mapNotNull null
+
+                val selectionScore = scoreEntryCandidate(
+                    pairScore = pairScore,
+                    quote = quote,
+                    marketSnapshot = marketSnapshot,
+                    setupReadiness = setupReadiness,
+                    dominantPairId = dominantPairId,
+                )
+
+                CandidateSelection(
+                    pairScore = pairScore,
+                    quote = quote,
+                    setupReadiness = setupReadiness,
+                    selectionScore = selectionScore,
+                )
+            }
+            .maxByOrNull { it.selectionScore }
+            ?: return null
+
+        val pairScore = chosenCandidate.pairScore
+        val quote = chosenCandidate.quote
+
+        return StrategySignal(
+            pairId = chosenCandidate.pairScore.pairId,
+            signalType = chosenCandidate.setupReadiness.signalType,
+            confidence = chosenCandidate.selectionScore.coerceIn(0.0, 1.0),
+            rationale = buildList {
+                add("Pair ${chosenCandidate.pairScore.pairId.value} jadi kandidat entry terkuat dari shortlist yang siap dieksekusi.")
+                add(chosenCandidate.setupReadiness.rationale)
+                if (dominantPairId == chosenCandidate.pairScore.pairId) {
+                    add("Kandidat ini unggul cukup jauh dari alternatif terdekat, jadi modal tidak dipaksa menyebar.")
+                }
+                if (heldPairs.isEmpty() && thresholds.productiveIdleBiasActive) {
+                    add("Modal sedang idle, jadi threshold entry sedikit dilonggarkan pada kandidat yang benar-benar kuat.")
+                }
+            },
+            entryPrice = quote.bestBid,
+            takeProfitPrice = DecimalValue.fromDouble(
+                quote.bestBid.toDoubleOrZero() *
+                    if (pairScore.preferredHorizon == TradingHorizon.SWING) 1.05 else 1.02,
+            ),
+            stopPrice = DecimalValue.fromDouble(
+                quote.bestBid.toDoubleOrZero() *
+                    if (pairScore.preferredHorizon == TradingHorizon.SWING) 0.96 else 0.985,
+            ),
+            setupType = chosenCandidate.setupReadiness.setupType,
+            horizon = pairScore.preferredHorizon,
+            pairTier = pairScore.pairTier,
+            marketRegime = marketSnapshot.regime,
+            edgeConfidence = modeSnapshot.edgeConfidence,
+            expectedHoldingHours = chosenCandidate.setupReadiness.expectedHoldingHours,
+            expectedNetProfitabilityPct = pairScore.marketOpportunityScore,
+        )
+    }
+
+    private fun resolveEntryThresholds(
+        modeSnapshot: BotModeSnapshot,
+        marketSnapshot: MarketOpportunitySnapshot,
+        heldPairs: Set<PairId>,
+    ): EntryThresholds {
+        val baseRankingScore = when (modeSnapshot.mode) {
             BotMode.SAFE -> Double.MAX_VALUE
             BotMode.DEFENSIVE -> executionConfig.defensiveMinRankingScore
             BotMode.GROWTH -> executionConfig.growthMinRankingScore
             BotMode.ATTACK -> executionConfig.attackMinRankingScore
         }
-        val chosenCandidate = deploymentPlan.candidates.firstOrNull { candidate ->
-            val pairScore = rankedPairs.firstOrNull { it.pairId == candidate.pairId } ?: return@firstOrNull false
-            val hasFunding = hasFundedQuoteAsset(candidate.pairId, balances, marketQuotes, deploymentPlan.suggestedPerPositionBudgetIdr)
-            candidate.pairId !in heldPairs &&
-                hasFunding &&
-                pairScore.rankingScore >= minRankingScore &&
-                pairScore.marketOpportunityScore >= executionConfig.minExpectedOpportunityScore
-        } ?: return null
-
-        val pairScore = rankedPairs.firstOrNull { it.pairId == chosenCandidate.pairId } ?: return null
-        val quote = quoteByPair[chosenCandidate.pairId] ?: return null
-
-        val signalType = when {
-            pairScore.preferredHorizon == TradingHorizon.SWING &&
-                modeSnapshot.edgeConfidence != EdgeConfidence.LOW &&
-                quote.mediumTermReturnPct >= 1.0 ->
-                StrategySignalType.BREAKOUT_ENTRY
-            quote.spreadPct <= 0.35 && quote.shortTermReturnPct < 0.8 ->
-                StrategySignalType.MEAN_REVERSION_ENTRY
-            else -> StrategySignalType.BREAKOUT_ENTRY
-        }
-        val setupType = when {
-            pairScore.preferredHorizon == TradingHorizon.SWING -> com.kibot.shared.models.SetupType.SWING_TREND_CONTINUATION
-            signalType == StrategySignalType.MEAN_REVERSION_ENTRY -> com.kibot.shared.models.SetupType.HEALTHY_SHORT_TERM_PULLBACK
-            else -> com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION
-        }
-
-        return StrategySignal(
-            pairId = chosenCandidate.pairId,
-            signalType = signalType,
-            confidence = pairScore.rankingScore,
-            rationale = listOf(
-                "Pair ${chosenCandidate.pairId.value} masuk kandidat terbaik yang belum sedang dipegang.",
-                "Mode ${modeSnapshot.mode.name} dan regime ${modeSnapshot.edgeConfidence.name} mendukung entry selektif.",
-            ),
-            entryPrice = quote.bestBid,
-            takeProfitPrice = DecimalValue.fromDouble(quote.bestBid.toDoubleOrZero() * if (pairScore.preferredHorizon == TradingHorizon.SWING) 1.05 else 1.02),
-            stopPrice = DecimalValue.fromDouble(quote.bestBid.toDoubleOrZero() * if (pairScore.preferredHorizon == TradingHorizon.SWING) 0.96 else 0.985),
-            setupType = setupType,
-            horizon = pairScore.preferredHorizon,
-            pairTier = pairScore.pairTier,
-            marketRegime = marketQuotes.toRegimeHint(),
-            edgeConfidence = modeSnapshot.edgeConfidence,
-            expectedHoldingHours = if (pairScore.preferredHorizon == TradingHorizon.SWING) 72.0 else 8.0,
-            expectedNetProfitabilityPct = pairScore.marketOpportunityScore,
+        val productiveIdleBiasActive = heldPairs.isEmpty() &&
+            modeSnapshot.mode in setOf(BotMode.GROWTH, BotMode.ATTACK) &&
+            marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC &&
+            marketSnapshot.marketOpportunityScore >= 0.60
+        return EntryThresholds(
+            minRankingScore = (baseRankingScore - if (productiveIdleBiasActive) executionConfig.productiveIdleRankingDelta else 0.0)
+                .coerceAtLeast(0.0),
+            minOpportunityScore = (
+                executionConfig.minExpectedOpportunityScore -
+                    if (productiveIdleBiasActive) executionConfig.productiveIdleOpportunityDelta else 0.0
+                ).coerceAtLeast(0.0),
+            productiveIdleBiasActive = productiveIdleBiasActive,
         )
+    }
+
+    private fun deriveSetupReadiness(
+        pairScore: PairScore,
+        quote: MarketQuote,
+        marketSnapshot: MarketOpportunitySnapshot,
+        baseOpportunityFloor: Double,
+    ): SetupReadiness? {
+        val setupType: com.kibot.shared.models.SetupType
+        val signalType: StrategySignalType
+        val adjustedOpportunityFloor: Double
+        val expectedHoldingHours: Double
+        val rationale: String
+
+        when {
+            pairScore.preferredHorizon == TradingHorizon.SWING &&
+                marketSnapshot.regime == MarketRegime.HEALTHY_UPTREND &&
+                pairScore.holdabilityScore >= 0.64 &&
+                pairScore.trendQualityScore >= 0.60 &&
+                quote.mediumTermReturnPct >= 0.90 -> {
+                setupType = com.kibot.shared.models.SetupType.SWING_TREND_CONTINUATION
+                signalType = StrategySignalType.BREAKOUT_ENTRY
+                adjustedOpportunityFloor = (baseOpportunityFloor - 0.01).coerceAtLeast(0.0)
+                expectedHoldingHours = 72.0
+                rationale = "Regime uptrend dan holdability kuat, jadi swing continuation boleh diprioritaskan."
+            }
+
+            quote.spreadPct <= 0.32 &&
+                quote.estimatedSlippagePct <= 0.32 &&
+                pairScore.fillQualityScore >= 0.62 &&
+                quote.shortTermReturnPct <= 0.55 &&
+                marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC -> {
+                setupType = com.kibot.shared.models.SetupType.HEALTHY_SHORT_TERM_PULLBACK
+                signalType = StrategySignalType.MEAN_REVERSION_ENTRY
+                adjustedOpportunityFloor = (baseOpportunityFloor - 0.02).coerceAtLeast(0.0)
+                expectedHoldingHours = 8.0
+                rationale = "Spread dan fill sehat, jadi pullback taktis boleh dipakai saat harga sedang rehat sehat."
+            }
+
+            quote.mediumTermReturnPct >= 0.85 &&
+                quote.shortTermReturnPct >= 0.30 -> {
+                setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION
+                signalType = StrategySignalType.BREAKOUT_ENTRY
+                adjustedOpportunityFloor = when (marketSnapshot.regime) {
+                    MarketRegime.HEALTHY_SIDEWAYS -> baseOpportunityFloor + 0.03
+                    MarketRegime.HIGH_VOLATILITY_UNCLEAR -> baseOpportunityFloor + 0.04
+                    else -> baseOpportunityFloor + 0.01
+                }.coerceAtMost(1.0)
+                expectedHoldingHours = if (pairScore.preferredHorizon == TradingHorizon.SWING) 48.0 else 10.0
+                rationale = "Breakout continuation tetap boleh, tapi threshold diperketat saat market belum benar-benar nyaman."
+            }
+
+            else -> return null
+        }
+
+        if (pairScore.marketOpportunityScore < adjustedOpportunityFloor) return null
+        return SetupReadiness(
+            setupType = setupType,
+            signalType = signalType,
+            expectedHoldingHours = expectedHoldingHours,
+            rationale = rationale,
+        )
+    }
+
+    private fun scoreEntryCandidate(
+        pairScore: PairScore,
+        quote: MarketQuote,
+        marketSnapshot: MarketOpportunitySnapshot,
+        setupReadiness: SetupReadiness,
+        dominantPairId: PairId?,
+    ): Double {
+        val regimeBias = when {
+            setupReadiness.setupType == com.kibot.shared.models.SetupType.SWING_TREND_CONTINUATION ->
+                ((marketSnapshot.swingBiasScore - 0.50) * 0.10).coerceIn(-0.03, 0.03)
+            setupReadiness.signalType == StrategySignalType.MEAN_REVERSION_ENTRY ->
+                ((marketSnapshot.tacticalBiasScore - 0.50) * 0.10).coerceIn(-0.03, 0.03)
+            else ->
+                if (marketSnapshot.regime == MarketRegime.HEALTHY_UPTREND) 0.02 else 0.0
+        }
+        val followThroughScore = when (setupReadiness.setupType) {
+            com.kibot.shared.models.SetupType.SWING_TREND_CONTINUATION ->
+                averageOf(pairScore.holdabilityScore, pairScore.trendQualityScore)
+            com.kibot.shared.models.SetupType.HEALTHY_SHORT_TERM_PULLBACK ->
+                averageOf(pairScore.fillQualityScore, pairScore.spreadScore, pairScore.slippageScore)
+            else ->
+                averageOf(pairScore.trendQualityScore, pairScore.historicalExpectancyScore)
+        }
+        val dominanceBonus = if (dominantPairId == pairScore.pairId) 0.025 else 0.0
+
+        return weightedAverage(
+            pairScore.rankingScore to 0.34,
+            pairScore.marketOpportunityScore to 0.26,
+            pairScore.fillQualityScore to 0.12,
+            pairScore.historicalExpectancyScore to 0.10,
+            followThroughScore to 0.10,
+            quote.recentTradeActivityScore.coerceIn(0.0, 1.0) to 0.08,
+        ).let { base ->
+            (base + regimeBias + dominanceBonus).coerceIn(0.0, 1.0)
+        }
     }
 
     private fun StrategySignal.toExecutionPlan(
@@ -350,6 +523,43 @@ class StrategyOrchestrator(
             )
     }
 
+    private fun applyWeeklyLearningBias(
+        rankedPairs: List<PairScore>,
+        weeklySummary: WeeklyLearningSummary?,
+        observedAt: kotlinx.datetime.Instant,
+    ): List<PairScore> {
+        val adaptationPlan = weeklySummary?.adaptationPlan ?: return rankedPairs
+        val whitelist = adaptationPlan.whitelistPairs.toSet()
+        val blacklist = adaptationPlan.temporaryBlacklistPairs.toSet()
+        val activeHours = adaptationPlan.activeHours.toSet()
+        val currentHour = observedAt.toString().substring(11, 13).toIntOrNull() ?: 0
+        val outsideActiveHoursPenalty = if (activeHours.isNotEmpty() && currentHour !in activeHours) 0.02 else 0.0
+
+        return rankedPairs
+            .map { pairScore ->
+                if (!pairScore.allowed) return@map pairScore
+                val bias = when (pairScore.pairId) {
+                    in whitelist -> 0.02
+                    in blacklist -> -0.04
+                    else -> 0.0
+                } - outsideActiveHoursPenalty
+                if (bias == 0.0) return@map pairScore
+                pairScore.copy(
+                    rankingScore = (pairScore.rankingScore + bias).coerceIn(0.0, 1.0),
+                    marketOpportunityScore = (pairScore.marketOpportunityScore + (bias * 0.75)).coerceIn(0.0, 1.0),
+                    rejectionReasons = pairScore.rejectionReasons,
+                )
+            }
+            .sortedWith(
+                compareByDescending<PairScore> { it.pairTier == com.kibot.shared.models.PairTier.TIER_A }
+                    .thenByDescending { it.rankingScore }
+                    .thenByDescending { it.marketOpportunityScore }
+                    .thenByDescending { it.fillQualityScore }
+                    .thenByDescending { it.historicalExpectancyScore }
+                    .thenByDescending { it.spreadScore + it.slippageScore },
+            )
+    }
+
     private fun hasFundedQuoteAsset(
         pairId: PairId,
         balances: List<BalanceSnapshot>,
@@ -433,6 +643,16 @@ class StrategyOrchestrator(
         return (pairQuality - drawdownPenalty - givebackPenalty + 0.35).coerceIn(0.0, 1.0)
     }
 
+    private fun weightedAverage(vararg entries: Pair<Double, Double>): Double {
+        val totalWeight = entries.sumOf { it.second }.coerceAtLeast(0.000001)
+        return (entries.sumOf { it.first.coerceIn(0.0, 1.0) * it.second } / totalWeight).coerceIn(0.0, 1.0)
+    }
+
+    private fun averageOf(vararg values: Double): Double {
+        if (values.isEmpty()) return 0.0
+        return values.map { it.coerceIn(0.0, 1.0) }.average().coerceIn(0.0, 1.0)
+    }
+
     private fun List<MarketQuote>.toRegimeHint(): MarketRegime {
         val avgTrend = map { it.mediumTermReturnPct }.average().takeIf { !it.isNaN() } ?: 0.0
         return when {
@@ -442,6 +662,26 @@ class StrategyOrchestrator(
         }
     }
 }
+
+private data class EntryThresholds(
+    val minRankingScore: Double,
+    val minOpportunityScore: Double,
+    val productiveIdleBiasActive: Boolean,
+)
+
+private data class SetupReadiness(
+    val setupType: com.kibot.shared.models.SetupType,
+    val signalType: StrategySignalType,
+    val expectedHoldingHours: Double,
+    val rationale: String,
+)
+
+private data class CandidateSelection(
+    val pairScore: PairScore,
+    val quote: MarketQuote,
+    val setupReadiness: SetupReadiness,
+    val selectionScore: Double,
+)
 
 private data class PairParts(
     val baseAsset: String,

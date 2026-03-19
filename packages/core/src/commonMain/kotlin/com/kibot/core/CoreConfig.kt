@@ -88,4 +88,6 @@ data class StrategyExecutionConfig(
     val attackMinRankingScore: Double = 0.68,
     val minExpectedOpportunityScore: Double = 0.58,
     val candidateCount: Int = 7,
+    val productiveIdleRankingDelta: Double = 0.02,
+    val productiveIdleOpportunityDelta: Double = 0.03,
 )

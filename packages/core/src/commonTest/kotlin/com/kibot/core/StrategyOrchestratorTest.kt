@@ -8,11 +8,16 @@ import com.kibot.shared.models.EngineHealthSnapshot
 import com.kibot.shared.models.HealthStatus
 import com.kibot.shared.models.MarketQuote
 import com.kibot.shared.models.PairId
+import com.kibot.shared.models.SetupType
 import com.kibot.shared.models.SyncHealth
+import com.kibot.shared.models.WeeklyAdaptationPlan
+import com.kibot.shared.models.WeeklyLearningSummary
 import kotlinx.datetime.Clock
+import kotlinx.datetime.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class StrategyOrchestratorTest {
@@ -108,6 +113,163 @@ class StrategyOrchestratorTest {
         assertEquals("gamma_idr", boostedGamma.pairId.value)
     }
 
+    @Test
+    fun weeklyWhitelistCanBiasSelectionWithoutBreakingSafety() {
+        val now = Clock.System.now()
+        val balances = listOf(
+            BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(100_000.0)),
+        )
+        val health = healthyEngine()
+        val quotes = listOf(
+            quote(
+                pair = "alpha_idr",
+                price = 101.0,
+                spreadPct = 0.12,
+                slippagePct = 0.10,
+                trendScore = 0.61,
+                expectancyScore = 0.62,
+                volume = 25_000_000.0,
+                holdabilityScore = 0.60,
+                shortTermReturnPct = 0.42,
+                mediumTermReturnPct = 1.10,
+                now = now,
+            ),
+            quote(
+                pair = "beta_idr",
+                price = 99.0,
+                spreadPct = 0.11,
+                slippagePct = 0.09,
+                trendScore = 0.60,
+                expectancyScore = 0.63,
+                volume = 24_000_000.0,
+                holdabilityScore = 0.61,
+                shortTermReturnPct = 0.40,
+                mediumTermReturnPct = 1.08,
+                now = now,
+            ),
+        )
+
+        val baseline = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = balances,
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = health,
+            marketQuotes = quotes,
+        )
+        val learningBiased = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = balances,
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = health,
+            marketQuotes = quotes,
+            weeklySummary = weeklySummary(
+                now = now,
+                whitelistPairs = listOf(PairId("beta_idr")),
+            ),
+        )
+
+        val baselineBeta = baseline.rankedPairs.first { it.pairId == PairId("beta_idr") }
+        val learningBeta = learningBiased.rankedPairs.first { it.pairId == PairId("beta_idr") }
+
+        assertTrue(learningBeta.rankingScore > baselineBeta.rankingScore)
+        assertEquals("beta_idr", learningBiased.selectedSignal?.pairId?.value)
+    }
+
+    @Test
+    fun healthyUptrendCanPreferSwingContinuationWhenItIsCloseEnough() {
+        val now = Clock.System.now()
+        val balances = listOf(
+            BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(100_000.0)),
+        )
+        val health = healthyEngine()
+        val quotes = listOf(
+            quote(
+                pair = "alpha_idr",
+                price = 120.0,
+                spreadPct = 0.12,
+                slippagePct = 0.10,
+                trendScore = 0.62,
+                expectancyScore = 0.64,
+                volume = 26_000_000.0,
+                holdabilityScore = 0.58,
+                shortTermReturnPct = 0.52,
+                mediumTermReturnPct = 1.25,
+                now = now,
+            ),
+            quote(
+                pair = "beta_idr",
+                price = 140.0,
+                spreadPct = 0.14,
+                slippagePct = 0.11,
+                trendScore = 0.68,
+                expectancyScore = 0.68,
+                volume = 25_000_000.0,
+                holdabilityScore = 0.78,
+                shortTermReturnPct = 0.90,
+                mediumTermReturnPct = 2.10,
+                now = now,
+            ),
+            quote(
+                pair = "gamma_idr",
+                price = 160.0,
+                spreadPct = 0.16,
+                slippagePct = 0.12,
+                trendScore = 0.66,
+                expectancyScore = 0.66,
+                volume = 23_000_000.0,
+                holdabilityScore = 0.74,
+                shortTermReturnPct = 0.82,
+                mediumTermReturnPct = 1.95,
+                now = now,
+            ),
+        )
+
+        val analysis = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = balances,
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = health,
+            marketQuotes = quotes,
+        )
+
+        val signal = assertNotNull(analysis.selectedSignal)
+        assertEquals("beta_idr", signal.pairId.value)
+        assertEquals(SetupType.SWING_TREND_CONTINUATION, signal.setupType)
+    }
+
+    private fun healthyEngine() = EngineHealthSnapshot(
+        status = HealthStatus.HEALTHY,
+        syncHealth = SyncHealth.HEALTHY,
+        websocketHealthy = true,
+        exchangeReachable = true,
+        supabaseReachable = true,
+    )
+
+    private fun weeklySummary(
+        now: kotlinx.datetime.Instant,
+        whitelistPairs: List<PairId> = emptyList(),
+    ) = WeeklyLearningSummary(
+        botId = BotId("main"),
+        periodStart = LocalDate(2026, 3, 10),
+        periodEnd = LocalDate(2026, 3, 17),
+        falseEntryRate = 0.10,
+        noTradeQualityScore = 0.60,
+        avoidedBadTradesIndicator = 0.40,
+        capitalUtilizationPct = 0.35,
+        productiveUtilizationPct = 0.22,
+        missedOpportunityRate = 0.18,
+        tacticalExpectancy = 0.16,
+        swingExpectancy = 0.18,
+        adaptationPlan = WeeklyAdaptationPlan(
+            whitelistPairs = whitelistPairs,
+            notes = listOf("Weekly bias ringan."),
+        ),
+        notes = listOf("Generated at ${now.toString()}"),
+    )
+
     private fun quote(
         pair: String,
         price: Double,
@@ -116,6 +278,9 @@ class StrategyOrchestratorTest {
         trendScore: Double,
         expectancyScore: Double,
         volume: Double,
+        holdabilityScore: Double = 0.65,
+        shortTermReturnPct: Double = 0.8,
+        mediumTermReturnPct: Double = 1.2,
         now: kotlinx.datetime.Instant,
     ): MarketQuote = MarketQuote(
         pairId = PairId(pair),
@@ -130,15 +295,15 @@ class StrategyOrchestratorTest {
         tradeCount24h = 250,
         bidDepthTop5Idr = DecimalValue.fromDouble(500_000.0),
         askDepthTop5Idr = DecimalValue.fromDouble(500_000.0),
-        shortTermReturnPct = 0.8,
-        mediumTermReturnPct = 1.2,
+        shortTermReturnPct = shortTermReturnPct,
+        mediumTermReturnPct = mediumTermReturnPct,
         realizedVolatilityPct = 1.4,
         recentTradeActivityScore = 0.8,
         volatilityQualityScore = 0.72,
         trendQualityScore = trendScore,
         historicalExpectancyScore = expectancyScore,
         fillQualityScore = 0.8,
-        holdabilityScore = 0.65,
+        holdabilityScore = holdabilityScore,
         capturedAt = now,
     )
 }

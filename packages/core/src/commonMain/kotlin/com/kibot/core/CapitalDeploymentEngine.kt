@@ -49,12 +49,15 @@ class CapitalDeploymentEngine(
             .coerceAtMost(config.maxConcurrentPositions)
         val firstCandidate = candidates.firstOrNull()
         val secondCandidate = candidates.getOrNull(1)
+        val topCandidateGap = ((firstCandidate?.rankingScore ?: 0.0) - (secondCandidate?.rankingScore ?: 0.0))
+            .coerceAtLeast(0.0)
         val secondSlotReady = risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) &&
             firstCandidate?.rankingScore?.let { it >= config.minSecondSlotRankingScore } == true &&
             secondCandidate?.let {
                 it.rankingScore >= config.minSecondSlotRankingScore &&
                     it.marketOpportunityScore >= config.minSecondSlotOpportunityScore
-            } == true
+            } == true &&
+            topCandidateGap <= 0.12
         val maxActivePositions = when {
             !risk.allowNewEntries || !mode.tradingAllowed -> openPositions
             secondSlotReady -> baseTotalCap
@@ -62,11 +65,12 @@ class CapitalDeploymentEngine(
                 .coerceAtMost(config.maxConcurrentPositions)
         }
         val hasNewSlotCapacity = maxActivePositions > openPositions
+        val dominanceBoost = topCandidateGap.coerceIn(0.0, 0.10) * 0.35
         val budgetMultiplier = when {
             maxActivePositions <= 1 &&
                 firstCandidate?.rankingScore?.let { it >= 0.80 } == true &&
                 risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) ->
-                config.singlePositionBudgetBoostMultiplier
+                config.singlePositionBudgetBoostMultiplier + dominanceBoost
             maxActivePositions >= 2 ->
                 config.multiPositionBudgetSplitMultiplier
             else -> 1.0
@@ -77,7 +81,8 @@ class CapitalDeploymentEngine(
         ).coerceAtLeast(0.0)
         val allowRotation = mode.mode != BotMode.SAFE &&
             openPositions > 0 &&
-            candidates.firstOrNull()?.rankingScore?.let { it >= 0.80 } == true
+            candidates.firstOrNull()?.rankingScore?.let { it >= 0.78 } == true &&
+            topCandidateGap >= 0.05
 
         val rationale = buildList {
             if (!risk.allowNewEntries) add("Entry baru diblokir oleh risk engine.")
@@ -86,6 +91,7 @@ class CapitalDeploymentEngine(
             if (mode.mode == BotMode.ATTACK) add("Modal boleh sedikit lebih aktif karena market sangat sehat.")
             if (candidates.isEmpty()) add("Belum ada kandidat yang layak memakai modal.")
             if (secondSlotReady) add("Slot kedua boleh dibuka karena dua kandidat teratas sama-sama kuat.")
+            if (!secondSlotReady && topCandidateGap > 0.12) add("Kandidat teratas terlalu dominan, jadi modal lebih baik difokuskan dulu.")
             if (allowRotation) add("Boleh pertimbangkan rotasi jika kandidat baru jauh lebih unggul.")
         }
 

@@ -197,6 +197,7 @@ class AndroidEngineDaemon(
                 health = finalHealth,
                 marketQuotes = resolvedMarketQuotes,
                 pairSupportHints = aiSupportHints,
+                weeklySummary = weeklyReview,
             )
         } else {
             null
