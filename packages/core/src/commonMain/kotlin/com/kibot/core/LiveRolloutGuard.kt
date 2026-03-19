@@ -12,6 +12,10 @@ data class LiveRolloutConfig(
     val shadowMinBotHealthScore: Double = 0.68,
     val shadowMinOpportunityScore: Double = 0.70,
     val minimumWeeklyTradeSamples: Int = 6,
+    val speculativeMinWeeklyTradeSamples: Int = 12,
+    val speculativeMinRankingScore: Double = 0.90,
+    val speculativeMinExpectedEdgePct: Double = 0.95,
+    val speculativeMaxWeeklyFalseEntryRate: Double = 0.20,
     val maxWeeklyFalseEntryRate: Double = 0.34,
 )
 
@@ -44,6 +48,23 @@ class LiveRolloutGuard(
         }
         if (cycle.riskDecision.riskLadderLevel !in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING)) {
             return blocked("shadow", "Risk ladder belum cukup sehat untuk rollout live.")
+        }
+        if (executionPlan.speculativePocket) {
+            if (weeklySummary == null || weeklySummary.tradeCount < config.speculativeMinWeeklyTradeSamples) {
+                return blocked("shadow", "Sleeve spekulatif butuh sample trade mingguan yang lebih matang sebelum boleh live.")
+            }
+            if (cycle.modeSnapshot.edgeConfidence != EdgeConfidence.HIGH) {
+                return blocked("guarded_live", "Sleeve spekulatif hanya boleh live saat edge confidence benar-benar tinggi.")
+            }
+            if (
+                executionPlan.pairRankingScore < config.speculativeMinRankingScore ||
+                executionPlan.expectedNetEdgePct < config.speculativeMinExpectedEdgePct
+            ) {
+                return blocked("guarded_live", "Sleeve spekulatif hanya boleh live pada setup yang sangat dominan.")
+            }
+            if (weeklySummary.falseEntryRate > config.speculativeMaxWeeklyFalseEntryRate) {
+                return blocked("guarded_live", "False entry mingguan masih terlalu tinggi untuk jalur spekulatif.")
+            }
         }
 
         val hasEnoughWeeklyTrades = weeklySummary?.tradeCount?.let { it >= config.minimumWeeklyTradeSamples } == true

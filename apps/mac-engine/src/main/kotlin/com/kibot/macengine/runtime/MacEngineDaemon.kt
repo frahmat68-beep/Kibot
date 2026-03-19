@@ -83,6 +83,7 @@ class MacEngineDaemon(
     private var lastLearningPublishedAt: Instant? = null
     private var lastWeeklyReviewPublishedAt: Instant? = null
     private var releaseCooldownUntil: Instant? = null
+    private var lastSuccessfulControlPlaneAt: Instant? = null
 
     suspend fun run() {
         logger.info("Mac engine daemon loop started.")
@@ -109,6 +110,7 @@ class MacEngineDaemon(
         val weeklyReview = runCatching {
             controlPlane.fetchLatestWeeklyLearningSummary(config.controlPlane.botId)
         }.getOrNull()
+        lastSuccessfulControlPlaneAt = now
 
         val exchangeReachable = runCatching { exchange.ping() }.getOrElse { false }
         val healthWarnings = mutableListOf<String>()
@@ -131,7 +133,11 @@ class MacEngineDaemon(
             }
         }
 
-        val localHealth = buildLocalHealth(exchangeReachable, healthWarnings)
+        val localHealth = buildLocalHealth(
+            exchangeReachable = exchangeReachable,
+            warnings = healthWarnings,
+            marketFeedHealthy = exchangeReachable,
+        )
         val masterBeforeTakeover = leaseAfterCommands.isHeldBy(config.device.deviceId, now)
 
         if (
@@ -180,7 +186,11 @@ class MacEngineDaemon(
         if (exchangeReachable && resolvedMarketQuotes.isEmpty()) {
             healthWarnings += "Market quote feed kosong."
         }
-        val finalHealth = buildLocalHealth(exchangeReachable, healthWarnings)
+        val finalHealth = buildLocalHealth(
+            exchangeReachable = exchangeReachable,
+            warnings = healthWarnings,
+            marketFeedHealthy = exchangeReachable && resolvedMarketQuotes.isNotEmpty(),
+        )
         val healthDecision = healthAdvisor.evaluate(finalHealth)
         val aiSupportEvaluation = if (isMaster && resolvedMarketQuotes.isNotEmpty()) {
             val shortlist = strategyOrchestrator.shortlistForSupport(resolvedMarketQuotes)
@@ -323,6 +333,8 @@ class MacEngineDaemon(
                     localHealth = buildLocalHealth(
                         exchangeReachable = runCatching { exchange.ping() }.getOrDefault(false),
                         warnings = listOf("Force safe takeover requested."),
+                        supabaseReachable = isControlPlaneReachable(Clock.System.now()),
+                        marketFeedHealthy = false,
                     ),
                 )
                 controlPlane.updateCommandStatus(
@@ -393,14 +405,14 @@ class MacEngineDaemon(
         }
         val balances = runCatching { exchange.fetchBalances() }.getOrDefault(emptyList())
         val openOrders = runCatching { exchange.fetchOpenOrders() }.getOrDefault(emptyList())
-        val fills = openOrders
-            .map { it.pairId }
+        val recentPersistedOrders = controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 120)
+        val reconciliationPairs = (openOrders.map { it.pairId } + recentPersistedOrders.map { it.pairId })
             .distinct()
+            .take(12)
+        val fills = reconciliationPairs
             .flatMap { pairId ->
                 runCatching { exchange.fetchRecentFills(pairId, limit = 20) }.getOrDefault(emptyList())
             }
-
-        val persistedOrders = controlPlane.fetchOpenPersistedOrders(config.controlPlane.botId)
         val reconciliation = reconciliationService.reconcile(
             portfolio = PortfolioSnapshot(
                 botId = config.controlPlane.botId,
@@ -411,7 +423,7 @@ class MacEngineDaemon(
                 lastSyncedAt = now,
             ),
             recentFills = fills,
-            persistedOrders = persistedOrders,
+            persistedOrders = recentPersistedOrders,
         )
 
         val evaluation = leaseCoordinator.canAcquireMastership(
@@ -474,10 +486,15 @@ class MacEngineDaemon(
         releaseCooldownUntil = Clock.System.now().plus((config.leaseTtlSeconds + 12).seconds)
     }
 
-    private fun buildLocalHealth(exchangeReachable: Boolean, warnings: List<String>): EngineHealthSnapshot {
+    private fun buildLocalHealth(
+        exchangeReachable: Boolean,
+        warnings: List<String>,
+        supabaseReachable: Boolean = isControlPlaneReachable(Clock.System.now()),
+        marketFeedHealthy: Boolean = exchangeReachable,
+    ): EngineHealthSnapshot {
         val status = when {
-            !exchangeReachable -> HealthStatus.CRITICAL
-            warnings.isNotEmpty() -> HealthStatus.WARNING
+            !exchangeReachable || !supabaseReachable -> HealthStatus.CRITICAL
+            !marketFeedHealthy || warnings.isNotEmpty() -> HealthStatus.WARNING
             else -> HealthStatus.HEALTHY
         }
         val syncHealth = when {
@@ -488,14 +505,21 @@ class MacEngineDaemon(
         return EngineHealthSnapshot(
             status = status,
             syncHealth = syncHealth,
-            websocketHealthy = exchangeReachable,
+            websocketHealthy = marketFeedHealthy,
             exchangeReachable = exchangeReachable,
-            supabaseReachable = true,
+            supabaseReachable = supabaseReachable,
             fillQualityScore = if (warnings.any { it.contains("fill", ignoreCase = true) }) 0.35 else 0.75,
             anomalyCount = warnings.size,
             lastError = warnings.firstOrNull(),
             warnings = warnings.distinct(),
         )
+    }
+
+    private fun isControlPlaneReachable(now: Instant): Boolean {
+        val lastSuccess = lastSuccessfulControlPlaneAt ?: return false
+        val stalenessMs = (now.toEpochMilliseconds() - lastSuccess.toEpochMilliseconds()).coerceAtLeast(0L)
+        val graceWindowMs = (config.pollIntervalMillis * 3L).coerceAtLeast(12_000L)
+        return stalenessMs <= graceWindowMs
     }
 
     private suspend fun publishAnalysisIfNeeded(

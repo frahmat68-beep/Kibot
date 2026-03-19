@@ -64,14 +64,50 @@ class IndodaxGateway internal constructor(
             val ask = bestAsk.toDoubleOrZero()
             val mid = ((bid + ask) / 2.0).takeIf { it > 0.0 } ?: return@mapNotNull null
             val spreadPct = ((ask - bid) / mid * 100.0).coerceAtLeast(0.0)
+            val lastPrice = DecimalValue(ticker.last ?: ticker.sell)
+            val last = lastPrice.toDoubleOrZero().takeIf { it > 0.0 } ?: mid
+            val high = DecimalValue(ticker.high ?: ticker.sell).toDoubleOrZero().takeIf { it > 0.0 } ?: last
+            val low = DecimalValue(ticker.low ?: ticker.buy).toDoubleOrZero().takeIf { it > 0.0 } ?: last
             val quoteVolume = DecimalValue(
                 ticker.volumeFor(pairParts.quoteAsset) ?: ticker.firstVolumeValue() ?: "0",
             )
             val baseVolume = DecimalValue(
                 ticker.volumeFor(pairParts.baseAsset) ?: "0",
             )
-            val volumeFactor = (quoteVolume.toDoubleOrZero() / 50_000_000.0).coerceIn(0.0, 1.0)
+            val volumeIdr = quoteVolume.toDoubleOrZero()
+            val volumeFactor = (volumeIdr / 50_000_000.0).coerceIn(0.0, 1.0)
             val stability = (1.0 - (spreadPct / 1.5)).coerceIn(0.0, 1.0) * 0.5 + (volumeFactor * 0.5)
+            val price24h = response.prices24h[pairId.value.replace("_", "")]?.toDoubleOrZero()?.takeIf { it > 0.0 }
+            val price7d = response.prices7d[pairId.value.replace("_", "")]?.toDoubleOrZero()?.takeIf { it > 0.0 }
+            val shortTermReturnPct = percentChange(last, price24h ?: mid)
+            val mediumTermReturnPct = percentChange(last, price7d ?: price24h ?: mid)
+            val realizedVolatilityPct = if (low > 0.0) (((high - low) / low) * 100.0).coerceAtLeast(0.0) else 0.0
+            val slippagePct = (spreadPct * 0.65).coerceAtLeast(0.05)
+            val tradeCount24h = estimateTradeCount(volumeIdr, mid)
+            val top5DepthIdr = estimateTopDepthIdr(
+                volumeIdr = volumeIdr,
+                stabilityScore = stability,
+                spreadPct = spreadPct,
+            )
+            val trendQualityScore = deriveTrendQualityScore(shortTermReturnPct, mediumTermReturnPct)
+            val volatilityQualityScore = deriveVolatilityQualityScore(realizedVolatilityPct, spreadPct)
+            val fillQualityScore = weightedScore(
+                stability to 0.42,
+                volumeFactor to 0.32,
+                (1.0 - (slippagePct / 1.2)).coerceIn(0.0, 1.0) to 0.26,
+            )
+            val historicalExpectancyScore = weightedScore(
+                trendQualityScore to 0.38,
+                volatilityQualityScore to 0.22,
+                fillQualityScore to 0.22,
+                volumeFactor to 0.18,
+            )
+            val holdabilityScore = weightedScore(
+                trendQualityScore to 0.45,
+                stability to 0.25,
+                volumeFactor to 0.15,
+                (1.0 - (realizedVolatilityPct / 22.0)).coerceIn(0.0, 1.0) to 0.15,
+            )
 
             MarketQuote(
                 pairId = pairId,
@@ -81,8 +117,20 @@ class IndodaxGateway internal constructor(
                 spreadPct = spreadPct,
                 quoteVolume24h = quoteVolume,
                 baseVolume24h = baseVolume,
-                estimatedSlippagePct = (spreadPct * 0.65).coerceAtLeast(0.05),
+                estimatedSlippagePct = slippagePct,
                 orderBookStabilityScore = stability.coerceIn(0.0, 1.0),
+                tradeCount24h = tradeCount24h,
+                bidDepthTop5Idr = DecimalValue.fromDouble(top5DepthIdr),
+                askDepthTop5Idr = DecimalValue.fromDouble(top5DepthIdr * 0.96),
+                shortTermReturnPct = shortTermReturnPct,
+                mediumTermReturnPct = mediumTermReturnPct,
+                realizedVolatilityPct = realizedVolatilityPct,
+                recentTradeActivityScore = tradeActivityScore(tradeCount24h, volumeFactor),
+                volatilityQualityScore = volatilityQualityScore,
+                trendQualityScore = trendQualityScore,
+                historicalExpectancyScore = historicalExpectancyScore,
+                fillQualityScore = fillQualityScore,
+                holdabilityScore = holdabilityScore,
                 capturedAt = ticker.serverTime?.let(Instant::fromEpochSeconds) ?: Clock.System.now(),
             )
         }
@@ -271,16 +319,22 @@ internal data class SignedQuery(
 @Serializable
 private data class SummariesResponse(
     val tickers: Map<String, SummaryTicker>,
+    @SerialName("prices_24h") val prices24h: Map<String, String> = emptyMap(),
+    @SerialName("prices_7d") val prices7d: Map<String, String> = emptyMap(),
 )
 
 @Serializable
 private data class SummaryTicker(
+    val high: String? = null,
+    val low: String? = null,
+    val last: String? = null,
     val buy: String,
     val sell: String,
     @SerialName("server_time") val serverTime: Long? = null,
     @SerialName("vol_btc") val volBtc: String? = null,
     @SerialName("vol_idr") val volIdr: String? = null,
     @SerialName("vol_usdt") val volUsdt: String? = null,
+    val name: String? = null,
 )
 
 private fun SummaryTicker.volumeFor(asset: String): String? = when (asset.lowercase()) {
@@ -291,6 +345,52 @@ private fun SummaryTicker.volumeFor(asset: String): String? = when (asset.lowerc
 }
 
 private fun SummaryTicker.firstVolumeValue(): String? = listOfNotNull(volIdr, volUsdt, volBtc).firstOrNull()
+
+private fun percentChange(current: Double, reference: Double): Double {
+    if (reference <= 0.0) return 0.0
+    return ((current - reference) / reference) * 100.0
+}
+
+private fun estimateTradeCount(volumeIdr: Double, midPrice: Double): Int {
+    if (volumeIdr <= 0.0 || midPrice <= 0.0) return 0
+    val estimatedTrades = volumeIdr / maxOf(midPrice * 0.18, 25_000.0)
+    return estimatedTrades.toInt().coerceIn(0, 20_000)
+}
+
+private fun estimateTopDepthIdr(
+    volumeIdr: Double,
+    stabilityScore: Double,
+    spreadPct: Double,
+): Double {
+    val depthFactor = (0.0035 + (stabilityScore * 0.0085) - (spreadPct * 0.0015)).coerceIn(0.001, 0.018)
+    return (volumeIdr * depthFactor).coerceAtLeast(0.0)
+}
+
+private fun deriveTrendQualityScore(shortTermReturnPct: Double, mediumTermReturnPct: Double): Double {
+    val shortScore = ((shortTermReturnPct + 3.0) / 9.0).coerceIn(0.0, 1.0)
+    val mediumScore = ((mediumTermReturnPct + 6.0) / 18.0).coerceIn(0.0, 1.0)
+    return weightedScore(shortScore to 0.42, mediumScore to 0.58)
+}
+
+private fun deriveVolatilityQualityScore(realizedVolatilityPct: Double, spreadPct: Double): Double {
+    val volatilityBand = when {
+        realizedVolatilityPct in 1.5..18.0 -> 1.0
+        realizedVolatilityPct < 1.5 -> (realizedVolatilityPct / 1.5).coerceIn(0.0, 1.0) * 0.85
+        else -> (1.0 - ((realizedVolatilityPct - 18.0) / 24.0)).coerceIn(0.0, 1.0)
+    }
+    val spreadPenalty = (1.0 - (spreadPct / 1.5)).coerceIn(0.0, 1.0)
+    return weightedScore(volatilityBand to 0.7, spreadPenalty to 0.3)
+}
+
+private fun tradeActivityScore(tradeCount24h: Int, volumeFactor: Double): Double {
+    val tradeScore = (tradeCount24h.toDouble() / 450.0).coerceIn(0.0, 1.0)
+    return weightedScore(tradeScore to 0.65, volumeFactor to 0.35)
+}
+
+private fun weightedScore(vararg parts: Pair<Double, Double>): Double {
+    val weightTotal = parts.sumOf { it.second }.takeIf { it > 0.0 } ?: return 0.0
+    return (parts.sumOf { it.first * it.second } / weightTotal).coerceIn(0.0, 1.0)
+}
 
 @Serializable
 private data class PrivateEnvelope<T>(

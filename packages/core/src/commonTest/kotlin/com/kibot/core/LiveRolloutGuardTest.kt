@@ -7,6 +7,7 @@ import com.kibot.shared.models.EngineHealthSnapshot
 import com.kibot.shared.models.HealthStatus
 import com.kibot.shared.models.MarketQuote
 import com.kibot.shared.models.PairId
+import com.kibot.shared.models.PairTier
 import com.kibot.shared.models.SyncHealth
 import com.kibot.shared.models.WeeklyAdaptationPlan
 import com.kibot.shared.models.WeeklyLearningSummary
@@ -74,6 +75,41 @@ class LiveRolloutGuardTest {
         )
 
         val decision = weakGuard.evaluate(cycle, summary)
+
+        assertFalse(decision.allowed)
+        assertEquals("shadow", decision.phase)
+    }
+
+    @Test
+    fun `speculative setup stays blocked until weekly sample is mature`() {
+        val cycle = healthyCycle().copy(
+            selectedSignal = healthyCycle().selectedSignal?.copy(
+                pairTier = PairTier.TIER_B,
+                speculativePocket = true,
+            ),
+            executionPlan = healthyCycle().executionPlan?.copy(
+                speculativePocket = true,
+                pairRankingScore = 0.93,
+                expectedNetEdgePct = 1.12,
+            ),
+        )
+        val summary = WeeklyLearningSummary(
+            botId = BotId("main"),
+            periodStart = LocalDate(2026, 3, 10),
+            periodEnd = LocalDate(2026, 3, 16),
+            tradeCount = 8,
+            falseEntryRate = 0.0,
+            noTradeQualityScore = 0.75,
+            avoidedBadTradesIndicator = 0.45,
+            capitalUtilizationPct = 0.28,
+            productiveUtilizationPct = 0.20,
+            missedOpportunityRate = 0.09,
+            tacticalExpectancy = 0.26,
+            swingExpectancy = 0.18,
+            adaptationPlan = WeeklyAdaptationPlan(),
+        )
+
+        val decision = guard.evaluate(cycle, summary)
 
         assertFalse(decision.allowed)
         assertEquals("shadow", decision.phase)

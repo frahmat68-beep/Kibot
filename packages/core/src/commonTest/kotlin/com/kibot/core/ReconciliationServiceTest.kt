@@ -48,4 +48,50 @@ class ReconciliationServiceTest {
 
         assertEquals(ReconciliationState.BLOCKED, report.state)
     }
+
+    @Test
+    fun `accepts recent fill when matching persisted order is available`() {
+        val now = Instant.parse("2026-03-15T01:00:00Z")
+        val report = ReconciliationService().reconcile(
+            portfolio = PortfolioSnapshot(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("100000"))),
+                openOrders = emptyList(),
+                positions = emptyList(),
+                totalEquityIdr = DecimalValue("100000"),
+                lastSyncedAt = now,
+            ),
+            recentFills = listOf(
+                FillSnapshot(
+                    fillId = FillId("fill-1"),
+                    orderId = OrderId("order-1"),
+                    pairId = PairId("btc_idr"),
+                    side = OrderSide.BUY,
+                    quantity = DecimalValue("0.001"),
+                    price = DecimalValue("1000000"),
+                    fee = DecimalValue("1000"),
+                    feeAsset = "idr",
+                    executedAt = now,
+                ),
+            ),
+            persistedOrders = listOf(
+                OrderSnapshot(
+                    orderId = OrderId("order-1"),
+                    clientOrderId = com.kibot.shared.models.ClientOrderId("client-1"),
+                    pairId = PairId("btc_idr"),
+                    side = OrderSide.BUY,
+                    orderType = OrderType.LIMIT,
+                    status = OrderStatus.FILLED,
+                    price = DecimalValue("1000000"),
+                    originalQuantity = DecimalValue("0.001"),
+                    executedQuantity = DecimalValue("0.001"),
+                    remainingQuantity = DecimalValue.Zero,
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            ),
+        )
+
+        assertEquals(ReconciliationState.CLEAN, report.state)
+    }
 }

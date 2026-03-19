@@ -90,6 +90,7 @@ class AndroidEngineDaemon(
     private var lastWeeklyReviewPublishedAt: Instant? = null
     private var smoothedExchangePingMs: Double? = null
     private var lastSuccessfulExchangePingAt: Instant? = null
+    private var lastSuccessfulControlPlaneAt: Instant? = null
 
     suspend fun syncOnce(): AndroidEngineTickResult = coroutineScope {
         ensureRegistered()
@@ -121,6 +122,7 @@ class AndroidEngineDaemon(
         val dailyRisk = dailyRiskDeferred.await()
         val commands = commandsDeferred.await()
         val weeklyReview = weeklyReviewDeferred.await()
+        lastSuccessfulControlPlaneAt = now
 
         val warnings = mutableListOf<String>()
         if (!exchangeReachable) warnings += "Exchange tidak bisa dijangkau."
@@ -137,7 +139,12 @@ class AndroidEngineDaemon(
             }
         }
 
-        val localHealth = buildLocalHealth(exchangeReachable, warnings, exchangePingMs)
+        val localHealth = buildLocalHealth(
+            exchangeReachable = exchangeReachable,
+            warnings = warnings,
+            feedLatencyMs = exchangePingMs,
+            marketFeedHealthy = exchangeReachable,
+        )
         val masterBeforeTakeover = leaseAfterCommands.isHeldBy(config.device.deviceId, now)
         if (botStateAfterCommands.desiredState == BotDesiredState.ON && !masterBeforeTakeover) {
             maybeTakeOver(now, botStateAfterCommands, leaseAfterCommands, localHealth)
@@ -173,7 +180,12 @@ class AndroidEngineDaemon(
         val resolvedOpenOrders = openOrdersDeferred?.await().orEmpty()
         val resolvedMarketQuotes = marketQuotesDeferred?.await().orEmpty()
         if (exchangeReachable && resolvedMarketQuotes.isEmpty()) warnings += "Feed market kosong."
-        val finalHealth = buildLocalHealth(exchangeReachable, warnings, exchangePingMs)
+        val finalHealth = buildLocalHealth(
+            exchangeReachable = exchangeReachable,
+            warnings = warnings,
+            feedLatencyMs = exchangePingMs,
+            marketFeedHealthy = exchangeReachable && resolvedMarketQuotes.isNotEmpty(),
+        )
         val healthDecision = healthAdvisor.evaluate(finalHealth)
         val aiSupportEvaluation = if (isMaster && resolvedMarketQuotes.isNotEmpty()) {
             val shortlist = strategyOrchestrator.shortlistForSupport(resolvedMarketQuotes)
@@ -313,6 +325,8 @@ class AndroidEngineDaemon(
                     localHealth = buildLocalHealth(
                         exchangeReachable = runCatching { exchange.ping() }.getOrDefault(false),
                         warnings = listOf("Force safe takeover diminta."),
+                        supabaseReachable = isControlPlaneReachable(Clock.System.now()),
+                        marketFeedHealthy = false,
                     ),
                 )
                 controlPlane.updateCommandStatus(command.commandId, if (outcome) CommandStatus.SUCCEEDED else CommandStatus.FAILED)
@@ -374,10 +388,13 @@ class AndroidEngineDaemon(
         }
         val balances = runCatching { exchange.fetchBalances() }.getOrDefault(emptyList())
         val openOrders = runCatching { exchange.fetchOpenOrders() }.getOrDefault(emptyList())
-        val fills = openOrders.map { it.pairId }.distinct().flatMap { pairId ->
+        val recentPersistedOrders = controlPlane.fetchRecentOrders(controlPlaneConfig.botId, limit = 120)
+        val reconciliationPairs = (openOrders.map { it.pairId } + recentPersistedOrders.map { it.pairId })
+            .distinct()
+            .take(12)
+        val fills = reconciliationPairs.flatMap { pairId ->
             runCatching { exchange.fetchRecentFills(pairId, limit = 20) }.getOrDefault(emptyList())
         }
-        val persistedOrders = controlPlane.fetchOpenPersistedOrders(controlPlaneConfig.botId)
         val reconciliation = reconciliationService.reconcile(
             portfolio = PortfolioSnapshot(
                 botId = controlPlaneConfig.botId,
@@ -388,7 +405,7 @@ class AndroidEngineDaemon(
                 lastSyncedAt = now,
             ),
             recentFills = fills,
-            persistedOrders = persistedOrders,
+            persistedOrders = recentPersistedOrders,
         )
         val evaluation = leaseCoordinator.canAcquireMastership(
             now = now,
@@ -578,6 +595,8 @@ class AndroidEngineDaemon(
         exchangeReachable: Boolean,
         warnings: List<String>,
         feedLatencyMs: Long? = null,
+        supabaseReachable: Boolean = isControlPlaneReachable(Clock.System.now()),
+        marketFeedHealthy: Boolean = exchangeReachable,
     ): EngineHealthSnapshot {
         val batteryStatus = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val batteryPct = batteryStatus?.let {
@@ -597,13 +616,12 @@ class AndroidEngineDaemon(
         val network = connectivityManager.activeNetwork
         val capabilities = network?.let(connectivityManager::getNetworkCapabilities)
         val networkMetered = connectivityManager.isActiveNetworkMetered
-        val supabaseReachable = true
-        val websocketHealthy = exchangeReachable
+        val websocketHealthy = marketFeedHealthy
 
         val status = when {
-            !exchangeReachable || capabilities == null || !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ->
+            !exchangeReachable || !supabaseReachable || capabilities == null || !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ->
                 HealthStatus.CRITICAL
-            warnings.isNotEmpty() -> HealthStatus.WARNING
+            !marketFeedHealthy || warnings.isNotEmpty() -> HealthStatus.WARNING
             else -> HealthStatus.HEALTHY
         }
         val syncHealth = when (status) {
@@ -626,6 +644,13 @@ class AndroidEngineDaemon(
             lastError = warnings.firstOrNull(),
             warnings = warnings.distinct(),
         )
+    }
+
+    private fun isControlPlaneReachable(now: Instant): Boolean {
+        val lastSuccess = lastSuccessfulControlPlaneAt ?: return false
+        val stalenessMs = (now - lastSuccess).inWholeMilliseconds
+        val graceWindowMs = (config.pollIntervalMillis * 3L).coerceAtLeast(12_000L)
+        return stalenessMs <= graceWindowMs
     }
 
     private fun deriveEffectiveState(
