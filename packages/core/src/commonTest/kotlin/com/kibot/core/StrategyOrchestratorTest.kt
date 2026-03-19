@@ -255,6 +255,7 @@ class StrategyOrchestratorTest {
         botId = BotId("main"),
         periodStart = LocalDate(2026, 3, 10),
         periodEnd = LocalDate(2026, 3, 17),
+        tradeCount = 16,
         falseEntryRate = 0.10,
         noTradeQualityScore = 0.60,
         avoidedBadTradesIndicator = 0.40,

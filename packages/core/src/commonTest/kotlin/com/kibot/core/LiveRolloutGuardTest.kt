@@ -1,0 +1,133 @@
+package com.kibot.core
+
+import com.kibot.shared.models.BalanceSnapshot
+import com.kibot.shared.models.BotId
+import com.kibot.shared.models.DecimalValue
+import com.kibot.shared.models.EngineHealthSnapshot
+import com.kibot.shared.models.HealthStatus
+import com.kibot.shared.models.MarketQuote
+import com.kibot.shared.models.PairId
+import com.kibot.shared.models.SyncHealth
+import com.kibot.shared.models.WeeklyAdaptationPlan
+import com.kibot.shared.models.WeeklyLearningSummary
+import kotlinx.datetime.Clock
+import kotlinx.datetime.LocalDate
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+
+class LiveRolloutGuardTest {
+    private val orchestrator = StrategyOrchestrator()
+    private val guard = LiveRolloutGuard()
+
+    @Test
+    fun `small weekly sample stays in shadow seed even when setup is strong`() {
+        val cycle = healthyCycle()
+        val summary = WeeklyLearningSummary(
+            botId = BotId("main"),
+            periodStart = LocalDate(2026, 3, 10),
+            periodEnd = LocalDate(2026, 3, 16),
+            tradeCount = 3,
+            falseEntryRate = 0.0,
+            noTradeQualityScore = 0.75,
+            avoidedBadTradesIndicator = 0.45,
+            capitalUtilizationPct = 0.20,
+            productiveUtilizationPct = 0.16,
+            missedOpportunityRate = 0.11,
+            tacticalExpectancy = 0.22,
+            swingExpectancy = 0.18,
+            adaptationPlan = WeeklyAdaptationPlan(),
+        )
+
+        val decision = guard.evaluate(cycle, summary)
+
+        assertTrue(decision.allowed)
+        assertEquals("shadow_seed", decision.phase)
+    }
+
+    @Test
+    fun `small weekly sample blocks weak setup`() {
+        val weakGuard = LiveRolloutGuard(
+            LiveRolloutConfig(
+                shadowMinRankingScore = 0.99,
+                shadowMinExpectedEdgePct = 0.99,
+                shadowMinBotHealthScore = 0.99,
+                shadowMinOpportunityScore = 0.99,
+            ),
+        )
+        val cycle = healthyCycle()
+        val summary = WeeklyLearningSummary(
+            botId = BotId("main"),
+            periodStart = LocalDate(2026, 3, 10),
+            periodEnd = LocalDate(2026, 3, 16),
+            tradeCount = 2,
+            falseEntryRate = 0.0,
+            noTradeQualityScore = 0.75,
+            avoidedBadTradesIndicator = 0.45,
+            capitalUtilizationPct = 0.18,
+            productiveUtilizationPct = 0.12,
+            missedOpportunityRate = 0.11,
+            tacticalExpectancy = 0.10,
+            swingExpectancy = 0.08,
+            adaptationPlan = WeeklyAdaptationPlan(),
+        )
+
+        val decision = weakGuard.evaluate(cycle, summary)
+
+        assertFalse(decision.allowed)
+        assertEquals("shadow", decision.phase)
+    }
+
+    private fun healthyCycle() = orchestrator.analyze(
+        botId = BotId("main"),
+        balances = listOf(BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(100_000.0))),
+        openOrders = emptyList(),
+        dailyRisk = null,
+        health = EngineHealthSnapshot(
+            status = HealthStatus.HEALTHY,
+            syncHealth = SyncHealth.HEALTHY,
+            websocketHealthy = true,
+            exchangeReachable = true,
+            supabaseReachable = true,
+        ),
+        marketQuotes = listOf(
+            quote("btc_idr", 1_000_000_000.0, 0.10, 0.08, 0.68, 0.66, 95_000_000.0),
+            quote("sol_idr", 2_500_000.0, 0.14, 0.10, 0.70, 0.68, 72_000_000.0),
+            quote("xrp_idr", 9_800.0, 0.12, 0.09, 0.62, 0.61, 56_000_000.0),
+        ),
+    )
+
+    private fun quote(
+        pair: String,
+        price: Double,
+        spreadPct: Double,
+        slippagePct: Double,
+        trendScore: Double,
+        expectancyScore: Double,
+        volume: Double,
+    ): MarketQuote = MarketQuote(
+        pairId = PairId(pair),
+        bestBid = DecimalValue.fromDouble(price),
+        bestAsk = DecimalValue.fromDouble(price * (1.0 + (spreadPct / 100.0))),
+        midPrice = DecimalValue.fromDouble(price),
+        spreadPct = spreadPct,
+        quoteVolume24h = DecimalValue.fromDouble(volume),
+        baseVolume24h = DecimalValue.fromDouble(volume / price),
+        estimatedSlippagePct = slippagePct,
+        orderBookStabilityScore = 0.88,
+        tradeCount24h = 320,
+        bidDepthTop5Idr = DecimalValue.fromDouble(900_000.0),
+        askDepthTop5Idr = DecimalValue.fromDouble(900_000.0),
+        shortTermReturnPct = 0.9,
+        mediumTermReturnPct = 1.4,
+        realizedVolatilityPct = 1.7,
+        recentTradeActivityScore = 0.84,
+        volatilityQualityScore = 0.75,
+        trendQualityScore = trendScore,
+        historicalExpectancyScore = expectancyScore,
+        fillQualityScore = 0.84,
+        holdabilityScore = 0.68,
+        capturedAt = Clock.System.now(),
+    )
+}

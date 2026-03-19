@@ -321,6 +321,7 @@ class MacEngineDaemonTest {
         botId = botId,
         periodStart = LocalDate(2026, 3, 8),
         periodEnd = LocalDate(2026, 3, 15),
+        tradeCount = 14,
         falseEntryRate = 0.08,
         noTradeQualityScore = 0.61,
         avoidedBadTradesIndicator = 0.42,

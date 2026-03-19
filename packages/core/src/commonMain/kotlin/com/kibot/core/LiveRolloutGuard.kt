@@ -11,6 +11,7 @@ data class LiveRolloutConfig(
     val shadowMinExpectedEdgePct: Double = 0.66,
     val shadowMinBotHealthScore: Double = 0.68,
     val shadowMinOpportunityScore: Double = 0.70,
+    val minimumWeeklyTradeSamples: Int = 6,
     val maxWeeklyFalseEntryRate: Double = 0.34,
 )
 
@@ -45,16 +46,31 @@ class LiveRolloutGuard(
             return blocked("shadow", "Risk ladder belum cukup sehat untuk rollout live.")
         }
 
-        if (weeklySummary == null) {
+        val hasEnoughWeeklyTrades = weeklySummary?.tradeCount?.let { it >= config.minimumWeeklyTradeSamples } == true
+        if (weeklySummary == null || !hasEnoughWeeklyTrades) {
             return if (
                 executionPlan.pairRankingScore >= config.shadowMinRankingScore &&
                 executionPlan.expectedNetEdgePct >= config.shadowMinExpectedEdgePct &&
                 cycle.marketSnapshot.botHealthScore >= config.shadowMinBotHealthScore &&
                 cycle.marketSnapshot.marketOpportunityScore >= config.shadowMinOpportunityScore
             ) {
-                allowed("shadow_seed", "Belum ada review mingguan, tapi setup sangat kuat jadi layak untuk rollout bertahap.")
+                allowed(
+                    "shadow_seed",
+                    if (weeklySummary == null) {
+                        "Belum ada review mingguan, tapi setup sangat kuat jadi layak untuk rollout bertahap."
+                    } else {
+                        "Sample trade mingguan masih kecil, jadi live hanya boleh seed entry pada setup yang sangat kuat."
+                    },
+                )
             } else {
-                blocked("shadow", "Belum ada review mingguan dan setup belum cukup kuat untuk rollout seed.")
+                blocked(
+                    "shadow",
+                    if (weeklySummary == null) {
+                        "Belum ada review mingguan dan setup belum cukup kuat untuk rollout seed."
+                    } else {
+                        "Sample trade mingguan belum cukup dan setup juga belum cukup kuat untuk rollout seed."
+                    },
+                )
             }
         }
 

@@ -99,6 +99,7 @@ class WeeklyLearningLoop(
             botId = botId,
             periodStart = periodStart,
             periodEnd = periodEnd,
+            tradeCount = trades.size,
             bestPairs = bestPairs,
             worstPairs = worstPairs,
             bestSetups = bestSetups,

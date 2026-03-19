@@ -136,6 +136,7 @@ data class WeeklyLearningSummary(
     val botId: BotId,
     val periodStart: LocalDate,
     val periodEnd: LocalDate,
+    val tradeCount: Int = 0,
     val bestPairs: List<PairId> = emptyList(),
     val worstPairs: List<PairId> = emptyList(),
     val bestSetups: List<SetupType> = emptyList(),

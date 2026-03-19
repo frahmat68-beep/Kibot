@@ -29,6 +29,7 @@ class SituationalLearningEngineTest {
             botId = BotId("main"),
             periodStart = LocalDate(2026, 3, 9),
             periodEnd = LocalDate(2026, 3, 15),
+            tradeCount = 18,
             falseEntryRate = 0.34,
             noTradeQualityScore = 0.58,
             avoidedBadTradesIndicator = 0.42,

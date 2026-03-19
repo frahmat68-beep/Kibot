@@ -294,6 +294,7 @@ class SupabaseControlPlaneClient internal constructor(
                 put("bot_id", summary.botId.value)
                 put("period_start", summary.periodStart.toString())
                 put("period_end", summary.periodEnd.toString())
+                put("trade_count", summary.tradeCount)
                 put("best_pairs", buildJsonArray {
                     summary.bestPairs.forEach { add(JsonPrimitive(it.value)) }
                 })
@@ -1076,6 +1077,7 @@ private data class WeeklyLearningReviewRow(
     @SerialName("bot_id") val botId: String,
     @SerialName("period_start") val periodStart: LocalDate,
     @SerialName("period_end") val periodEnd: LocalDate,
+    @SerialName("trade_count") val tradeCount: Int = 0,
     @SerialName("best_pairs") val bestPairs: JsonElement? = null,
     @SerialName("worst_pairs") val worstPairs: JsonElement? = null,
     @SerialName("best_setups") val bestSetups: JsonElement? = null,
@@ -1098,6 +1100,7 @@ private fun WeeklyLearningReviewRow.toWeeklyLearningSummary(): WeeklyLearningSum
     botId = BotId(botId),
     periodStart = periodStart,
     periodEnd = periodEnd,
+    tradeCount = tradeCount,
     bestPairs = bestPairs.decodePairIdListOrEmpty(),
     worstPairs = worstPairs.decodePairIdListOrEmpty(),
     bestSetups = bestSetups.decodeSetupTypeListOrEmpty(),
