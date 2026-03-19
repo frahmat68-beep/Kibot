@@ -39,7 +39,19 @@ class KiBotWidgetProvider : AppWidgetProvider() {
             appWidgetIds.forEach { widgetId ->
                 val views = RemoteViews(context.packageName, R.layout.widget_kibot_status).apply {
                     val dailyReturnPct = derivePnlPct(snapshot)
+                    val live = snapshot.updatedAtEpochMs > 0L &&
+                        (System.currentTimeMillis() - snapshot.updatedAtEpochMs) <= 90_000L
                     setTextViewText(R.id.widget_title, "KiBot")
+                    setTextViewText(R.id.widget_status_chip, if (live) "LIVE" else "OFF")
+                    setTextColor(
+                        R.id.widget_status_chip,
+                        if (live) 0xFF2DD881.toInt() else 0xFFA8B7D7.toInt(),
+                    )
+                    setInt(
+                        R.id.widget_status_chip,
+                        "setBackgroundResource",
+                        if (live) R.drawable.widget_pnl_positive else R.drawable.widget_pnl_neutral,
+                    )
                     setTextViewText(R.id.widget_meta, "Update ${formatUpdated(snapshot.updatedAtEpochMs)}")
                     setTextViewText(R.id.widget_equity, snapshot.totalEquityIdr)
                     setTextViewText(R.id.widget_daily_return_value, dailyReturnPct)
