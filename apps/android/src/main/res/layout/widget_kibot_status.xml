@@ -5,7 +5,10 @@
     android:layout_height="match_parent"
     android:background="@drawable/widget_kibot_background"
     android:orientation="vertical"
-    android:padding="18dp">
+    android:paddingLeft="20dp"
+    android:paddingTop="18dp"
+    android:paddingRight="20dp"
+    android:paddingBottom="18dp">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -20,11 +23,11 @@
             android:layout_weight="1"
             android:text="KiBot"
             android:textColor="#F4F7FF"
-            android:textSize="24sp"
+            android:textSize="30sp"
             android:textStyle="bold" />
 
         <LinearLayout
-            android:layout_width="wrap_content"
+            android:layout_width="120dp"
             android:layout_height="wrap_content"
             android:layout_gravity="top"
             android:gravity="end"
@@ -36,25 +39,25 @@
                 android:layout_height="wrap_content"
                 android:background="@drawable/widget_pnl_positive"
                 android:layout_gravity="end"
-                android:paddingLeft="12dp"
-                android:paddingTop="5dp"
-                android:paddingRight="12dp"
-                android:paddingBottom="5dp"
+                android:paddingLeft="14dp"
+                android:paddingTop="7dp"
+                android:paddingRight="14dp"
+                android:paddingBottom="7dp"
                 android:text="LIVE"
                 android:textColor="#2DD881"
-                android:textSize="10sp"
+                android:textSize="12sp"
                 android:textStyle="bold" />
 
             <TextView
                 android:id="@+id/widget_meta"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_gravity="end"
-                android:layout_marginTop="4dp"
+                android:layout_marginTop="6dp"
                 android:gravity="end"
                 android:text="Update --:--"
                 android:textColor="#A8B7D7"
-                android:textSize="11sp" />
+                android:textSize="13sp" />
         </LinearLayout>
     </LinearLayout>
 
@@ -62,10 +65,10 @@
         android:id="@+id/widget_equity"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginTop="14dp"
+        android:layout_marginTop="10dp"
         android:text="Rp0"
         android:textColor="#F4F7FF"
-        android:textSize="44sp"
+        android:textSize="56sp"
         android:textStyle="bold" />
 
     <LinearLayout
@@ -81,40 +84,35 @@
             android:layout_height="wrap_content"
             android:text="+Rp0"
             android:textColor="#2DD881"
-            android:textSize="29sp"
+            android:textSize="34sp"
             android:textStyle="bold" />
 
         <TextView
             android:id="@+id/widget_daily_return_value"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginLeft="10dp"
+            android:layout_marginLeft="12dp"
             android:background="@drawable/widget_pnl_positive"
             android:paddingLeft="14dp"
-            android:paddingTop="7dp"
+            android:paddingTop="8dp"
             android:paddingRight="14dp"
-            android:paddingBottom="7dp"
+            android:paddingBottom="8dp"
             android:text="+0.0%"
             android:textColor="#2DD881"
-            android:textSize="15sp"
+            android:textSize="17sp"
             android:textStyle="bold" />
     </LinearLayout>
 
-    <LinearLayout
-        android:layout_width="match_parent"
+    <TextView
+        android:id="@+id/widget_pair"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="10dp"
-        android:orientation="vertical"
-        android:paddingTop="0dp">
-
-        <TextView
-            android:id="@+id/widget_pair"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="-"
-            android:textColor="#F4F7FF"
-            android:textSize="16sp"
-            android:textStyle="normal"
-            android:textAllCaps="true" />
-    </LinearLayout>
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:text="-"
+        android:textAllCaps="true"
+        android:textColor="#A8B7D7"
+        android:textSize="14sp"
+        android:textStyle="bold" />
 </LinearLayout>
