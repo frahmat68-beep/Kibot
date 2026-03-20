@@ -16,6 +16,11 @@ data class LiveRolloutConfig(
     val speculativeMinRankingScore: Double = 0.68,
     val speculativeMinExpectedEdgePct: Double = 0.46,
     val speculativeMaxWeeklyFalseEntryRate: Double = 0.45,
+    val speculativeAggressiveOverrideMaxWeeklyFalseEntryRate: Double = 0.70,
+    val speculativeAggressiveOverrideMinRankingScore: Double = 0.74,
+    val speculativeAggressiveOverrideMinExpectedEdgePct: Double = 0.48,
+    val speculativeAggressiveOverrideMinBotHealthScore: Double = 0.60,
+    val speculativeAggressiveOverrideMinOpportunityScore: Double = 0.58,
     val maxWeeklyFalseEntryRate: Double = 0.50,
     val aggressiveOverrideMaxWeeklyFalseEntryRate: Double = 0.70,
     val aggressiveOverrideMinRankingScore: Double = 0.78,
@@ -78,7 +83,14 @@ class LiveRolloutGuard(
                 return blocked("guarded_live", "Sleeve spekulatif hanya boleh live pada setup yang sangat dominan.")
             }
             if (weeklySummary.falseEntryRate > config.speculativeMaxWeeklyFalseEntryRate) {
-                return blocked("guarded_live", "False entry mingguan masih terlalu tinggi untuk jalur spekulatif.")
+                return if (canAggressivelyOverrideSpeculativeGate(cycle, weeklySummary)) {
+                    allowed(
+                        "guarded_live",
+                        "False entry mingguan untuk sleeve spekulatif sedang tinggi, tapi setup sekarang cukup dominan jadi live tetap dibuka.",
+                    )
+                } else {
+                    blocked("guarded_live", "False entry mingguan masih terlalu tinggi untuk jalur spekulatif.")
+                }
             }
         }
 
@@ -151,5 +163,20 @@ class LiveRolloutGuard(
             executionPlan.expectedNetEdgePct >= config.aggressiveOverrideMinExpectedEdgePct &&
             cycle.marketSnapshot.botHealthScore >= config.aggressiveOverrideMinBotHealthScore &&
             cycle.marketSnapshot.marketOpportunityScore >= config.aggressiveOverrideMinOpportunityScore
+    }
+
+    private fun canAggressivelyOverrideSpeculativeGate(
+        cycle: StrategyCycleResult,
+        weeklySummary: WeeklyLearningSummary,
+    ): Boolean {
+        val executionPlan = cycle.executionPlan ?: return false
+        if (!executionPlan.speculativePocket) return false
+        if (weeklySummary.falseEntryRate > config.speculativeAggressiveOverrideMaxWeeklyFalseEntryRate) return false
+        if (cycle.modeSnapshot.mode !in setOf(BotMode.GROWTH, BotMode.ATTACK)) return false
+        if (cycle.modeSnapshot.edgeConfidence != EdgeConfidence.HIGH) return false
+        return executionPlan.pairRankingScore >= config.speculativeAggressiveOverrideMinRankingScore &&
+            executionPlan.expectedNetEdgePct >= config.speculativeAggressiveOverrideMinExpectedEdgePct &&
+            cycle.marketSnapshot.botHealthScore >= config.speculativeAggressiveOverrideMinBotHealthScore &&
+            cycle.marketSnapshot.marketOpportunityScore >= config.speculativeAggressiveOverrideMinOpportunityScore
     }
 }
