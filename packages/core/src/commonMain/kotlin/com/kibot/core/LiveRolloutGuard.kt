@@ -17,6 +17,11 @@ data class LiveRolloutConfig(
     val speculativeMinExpectedEdgePct: Double = 0.46,
     val speculativeMaxWeeklyFalseEntryRate: Double = 0.45,
     val maxWeeklyFalseEntryRate: Double = 0.50,
+    val aggressiveOverrideMaxWeeklyFalseEntryRate: Double = 0.70,
+    val aggressiveOverrideMinRankingScore: Double = 0.78,
+    val aggressiveOverrideMinExpectedEdgePct: Double = 0.50,
+    val aggressiveOverrideMinBotHealthScore: Double = 0.64,
+    val aggressiveOverrideMinOpportunityScore: Double = 0.60,
 )
 
 data class LiveRolloutDecision(
@@ -106,7 +111,14 @@ class LiveRolloutGuard(
         }
 
         if (weeklySummary.falseEntryRate > config.maxWeeklyFalseEntryRate) {
-            return blocked("guarded_live", "False entry mingguan masih terlalu tinggi untuk live execution.")
+            return if (canAggressivelyOverrideFalseEntryGate(cycle, weeklySummary)) {
+                allowed(
+                    "guarded_live",
+                    "False entry mingguan sedang tinggi, tapi setup sekarang cukup dominan jadi live tetap dibuka secara agresif.",
+                )
+            } else {
+                blocked("guarded_live", "False entry mingguan masih terlalu tinggi untuk live execution.")
+            }
         }
         if (weeklySummary.tacticalExpectancy < -0.10 && weeklySummary.swingExpectancy < -0.10) {
             return blocked("guarded_live", "Expectancy mingguan masih buruk, jadi live tetap ditahan.")
@@ -126,4 +138,18 @@ class LiveRolloutGuard(
         phase = phase,
         reason = reason,
     )
+
+    private fun canAggressivelyOverrideFalseEntryGate(
+        cycle: StrategyCycleResult,
+        weeklySummary: WeeklyLearningSummary,
+    ): Boolean {
+        val executionPlan = cycle.executionPlan ?: return false
+        if (weeklySummary.falseEntryRate > config.aggressiveOverrideMaxWeeklyFalseEntryRate) return false
+        if (cycle.modeSnapshot.mode !in setOf(BotMode.GROWTH, BotMode.ATTACK)) return false
+        if (cycle.modeSnapshot.edgeConfidence == EdgeConfidence.LOW) return false
+        return executionPlan.pairRankingScore >= config.aggressiveOverrideMinRankingScore &&
+            executionPlan.expectedNetEdgePct >= config.aggressiveOverrideMinExpectedEdgePct &&
+            cycle.marketSnapshot.botHealthScore >= config.aggressiveOverrideMinBotHealthScore &&
+            cycle.marketSnapshot.marketOpportunityScore >= config.aggressiveOverrideMinOpportunityScore
+    }
 }

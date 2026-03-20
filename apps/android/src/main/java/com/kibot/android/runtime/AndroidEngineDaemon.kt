@@ -104,6 +104,7 @@ class AndroidEngineDaemon(
     private var lastSuccessfulControlPlaneAt: Instant? = null
     private var lastExecutionPolicyLogSignature: String? = null
     private var lastExecutionPolicyLoggedAt: Instant? = null
+    private var lastEntryGateReason: String? = null
     private var forcedTrialExitConsumed = false
     private var stopProtectionStartedAt: Instant? = null
 
@@ -708,6 +709,7 @@ class AndroidEngineDaemon(
             }
         }
         if (stopProtectionStartedAt != null) {
+            lastEntryGateReason = "Stop aman aktif. Entry baru ditahan sampai posisi dan order bersih."
             return LiveLogEntry(
                 timestampEpochMs = now.toEpochMilliseconds(),
                 category = "STOP",
@@ -719,10 +721,22 @@ class AndroidEngineDaemon(
             )
         }
 
-        val executionPlan = cycle.executionPlan ?: return null
-        if (!cycle.modeSnapshot.tradingAllowed || !cycle.riskDecision.allowNewEntries) return null
+        val selectedSignal = cycle.selectedSignal
+        val executionPlan = cycle.executionPlan ?: run {
+            if (selectedSignal != null) {
+                lastEntryGateReason = "Setup ${selectedSignal.pairId.value} ada, tapi budget minimum atau ukuran order belum lolos."
+            } else {
+                lastEntryGateReason = null
+            }
+            return null
+        }
+        if (!cycle.modeSnapshot.tradingAllowed || !cycle.riskDecision.allowNewEntries) {
+            lastEntryGateReason = "Mode/risk gate masih menutup entry live."
+            return null
+        }
         val rolloutDecision = liveRolloutGuard.evaluate(cycle, weeklyReview)
         if (!rolloutDecision.allowed) {
+            lastEntryGateReason = rolloutDecision.reason
             appendAuditLog(
                 level = LogLevel.INFO,
                 category = "ROLLOUT_GUARD",
@@ -731,6 +745,7 @@ class AndroidEngineDaemon(
             return null
         }
         if (activePersistedOrders.isNotEmpty()) {
+            lastEntryGateReason = "Masih ada order aktif yang belum selesai, jadi entry baru ditunda."
             appendThrottledAuditLog(
                 now = now,
                 level = LogLevel.INFO,
@@ -746,6 +761,7 @@ class AndroidEngineDaemon(
             marketQuotes = marketQuotes,
         )
         routedEntry.blockedReason?.let { blockedReason ->
+            lastEntryGateReason = blockedReason
             appendThrottledAuditLog(
                 now = now,
                 level = LogLevel.WARN,
@@ -783,7 +799,10 @@ class AndroidEngineDaemon(
             message = result.message,
         )
         if (result.submitted) {
+            lastEntryGateReason = null
             lastAnalysisPublishedAt = now
+        } else {
+            lastEntryGateReason = result.message
         }
         return when {
             result.submitted -> LiveLogEntry(
@@ -1502,6 +1521,14 @@ class AndroidEngineDaemon(
                     timestampEpochMs = now.toEpochMilliseconds(),
                     category = "SETUP",
                     message = "Siap entry ${executionPlan.signal.pairId.value.lowercase()}. Harga dan fill lagi dicek cepat.",
+                )
+            }
+
+            selectedSignal != null && !lastEntryGateReason.isNullOrBlank() -> {
+                LiveLogEntry(
+                    timestampEpochMs = now.toEpochMilliseconds(),
+                    category = "GATE",
+                    message = "Bidik ${selectedSignal.pairId.value.lowercase()}. ${lastEntryGateReason.orEmpty()}",
                 )
             }
 

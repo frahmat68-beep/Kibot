@@ -196,7 +196,7 @@ class StrategyOrchestrator(
         deploymentPlan: com.kibot.shared.models.CapitalDeploymentPlan,
         openOrders: List<com.kibot.shared.models.OrderSnapshot>,
     ): StrategySignal? {
-        if (!modeSnapshot.tradingAllowed || openOrders.isNotEmpty()) return null
+        if (!modeSnapshot.tradingAllowed || openOrders.isNotEmpty() || !deploymentPlan.allowNewEntries) return null
         val heldPairs = positions
             .filter { it.state != PositionState.CLOSED }
             .map { it.pairId }
@@ -480,7 +480,7 @@ class StrategyOrchestrator(
             ?.toDoubleOrZero()
             ?: 0.0
         val rawBudgetIdr = minOf(
-            deploymentPlan.suggestedPerPositionBudgetIdr,
+            maxOf(deploymentPlan.suggestedPerPositionBudgetIdr, executionConfig.minOrderNotionalIdr),
             quoteBalanceUnits * quoteAssetPriceIdr,
         )
         val budgetIdr = (rawBudgetIdr * (1.0 - executionConfig.entrySpendBufferPct))
@@ -635,7 +635,7 @@ class StrategyOrchestrator(
         val parts = pairId.assets()
         val quoteBalance = balances.firstOrNull { it.asset.equals(parts.quoteAsset, ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
         val quoteAssetPrice = quoteAssetPriceIdr(parts.quoteAsset, marketQuotes) ?: return false
-        return quoteBalance * quoteAssetPrice >= minOf(targetBudgetIdr, executionConfig.minOrderNotionalIdr)
+        return quoteBalance * quoteAssetPrice >= maxOf(targetBudgetIdr, executionConfig.minOrderNotionalIdr)
     }
 
     private fun quoteAssetPriceIdr(asset: String, marketQuotes: List<MarketQuote>): Double? {
