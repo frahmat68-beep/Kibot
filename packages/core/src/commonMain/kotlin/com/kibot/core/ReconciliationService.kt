@@ -7,8 +7,11 @@ import com.kibot.shared.models.OrderStatus
 import com.kibot.shared.models.PortfolioSnapshot
 import com.kibot.shared.models.ReconciliationReport
 import com.kibot.shared.models.ReconciliationState
+import kotlin.time.Duration.Companion.minutes
 
 class ReconciliationService {
+    private val unmatchedFillLookback = 20.minutes
+
     fun reconcile(
         portfolio: PortfolioSnapshot,
         recentFills: List<FillSnapshot>,
@@ -23,8 +26,10 @@ class ReconciliationService {
             }
             .map(OrderSnapshot::clientOrderId)
 
+        val unmatchedFillCutoff = portfolio.lastSyncedAt - unmatchedFillLookback
         val unmatchedFills = recentFills.filter { fill ->
-            persistedOrders.none { it.orderId == fill.orderId }
+            fill.executedAt >= unmatchedFillCutoff &&
+                persistedOrders.none { it.orderId == fill.orderId }
         }.map(FillSnapshot::fillId)
 
         val warnings = buildList {

@@ -172,15 +172,11 @@ class AppRepository(
             )
         }
         val lanSnapshotDeferred = scope.async { fetchLanMacSnapshot() }
-        val liveBalancesDeferred: kotlinx.coroutines.Deferred<List<BalanceSnapshot>>? = if (uiPreferredSnapshot == null) {
-            scope.async { runCatching { exchangeGateway.fetchBalances() }.getOrDefault(emptyList()) }
-        } else {
-            null
+        val liveBalancesDeferred = scope.async {
+            runCatching { exchangeGateway.fetchBalances() }.getOrDefault(emptyList())
         }
-        val liveQuotesDeferred: kotlinx.coroutines.Deferred<List<MarketQuote>>? = if (uiPreferredSnapshot == null) {
-            scope.async { runCatching { exchangeGateway.fetchMarketQuotes() }.getOrDefault(emptyList()) }
-        } else {
-            null
+        val liveQuotesDeferred = scope.async {
+            runCatching { exchangeGateway.fetchMarketQuotes() }.getOrDefault(emptyList())
         }
 
         val botState = botStateDeferred.await() ?: return
@@ -188,14 +184,15 @@ class AppRepository(
         val devices = devicesDeferred.await()
         val risk = riskDeferred.await()
         val riskHistory = riskHistoryDeferred.await()
-        val liveBalances = liveBalancesDeferred?.await().orEmpty()
-        val liveQuotes = liveQuotesDeferred?.await().orEmpty()
+        val liveBalances = liveBalancesDeferred.await()
+        val liveQuotes = liveQuotesDeferred.await()
         val lanSnapshot = lanSnapshotDeferred.await()
         val auxiliary = fetchAuxiliaryData(gateway, now)
         val logs = auxiliary.logs
         val orders = auxiliary.orders
         val weeklyReview = auxiliary.weeklyReview
-        val liveEquityIdr = uiPreferredSnapshot?.totalEquityIdr?.parseRupiahLabel() ?: estimateEquityIdr(liveBalances, liveQuotes)
+        val liveEquityIdr = estimateEquityIdr(liveBalances, liveQuotes)
+            ?: uiPreferredSnapshot?.totalEquityIdr?.parseRupiahLabel()
         val openingEquityIdr = when {
             risk?.openingEquityIdr != null -> risk.openingEquityIdr.toDoubleOrZero()
             liveEquityIdr != null -> runtimePreferenceStore.getOrRememberDailyOpeningEquity(
@@ -205,26 +202,33 @@ class AppRepository(
             else -> null
         }
         val livePnlTodayIdr = when {
-            uiPreferredSnapshot != null -> uiPreferredSnapshot.pnlTodayIdr.parseRupiahLabel()
             liveEquityIdr != null && openingEquityIdr != null -> liveEquityIdr - openingEquityIdr
+            uiPreferredSnapshot != null -> uiPreferredSnapshot.pnlTodayIdr.parseRupiahLabel()
             risk != null -> risk.realizedPnlIdr.toDoubleOrZero() + risk.unrealizedPnlIdr.toDoubleOrZero()
             else -> 0.0
         }
-        val modalSaatIniLabel = uiPreferredSnapshot?.totalEquityIdr
-            ?: liveEquityIdr?.let(::formatIdr)
+        val modalSaatIniLabel = liveEquityIdr?.let(::formatIdr)
+            ?: uiPreferredSnapshot?.totalEquityIdr
             ?: risk?.currentEquityIdr?.let { formatIdr(it.toDoubleOrZero()) }
             ?: _uiState.value.modalSaatIniIdr
-        val pnlTodayLabel = uiPreferredSnapshot?.pnlTodayIdr
-            ?: livePnlTodayIdr?.let(::formatSignedIdr)
+        val pnlTodayLabel = livePnlTodayIdr?.let(::formatSignedIdr)
+            ?: uiPreferredSnapshot?.pnlTodayIdr
             ?: formatSignedIdr(0.0)
         val pnlTodayPctLabel = when {
-            uiPreferredSnapshot != null -> uiPreferredSnapshot.derivedPnlPctLabel()
             livePnlTodayIdr != null && openingEquityIdr != null && openingEquityIdr > 0.0 ->
                 formatSignedPercent(livePnlTodayIdr / openingEquityIdr)
+            uiPreferredSnapshot != null -> uiPreferredSnapshot.derivedPnlPctLabel()
             else -> "+0.0%"
         }
-        val livePositions = uiPreferredSnapshot?.toPositionCards()
-            ?: buildLivePositions(liveBalances, liveQuotes)
+        val livePositions = if (liveBalances.isNotEmpty() && liveQuotes.isNotEmpty()) {
+            buildLivePositions(
+                balances = liveBalances,
+                quotes = liveQuotes,
+                liveSnapshot = uiPreferredSnapshot,
+            )
+        } else {
+            uiPreferredSnapshot?.toPositionCards().orEmpty()
+        }
         val portfolioSection = buildPortfolioSection(
             now = now,
             history = riskHistory,
@@ -234,6 +238,8 @@ class AppRepository(
             pnlTodayPctLabel = pnlTodayPctLabel,
             risk = risk,
             positions = livePositions,
+            balances = liveBalances,
+            quotes = liveQuotes,
             liveSnapshot = uiPreferredSnapshot,
         )
 
@@ -328,36 +334,33 @@ class AppRepository(
                 )
             },
         )
-        val refreshedSnapshot = if (uiPreferredSnapshot == null) {
-            LiveStatusSnapshot(
-                updatedAtEpochMs = System.currentTimeMillis(),
-                activePair = botState.currentPair?.value
-                    ?: _uiState.value.pairAktif
-                    .takeIf { it.isNotBlank() && it != "-" }
-                    ?: _uiState.value.radarPairs.firstOrNull()
-                    ?: "-",
-                totalEquityIdr = modalSaatIniLabel,
-                pnlTodayIdr = pnlTodayLabel,
-                scanUniverseCount = _uiState.value.scanUniverseCount,
-                radarPairs = _uiState.value.radarPairs,
-                holdings = livePositions.map {
-                    LiveHoldingUi(
-                        asset = it.pair,
-                        amount = it.quantity,
-                        valueIdr = it.value,
-                        pnlIdr = it.pnl,
-                    )
-                },
-                statusMessage = _uiState.value.statusMessage,
-            )
-        } else {
-            null
-        }
-        refreshedSnapshot?.let { snapshot ->
-            liveStatusStore.update(snapshot)
-            runCatching {
-                KiBotWidgetProvider.updateAll(appContext, snapshot)
-            }
+        val refreshedSnapshot = LiveStatusSnapshot(
+            updatedAtEpochMs = uiPreferredSnapshot?.updatedAtEpochMs ?: System.currentTimeMillis(),
+            activePair = botState.currentPair?.value
+                ?: _uiState.value.pairAktif
+                .takeIf { it.isNotBlank() && it != "-" }
+                ?: _uiState.value.radarPairs.firstOrNull()
+                ?: "-",
+            totalEquityIdr = modalSaatIniLabel,
+            pnlTodayIdr = pnlTodayLabel,
+            internetPingMs = uiPreferredSnapshot?.internetPingMs,
+            scanUniverseCount = _uiState.value.scanUniverseCount,
+            radarPairs = _uiState.value.radarPairs,
+            holdings = livePositions.map {
+                LiveHoldingUi(
+                    asset = it.pair,
+                    amount = it.quantity,
+                    valueIdr = it.value,
+                    pnlIdr = it.pnl.substringBefore(" ").takeIf { label -> label.isNotBlank() } ?: "",
+                    pnlPctLabel = it.pnl.substringAfter(" ", "").takeIf { label -> label.isNotBlank() } ?: "",
+                )
+            },
+            statusMessage = _uiState.value.statusMessage,
+            liveLogEntries = uiPreferredSnapshot?.liveLogEntries ?: _uiState.value.liveLogEntries,
+        )
+        liveStatusStore.update(refreshedSnapshot)
+        runCatching {
+            KiBotWidgetProvider.updateAll(appContext, refreshedSnapshot)
         }
         persistState()
     }
@@ -436,7 +439,12 @@ class AppRepository(
     private fun buildLivePositions(
         balances: List<BalanceSnapshot>,
         quotes: List<MarketQuote>,
+        liveSnapshot: LiveStatusSnapshot?,
     ): List<PositionCardUi> {
+        val snapshotHoldingsByAsset = liveSnapshot
+            ?.holdings
+            ?.associateBy { it.asset.uppercase() }
+            .orEmpty()
         return balances
             .asSequence()
             .filterNot { it.asset.equals("idr", ignoreCase = true) }
@@ -445,11 +453,16 @@ class AppRepository(
                 if (units <= 0.0) return@mapNotNull null
                 val valueIdr = quoteAssetPriceIdr(balance.asset, quotes)?.let { units * it } ?: 0.0
                 if (valueIdr < MIN_VISIBLE_HOLDING_IDR) return@mapNotNull null
+                val assetCode = balance.asset.uppercase()
+                val snapshotHolding = snapshotHoldingsByAsset[assetCode]
                 PositionCardUi(
-                    pair = balance.asset.uppercase(),
-                    quantity = "${formatQuantity(units)} ${balance.asset.uppercase()}",
-                    value = "~${formatIdr(valueIdr)}",
-                    pnl = "",
+                    pair = assetCode,
+                    quantity = "${formatQuantity(units)} $assetCode",
+                    value = formatIdr(valueIdr),
+                    pnl = listOf(snapshotHolding?.pnlIdr, snapshotHolding?.pnlPctLabel)
+                        .filterNotNull()
+                        .filter { it.isNotBlank() }
+                        .joinToString(" "),
                 )
             }
             .sortedByDescending { extractCurrencyValue(it.value) }
@@ -465,10 +478,27 @@ class AppRepository(
         pnlTodayPctLabel: String,
         risk: com.kibot.shared.models.DailyRiskSnapshot?,
         positions: List<PositionCardUi>,
+        balances: List<BalanceSnapshot>,
+        quotes: List<MarketQuote>,
         liveSnapshot: LiveStatusSnapshot?,
     ): PortfolioSectionUi {
         val currentEquity = totalEquityIdr ?: totalEquityLabel.parseRupiahLabel() ?: 0.0
-        val allocationSource = if (!liveSnapshot?.holdings.isNullOrEmpty()) {
+        val allocationSource = if (balances.isNotEmpty() && quotes.isNotEmpty()) {
+            balances
+                .asSequence()
+                .filterNot { it.asset.equals("idr", ignoreCase = true) }
+                .mapNotNull { balance ->
+                    val units = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+                    if (units <= 0.0) return@mapNotNull null
+                    val valueIdr = quoteAssetPriceIdr(balance.asset, quotes)?.let { units * it } ?: 0.0
+                    if (valueIdr <= 0.0) return@mapNotNull null
+                    AllocationSource(
+                        label = balance.asset.uppercase(),
+                        valueIdr = valueIdr,
+                    )
+                }
+                .toList()
+        } else if (!liveSnapshot?.holdings.isNullOrEmpty()) {
             liveSnapshot!!.holdings.map {
                 AllocationSource(
                     label = it.asset.uppercase(),
