@@ -125,6 +125,12 @@ class RiskEngine(
                 .toInt()
                 .coerceAtLeast(1)
                 .coerceAtMost(config.maxConcurrentPositions)
+        }.let { rawSlots ->
+            when {
+                currentEquity < 120_000.0 -> rawSlots.coerceAtMost(4)
+                currentEquity < 200_000.0 -> rawSlots.coerceAtMost(5)
+                else -> rawSlots
+            }
         }
         val additionalSlots = (desiredActiveSlots - openPositions).coerceAtLeast(0)
         val slotAwareBudget = if (desiredActiveSlots > 0) {

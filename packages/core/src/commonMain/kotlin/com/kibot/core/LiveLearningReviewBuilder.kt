@@ -20,6 +20,8 @@ data class LiveLearningReviewConfig(
     val maxRecentOrders: Int = 80,
     val publishIntervalHours: Int = 6,
     val missedOpportunityThreshold: Double = 0.70,
+    val minimumMeaningfulNetProfitIdr: Double = 300.0,
+    val minimumMeaningfulNetProfitPct: Double = 0.85,
 ) {
     val lookbackWindowMs: Long = lookbackDays * 86_400_000L
 }
@@ -41,6 +43,7 @@ class LiveLearningReviewBuilder(
         val quoteByPair = marketQuotes.associateBy { it.pairId }
         val portfolioEquityIdr = cycle.portfolio.totalEquityIdr.toDoubleOrZero().coerceAtLeast(1.0)
         val cutoffEpochMs = now.toEpochMilliseconds() - config.lookbackWindowMs
+        val realizedRoundTripBySellOrder = buildRealizedRoundTripBySellOrder(recentOrders)
 
         val observations = buildList {
             recentOrders
@@ -77,7 +80,26 @@ class LiveLearningReviewBuilder(
                     }
                     val feePenaltyPct = ((order.feePaid.toDoubleOrZero() / notionalIdr) * 100.0).coerceIn(0.0, 1.5)
                     val slippagePct = quote?.estimatedSlippagePct ?: 0.10
-                    val realizedPnlPct = (markToMarketPct - feePenaltyPct - (slippagePct * 0.25)).coerceIn(-5.0, 5.0)
+                    val realizedRoundTrip = if (order.side == OrderSide.SELL) {
+                        realizedRoundTripBySellOrder[order.orderId]
+                    } else {
+                        null
+                    }
+                    val realizedPnlPct = when (order.side) {
+                        OrderSide.SELL -> realizedRoundTrip?.pnlPct
+                            ?: (markToMarketPct - feePenaltyPct - (slippagePct * 0.25))
+                        OrderSide.BUY -> markToMarketPct - feePenaltyPct - (slippagePct * 0.25)
+                    }.coerceIn(-5.0, 5.0)
+                    val realizedPnlIdr = when (order.side) {
+                        OrderSide.SELL -> realizedRoundTrip?.pnlIdr
+                            ?: ((realizedPnlPct / 100.0) * notionalIdr)
+                        OrderSide.BUY -> ((realizedPnlPct / 100.0) * notionalIdr)
+                    }
+                    val lowQualityRoundTrip = order.side == OrderSide.SELL &&
+                        realizedPnlPct < config.minimumMeaningfulNetProfitPct &&
+                        realizedPnlIdr < config.minimumMeaningfulNetProfitIdr
+                    val productiveTrade = realizedPnlPct > config.minimumMeaningfulNetProfitPct &&
+                        realizedPnlIdr >= config.minimumMeaningfulNetProfitIdr
 
                     add(
                         LearningObservation(
@@ -87,12 +109,19 @@ class LiveLearningReviewBuilder(
                             horizon = horizon,
                             tradeTaken = true,
                             realizedPnlPct = realizedPnlPct,
-                            expectedNetEdgePct = pairScore?.marketOpportunityScore ?: 0.0,
+                            expectedNetEdgePct = pairScore?.feeAdjustedEdgeScore ?: 0.0,
                             slippagePct = slippagePct,
                             fillQualityScore = pairScore?.fillQualityScore ?: quote?.fillQualityScore ?: 0.5,
-                            falseEntry = order.side == OrderSide.BUY && realizedPnlPct <= -0.35,
+                            falseEntry = when (order.side) {
+                                OrderSide.BUY -> realizedPnlPct <= -0.55
+                                OrderSide.SELL -> realizedPnlPct <= -0.20 || lowQualityRoundTrip
+                            },
                             capitalUtilizationPct = utilization,
-                            productiveUtilizationPct = if (realizedPnlPct > 0.0) utilization else utilization * 0.45,
+                            productiveUtilizationPct = when {
+                                productiveTrade -> utilization
+                                realizedPnlPct > 0.0 -> utilization * 0.25
+                                else -> utilization * 0.45
+                            },
                         ),
                     )
                 }
@@ -137,6 +166,26 @@ class LiveLearningReviewBuilder(
                     )
                 }
             }
+
+            if (
+                cycle.selectedSignal != null &&
+                cycle.executionPlan == null &&
+                cycle.modeSnapshot.tradingAllowed &&
+                cycle.deploymentPlan.allowNewEntries
+            ) {
+                add(
+                    LearningObservation(
+                        observedAt = now,
+                        pairId = cycle.selectedSignal.pairId,
+                        setupType = cycle.selectedSignal.setupType,
+                        horizon = cycle.selectedSignal.horizon,
+                        tradeTaken = false,
+                        missedQualifiedOpportunity = cycle.selectedSignal.expectedNetProfitabilityPct >= config.minimumMeaningfulNetProfitPct,
+                        capitalUtilizationPct = 0.0,
+                        productiveUtilizationPct = 0.0,
+                    ),
+                )
+            }
         }
 
         if (observations.isEmpty()) return null
@@ -148,6 +197,69 @@ class LiveLearningReviewBuilder(
         )
     }
 
+    private fun buildRealizedRoundTripBySellOrder(
+        recentOrders: List<OrderSnapshot>,
+    ): Map<com.kibot.shared.models.OrderId, RealizedRoundTrip> {
+        data class OpenLot(
+            val quantity: Double,
+            val price: Double,
+        )
+
+        val lotsByPair = mutableMapOf<com.kibot.shared.models.PairId, ArrayDeque<OpenLot>>()
+        val realizedByOrder = mutableMapOf<com.kibot.shared.models.OrderId, RealizedRoundTrip>()
+
+        recentOrders
+            .sortedBy { it.updatedAt.toEpochMilliseconds() }
+            .forEach { order ->
+                val executedQty = order.executedQuantity.toDoubleOrZero().takeIf { it > 0.0 }
+                    ?: order.originalQuantity.toDoubleOrZero()
+                val price = order.price.toDoubleOrZero()
+                if (executedQty <= 0.0 || price <= 0.0) return@forEach
+
+                when (order.side) {
+                    OrderSide.BUY -> {
+                        val queue = lotsByPair.getOrPut(order.pairId) { ArrayDeque() }
+                        queue.addLast(OpenLot(quantity = executedQty, price = price))
+                    }
+
+                    OrderSide.SELL -> {
+                        val queue = lotsByPair.getOrPut(order.pairId) { ArrayDeque() }
+                        var remainingQty = executedQty
+                        var costQty = 0.0
+                        var costNotional = 0.0
+
+                        while (remainingQty > 0.0 && queue.isNotEmpty()) {
+                            val lot = queue.removeFirst()
+                            val matchedQty = minOf(remainingQty, lot.quantity)
+                            costQty += matchedQty
+                            costNotional += matchedQty * lot.price
+                            remainingQty -= matchedQty
+                            val leftoverQty = lot.quantity - matchedQty
+                            if (leftoverQty > 0.0) {
+                                queue.addFirst(lot.copy(quantity = leftoverQty))
+                            }
+                        }
+
+                        val averageCost = when {
+                            costQty > 0.0 -> costNotional / costQty
+                            else -> price
+                        }
+                        val sellNotional = executedQty * price
+                        val feePenaltyPct = ((order.feePaid.toDoubleOrZero() / sellNotional) * 100.0).coerceIn(0.0, 1.5)
+                        val grossPct = if (averageCost > 0.0) ((price - averageCost) / averageCost) * 100.0 else 0.0
+                        val netPct = grossPct - feePenaltyPct
+                        val netPnlIdr = ((price - averageCost) * executedQty) - order.feePaid.toDoubleOrZero()
+                        realizedByOrder[order.orderId] = RealizedRoundTrip(
+                            pnlPct = netPct,
+                            pnlIdr = netPnlIdr,
+                        )
+                    }
+                }
+            }
+
+        return realizedByOrder
+    }
+
     private fun setupFor(horizon: TradingHorizon, quote: MarketQuote?): SetupType {
         if (horizon == TradingHorizon.SWING) return SetupType.SWING_TREND_CONTINUATION
         val shortReturn = quote?.shortTermReturnPct ?: 0.0
@@ -157,4 +269,9 @@ class LiveLearningReviewBuilder(
             else -> SetupType.MICRO_MEAN_REVERSION
         }
     }
+
+    private data class RealizedRoundTrip(
+        val pnlPct: Double,
+        val pnlIdr: Double,
+    )
 }

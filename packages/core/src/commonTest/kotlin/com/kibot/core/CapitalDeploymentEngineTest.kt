@@ -111,6 +111,34 @@ class CapitalDeploymentEngineTest {
         assertTrue(plan.candidates.first().speculativePocket)
     }
 
+    @Test
+    fun `small equity does not spread into too many micro positions`() {
+        val smallPortfolio = PortfolioSnapshot(
+            botId = BotId("main"),
+            balances = listOf(BalanceSnapshot("idr", DecimalValue("93614"))),
+            openOrders = emptyList(),
+            positions = emptyList(),
+            totalEquityIdr = DecimalValue("93614"),
+            lastSyncedAt = Instant.parse("2026-03-22T00:00:00Z"),
+        )
+
+        val plan = engine.plan(
+            portfolio = smallPortfolio,
+            rankedPairs = listOf(
+                pairScore("doge_idr", ranking = 0.81, opportunity = 1.22),
+                pairScore("trx_idr", ranking = 0.79, opportunity = 1.18),
+                pairScore("eth_idr", ranking = 0.77, opportunity = 1.16),
+                pairScore("xrp_idr", ranking = 0.76, opportunity = 1.15),
+                pairScore("usdt_idr", ranking = 0.74, opportunity = 1.12),
+            ),
+            risk = risk,
+            mode = mode,
+        )
+
+        assertTrue(plan.maxActivePositions <= 4)
+        assertTrue(plan.suggestedPerPositionBudgetIdr >= 22_500.0)
+    }
+
     private fun portfolio() = PortfolioSnapshot(
         botId = BotId("main"),
         balances = listOf(BalanceSnapshot("idr", DecimalValue("100000"))),

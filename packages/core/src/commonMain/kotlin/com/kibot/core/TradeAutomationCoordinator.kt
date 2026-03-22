@@ -25,12 +25,22 @@ import kotlin.math.max
 data class TradeAutomationConfig(
     val minTrackedPositionValueIdr: Double = 12_000.0,
     val thesisInvalidRankingFloor: Double = 0.46,
-    val thesisInvalidAgeHours: Double = 1.5,
-    val timeExitGraceMultiplier: Double = 1.35,
-    val maxStaleLossPctForTimeExit: Double = 0.35,
+    val thesisInvalidAgeHours: Double = 2.5,
+    val timeExitGraceMultiplier: Double = 1.60,
+    val maxStaleLossPctForTimeExit: Double = 0.10,
     val orderFillTolerancePct: Double = 0.0025,
     val emergencyMarketExitLossPct: Double = -2.2,
     val ambiguousOrderGraceMinutes: Double = 10.0,
+    val estimatedRoundTripCostPct: Double = 0.66,
+    val breakEvenExitBufferPct: Double = 0.12,
+    val speculativeWinnerRunMinPnlPct: Double = 1.8,
+    val speculativeWinnerRunMinTrendScore: Double = 0.62,
+    val speculativeWinnerRunMinHealthScore: Double = 0.60,
+    val speculativeWinnerRunMinOpportunityScore: Double = 0.60,
+    val breakoutWinnerRunMinPnlPct: Double = 1.05,
+    val breakoutWinnerRunMinTrendScore: Double = 0.60,
+    val breakoutWinnerRunMinHealthScore: Double = 0.58,
+    val breakoutWinnerRunMinOpportunityScore: Double = 0.58,
 )
 
 data class ManagedPosition(
@@ -41,6 +51,7 @@ data class ManagedPosition(
     val currentValueIdr: DecimalValue,
     val unrealizedPnlIdr: DecimalValue,
     val unrealizedPnlPct: Double,
+    val breakEvenPrice: DecimalValue,
     val takeProfitPrice: DecimalValue,
     val stopPrice: DecimalValue,
     val openedAt: Instant,
@@ -119,9 +130,7 @@ class TradeAutomationCoordinator(
             val executedQuantity = fills.sumOf { it.quantity.toDoubleOrZero() }
             val originalQuantity = persisted.originalQuantity.toDoubleOrZero().coerceAtLeast(0.0)
             val tolerance = max(originalQuantity * config.orderFillTolerancePct, 0.00000001)
-            val forceFilled = openOrder == null &&
-                fills.isNotEmpty() &&
-                persisted.status != OrderStatus.CANCEL_REQUESTED &&
+            val forceFilled = persisted.status != OrderStatus.CANCEL_REQUESTED &&
                 executedQuantity > tolerance
             val effectiveOriginalQuantity = if (forceFilled) executedQuantity else originalQuantity
             val remainingQuantity = if (forceFilled) {
@@ -189,6 +198,9 @@ class TradeAutomationCoordinator(
                     ?.price
                     ?.toDoubleOrZero()
                 ?: quote.midPrice.toDoubleOrZero()
+            val breakEvenPrice = DecimalValue.fromDouble(
+                weightedEntryPrice * (1.0 + ((config.estimatedRoundTripCostPct + config.breakEvenExitBufferPct) / 100.0)),
+            )
             val openedAt = buyOrders.maxByOrNull { it.updatedAt }?.updatedAt
                 ?: pairOrders.firstOrNull { it.side == OrderSide.BUY }?.createdAt
                 ?: now
@@ -198,15 +210,15 @@ class TradeAutomationCoordinator(
             val takeProfitPrice = DecimalValue.fromDouble(
                 weightedEntryPrice *
                     when {
-                        speculativePocket -> 1.03
-                        horizon == TradingHorizon.SWING -> 1.05
-                        else -> 1.02
+                        speculativePocket -> 1.10
+                        horizon == TradingHorizon.SWING -> 1.075
+                        else -> 1.04
                     },
             )
             val stopPrice = DecimalValue.fromDouble(
                 weightedEntryPrice *
                     when {
-                        speculativePocket -> 0.972
+                        speculativePocket -> 0.982
                         horizon == TradingHorizon.SWING -> 0.96
                         else -> 0.985
                     },
@@ -226,6 +238,7 @@ class TradeAutomationCoordinator(
                 currentValueIdr = DecimalValue.fromDouble(valueIdr),
                 unrealizedPnlIdr = DecimalValue.fromDouble(unrealizedPnlIdr),
                 unrealizedPnlPct = unrealizedPnlPct,
+                breakEvenPrice = breakEvenPrice,
                 takeProfitPrice = takeProfitPrice,
                 stopPrice = stopPrice,
                 openedAt = openedAt,
@@ -240,9 +253,9 @@ class TradeAutomationCoordinator(
                 pairTier = rankedPair?.pairTier ?: com.kibot.shared.models.PairTier.TIER_B,
                 speculativePocket = speculativePocket,
                 expectedHoldingHours = when {
-                    speculativePocket -> 2.0
+                    speculativePocket -> 8.0
                     horizon == TradingHorizon.SWING -> 72.0
-                    else -> 8.0
+                    else -> 12.0
                 },
             )
         }.sortedByDescending { it.currentValueIdr.toDoubleOrZero() }
@@ -294,13 +307,20 @@ class TradeAutomationCoordinator(
         riskDecision: RiskDecision,
     ): ExitDecision? {
         val currentBid = position.currentBidPrice.toDoubleOrZero()
+        val breakEvenPrice = position.breakEvenPrice.toDoubleOrZero()
         val stopPrice = position.stopPrice.toDoubleOrZero()
         val takeProfitPrice = position.takeProfitPrice.toDoubleOrZero()
         val ageHours = ((now.toEpochMilliseconds() - position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 3_600_000.0)
+        val keepWinnerRunning = shouldKeepWinnerRunning(
+            position = position,
+            pairScore = pairScore,
+            marketRegime = marketRegime,
+            riskDecision = riskDecision,
+        )
 
         val exitReason = when {
             currentBid <= stopPrice -> ExitReason.STOP_LOSS_EXIT
-            currentBid >= takeProfitPrice -> ExitReason.PROFIT_EXIT
+            currentBid >= takeProfitPrice && !keepWinnerRunning -> ExitReason.PROFIT_EXIT
             marketRegime == MarketRegime.BREAKDOWN_PANIC -> ExitReason.THESIS_INVALID_EXIT
             pairScore != null &&
                 (!pairScore.allowed || pairScore.rankingScore < config.thesisInvalidRankingFloor) &&
@@ -309,14 +329,32 @@ class TradeAutomationCoordinator(
             ageHours >= position.expectedHoldingHours * config.timeExitGraceMultiplier &&
                 position.unrealizedPnlPct <= config.maxStaleLossPctForTimeExit -> ExitReason.TIME_EXIT
             riskDecision.profitProtectionStatus != com.kibot.shared.models.ProfitProtectionStatus.INACTIVE &&
-                position.unrealizedPnlPct >= 1.1 &&
-                currentBid < takeProfitPrice * 0.992 -> ExitReason.PROFIT_PROTECTION_EXIT
+                position.unrealizedPnlPct >= (if (position.speculativePocket) 2.6 else 1.4) &&
+                currentBid < takeProfitPrice * when {
+                    keepWinnerRunning && position.speculativePocket -> 0.970
+                    keepWinnerRunning -> 0.982
+                    position.speculativePocket -> 0.985
+                    else -> 0.992
+                } ->
+                ExitReason.PROFIT_PROTECTION_EXIT
             else -> null
         } ?: return null
 
         val useEmergencyMarketExit = riskDecision.hardStopTriggered ||
             marketRegime == MarketRegime.BREAKDOWN_PANIC ||
             (exitReason == ExitReason.STOP_LOSS_EXIT && position.unrealizedPnlPct <= config.emergencyMarketExitLossPct)
+
+        val nonEmergencyExitBelowBreakEven = !useEmergencyMarketExit &&
+            exitReason in setOf(
+                ExitReason.PROFIT_EXIT,
+                ExitReason.TIME_EXIT,
+                ExitReason.THESIS_INVALID_EXIT,
+                ExitReason.PROFIT_PROTECTION_EXIT,
+            ) &&
+            currentBid < breakEvenPrice
+        if (nonEmergencyExitBelowBreakEven) {
+            return null
+        }
 
         val signal = StrategySignal(
             pairId = position.pairId,
@@ -355,6 +393,36 @@ class TradeAutomationCoordinator(
                 speculativePocket = position.speculativePocket,
             ),
         )
+    }
+
+    private fun shouldKeepWinnerRunning(
+        position: ManagedPosition,
+        pairScore: PairScore?,
+        marketRegime: MarketRegime,
+        riskDecision: RiskDecision,
+    ): Boolean {
+        if (riskDecision.hardStopTriggered || marketRegime == MarketRegime.BREAKDOWN_PANIC) return false
+        val score = pairScore ?: return false
+        return when {
+            position.speculativePocket ->
+                position.unrealizedPnlPct >= config.speculativeWinnerRunMinPnlPct &&
+                    score.allowed &&
+                    score.trendQualityScore >= config.speculativeWinnerRunMinTrendScore &&
+                    score.recentHealthScore >= config.speculativeWinnerRunMinHealthScore &&
+                    score.marketOpportunityScore >= config.speculativeWinnerRunMinOpportunityScore
+            position.setupType == SetupType.LIGHT_BREAKOUT_CONTINUATION ->
+                position.unrealizedPnlPct >= config.breakoutWinnerRunMinPnlPct &&
+                    score.allowed &&
+                    score.trendQualityScore >= config.breakoutWinnerRunMinTrendScore &&
+                    score.recentHealthScore >= config.breakoutWinnerRunMinHealthScore &&
+                    score.marketOpportunityScore >= config.breakoutWinnerRunMinOpportunityScore
+            position.horizon == TradingHorizon.SWING ->
+                position.unrealizedPnlPct >= 1.20 &&
+                    score.allowed &&
+                    score.trendQualityScore >= 0.60 &&
+                    score.marketOpportunityScore >= 0.58
+            else -> false
+        }
     }
 
     private fun resolveBalancePairId(

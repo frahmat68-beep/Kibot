@@ -76,6 +76,14 @@ class AppRepository(
         ?.let { CachedLanEndpoint(it, 0L) }
     private var lastLanDiscoveryAttemptEpochMs: Long = 0L
 
+    private data class ValuedHolding(
+        val asset: String,
+        val quantity: Double,
+        val valueIdr: Double,
+        val pnlIdrLabel: String = "",
+        val pnlPctLabel: String = "",
+    )
+
     fun toggleBot(): Boolean {
         val current = _uiState.value
         val nextRunning = !current.isBotRunning
@@ -220,15 +228,16 @@ class AppRepository(
             uiPreferredSnapshot != null -> uiPreferredSnapshot.derivedPnlPctLabel()
             else -> "+0.0%"
         }
-        val livePositions = if (liveBalances.isNotEmpty() && liveQuotes.isNotEmpty()) {
-            buildLivePositions(
+        val valuedHoldings = when {
+            liveBalances.isNotEmpty() && liveQuotes.isNotEmpty() -> buildValuedHoldings(
                 balances = liveBalances,
                 quotes = liveQuotes,
                 liveSnapshot = uiPreferredSnapshot,
             )
-        } else {
-            uiPreferredSnapshot?.toPositionCards().orEmpty()
+            !uiPreferredSnapshot?.holdings.isNullOrEmpty() -> buildSnapshotValuedHoldings(uiPreferredSnapshot!!)
+            else -> emptyList()
         }
+        val livePositions = buildLivePositions(valuedHoldings)
         val portfolioSection = buildPortfolioSection(
             now = now,
             history = riskHistory,
@@ -237,10 +246,7 @@ class AppRepository(
             pnlTodayLabel = pnlTodayLabel,
             pnlTodayPctLabel = pnlTodayPctLabel,
             risk = risk,
-            positions = livePositions,
-            balances = liveBalances,
-            quotes = liveQuotes,
-            liveSnapshot = uiPreferredSnapshot,
+            holdings = valuedHoldings,
         )
 
         val activeDeviceId = lease?.currentHolder ?: botState.activeDeviceId
@@ -437,36 +443,20 @@ class AppRepository(
     }
 
     private fun buildLivePositions(
-        balances: List<BalanceSnapshot>,
-        quotes: List<MarketQuote>,
-        liveSnapshot: LiveStatusSnapshot?,
+        holdings: List<ValuedHolding>,
     ): List<PositionCardUi> {
-        val snapshotHoldingsByAsset = liveSnapshot
-            ?.holdings
-            ?.associateBy { it.asset.uppercase() }
-            .orEmpty()
-        return balances
-            .asSequence()
-            .filterNot { it.asset.equals("idr", ignoreCase = true) }
-            .mapNotNull { balance ->
-                val units = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
-                if (units <= 0.0) return@mapNotNull null
-                val valueIdr = quoteAssetPriceIdr(balance.asset, quotes)?.let { units * it } ?: 0.0
-                if (valueIdr < MIN_VISIBLE_HOLDING_IDR) return@mapNotNull null
-                val assetCode = balance.asset.uppercase()
-                val snapshotHolding = snapshotHoldingsByAsset[assetCode]
+        return holdings
+            .map { holding ->
                 PositionCardUi(
-                    pair = assetCode,
-                    quantity = "${formatQuantity(units)} $assetCode",
-                    value = formatIdr(valueIdr),
-                    pnl = listOf(snapshotHolding?.pnlIdr, snapshotHolding?.pnlPctLabel)
-                        .filterNotNull()
+                    pair = holding.asset,
+                    quantity = "${formatQuantity(holding.quantity)} ${holding.asset}",
+                    value = formatIdr(holding.valueIdr),
+                    pnl = listOf(holding.pnlIdrLabel, holding.pnlPctLabel)
                         .filter { it.isNotBlank() }
                         .joinToString(" "),
                 )
             }
             .sortedByDescending { extractCurrencyValue(it.value) }
-            .toList()
     }
 
     private fun buildPortfolioSection(
@@ -477,48 +467,23 @@ class AppRepository(
         pnlTodayLabel: String,
         pnlTodayPctLabel: String,
         risk: com.kibot.shared.models.DailyRiskSnapshot?,
-        positions: List<PositionCardUi>,
-        balances: List<BalanceSnapshot>,
-        quotes: List<MarketQuote>,
-        liveSnapshot: LiveStatusSnapshot?,
+        holdings: List<ValuedHolding>,
     ): PortfolioSectionUi {
         val currentEquity = totalEquityIdr ?: totalEquityLabel.parseRupiahLabel() ?: 0.0
-        val allocationSource = if (balances.isNotEmpty() && quotes.isNotEmpty()) {
-            balances
-                .asSequence()
-                .filterNot { it.asset.equals("idr", ignoreCase = true) }
-                .mapNotNull { balance ->
-                    val units = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
-                    if (units <= 0.0) return@mapNotNull null
-                    val valueIdr = quoteAssetPriceIdr(balance.asset, quotes)?.let { units * it } ?: 0.0
-                    if (valueIdr <= 0.0) return@mapNotNull null
-                    AllocationSource(
-                        label = balance.asset.uppercase(),
-                        valueIdr = valueIdr,
-                    )
-                }
-                .toList()
-        } else if (!liveSnapshot?.holdings.isNullOrEmpty()) {
-            liveSnapshot!!.holdings.map {
+        val allocationSource = holdings
+            .map {
                 AllocationSource(
-                    label = it.asset.uppercase(),
-                    valueIdr = it.valueIdr.parseRupiahLabel() ?: 0.0,
+                    label = it.asset,
+                    valueIdr = it.valueIdr,
                 )
             }
-        } else {
-            positions.map {
-                AllocationSource(
-                    label = it.pair.uppercase(),
-                    valueIdr = extractCurrencyValue(it.value),
-                )
-            }
-        }.filter { it.valueIdr > 0.0 }
+            .filter { it.valueIdr > 0.0 }
 
         val investedValue = allocationSource.sumOf { it.valueIdr }
         val cashReadyIdr = (currentEquity - investedValue).coerceAtLeast(0.0)
         val cashReadyPct = if (currentEquity > 0.0) cashReadyIdr / currentEquity else 0.0
         val totalUnrealized = risk?.unrealizedPnlIdr?.toDoubleOrZero()
-            ?: liveSnapshot?.holdings?.sumOf { it.pnlIdr.parseRupiahLabel() ?: 0.0 }
+            ?: holdings.sumOf { it.pnlIdrLabel.parseRupiahLabel() ?: 0.0 }
             ?: 0.0
         val topConcentrationPct = allocationSource.maxOfOrNull { it.valueIdr }
             ?.let { largest -> if (currentEquity > 0.0) largest / currentEquity else 0.0 }
@@ -621,6 +586,55 @@ class AppRepository(
                 )
             }
         }
+    }
+
+    private fun buildValuedHoldings(
+        balances: List<BalanceSnapshot>,
+        quotes: List<MarketQuote>,
+        liveSnapshot: LiveStatusSnapshot?,
+    ): List<ValuedHolding> {
+        val snapshotHoldingsByAsset = liveSnapshot
+            ?.holdings
+            ?.associateBy { it.asset.uppercase() }
+            .orEmpty()
+        return balances
+            .asSequence()
+            .filterNot { it.asset.equals("idr", ignoreCase = true) }
+            .mapNotNull { balance ->
+                val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+                if (quantity <= 0.0) return@mapNotNull null
+                val valueIdr = quoteAssetPriceIdr(balance.asset, quotes)?.let { quantity * it } ?: 0.0
+                if (valueIdr < MIN_VISIBLE_HOLDING_IDR) return@mapNotNull null
+                val assetCode = balance.asset.uppercase()
+                val snapshotHolding = snapshotHoldingsByAsset[assetCode]
+                ValuedHolding(
+                    asset = assetCode,
+                    quantity = quantity,
+                    valueIdr = valueIdr,
+                    pnlIdrLabel = snapshotHolding?.pnlIdr.orEmpty(),
+                    pnlPctLabel = snapshotHolding?.pnlPctLabel.orEmpty(),
+                )
+            }
+            .sortedByDescending { it.valueIdr }
+            .toList()
+    }
+
+    private fun buildSnapshotValuedHoldings(
+        liveSnapshot: LiveStatusSnapshot,
+    ): List<ValuedHolding> {
+        return liveSnapshot.holdings
+            .mapNotNull { holding ->
+                val valueIdr = holding.valueIdr.parseRupiahLabel() ?: return@mapNotNull null
+                if (valueIdr < MIN_VISIBLE_HOLDING_IDR) return@mapNotNull null
+                ValuedHolding(
+                    asset = holding.asset.uppercase(),
+                    quantity = extractQuantityValue(holding.amount),
+                    valueIdr = valueIdr,
+                    pnlIdrLabel = holding.pnlIdr,
+                    pnlPctLabel = holding.pnlPctLabel,
+                )
+            }
+            .sortedByDescending { it.valueIdr }
     }
 
     private fun quoteAssetPriceIdr(asset: String, quotes: List<MarketQuote>): Double? {
@@ -823,8 +837,16 @@ class AppRepository(
         return "$hh:$mm"
     }
 
+    private fun extractQuantityValue(label: String): Double {
+        val numeric = label
+            .trim()
+            .substringBeforeLast(' ')
+            .replace(",", "")
+        return numeric.toDoubleOrNull() ?: 0.0
+    }
+
     companion object {
-        private const val MIN_VISIBLE_HOLDING_IDR = 1_000.0
+        private const val MIN_VISIBLE_HOLDING_IDR = 1.0
         private const val AUXILIARY_CACHE_TTL_MS = 20_000L
         private const val LIVE_SNAPSHOT_FRESHNESS_MS = 15_000L
         private const val LIVE_SNAPSHOT_UI_TTL_MS = 60_000L

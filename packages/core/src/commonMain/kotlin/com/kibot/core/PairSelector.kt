@@ -134,6 +134,19 @@ class PairSelector(
         } else {
             TradingHorizon.TACTICAL
         }
+        val grossEdgePct = deriveGrossEdgePct(
+            quote = quote,
+            rankingScore = rankingScore,
+            recentHealthScore = recentHealthScore,
+            historicalExpectancyScore = historicalExpectancyScore,
+            fillQualityScore = fillQualityScore,
+            trendQualityScore = trendQualityScore,
+        )
+        val roundTripCostPct = estimateRoundTripCostPct(
+            quote = quote,
+            speculativePocket = speculativePocket,
+        )
+        val feeAdjustedEdgePct = grossEdgePct - roundTripCostPct
 
         val rejectionReasons = buildList {
             if (quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr && !smallCapitalEligible) {
@@ -148,7 +161,7 @@ class PairSelector(
             }
             if (fillQualityScore < policy.minFillQualityScore) add("Kualitas fill memburuk.")
             if (historicalExpectancyScore < policy.minHistoricalExpectancyScore) add("Expectancy historis belum cukup sehat.")
-            if (marketOpportunityScore < policy.minFeeAdjustedEdgeScore) add("Net edge setelah biaya belum layak.")
+            if (feeAdjustedEdgePct < policy.minFeeAdjustedEdgeScore) add("Net edge setelah biaya belum layak.")
         }
 
         val pairTier = when {
@@ -174,7 +187,7 @@ class PairSelector(
             recentHealthScore = recentHealthScore,
             fillQualityScore = fillQualityScore,
             holdabilityScore = holdabilityScore,
-            feeAdjustedEdgeScore = marketOpportunityScore,
+            feeAdjustedEdgeScore = feeAdjustedEdgePct,
             marketOpportunityScore = marketOpportunityScore,
             rankingScore = rankingScore,
             pairTier = pairTier,
@@ -219,6 +232,54 @@ class PairSelector(
             quote.fillQualityScore.coerceIn(0.0, 1.0),
             quote.orderBookStabilityScore.coerceIn(0.0, 1.0),
         )
+    }
+
+    private fun deriveGrossEdgePct(
+        quote: MarketQuote,
+        rankingScore: Double,
+        recentHealthScore: Double,
+        historicalExpectancyScore: Double,
+        fillQualityScore: Double,
+        trendQualityScore: Double,
+    ): Double {
+        val baseOpportunityPct = ((rankingScore - 0.44).coerceAtLeast(0.0) * 2.5)
+        val expectancyAssistPct = maxOf(historicalExpectancyScore - 0.50, 0.0) * 0.85
+        val qualityAssistPct = maxOf(fillQualityScore - 0.50, 0.0) * 0.55
+        val momentumAssistPct = (
+            maxOf(quote.shortTermReturnPct, 0.0) * 0.28 +
+                maxOf(quote.mediumTermReturnPct, 0.0) * 0.18 +
+                maxOf(trendQualityScore - 0.50, 0.0) * 0.80 +
+                maxOf(recentHealthScore - 0.50, 0.0) * 0.45
+            )
+        val explosiveBreakoutBonusPct = when {
+            quote.shortTermReturnPct >= 0.90 &&
+                quote.mediumTermReturnPct >= 0.55 &&
+                quote.recentTradeActivityScore >= 0.60 &&
+                trendQualityScore >= 0.62 &&
+                fillQualityScore >= 0.60 -> 0.24
+            quote.shortTermReturnPct >= 0.65 &&
+                quote.mediumTermReturnPct >= 0.40 &&
+                quote.recentTradeActivityScore >= 0.54 &&
+                fillQualityScore >= 0.58 -> 0.12
+            else -> 0.0
+        }
+        return (baseOpportunityPct + expectancyAssistPct + qualityAssistPct + momentumAssistPct + explosiveBreakoutBonusPct)
+            .coerceIn(0.0, policy.strongNetEdgePct * 2.0)
+    }
+
+    private fun estimateRoundTripCostPct(
+        quote: MarketQuote,
+        speculativePocket: Boolean,
+    ): Double {
+        val feeCostPct = if (speculativePocket) {
+            policy.estimatedTakerRoundTripCostPct
+        } else {
+            policy.estimatedMakerRoundTripCostPct
+        }
+        val spreadCostPct = quote.spreadPct.coerceAtLeast(0.0)
+        val slippageCostPct = quote.estimatedSlippagePct.coerceAtLeast(0.0) * if (speculativePocket) 0.80 else 0.60
+        val stabilityPenaltyPct = ((1.0 - quote.orderBookStabilityScore.coerceIn(0.0, 1.0)) * 0.18)
+        return feeCostPct + spreadCostPct + slippageCostPct + stabilityPenaltyPct + policy.feeSafetyBufferPct
     }
 
     private fun normalizeRatio(value: Double, baseline: Double, saturationMultiplier: Double): Double {

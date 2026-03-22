@@ -29,7 +29,7 @@ class CapitalDeploymentEngine(
                     preferredHorizon = it.preferredHorizon,
                     rankingScore = it.rankingScore,
                     marketOpportunityScore = it.marketOpportunityScore,
-                    expectedNetProfitabilityPct = (it.feeAdjustedEdgeScore * 100.0).coerceAtLeast(0.0),
+                    expectedNetProfitabilityPct = it.feeAdjustedEdgeScore.coerceAtLeast(0.0),
                     holdabilityScore = it.holdabilityScore,
                     speculativePocket = it.speculativePocket,
                     rationale = it.rejectionReasons.ifEmpty {
@@ -77,6 +77,12 @@ class CapitalDeploymentEngine(
             else -> kotlin.math.floor(
                 ((currentEquity * (1.0 - reservePct)).coerceAtLeast(0.0)) / config.targetMinPositionBudgetIdr,
             ).toInt().coerceAtLeast(1)
+        }.let { rawCap ->
+            when {
+                currentEquity < 120_000.0 -> rawCap.coerceAtMost(4)
+                currentEquity < 200_000.0 -> rawCap.coerceAtMost(5)
+                else -> rawCap
+            }
         }.coerceAtMost(config.maxConcurrentPositions)
         val baseTotalCap = (openPositions + risk.maxAllowedAdditionalPositions)
             .coerceAtMost(config.maxConcurrentPositions)
@@ -146,8 +152,13 @@ class CapitalDeploymentEngine(
             !speculativePocketReady &&
             openPositions > 0 &&
             candidates.firstOrNull()?.rankingScore?.let { it >= 0.74 } == true &&
+            candidates.firstOrNull()?.expectedNetProfitabilityPct?.let { it >= (config.rotationMinNetUpgradePct + 0.20) } == true &&
+            portfolio.positions.any {
+                it.state != PositionState.CLOSED &&
+                    it.unrealizedPnlIdr.toDoubleOrZero() > 0.0
+            } &&
             (
-                topCandidateGap >= config.rotationRankingGapMin ||
+                topCandidateGap >= (config.rotationRankingGapMin + 0.02) ||
                     top1DeployableConcentration >= config.top1DeployableConcentrationMaxPct ||
                     loserHeatPct >= config.loserHeatCautionPct
                 )

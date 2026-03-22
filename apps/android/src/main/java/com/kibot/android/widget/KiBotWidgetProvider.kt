@@ -59,7 +59,6 @@ class KiBotWidgetProvider : AppWidgetProvider() {
                     setTextColor(R.id.widget_daily_return_value, pnlTextColor(dailyReturnPct))
                     setTextColor(R.id.widget_pnl_value, pnlTextColor(snapshot.pnlTodayIdr))
                     setInt(R.id.widget_daily_return_value, "setBackgroundResource", pnlBadgeBackground(dailyReturnPct))
-                    setTextViewText(R.id.widget_pair, formatPair(snapshot.activePair))
                     setOnClickPendingIntent(R.id.widget_root, openAppIntent(context))
                 }
                 appWidgetManager.updateAppWidget(widgetId, views)
@@ -108,12 +107,6 @@ class KiBotWidgetProvider : AppWidgetProvider() {
             val pct = kotlin.math.abs((pnl / opening) * 100.0)
             val prefix = if (snapshot.pnlTodayIdr.trim().startsWith("-") || pnl < 0.0) "-" else "+"
             return "$prefix${"%.1f".format(kotlin.math.abs(pct))}%"
-        }
-
-        private fun formatPair(pair: String): String {
-            val normalized = pair.trim()
-            if (normalized.isBlank() || normalized == "-") return ""
-            return normalized.replace('_', '/').uppercase()
         }
 
         private fun String.parseRupiahLabel(): Double? {

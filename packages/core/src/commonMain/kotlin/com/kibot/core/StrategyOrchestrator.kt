@@ -120,6 +120,7 @@ class StrategyOrchestrator(
             modeSnapshot = modeSnapshot,
             deploymentPlan = deploymentPlan,
             openOrders = openOrders,
+            weeklySummary = weeklySummary,
         )
         val executionPlan = selectedSignal?.toExecutionPlan(
             balances = balances,
@@ -195,6 +196,7 @@ class StrategyOrchestrator(
         modeSnapshot: BotModeSnapshot,
         deploymentPlan: com.kibot.shared.models.CapitalDeploymentPlan,
         openOrders: List<com.kibot.shared.models.OrderSnapshot>,
+        weeklySummary: WeeklyLearningSummary?,
     ): StrategySignal? {
         if (!modeSnapshot.tradingAllowed || openOrders.isNotEmpty() || !deploymentPlan.allowNewEntries) return null
         val heldPairs = positions
@@ -224,6 +226,8 @@ class StrategyOrchestrator(
             .mapNotNull { candidate ->
                 val pairScore = rankedPairs.firstOrNull { it.pairId == candidate.pairId } ?: return@mapNotNull null
                 val quote = quoteByPair[candidate.pairId] ?: return@mapNotNull null
+                val pairAssets = candidate.pairId.assets()
+                if (pairAssets.quoteAsset !in executionConfig.executionAllowedQuoteAssets) return@mapNotNull null
                 val hasFunding = hasFundedQuoteAsset(
                     pairId = candidate.pairId,
                     balances = balances,
@@ -248,6 +252,7 @@ class StrategyOrchestrator(
                     setupReadiness = setupReadiness,
                     dominantPairId = dominantPairId,
                     targetBudgetIdr = deploymentPlan.suggestedPerPositionBudgetIdr,
+                    weeklySummary = weeklySummary,
                 )
 
                 CandidateSelection(
@@ -280,19 +285,32 @@ class StrategyOrchestrator(
                     add("Modal sedang idle, jadi threshold entry sedikit dilonggarkan pada kandidat yang benar-benar kuat.")
                 }
             },
-            entryPrice = quote.bestBid,
+            entryPrice = resolveEntryReferencePrice(
+                quote = quote,
+                pairScore = pairScore,
+                setupReadiness = chosenCandidate.setupReadiness,
+            ),
             takeProfitPrice = DecimalValue.fromDouble(
-                quote.bestBid.toDoubleOrZero() *
+                resolveEntryReferencePrice(
+                    quote = quote,
+                    pairScore = pairScore,
+                    setupReadiness = chosenCandidate.setupReadiness,
+                ).toDoubleOrZero() *
                     when {
-                        pairScore.speculativePocket -> 1.03
-                        pairScore.preferredHorizon == TradingHorizon.SWING -> 1.05
-                        else -> 1.02
+                        pairScore.speculativePocket -> 1.06
+                        pairScore.preferredHorizon == TradingHorizon.SWING -> 1.075
+                        chosenCandidate.setupReadiness.signalType == StrategySignalType.BREAKOUT_ENTRY -> 1.04
+                        else -> 1.028
                     },
             ),
             stopPrice = DecimalValue.fromDouble(
-                quote.bestBid.toDoubleOrZero() *
+                resolveEntryReferencePrice(
+                    quote = quote,
+                    pairScore = pairScore,
+                    setupReadiness = chosenCandidate.setupReadiness,
+                ).toDoubleOrZero() *
                     when {
-                        pairScore.speculativePocket -> 0.972
+                        pairScore.speculativePocket -> 0.978
                         pairScore.preferredHorizon == TradingHorizon.SWING -> 0.96
                         else -> 0.985
                     },
@@ -304,7 +322,7 @@ class StrategyOrchestrator(
             marketRegime = marketSnapshot.regime,
             edgeConfidence = modeSnapshot.edgeConfidence,
             expectedHoldingHours = chosenCandidate.setupReadiness.expectedHoldingHours,
-            expectedNetProfitabilityPct = pairScore.marketOpportunityScore,
+            expectedNetProfitabilityPct = pairScore.feeAdjustedEdgeScore,
         )
     }
 
@@ -312,6 +330,7 @@ class StrategyOrchestrator(
         modeSnapshot: BotModeSnapshot,
         marketSnapshot: MarketOpportunitySnapshot,
         heldPairs: Set<PairId>,
+        weeklySummary: WeeklyLearningSummary? = null,
     ): EntryThresholds {
         val baseRankingScore = when (modeSnapshot.mode) {
             BotMode.SAFE -> Double.MAX_VALUE
@@ -323,12 +342,27 @@ class StrategyOrchestrator(
             modeSnapshot.mode in setOf(BotMode.GROWTH, BotMode.ATTACK) &&
             marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC &&
             marketSnapshot.marketOpportunityScore >= 0.57
+        val learningAggressionBias = when {
+            weeklySummary == null -> 0.0
+            weeklySummary.falseEntryRate <= 0.22 &&
+                weeklySummary.productiveUtilizationPct <= 0.34 &&
+                weeklySummary.missedOpportunityRate >= 0.18 -> 0.03
+            weeklySummary.falseEntryRate <= 0.28 &&
+                weeklySummary.productiveUtilizationPct <= 0.40 &&
+                weeklySummary.missedOpportunityRate >= 0.12 -> 0.015
+            else -> 0.0
+        }
         return EntryThresholds(
-            minRankingScore = (baseRankingScore - if (productiveIdleBiasActive) executionConfig.productiveIdleRankingDelta else 0.0)
+            minRankingScore = (
+                baseRankingScore -
+                    if (productiveIdleBiasActive) executionConfig.productiveIdleRankingDelta else 0.0 -
+                    learningAggressionBias
+                )
                 .coerceAtLeast(0.0),
             minOpportunityScore = (
                 executionConfig.minExpectedOpportunityScore -
-                    if (productiveIdleBiasActive) executionConfig.productiveIdleOpportunityDelta else 0.0
+                    if (productiveIdleBiasActive) executionConfig.productiveIdleOpportunityDelta else 0.0 -
+                    (learningAggressionBias * 0.75)
                 ).coerceAtLeast(0.0),
             productiveIdleBiasActive = productiveIdleBiasActive,
         )
@@ -350,12 +384,34 @@ class StrategyOrchestrator(
             pairScore.speculativePocket &&
                 marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC &&
                 speculativePocketAllowed(marketSnapshot) &&
-                quote.shortTermReturnPct <= 24.0 -> {
+                quote.shortTermReturnPct in executionConfig.breakoutAggressiveEntryMinShortTermReturnPct..220.0 &&
+                quote.mediumTermReturnPct >= executionConfig.breakoutAggressiveEntryMinMediumTermReturnPct &&
+                pairScore.fillQualityScore >= 0.58 &&
+                pairScore.trendQualityScore >= 0.60 &&
+                quote.recentTradeActivityScore >= 0.56 &&
+                pairScore.feeAdjustedEdgeScore >= (executionConfig.breakoutAggressiveEntryMinExpectedNetProfitPct - 0.04) -> {
                 setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION
                 signalType = StrategySignalType.BREAKOUT_ENTRY
-                adjustedOpportunityFloor = (baseOpportunityFloor + 0.005).coerceAtMost(1.0)
-                expectedHoldingHours = 3.0
-                rationale = "Sleeve spekulatif aktif: momentum meledak masih sehat, tapi budget dan durasi entry dipersempit."
+                adjustedOpportunityFloor = (baseOpportunityFloor - 0.035).coerceAtLeast(0.0)
+                expectedHoldingHours = 10.0
+                rationale = "Sleeve spekulatif aktif: momentum breakout terlihat dominan, jadi bot boleh lebih cepat masuk dan winner diberi ruang lebih panjang."
+            }
+
+            quote.shortTermReturnPct >= executionConfig.breakoutAggressiveEntryMinShortTermReturnPct &&
+                quote.mediumTermReturnPct >= executionConfig.breakoutAggressiveEntryMinMediumTermReturnPct &&
+                pairScore.fillQualityScore >= 0.60 &&
+                pairScore.trendQualityScore >= 0.62 &&
+                quote.recentTradeActivityScore >= 0.58 &&
+                pairScore.feeAdjustedEdgeScore >= executionConfig.breakoutAggressiveEntryMinExpectedNetProfitPct -> {
+                setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION
+                signalType = StrategySignalType.BREAKOUT_ENTRY
+                adjustedOpportunityFloor = when (marketSnapshot.regime) {
+                    MarketRegime.HEALTHY_UPTREND -> (baseOpportunityFloor - 0.025)
+                    MarketRegime.HEALTHY_SIDEWAYS -> (baseOpportunityFloor - 0.015)
+                    else -> baseOpportunityFloor
+                }.coerceAtLeast(0.0)
+                expectedHoldingHours = if (pairScore.preferredHorizon == TradingHorizon.SWING) 30.0 else 12.0
+                rationale = "Momentum eksplosif terlihat bersih, jadi bot boleh ambil breakout lebih tegas selama net edge tetap masuk akal."
             }
 
             pairScore.preferredHorizon == TradingHorizon.SWING &&
@@ -414,6 +470,7 @@ class StrategyOrchestrator(
         setupReadiness: SetupReadiness,
         dominantPairId: PairId?,
         targetBudgetIdr: Double,
+        weeklySummary: WeeklyLearningSummary?,
     ): Double {
         val regimeBias = when {
             setupReadiness.setupType == com.kibot.shared.models.SetupType.SWING_TREND_CONTINUATION ->
@@ -446,21 +503,41 @@ class StrategyOrchestrator(
             else -> 0.40
         }
         val affordableNominalBias = when {
-            pairScore.speculativePocket -> 0.045
-            pairScore.preferredHorizon == TradingHorizon.TACTICAL && affordableUnits >= 100.0 -> 0.028
+            pairScore.speculativePocket -> 0.030
+            pairScore.preferredHorizon == TradingHorizon.TACTICAL && affordableUnits >= 100.0 -> 0.015
+            else -> 0.0
+        }
+        val setupLearningBias = weeklySummary
+            ?.adaptationPlan
+            ?.setupBias
+            ?.get(setupReadiness.setupType.name)
+            ?.coerceIn(-0.10, 0.10)
+            ?.times(0.30)
+            ?: 0.0
+        val netEdgeScore = (pairScore.feeAdjustedEdgeScore / 2.0).coerceIn(0.0, 1.0)
+        val momentumBonus = when {
+            setupReadiness.signalType == StrategySignalType.BREAKOUT_ENTRY &&
+                quote.shortTermReturnPct >= executionConfig.breakoutAggressiveEntryMinShortTermReturnPct &&
+                quote.mediumTermReturnPct >= executionConfig.breakoutAggressiveEntryMinMediumTermReturnPct &&
+                pairScore.feeAdjustedEdgeScore >= executionConfig.breakoutAggressiveEntryMinExpectedNetProfitPct ->
+                0.075
+            setupReadiness.signalType == StrategySignalType.BREAKOUT_ENTRY &&
+                pairScore.feeAdjustedEdgeScore >= executionConfig.marketEntryMinExpectedNetProfitPct ->
+                0.030
             else -> 0.0
         }
 
         return weightedAverage(
-            pairScore.rankingScore to 0.29,
-            pairScore.marketOpportunityScore to 0.24,
+            pairScore.rankingScore to 0.24,
+            pairScore.marketOpportunityScore to 0.17,
+            netEdgeScore to 0.22,
             pairScore.fillQualityScore to 0.12,
-            pairScore.historicalExpectancyScore to 0.10,
+            pairScore.historicalExpectancyScore to 0.11,
             followThroughScore to 0.10,
-            quote.recentTradeActivityScore.coerceIn(0.0, 1.0) to 0.07,
-            affordabilityScore to 0.08,
+            quote.recentTradeActivityScore.coerceIn(0.0, 1.0) to 0.04,
+            affordabilityScore to 0.02,
         ).let { base ->
-            (base + regimeBias + dominanceBonus + affordableNominalBias).coerceIn(0.0, 1.0)
+            (base + regimeBias + dominanceBonus + affordableNominalBias + momentumBonus + setupLearningBias).coerceIn(0.0, 1.0)
         }
     }
 
@@ -473,6 +550,7 @@ class StrategyOrchestrator(
     ): ExecutionPlan? {
         val quote = quoteByPair[pairId] ?: return null
         val pairParts = pairId.assets()
+        if (pairParts.quoteAsset !in executionConfig.executionAllowedQuoteAssets) return null
         val quoteAssetPriceIdr = quoteAssetPriceIdr(pairParts.quoteAsset, marketQuotes) ?: return null
         val quoteBalanceUnits = balances
             .firstOrNull { it.asset.equals(pairParts.quoteAsset, ignoreCase = true) }
@@ -487,18 +565,38 @@ class StrategyOrchestrator(
             .coerceAtLeast(0.0)
         if (budgetIdr < executionConfig.minOrderNotionalIdr) return null
 
+        val minExpectedNetProfitIdr = if (speculativePocket) {
+            executionConfig.minExpectedNetProfitIdrSpeculative
+        } else {
+            executionConfig.minExpectedNetProfitIdr
+        }
+        val projectedNetProfitIdr = budgetIdr * (expectedNetProfitabilityPct / 100.0)
+        if (projectedNetProfitIdr < minExpectedNetProfitIdr) return null
+
         val priceInQuoteAsset = entryPrice?.toDoubleOrZero()?.takeIf { it > 0.0 } ?: return null
         val budgetQuoteUnits = if (pairParts.quoteAsset == "idr") {
             budgetIdr
         } else {
             budgetIdr / quoteAssetPriceIdr
         }
+        val strongBreakoutMomentum = setupType == com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION &&
+            shortTermReturnPct(quote) >= executionConfig.breakoutAggressiveEntryMinShortTermReturnPct &&
+            quote.mediumTermReturnPct >= executionConfig.breakoutAggressiveEntryMinMediumTermReturnPct &&
+            expectedNetProfitabilityPct >= executionConfig.breakoutAggressiveEntryMinExpectedNetProfitPct
         val useMarketBuy =
             executionConfig.marketEntryEnabled &&
                 pairParts.quoteAsset == "idr" &&
                 setupType == com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION &&
-                confidence >= executionConfig.marketEntryMinRankingScore &&
-                expectedNetProfitabilityPct >= executionConfig.marketEntryMinExpectedNetProfitPct &&
+                confidence >= if (speculativePocket) {
+                    executionConfig.breakoutAggressiveEntryMinRankingScore
+                } else {
+                    executionConfig.marketEntryMinRankingScore
+                } &&
+                expectedNetProfitabilityPct >= if (strongBreakoutMomentum || speculativePocket) {
+                    executionConfig.breakoutAggressiveEntryMinExpectedNetProfitPct
+                } else {
+                    executionConfig.marketEntryMinExpectedNetProfitPct
+                } &&
                 quote.spreadPct <= executionConfig.marketEntryMaxSpreadPct &&
                 quote.estimatedSlippagePct <= executionConfig.marketEntryMaxSlippagePct &&
                 quote.recentTradeActivityScore >= executionConfig.marketEntryMinTradeActivityScore &&
@@ -512,6 +610,18 @@ class StrategyOrchestrator(
         } else {
             priceInQuoteAsset
         }
+        val estimatedRoundTripCostPct = estimateExecutionRoundTripCostPct(
+            quote = quote,
+            useMarketBuy = useMarketBuy,
+            speculativePocket = speculativePocket,
+        )
+        val estimatedRoundTripCostIdr = budgetIdr * (estimatedRoundTripCostPct / 100.0)
+        val minimumRequiredNetProfitIdr = maxOf(
+            minExpectedNetProfitIdr,
+            estimatedRoundTripCostIdr * executionConfig.minProfitToCostMultiplier,
+            estimatedRoundTripCostIdr + executionConfig.minProfitAfterFeesBufferIdr,
+        )
+        if (projectedNetProfitIdr < minimumRequiredNetProfitIdr) return null
         val quantity = budgetQuoteUnits / effectivePriceInQuoteAsset
         if (quantity <= 0.0) return null
 
@@ -529,6 +639,21 @@ class StrategyOrchestrator(
             pairRankingScore = confidence,
             speculativePocket = speculativePocket,
         )
+    }
+
+    private fun estimateExecutionRoundTripCostPct(
+        quote: MarketQuote,
+        useMarketBuy: Boolean,
+        speculativePocket: Boolean,
+    ): Double {
+        val feePct = when {
+            useMarketBuy || speculativePocket -> 0.78
+            else -> 0.52
+        }
+        val slippagePct = quote.estimatedSlippagePct.coerceAtLeast(0.0) * if (useMarketBuy) 0.95 else 0.70
+        val spreadPct = quote.spreadPct.coerceAtLeast(0.0) * if (useMarketBuy) 0.55 else 0.40
+        val stabilityPenaltyPct = ((1.0 - quote.orderBookStabilityScore.coerceIn(0.0, 1.0)) * 0.18)
+        return feePct + slippagePct + spreadPct + stabilityPenaltyPct + 0.08
     }
 
     private fun buildDistrustLabels(
@@ -599,14 +724,14 @@ class StrategyOrchestrator(
         val blacklist = adaptationPlan.temporaryBlacklistPairs.toSet()
         val activeHours = adaptationPlan.activeHours.toSet()
         val currentHour = observedAt.toString().substring(11, 13).toIntOrNull() ?: 0
-        val outsideActiveHoursPenalty = if (activeHours.isNotEmpty() && currentHour !in activeHours) 0.02 else 0.0
+        val outsideActiveHoursPenalty = if (activeHours.isNotEmpty() && currentHour !in activeHours) 0.03 else 0.0
 
         return rankedPairs
             .map { pairScore ->
                 if (!pairScore.allowed) return@map pairScore
                 val bias = when (pairScore.pairId) {
-                    in whitelist -> 0.02
-                    in blacklist -> -0.04
+                    in whitelist -> 0.035
+                    in blacklist -> -0.08
                     else -> 0.0
                 } - outsideActiveHoursPenalty
                 if (bias == 0.0) return@map pairScore
@@ -716,6 +841,22 @@ class StrategyOrchestrator(
             marketSnapshot.edgeConfidence != EdgeConfidence.LOW &&
             marketSnapshot.botHealthScore >= 0.62
     }
+
+    private fun resolveEntryReferencePrice(
+        quote: MarketQuote,
+        pairScore: PairScore,
+        setupReadiness: SetupReadiness,
+    ): DecimalValue {
+        return when {
+            pairScore.speculativePocket || setupReadiness.signalType == StrategySignalType.BREAKOUT_ENTRY ->
+                quote.bestAsk.takeIf { it.toDoubleOrZero() > 0.0 } ?: quote.bestBid
+            else -> quote.bestBid
+        }
+    }
+
+    private fun shortTermReturnPct(
+        quote: MarketQuote,
+    ): Double = quote.shortTermReturnPct
 
     private fun weightedAverage(vararg entries: Pair<Double, Double>): Double {
         val totalWeight = entries.sumOf { it.second }.coerceAtLeast(0.000001)

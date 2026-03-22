@@ -1,0 +1,122 @@
+package com.kibot.macengine
+
+import com.kibot.aisupport.GeminiSupportClient
+import com.kibot.aisupport.GeminiSupportCoordinator
+import com.kibot.controlplane.SupabaseControlPlaneClient
+import com.kibot.indodax.IndodaxGateway
+import com.kibot.macengine.config.MacRuntimeConfigLoader
+import com.kibot.macengine.runtime.MacEngineDaemon
+import com.kibot.macengine.runtime.MacCommandDispatcher
+import com.kibot.macengine.runtime.PassiveExchangeGateway
+import com.kibot.macengine.server.LocalDashboardServer
+import com.kibot.macengine.state.MacCommand
+import com.kibot.macengine.state.MacStateRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import org.slf4j.LoggerFactory
+import java.nio.file.Paths
+
+fun main(args: Array<String>) {
+    val logger = LoggerFactory.getLogger("KiBotMac")
+    val config = MacRuntimeConfigLoader.load()
+    val repository = MacStateRepository()
+    val controlPlane = SupabaseControlPlaneClient(config.controlPlane)
+    val exchange = config.indodaxCredentials?.let {
+        IndodaxGateway(config.indodaxClientConfig, it)
+    } ?: PassiveExchangeGateway()
+    val dispatcher = MacCommandDispatcher(
+        repository = repository,
+        controlPlane = controlPlane,
+        config = config,
+    )
+    val daemon = MacEngineDaemon(
+        repository = repository,
+        controlPlane = controlPlane,
+        exchange = exchange,
+        config = config,
+        aiSupportCoordinator = config.aiSupportConfig?.let { GeminiSupportCoordinator(it, GeminiSupportClient(it)) },
+    )
+
+    if (args.isNotEmpty()) {
+        handleCliCommand(args.first(), repository, daemon, dispatcher, logger)
+        return
+    }
+
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val server = LocalDashboardServer(
+        repository = repository,
+        host = config.bindHost,
+        port = config.port,
+        dispatchCommand = { dispatcher.dispatch(it) },
+        androidReleaseDirectory = Paths.get("").toAbsolutePath().resolve(".dist/android/stable"),
+    )
+
+    Runtime.getRuntime().addShutdownHook(
+        Thread {
+            logger.info("Shutting down KiBot mac engine.")
+            server.stop()
+            scope.cancel()
+        },
+    )
+
+    scope.launch { daemon.run() }
+    server.start()
+}
+
+private fun handleCliCommand(
+    rawCommand: String,
+    repository: MacStateRepository,
+    daemon: MacEngineDaemon,
+    dispatcher: MacCommandDispatcher,
+    logger: org.slf4j.Logger,
+) {
+    val state = runBlocking {
+        when (rawCommand.lowercase()) {
+            "status" -> daemon.syncOnce()
+            "start" -> {
+                dispatcher.dispatch(MacCommand.START_BOT)
+                daemon.syncOnce()
+            }
+
+            "stop" -> {
+                dispatcher.dispatch(MacCommand.STOP_BOT)
+                daemon.syncOnce()
+            }
+
+            "request-takeover" -> {
+                dispatcher.dispatch(MacCommand.REQUEST_TAKEOVER)
+                daemon.syncOnce()
+            }
+
+            "force-safe-takeover" -> {
+                dispatcher.dispatch(MacCommand.FORCE_SAFE_TAKEOVER)
+                daemon.syncOnce()
+            }
+
+            "release-control" -> {
+                dispatcher.dispatch(MacCommand.RELEASE_CONTROL)
+                daemon.syncOnce()
+            }
+
+            "sync" -> {
+                dispatcher.dispatch(MacCommand.SYNC_NOW)
+                daemon.syncOnce()
+            }
+
+            else -> error("Unknown CLI command: $rawCommand")
+        }
+        repository.state.value
+    }
+
+    logger.info(
+        "botRunning={}, effectiveState={}, activeEngine={}, status={}",
+        state.isBotRunning,
+        state.effectiveState,
+        state.activeEngine,
+        state.statusMessage,
+    )
+}

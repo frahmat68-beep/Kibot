@@ -19,6 +19,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class StrategyOrchestratorTest {
@@ -179,6 +180,69 @@ class StrategyOrchestratorTest {
     }
 
     @Test
+    fun weeklySetupBiasCanPushBreakoutCandidateAbovePullback() {
+        val now = Clock.System.now()
+        val balances = listOf(BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(100_000.0)))
+        val health = healthyEngine()
+        val quotes = listOf(
+            quote(
+                pair = "pull_idr",
+                price = 101.0,
+                spreadPct = 0.11,
+                slippagePct = 0.09,
+                trendScore = 0.61,
+                expectancyScore = 0.61,
+                volume = 26_000_000.0,
+                holdabilityScore = 0.58,
+                shortTermReturnPct = 0.35,
+                mediumTermReturnPct = 0.92,
+                now = now,
+            ),
+            quote(
+                pair = "break_idr",
+                price = 99.0,
+                spreadPct = 0.12,
+                slippagePct = 0.10,
+                trendScore = 0.70,
+                expectancyScore = 0.64,
+                volume = 28_000_000.0,
+                holdabilityScore = 0.62,
+                shortTermReturnPct = 0.88,
+                mediumTermReturnPct = 1.20,
+                now = now,
+            ),
+        )
+
+        val learningBiased = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = balances,
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = health,
+            marketQuotes = quotes,
+            weeklySummary = WeeklyLearningSummary(
+                botId = BotId("main"),
+                periodStart = LocalDate(2026, 3, 10),
+                periodEnd = LocalDate(2026, 3, 17),
+                tradeCount = 18,
+                falseEntryRate = 0.12,
+                noTradeQualityScore = 0.58,
+                avoidedBadTradesIndicator = 0.44,
+                capitalUtilizationPct = 0.32,
+                productiveUtilizationPct = 0.20,
+                missedOpportunityRate = 0.22,
+                tacticalExpectancy = 0.18,
+                swingExpectancy = 0.12,
+                adaptationPlan = WeeklyAdaptationPlan(
+                    setupBias = mapOf(SetupType.LIGHT_BREAKOUT_CONTINUATION.name to 0.12),
+                ),
+            ),
+        )
+
+        assertEquals("break_idr", learningBiased.selectedSignal?.pairId?.value)
+    }
+
+    @Test
     fun healthyUptrendStillFindsAHighQualitySignalWhenScoresAreClose() {
         val now = Clock.System.now()
         val balances = listOf(
@@ -283,6 +347,72 @@ class StrategyOrchestratorTest {
         val plan = assertNotNull(analysis.executionPlan)
         assertEquals(OrderType.MARKET, plan.orderType)
         assertFalse(plan.postOnlyPreferred)
+    }
+
+    @Test
+    fun lowAbsoluteProfitSetupDoesNotProduceExecutionPlan() {
+        val now = Clock.System.now()
+        val profitAwareOrchestrator = StrategyOrchestrator(
+            executionConfig = StrategyExecutionConfig(
+                minExpectedNetProfitIdr = 500.0,
+                minExpectedNetProfitIdrSpeculative = 650.0,
+            ),
+        )
+        val analysis = profitAwareOrchestrator.analyze(
+            botId = BotId("main"),
+            balances = listOf(BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(40_000.0))),
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = healthyEngine(),
+            marketQuotes = listOf(
+                quote(
+                    pair = "micro_idr",
+                    price = 150.0,
+                    spreadPct = 0.20,
+                    slippagePct = 0.18,
+                    trendScore = 0.70,
+                    expectancyScore = 0.68,
+                    volume = 48_000_000.0,
+                    holdabilityScore = 0.56,
+                    shortTermReturnPct = 0.92,
+                    mediumTermReturnPct = 1.40,
+                    now = now,
+                ),
+            ),
+        )
+
+        assertNotNull(analysis.selectedSignal)
+        assertNull(analysis.executionPlan)
+    }
+
+    @Test
+    fun explosiveBreakoutCanUseMarketBuyEarlierWhenNetProfitCoversCostsWell() {
+        val now = Clock.System.now()
+        val analysis = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = listOf(BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(100_000.0))),
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = healthyEngine(),
+            marketQuotes = listOf(
+                quote(
+                    pair = "stik_idr",
+                    price = 6_611.0,
+                    spreadPct = 0.24,
+                    slippagePct = 0.20,
+                    trendScore = 0.82,
+                    expectancyScore = 0.74,
+                    volume = 714_000_000.0,
+                    holdabilityScore = 0.54,
+                    shortTermReturnPct = 1.65,
+                    mediumTermReturnPct = 1.15,
+                    now = now,
+                ),
+            ),
+        )
+
+        val plan = assertNotNull(analysis.executionPlan)
+        assertEquals(OrderType.MARKET, plan.orderType)
     }
 
     private fun healthyEngine() = EngineHealthSnapshot(

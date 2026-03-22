@@ -247,7 +247,7 @@ class AndroidEngineDaemon(
             null
         }
         val recentPersistedOrders = if (isMaster && exchangeReachable) {
-            runCatching { controlPlane.fetchRecentOrders(controlPlaneConfig.botId, limit = 160) }.getOrDefault(emptyList())
+            runCatching { controlPlane.fetchRecentOrders(controlPlaneConfig.botId, limit = 500) }.getOrDefault(emptyList())
         } else {
             emptyList()
         }
@@ -514,7 +514,7 @@ class AndroidEngineDaemon(
         }
         val balances = runCatching { exchange.fetchBalances() }.getOrDefault(emptyList())
         val openOrders = runCatching { exchange.fetchOpenOrders() }.getOrDefault(emptyList())
-        val recentPersistedOrders = controlPlane.fetchRecentOrders(controlPlaneConfig.botId, limit = 120)
+        val recentPersistedOrders = controlPlane.fetchRecentOrders(controlPlaneConfig.botId, limit = 500)
         val reconciliationPairs = (openOrders.map { it.pairId } + recentPersistedOrders.map { it.pairId })
             .distinct()
             .take(12)
@@ -744,6 +744,20 @@ class AndroidEngineDaemon(
             )
             return null
         }
+        entryBlockedByPortfolioState(
+            cycle = cycle,
+            executionPlan = executionPlan,
+            managedPositions = managedPositions,
+        )?.let { blockedReason ->
+            lastEntryGateReason = blockedReason
+            appendThrottledAuditLog(
+                now = now,
+                level = LogLevel.WARN,
+                category = "ENTRY_POLICY",
+                message = blockedReason,
+            )
+            return null
+        }
         if (activePersistedOrders.isNotEmpty()) {
             lastEntryGateReason = "Masih ada order aktif yang belum selesai, jadi entry baru ditunda."
             appendThrottledAuditLog(
@@ -821,6 +835,34 @@ class AndroidEngineDaemon(
         }
     }
 
+    private fun entryBlockedByPortfolioState(
+        cycle: StrategyCycleResult,
+        executionPlan: ExecutionPlan,
+        managedPositions: List<ManagedPosition>,
+    ): String? {
+        if (managedPositions.isEmpty()) return null
+
+        val samePairExposure = managedPositions.firstOrNull { it.pairId == executionPlan.signal.pairId }
+        if (samePairExposure != null && samePairExposure.unrealizedPnlPct < 0.15) {
+            return "Masih pegang ${executionPlan.signal.pairId.value} dan posisinya belum cukup hijau, jadi bot tidak averaging dulu."
+        }
+
+        val profitablePositions = managedPositions.filter { it.unrealizedPnlPct >= 0.20 }
+        val redPositions = managedPositions.filter { it.unrealizedPnlPct <= -0.45 }
+        val slotsAreFull = managedPositions.size >= cycle.deploymentPlan.maxActivePositions.coerceAtLeast(1)
+
+        if (cycle.deploymentPlan.allowRotation && profitablePositions.isEmpty()) {
+            return "Rotasi ditunda karena belum ada posisi yang sudah hijau setelah biaya."
+        }
+        if (slotsAreFull && redPositions.isNotEmpty() && profitablePositions.isEmpty()) {
+            return "Entry baru ditahan karena portofolio masih merah dan belum ada posisi hijau untuk rotasi."
+        }
+        if (redPositions.size >= 3 && profitablePositions.isEmpty()) {
+            return "Terlalu banyak posisi masih merah, jadi bot tahan entry baru sampai ada recovery nyata."
+        }
+        return null
+    }
+
     private fun routeEntryPlanByLatency(
         executionPlan: ExecutionPlan,
         health: EngineHealthSnapshot,
@@ -873,10 +915,31 @@ class AndroidEngineDaemon(
                 )
             }
 
-            else -> EntryRoutingDecision(
-                executionPlan = null,
-                blockedReason = "Ping merah ${latencyMs}ms. Entry baru ${executionPlan.signal.pairId.value} diblokir sampai feed pulih; bot hanya fokus monitor/exit aman.",
-            )
+            else -> {
+                val fallbackLimitPrice = quote?.bestAsk
+                    ?: executionPlan.limitPrice
+                    ?: executionPlan.signal.entryPrice
+                if (
+                    executionPlan.signal.speculativePocket &&
+                    executionPlan.expectedNetEdgePct >= 0.85 &&
+                    latencyMs <= aggressiveLimitFallbackHardStopMs &&
+                    fallbackLimitPrice != null
+                ) {
+                    EntryRoutingDecision(
+                        executionPlan = executionPlan.copy(
+                            orderType = OrderType.LIMIT,
+                            limitPrice = fallbackLimitPrice,
+                            postOnlyPreferred = false,
+                        ),
+                        message = "Ping tinggi ${latencyMs}ms. Pair breakout kuat ${executionPlan.signal.pairId.value} tetap boleh seed LIMIT cepat sambil jaga risiko.",
+                    )
+                } else {
+                    EntryRoutingDecision(
+                        executionPlan = null,
+                        blockedReason = "Ping merah ${latencyMs}ms. Entry baru ${executionPlan.signal.pairId.value} diblokir sampai feed pulih; bot hanya fokus monitor/exit aman.",
+                    )
+                }
+            }
         }
     }
 
@@ -1273,11 +1336,9 @@ class AndroidEngineDaemon(
         if (equity <= 0.0) return null
         val openingEquity = dailyRisk?.openingEquityIdr?.toDoubleOrZero() ?: equity
         val pnl = equity - openingEquity
-        val holdings = managedPositions
-            .takeIf { it.isNotEmpty() }
-            ?.sortedByDescending { it.currentValueIdr.toDoubleOrZero() }
-            ?.take(6)
-            ?.map { position ->
+        val managedHoldingItems = managedPositions
+            .sortedByDescending { it.currentValueIdr.toDoubleOrZero() }
+            .map { position ->
                 val baseAsset = position.pairId.value.substringBefore('_').uppercase()
                 LiveHoldingUi(
                     asset = baseAsset,
@@ -1287,23 +1348,27 @@ class AndroidEngineDaemon(
                     pnlPctLabel = formatSignedPercentFromPct(position.unrealizedPnlPct),
                 )
             }
-            ?: balances
-                .asSequence()
-                .filterNot { it.asset.equals("idr", ignoreCase = true) }
-                .mapNotNull { balance ->
-                    val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
-                    if (quantity <= 0.0) return@mapNotNull null
-                    val value = quantity * (quoteAssetPriceIdr(balance.asset, marketQuotes) ?: 0.0)
-                    if (value < 1_000.0) return@mapNotNull null
-                    LiveHoldingUi(
-                        asset = balance.asset.uppercase(),
-                        amount = formatAssetAmount(quantity, balance.asset),
-                        valueIdr = formatIdr(value),
-                    )
-                }
-                .sortedByDescending { it.valueIdr.filter(Char::isDigit).toLongOrNull() ?: 0L }
-                .take(6)
-                .toList()
+        val trackedAssets = managedHoldingItems.map { it.asset.uppercase() }.toSet()
+        val balanceHoldingItems = balances
+            .asSequence()
+            .filterNot { it.asset.equals("idr", ignoreCase = true) }
+            .mapNotNull { balance ->
+                val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+                if (quantity <= 0.0) return@mapNotNull null
+                val asset = balance.asset.uppercase()
+                if (asset in trackedAssets) return@mapNotNull null
+                val value = quantity * (quoteAssetPriceIdr(balance.asset, marketQuotes) ?: 0.0)
+                if (value < 1_000.0) return@mapNotNull null
+                LiveHoldingUi(
+                    asset = asset,
+                    amount = formatAssetAmount(quantity, balance.asset),
+                    valueIdr = formatIdr(value),
+                )
+            }
+            .toList()
+        val holdings = (managedHoldingItems + balanceHoldingItems)
+            .sortedByDescending { it.valueIdr.filter(Char::isDigit).toLongOrNull() ?: 0L }
+            .take(6)
         return LiveStatusSnapshot(
             updatedAtEpochMs = now.toEpochMilliseconds(),
             activePair = currentPair ?: "-",
@@ -1486,6 +1551,7 @@ class AndroidEngineDaemon(
             currentValueIdr = DecimalValue.fromDouble(currentValue),
             unrealizedPnlIdr = DecimalValue.Zero,
             unrealizedPnlPct = 0.0,
+            breakEvenPrice = DecimalValue.fromDouble(bidPrice * 1.0066),
             takeProfitPrice = quote.bestAsk,
             stopPrice = quote.bestBid,
             openedAt = now,
@@ -1734,8 +1800,9 @@ class AndroidEngineDaemon(
         private const val staleExitOrderMaxAgeMinutes = 4.5
         private const val staleExitOrderMaxDriftPct = 0.55
         private const val staleExitRepriceLossFloorPct = -0.35
-        private const val makerFirstMaxLatencyMs = 320L
-        private const val aggressiveLimitFallbackLatencyMs = 820L
+        private const val makerFirstMaxLatencyMs = 360L
+        private const val aggressiveLimitFallbackLatencyMs = 900L
+        private const val aggressiveLimitFallbackHardStopMs = 1_350L
         private const val entryBlockLatencyMs = 1100L
         private const val manualStopProtectionStatusWindowMs = 90_000L
         private const val executionPolicyLogCooldownMinutes = 2L
