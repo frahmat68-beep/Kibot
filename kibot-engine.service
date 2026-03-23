@@ -1,0 +1,24 @@
+[Unit]
+Description=KiBot Mac Engine Trading Bot
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/KiBot
+Environment=SUPABASE_URL=https://txdvrhkxkylnlxnkpmfl.supabase.co
+Environment=SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR4ZHZyaGt4a3lsbmx4bmtwbWZsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4ODgwNTIsImV4cCI6MjA4OTQ2NDA1Mn0.Tz_8veCdatdTMpxwbSDmSCxvBTX50O3bYc1koFmUiKw
+Environment=DEVICE_DISPLAY_NAME="Oracle Cloud Server"
+Environment=MAC_ENGINE_BIND_HOST=0.0.0.0
+Environment=MAC_ENGINE_PORT=8787
+ExecStart=/usr/bin/java -Xmx256m -jar /home/ubuntu/KiBot/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar
+ExecStop=/bin/bash -c 'pkill -f "/home/ubuntu/KiBot/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar"'
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kibot-engine
+
+[Install]
+WantedBy=multi-user.target

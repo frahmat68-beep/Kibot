@@ -1,0 +1,42 @@
+name: Deploy KiBot
+
+on:
+  push:
+    branches: [ main ] # Ganti 'master' kalau branch lu namanya master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v4
+
+    - name: Set up Java 21
+      uses: actions/setup-java@v4
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+
+    - name: Build Fat JAR
+      run: |
+        chmod +x gradlew
+        ./gradlew :apps:mac-engine:fatJar
+
+    - name: Copy JAR to Server
+      uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USERNAME }}
+        key: ${{ secrets.SSH_KEY }}
+        source: "apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar"
+        target: "/home/ubuntu/"
+        strip_components: 4
+
+    - name: Restart Bot di Server
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USERNAME }}
+        key: ${{ secrets.SSH_KEY }}
+        script: |
+          sudo systemctl restart kibot-engine
