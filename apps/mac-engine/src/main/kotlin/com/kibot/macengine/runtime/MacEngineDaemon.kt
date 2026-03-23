@@ -382,8 +382,8 @@ class MacEngineDaemon(
         if (registered) return
         controlPlane.registerDevice(config.device)
         registered = true
-        repository.noteStatus("Mac engine registered with control-plane.")
-        appendAuditLog(LogLevel.INFO, "AUTH", "Mac device registered with control-plane.")
+        repository.noteStatus("Server monitor connected to live feed.")
+        appendAuditLog(LogLevel.INFO, "AUTH", "Server monitor connected to live feed.")
     }
 
     private suspend fun handleCommand(
@@ -1210,7 +1210,7 @@ class MacEngineDaemon(
             liveExecutionEnabled = config.enableLiveExecution,
             portfolioValueIdr = formatIdr(portfolioValue),
             pnlTodayIdr = formatSignedIdr(pnlToday),
-            syncPathLabel = if (config.bindHost == "127.0.0.1" || config.bindHost == "localhost") "Supabase" else "Supabase + LAN",
+            syncPathLabel = if (config.bindHost == "127.0.0.1" || config.bindHost == "localhost") "Live Feed" else "Live + LAN",
             activeEngine = activeDevice?.displayName ?: "None",
             standbyEngine = standbyDevice?.displayName ?: "Waiting",
             syncHealth = localHealth.syncHealth.name,
@@ -1230,10 +1230,10 @@ class MacEngineDaemon(
             lastUpdatedLabel = formatUpdatedLabel(now),
             statusMessage = when {
                 botState.effectiveState == BotEffectiveState.SAFE_MODE || lease?.conflictDetected == true ->
-                    "Safe mode active. Resolve exchange/control-plane ambiguity before resuming."
+                    "Safe mode aktif. Tunggu status trade dan data exchange benar-benar bersih."
                 localHealth.status == HealthStatus.CRITICAL -> "Mac cannot trade safely yet. ${localHealth.warnings.firstOrNull().orEmpty()}".trim()
-                lease.isHeldBy(config.device.deviceId, now) -> "Mac currently holds the master lease."
-                else -> "Mac standby is monitoring lease and waiting for a safe takeover window."
+                lease.isHeldBy(config.device.deviceId, now) -> "Server Oracle sedang memegang engine trading utama."
+                else -> "Server Oracle sedang sinkron dan memantau market."
             },
             lastUpdatedEpochMs = now.toEpochMilliseconds(),
             heldAssets = heldAssets,

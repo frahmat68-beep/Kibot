@@ -757,12 +757,12 @@ class AppRepository(
     private fun resolveSyncPathLabel(
         lanSnapshot: LanMacSnapshot?,
     ): String {
-        if (lanSnapshot?.reachable == true) return "Supabase + LAN"
+        if (lanSnapshot?.reachable == true) return "Live + LAN"
         val verifiedAt = cachedLanEndpoint?.verifiedAtEpochMs ?: 0L
         if (verifiedAt > 0L && System.currentTimeMillis() - verifiedAt <= LAN_VERIFIED_TTL_MS) {
-            return "Supabase + LAN"
+            return "Live + LAN"
         }
-        return "Supabase"
+        return "Live Feed"
     }
 
     private fun isWifiConnected(): Boolean {

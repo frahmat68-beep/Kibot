@@ -56,17 +56,17 @@ data class MacDashboardState(
             liveExecutionEnabled = false,
             portfolioValueIdr = "Rp0",
             pnlTodayIdr = "+Rp0",
-            syncPathLabel = "Supabase",
+            syncPathLabel = "Live Feed",
             activeEngine = "Android",
             standbyEngine = "Mac",
             syncHealth = "DEGRADED",
             leaseTerm = 0,
-            healthSummary = "Waiting for control-plane connection.",
+            healthSummary = "Waiting for live server connection.",
             weeklyLearningSummary = "Belum ada review mingguan.",
             weeklyAdaptationSummary = "Adaptasi mingguan akan tampil di sini.",
             lastHeartbeatLabel = "Never",
             lastUpdatedLabel = "Baru saja",
-            statusMessage = "Mac standby is booting.",
+            statusMessage = "Server monitor is booting.",
             lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
             serverLocation = "Oracle Cloud (24/7)",
             serverUptime = "0m",
@@ -114,11 +114,11 @@ class MacStateRepository {
 }
 
 private fun MacCommand.defaultStatusMessage(): String = when (this) {
-    MacCommand.REQUEST_TAKEOVER -> "Graceful takeover requested."
-    MacCommand.FORCE_SAFE_TAKEOVER -> "Force safe takeover requested."
-    MacCommand.RELEASE_CONTROL -> "Release control requested."
-    MacCommand.SYNC_NOW -> "Manual sync requested."
-    MacCommand.START_BOT -> "Bot start requested."
-    MacCommand.STOP_BOT -> "Bot stop requested."
-    MacCommand.TOGGLE_LIVE_EXECUTION -> "Toggle live execution requested."
+    MacCommand.REQUEST_TAKEOVER -> "Takeover request queued."
+    MacCommand.FORCE_SAFE_TAKEOVER -> "Safe takeover request queued."
+    MacCommand.RELEASE_CONTROL -> "Release request queued."
+    MacCommand.SYNC_NOW -> "Manual refresh requested."
+    MacCommand.START_BOT -> "Start request queued."
+    MacCommand.STOP_BOT -> "Stop request queued."
+    MacCommand.TOGGLE_LIVE_EXECUTION -> "Execution mode update queued."
 }

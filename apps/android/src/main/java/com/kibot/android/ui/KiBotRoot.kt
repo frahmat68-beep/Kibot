@@ -501,7 +501,7 @@ private fun HeroCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 StatusChip(
-                    label = if (state.isBotRunning) "Oracle Server Live" else "Oracle Server Sync",
+                    label = if (state.isBotRunning) "Server Oracle Aktif" else "Server Oracle Siap",
                     tint = if (state.isBotRunning) Color(0xFF22C55E) else Color(0xFF94A3B8),
                 )
                 StatusChip(
@@ -836,9 +836,9 @@ private fun EngineControlScreen(
     ) {
         SurfaceCard {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text("Server View", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Text("Server Oracle", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatusChip("Engine ${state.activeEngine}", Color(0xFF1D4ED8))
+                    StatusChip("View Only", Color(0xFF1D4ED8))
                     StatusChip(state.syncPathLabel, Color(0xFF0EA5E9))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -871,12 +871,13 @@ private fun EngineControlScreen(
                     ) {
                         StatusRow("Portfolio", state.modalSaatIniIdr)
                         StatusRow("PnL Hari Ini", state.pnlTodayIdr)
+                        StatusRow("Feed", state.syncPathLabel)
                         StatusRow("Lease Term", "#${state.leaseTerm}")
                         StatusRow("Update", state.lastUpdatedLabel)
                     }
                 }
                 Text(
-                    "Kontrol manual dimatikan. Server Oracle jalan 24/7 dan app ini hanya untuk pantau status, portfolio, dan trade.",
+                    "App ini hanya untuk pantau hasil trade server. Semua keputusan trading berjalan otomatis di Oracle 24/7.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 3,

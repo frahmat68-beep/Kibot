@@ -141,7 +141,7 @@ data class KiBotUiState(
             pairAktif = "-",
             leaseTerm = 7,
             syncLagLabel = "-",
-            syncPathLabel = "Supabase",
+            syncPathLabel = "Live Feed",
             lastUpdatedLabel = "Baru saja",
             statusMessage = "Menunggu sync live Indodax.",
             weeklyLearningSummary = "Belum ada review mingguan.",

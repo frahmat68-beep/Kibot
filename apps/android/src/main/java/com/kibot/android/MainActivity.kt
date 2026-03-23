@@ -23,7 +23,7 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             repository.syncNow()
-            if (repository.uiState.value.syncPathLabel != "Supabase + LAN") {
+            if (repository.uiState.value.syncPathLabel != "Live + LAN") {
                 delay(2_500)
                 repository.syncNow()
             }

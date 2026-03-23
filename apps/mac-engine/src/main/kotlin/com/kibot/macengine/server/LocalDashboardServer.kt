@@ -65,7 +65,7 @@ class LocalDashboardServer(
             get("/") {
                 call.respondHtml {
                     head {
-                        title("KiBot Mac Engine")
+                        title("KiBot Server Monitor")
                         meta {
                             name = "viewport"
                             content = "width=device-width, initial-scale=1"
@@ -85,7 +85,7 @@ class LocalDashboardServer(
                                   fetch('/api/state')
                                     .then(r => r.json())
                                     .then(state => {
-                                      document.getElementById('status-message').textContent = 'Bot trading otomatis 24/7 di server Singapore. Tidak ada kontrol manual.';
+                                      document.getElementById('status-message').textContent = 'View-only monitor hasil trade server Oracle. Semua kontrol manual dimatikan.';
                                       document.getElementById('portfolio-value').textContent = state.portfolioValueIdr;
                                       document.getElementById('portfolio-value-card').textContent = state.portfolioValueIdr;
                                       document.getElementById('pnl-today').textContent = state.pnlTodayIdr;
@@ -94,19 +94,23 @@ class LocalDashboardServer(
                                       document.getElementById('last-updated-card').textContent = state.lastUpdatedLabel;
                                       document.getElementById('lease-term').textContent = '#' + state.leaseTerm;
                                       document.getElementById('live-execution').textContent = state.liveExecutionEnabled ? 'LIVE' : 'SHADOW';
-                                      document.getElementById('live-execution-card').textContent = state.liveExecutionEnabled ? 'LIVE' : 'SHADOW';
                                       document.getElementById('server-uptime').textContent = state.serverUptime;
                                       document.getElementById('market-regime').textContent = state.marketRegime;
                                       document.getElementById('top-candidate').textContent = state.topCandidate;
                                       document.getElementById('top-candidate-card').textContent = state.topCandidate;
                                       document.getElementById('edge-confidence').textContent = state.edgeConfidence;
                                       document.getElementById('exchange-ping').textContent = state.exchangePingMs;
+                                      document.getElementById('exchange-ping-card').textContent = state.exchangePingMs;
+                                      document.getElementById('sync-path').textContent = state.syncPathLabel;
+                                      document.getElementById('sync-path-card').textContent = state.syncPathLabel;
+                                      document.getElementById('sync-health').textContent = state.syncHealth;
+                                      document.getElementById('server-location').textContent = 'Oracle 24/7';
                                       
                                       const heldAssetsDiv = document.getElementById('held-assets');
                                       heldAssetsDiv.innerHTML = '';
                                       if (state.heldAssets.length === 0) {
                                         const p = document.createElement('p');
-                                        p.textContent = 'No assets held.';
+                                        p.textContent = 'Belum ada aset aktif.';
                                         heldAssetsDiv.appendChild(p);
                                       } else {
                                         state.heldAssets.forEach(asset => {
@@ -212,70 +216,92 @@ private fun String.toMacCommand(): MacCommand = when (uppercase()) {
 
 private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbeUrl: String?) {
     div("page-shell") {
-        div("hero") {
-            div("hero-copy") {
-                h1 { +"KiBot Dashboard" }
-                p {
-                    attributes["id"] = "status-message"
-                    +"Bot trading otomatis 24/7 di server Singapore. Tidak ada kontrol manual."
-                }
-                div("hero-metrics") {
-                    metricTile("Portfolio", state.portfolioValueIdr, "portfolio-value")
-                    metricTile("PnL Hari Ini", state.pnlTodayIdr, "pnl-today")
-                    metricTile("Update", state.lastUpdatedLabel, "last-updated")
-                }
-            }
-            div("hero-panel") {
-                div("metric-tile") {
-                    span("metric-label") { +"Server" }
-                    span("metric-value") { +"Oracle Ubuntu 24.04" }
-                }
-                div("metric-tile") {
-                    span("metric-label") { +"Execution" }
-                    span("metric-value") {
+        div("hero-card") {
+            div("hero-topbar") {
+                h1 { +"KiBot" }
+                div("hero-topbar-right") {
+                    div("live-pill") {
                         attributes["id"] = "live-execution"
                         +(if (state.liveExecutionEnabled) "LIVE" else "SHADOW")
                     }
-                }
-                div("metric-tile") {
-                    span("metric-label") { +"Top Pair" }
-                    span("metric-value") {
-                        attributes["id"] = "top-candidate-card"
-                        +state.topCandidate
+                    p("hero-update") {
+                        +"Update "
+                        span {
+                            attributes["id"] = "last-updated"
+                            +state.lastUpdatedLabel
+                        }
                     }
                 }
-                p("hero-note") { +"Dashboard ini hanya view-only. Semua keputusan trading berjalan otomatis di server." }
+            }
+            div("hero-balance") {
+                span {
+                    attributes["id"] = "portfolio-value"
+                    +state.portfolioValueIdr
+                }
+            }
+            div("hero-pnl-row") {
+                span("hero-pnl") {
+                    attributes["id"] = "pnl-today"
+                    +state.pnlTodayIdr
+                }
+                span("hero-ping-pill") {
+                    attributes["id"] = "exchange-ping"
+                    +state.exchangePingMs
+                }
+            }
+            p("hero-status") {
+                attributes["id"] = "status-message"
+                +"View-only monitor hasil trade server Oracle. Semua kontrol manual dimatikan."
             }
         }
 
-        div("grid") {
-            div("card accent") {
-                h2 { +"Wallet Snapshot" }
-                statusLine("Saldo", state.portfolioValueIdr, "portfolio-value-card")
-                statusLine("PnL Hari Ini", state.pnlTodayIdr, "pnl-today-card")
-                statusLine("Lease Term", "#${state.leaseTerm}", "lease-term")
-                statusLine("Update", state.lastUpdatedLabel, "last-updated-card")
+        div("dashboard-grid") {
+            div("card live-pair-card") {
+                div("card-header-row") {
+                    h2 { +"Live Pair" }
+                    div("chip chip-green") {
+                        attributes["id"] = "sync-path"
+                        +state.syncPathLabel
+                    }
+                }
+                div("pair-hero") {
+                    attributes["id"] = "top-candidate"
+                    +state.topCandidate
+                }
+                div("pair-meta-grid") {
+                    div("pair-meta-chip") {
+                        span("pair-meta-label") { +"Mode" }
+                        span("pair-meta-value") { +state.operatingMode }
+                    }
+                    div("pair-meta-chip") {
+                        span("pair-meta-label") { +"Regime" }
+                        span("pair-meta-value") {
+                            attributes["id"] = "market-regime"
+                            +state.marketRegime
+                        }
+                    }
+                    div("pair-meta-chip") {
+                        span("pair-meta-label") { +"Edge" }
+                        span("pair-meta-value") {
+                            attributes["id"] = "edge-confidence"
+                            +state.edgeConfidence
+                        }
+                    }
+                }
             }
+
             div("card") {
-                h2 { +"Status Bot" }
-                statusLine("Status", "RUNNING (24/7)", "bot-running")
-                statusLine("Execution", if (state.liveExecutionEnabled) "LIVE" else "SHADOW", "live-execution-card")
-                statusLine("Server", "Singapore (Oracle Cloud)", "server-location")
-                statusLine("Uptime", state.serverUptime, "server-uptime")
-                statusLine("Ping", state.exchangePingMs, "exchange-ping")
-            }
-            div("card") {
-                h2 { +"Market Info" }
-                statusLine("Regime", state.marketRegime, "market-regime")
-                statusLine("Top Candidate", state.topCandidate, "top-candidate")
-                statusLine("Edge Confidence", state.edgeConfidence, "edge-confidence")
-            }
-            div("card") {
-                h2 { +"Held Assets" }
+                div("card-header-row") {
+                    h2 { +"Holdings" }
+                    div("chip chip-blue") {
+                        attributes["id"] = "server-location"
+                        +"Oracle 24/7"
+                    }
+                }
                 div("status-list") {
                     attributes["id"] = "held-assets"
                     if (state.heldAssets.isEmpty()) {
-                        p { +"No assets held." }
+                        p { +"Belum ada aset aktif." }
                     } else {
                         state.heldAssets.forEach {
                             p { +it }
@@ -283,8 +309,32 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbe
                     }
                 }
             }
-            div("card full-width") {
-                h2 { +"Logs" }
+
+            div("card") {
+                div("card-header-row") {
+                    h2 { +"Server" }
+                    div("chip chip-neutral") {
+                        attributes["id"] = "sync-health"
+                        +state.syncHealth
+                    }
+                }
+                statusLine("Saldo", state.portfolioValueIdr, "portfolio-value-card")
+                statusLine("PnL Hari Ini", state.pnlTodayIdr, "pnl-today-card")
+                statusLine("Feed", state.syncPathLabel, "sync-path-card")
+                statusLine("Latency", state.exchangePingMs, "exchange-ping-card")
+                statusLine("Uptime", state.serverUptime, "server-uptime")
+                statusLine("Lease Term", "#${state.leaseTerm}", "lease-term")
+                statusLine("Update", state.lastUpdatedLabel, "last-updated-card")
+            }
+
+            div("card activity-card") {
+                div("card-header-row") {
+                    h2 { +"Timeline" }
+                    div("chip chip-purple") {
+                        attributes["id"] = "top-candidate-card"
+                        +state.topCandidate
+                    }
+                }
                 div("log-list") {
                     attributes["id"] = "log-lines"
                     p { +"Loading logs..." }
@@ -298,16 +348,6 @@ private fun FlowContent.statusLine(label: String, value: String, idValue: String
     div("status-row") {
         span("status-label") { +label }
         span("status-value") {
-            attributes["id"] = idValue
-            +value
-        }
-    }
-}
-
-private fun FlowContent.metricTile(label: String, value: String, idValue: String) {
-    div("metric-tile") {
-        span("metric-label") { +label }
-        span("metric-value") {
             attributes["id"] = idValue
             +value
         }
@@ -340,14 +380,11 @@ private fun dashboardStyles(): String = """
       min-height: 100vh;
     }
     .page-shell {
-      max-width: 1160px;
+      max-width: 1180px;
       margin: 0 auto;
       padding: 32px 24px 48px;
     }
-    .hero {
-      display: grid;
-      grid-template-columns: 1.2fr 1fr;
-      gap: 24px;
+    .hero-card {
       padding: 28px;
       border-radius: 28px;
       background: linear-gradient(135deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04));
@@ -355,56 +392,102 @@ private fun dashboardStyles(): String = """
       backdrop-filter: blur(18px);
       box-shadow: 0 30px 70px rgba(0,0,0,0.28);
     }
-    .hero h1 {
+    .hero-topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+    }
+    .hero-topbar h1 {
       margin: 0 0 12px;
       font-size: 40px;
       line-height: 1;
     }
-    .hero p {
+    .hero-topbar-right {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 10px;
+    }
+    .hero-update {
       margin: 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.2;
+    }
+    .live-pill, .chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      border: 1px solid rgba(255,255,255,0.10);
+    }
+    .live-pill {
+      color: #2dd881;
+      background: rgba(45,216,129,0.10);
+      border-color: rgba(45,216,129,0.45);
+    }
+    .chip-green {
+      color: #2dd881;
+      background: rgba(45,216,129,0.10);
+    }
+    .chip-blue {
+      color: #7bd3ff;
+      background: rgba(123,211,255,0.10);
+    }
+    .chip-purple {
+      color: #b799ff;
+      background: rgba(183,153,255,0.12);
+    }
+    .chip-neutral {
+      color: #dbe7ff;
+      background: rgba(255,255,255,0.06);
+    }
+    .hero-balance {
+      margin-top: 18px;
+      font-size: clamp(54px, 7vw, 82px);
+      font-weight: 900;
+      line-height: 0.98;
+      letter-spacing: -0.05em;
+    }
+    .hero-pnl-row {
+      margin-top: 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .hero-pnl {
+      font-size: clamp(28px, 4vw, 44px);
+      font-weight: 900;
+      color: var(--accent-2);
+      line-height: 1;
+    }
+    .hero-ping-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 14px;
+      border-radius: 999px;
+      font-size: 14px;
+      font-weight: 800;
+      color: #facc15;
+      background: rgba(250,204,21,0.10);
+      border: 1px solid rgba(250,204,21,0.25);
+    }
+    .hero-status {
+      margin: 16px 0 0;
       color: var(--muted);
       font-size: 16px;
       line-height: 1.6;
     }
-    .hero-metrics {
+    .dashboard-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
-      margin-top: 18px;
-    }
-    .metric-tile {
-      display: grid;
-      gap: 8px;
-      padding: 16px;
-      border-radius: 20px;
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.08);
-    }
-    .metric-label {
-      color: var(--muted);
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }
-    .metric-value {
-      font-size: 22px;
-      font-weight: 800;
-    }
-    .hero-panel {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 12px;
-      align-content: start;
-    }
-    .hero-note {
-      margin: 4px 0 0;
-      color: var(--muted);
-      font-size: 14px;
-      line-height: 1.5;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: 1.15fr 1fr;
       gap: 18px;
       margin-top: 20px;
     }
@@ -415,11 +498,51 @@ private fun dashboardStyles(): String = """
       border: 1px solid var(--stroke);
       backdrop-filter: blur(14px);
     }
-    .full-width {
-        grid-column: 1 / -1;
+    .live-pair-card {
+      min-height: 220px;
+    }
+    .activity-card {
+      min-height: 320px;
+    }
+    .card-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .pair-hero {
+      font-size: clamp(34px, 5vw, 56px);
+      font-weight: 900;
+      line-height: 1;
+      letter-spacing: -0.04em;
+      margin-bottom: 14px;
+    }
+    .pair-meta-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .pair-meta-chip {
+      display: grid;
+      gap: 6px;
+      padding: 14px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .pair-meta-label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .pair-meta-value {
+      font-size: 16px;
+      font-weight: 800;
     }
     .log-list {
-        height: 200px;
+        height: 240px;
         overflow-y: auto;
         font-family: "SF Mono", "Menlo", monospace;
         font-size: 12px;
@@ -429,11 +552,8 @@ private fun dashboardStyles(): String = """
         margin: 0;
         padding: 4px 0;
     }
-    .accent {
-      background: linear-gradient(135deg, rgba(123,211,255,0.14), rgba(142,255,193,0.09));
-    }
     .card h2 {
-      margin: 0 0 14px;
+      margin: 0;
       font-size: 18px;
     }
     .status-row {
@@ -465,11 +585,18 @@ private fun dashboardStyles(): String = """
       border-bottom: none;
     }
     @media (max-width: 900px) {
-      .hero, .grid {
+      .dashboard-grid {
         grid-template-columns: 1fr;
       }
-      .hero-metrics {
+      .pair-meta-grid {
         grid-template-columns: 1fr;
+      }
+      .hero-topbar {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .hero-topbar-right {
+        align-items: flex-start;
       }
     }
 """.trimIndent()
