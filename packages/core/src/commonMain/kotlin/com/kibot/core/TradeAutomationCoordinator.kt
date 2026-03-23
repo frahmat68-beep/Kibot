@@ -41,6 +41,8 @@ data class TradeAutomationConfig(
     val breakoutWinnerRunMinTrendScore: Double = 0.60,
     val breakoutWinnerRunMinHealthScore: Double = 0.58,
     val breakoutWinnerRunMinOpportunityScore: Double = 0.58,
+    val minMeaningfulNonEmergencyExitProfitPct: Double = 0.90,
+    val minMeaningfulNonEmergencyExitProfitIdr: Double = 140.0,
 )
 
 data class ManagedPosition(
@@ -353,6 +355,18 @@ class TradeAutomationCoordinator(
             ) &&
             currentBid < breakEvenPrice
         if (nonEmergencyExitBelowBreakEven) {
+            return null
+        }
+        val nonEmergencyExitTooSmall = !useEmergencyMarketExit &&
+            exitReason in setOf(
+                ExitReason.PROFIT_EXIT,
+                ExitReason.TIME_EXIT,
+                ExitReason.THESIS_INVALID_EXIT,
+                ExitReason.PROFIT_PROTECTION_EXIT,
+            ) &&
+            position.unrealizedPnlPct < config.minMeaningfulNonEmergencyExitProfitPct &&
+            position.unrealizedPnlIdr.toDoubleOrZero() < config.minMeaningfulNonEmergencyExitProfitIdr
+        if (nonEmergencyExitTooSmall) {
             return null
         }
 

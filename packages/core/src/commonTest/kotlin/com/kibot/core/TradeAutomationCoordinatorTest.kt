@@ -27,7 +27,7 @@ class TradeAutomationCoordinatorTest {
     private val coordinator = TradeAutomationCoordinator()
 
     @Test
-    fun `take profit position gets automatic sell plan`() {
+    fun `take profit pullback position gets automatic sell plan`() {
         val now = Clock.System.now()
         val quotes = listOf(
             marketQuote(
@@ -35,8 +35,8 @@ class TradeAutomationCoordinatorTest {
                 bid = 108_200.0,
                 ask = 108_500.0,
                 volume = 120_000_000.0,
-                shortTermReturn = 0.30,
-                mediumTermReturn = 2.10,
+                shortTermReturn = -0.18,
+                mediumTermReturn = 0.62,
             ),
         )
         val cycle = orchestrator.analyze(
@@ -68,7 +68,7 @@ class TradeAutomationCoordinatorTest {
                 openedAt = now,
                 updatedAt = now,
                 horizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
-                setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION,
+                setupType = com.kibot.shared.models.SetupType.HEALTHY_SHORT_TERM_PULLBACK,
                 pairTier = com.kibot.shared.models.PairTier.TIER_A,
                 speculativePocket = false,
                 expectedHoldingHours = 12.0,

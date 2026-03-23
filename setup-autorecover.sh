@@ -7,6 +7,8 @@ set -e
 
 echo "Setting up KiBot automatic recovery..."
 
+mkdir -p /home/ubuntu/KiBot/server
+
 # Copy service file
 sudo cp /home/ubuntu/KiBot/kibot-engine.service /etc/systemd/system/
 sudo chmod 644 /etc/systemd/system/kibot-engine.service
@@ -30,6 +32,7 @@ crontab -l | grep kibot
 
 # Make recovery script executable
 chmod +x /home/ubuntu/KiBot/kibot-recovery.sh
+chmod +x /home/ubuntu/KiBot/setup-autorecover.sh
 
 echo "Setup complete! KiBot will auto-restart if it crashes."
-echo "Dashboard should be available at http://213.35.118.26:8787"
+echo "Dashboard should be available at http://<oracle-ip>:8787"

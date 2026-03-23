@@ -471,6 +471,10 @@ class MacEngineDaemon(
                 controlPlane.updateCommandStatus(command.commandId, CommandStatus.SUCCEEDED)
                 "Command ${command.commandType.name} acknowledged."
             }
+            CommandType.TOGGLE_LIVE_EXECUTION -> {
+                controlPlane.updateCommandStatus(command.commandId, CommandStatus.SUCCEEDED)
+                "Command ${command.commandType.name} acknowledged."
+            }
         }
     }
 
@@ -1234,6 +1238,8 @@ class MacEngineDaemon(
             lastUpdatedEpochMs = now.toEpochMilliseconds(),
             heldAssets = heldAssets,
             exchangePingMs = localHealth.feedLatencyMs?.let { "${it}ms" } ?: "--",
+            serverLocation = "Oracle Cloud (24/7)",
+            serverUptime = "0m",
         )
     }
 

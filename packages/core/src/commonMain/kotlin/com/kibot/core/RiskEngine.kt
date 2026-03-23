@@ -127,8 +127,8 @@ class RiskEngine(
                 .coerceAtMost(config.maxConcurrentPositions)
         }.let { rawSlots ->
             when {
-                currentEquity < 120_000.0 -> rawSlots.coerceAtMost(4)
-                currentEquity < 200_000.0 -> rawSlots.coerceAtMost(5)
+                currentEquity < 120_000.0 -> rawSlots.coerceAtMost(3)
+                currentEquity < 200_000.0 -> rawSlots.coerceAtMost(4)
                 else -> rawSlots
             }
         }

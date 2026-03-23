@@ -13,7 +13,6 @@ import io.ktor.server.html.respondHtml
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
-import io.ktor.server.request.receiveParameters
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
 import io.ktor.server.response.respondText
@@ -23,7 +22,6 @@ import io.ktor.server.routing.routing
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.html.FlowContent
 import kotlinx.html.body
-import kotlinx.html.button
 import kotlinx.html.classes
 import kotlinx.html.div
 import kotlinx.html.h1
@@ -96,9 +94,11 @@ class LocalDashboardServer(
                                       document.getElementById('last-updated-card').textContent = state.lastUpdatedLabel;
                                       document.getElementById('lease-term').textContent = '#' + state.leaseTerm;
                                       document.getElementById('live-execution').textContent = state.liveExecutionEnabled ? 'LIVE' : 'SHADOW';
+                                      document.getElementById('live-execution-card').textContent = state.liveExecutionEnabled ? 'LIVE' : 'SHADOW';
                                       document.getElementById('server-uptime').textContent = state.serverUptime;
                                       document.getElementById('market-regime').textContent = state.marketRegime;
                                       document.getElementById('top-candidate').textContent = state.topCandidate;
+                                      document.getElementById('top-candidate-card').textContent = state.topCandidate;
                                       document.getElementById('edge-confidence').textContent = state.edgeConfidence;
                                       document.getElementById('exchange-ping').textContent = state.exchangePingMs;
                                       
@@ -137,42 +137,6 @@ class LocalDashboardServer(
                                       }
                                     });
                                 }, 5000);
-                                """.trimIndent()
-                            }
-                        }
-                        script {
-                            unsafe {
-                                +"""
-                                const commandStatus = document.getElementById('command-status');
-                                const buttons = document.querySelectorAll('.command-button');
-                                buttons.forEach(button => {
-                                  button.addEventListener('click', () => {
-                                    const action = button.dataset.action;
-                                    commandStatus.textContent = 'Sending ' + action + '...';
-                                    buttons.forEach(b => b.disabled = true);
-                                    
-                                    const formData = new URLSearchParams();
-                                    formData.append('action', action);
-
-                                    fetch('/command', {
-                                      method: 'POST',
-                                      body: formData
-                                    }).then(r => {
-                                      if (r.ok) {
-                                        commandStatus.textContent = 'Command ' + action + ' sent successfully.';
-                                      } else {
-                                        commandStatus.textContent = 'Error sending ' + action + '.';
-                                      }
-                                    }).catch(err => {
-                                        commandStatus.textContent = 'Network error.';
-                                    }).finally(() => {
-                                        setTimeout(() => {
-                                            buttons.forEach(b => b.disabled = false);
-                                            commandStatus.textContent = '';
-                                        }, 2000);
-                                    });
-                                  });
-                                });
                                 """.trimIndent()
                             }
                         }
@@ -220,9 +184,7 @@ class LocalDashboardServer(
             }
 
             post("/command") {
-                val action = call.receiveParameters()["action"] ?: return@post call.respond(HttpStatusCode.BadRequest)
-                dispatchCommand(action.toMacCommand())
-                call.respondText("ok", ContentType.Text.Plain)
+                call.respond(HttpStatusCode.Forbidden, mapOf("error" to "dashboard view-only"))
             }
         }
     }
@@ -263,15 +225,26 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbe
                     metricTile("Update", state.lastUpdatedLabel, "last-updated")
                 }
             }
-            div("hero-actions") {
-                commandButton("START BOT", "START_BOT")
-                commandButton("STOP BOT", "STOP_BOT")
-                commandButton("FORCE TAKEOVER", "FORCE_SAFE_TAKEOVER")
-                commandButton("RELEASE CONTROL", "RELEASE_CONTROL")
-                p("command-status") {
-                    attributes["id"] = "command-status"
-                    +""
+            div("hero-panel") {
+                div("metric-tile") {
+                    span("metric-label") { +"Server" }
+                    span("metric-value") { +"Oracle Ubuntu 24.04" }
                 }
+                div("metric-tile") {
+                    span("metric-label") { +"Execution" }
+                    span("metric-value") {
+                        attributes["id"] = "live-execution"
+                        +(if (state.liveExecutionEnabled) "LIVE" else "SHADOW")
+                    }
+                }
+                div("metric-tile") {
+                    span("metric-label") { +"Top Pair" }
+                    span("metric-value") {
+                        attributes["id"] = "top-candidate-card"
+                        +state.topCandidate
+                    }
+                }
+                p("hero-note") { +"Dashboard ini hanya view-only. Semua keputusan trading berjalan otomatis di server." }
             }
         }
 
@@ -285,8 +258,8 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbe
             }
             div("card") {
                 h2 { +"Status Bot" }
-                statusLine("Status", "RUNNING (Otomatis 24/7)", "bot-running")
-                statusLine("Execution", if (state.liveExecutionEnabled) "LIVE" else "SHADOW", "live-execution")
+                statusLine("Status", "RUNNING (24/7)", "bot-running")
+                statusLine("Execution", if (state.liveExecutionEnabled) "LIVE" else "SHADOW", "live-execution-card")
                 statusLine("Server", "Singapore (Oracle Cloud)", "server-location")
                 statusLine("Uptime", state.serverUptime, "server-uptime")
                 statusLine("Ping", state.exchangePingMs, "exchange-ping")
@@ -338,13 +311,6 @@ private fun FlowContent.metricTile(label: String, value: String, idValue: String
             attributes["id"] = idValue
             +value
         }
-    }
-}
-
-private fun FlowContent.commandButton(label: String, action: String) {
-    button(classes = "command-button") {
-        attributes["data-action"] = action
-        +label
     }
 }
 
@@ -424,30 +390,17 @@ private fun dashboardStyles(): String = """
       font-size: 22px;
       font-weight: 800;
     }
-    .hero-actions {
+    .hero-panel {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: 1fr;
       gap: 12px;
       align-content: start;
     }
-    .command-button {
-      width: 100%;
-      border: 0;
-      border-radius: 18px;
-      padding: 14px 16px;
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      color: #07111f;
-      background: linear-gradient(135deg, var(--accent), #9fb7ff);
-    }
-    .command-button:disabled { opacity: 0.72; cursor: wait; }
-    .command-status {
-      margin: 8px 0 0;
-      min-height: 22px;
+    .hero-note {
+      margin: 4px 0 0;
       color: var(--muted);
       font-size: 14px;
-      grid-column: 1 / -1;
+      line-height: 1.5;
     }
     .grid {
       display: grid;

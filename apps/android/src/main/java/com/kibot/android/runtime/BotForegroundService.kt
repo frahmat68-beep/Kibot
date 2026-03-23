@@ -40,12 +40,6 @@ class BotForegroundService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (intent?.action == ACTION_TOGGLE) {
-            serviceScope.launch {
-                handleToggle()
-            }
-            return START_STICKY
-        }
         if (loopJob?.isActive != true) {
             loopJob = serviceScope.launch { runLoop() }
         }
@@ -89,7 +83,6 @@ class BotForegroundService : Service() {
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setContentIntent(openAppIntent())
-            .addAction(toggleAction(if (isRunning) "Turn OFF" else "Turn ON"))
             .build()
     }
 
@@ -136,22 +129,6 @@ class BotForegroundService : Service() {
         return app?.container?.liveStatusStore?.current() ?: LiveStatusSnapshot.Empty
     }
 
-    private fun toggleAction(label: String): NotificationCompat.Action {
-        val pendingIntent = PendingIntent.getService(
-            this,
-            0,
-            Intent(this, BotForegroundService::class.java).apply {
-                action = ACTION_TOGGLE
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        return NotificationCompat.Action.Builder(
-            android.R.drawable.stat_sys_upload_done,
-            label,
-            pendingIntent,
-        ).build()
-    }
-
     private fun openAppIntent(): PendingIntent {
         val intent = Intent(this, com.kibot.android.MainActivity::class.java)
         return PendingIntent.getActivity(
@@ -160,17 +137,6 @@ class BotForegroundService : Service() {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-    }
-
-    private suspend fun handleToggle() {
-        val app = application as? com.kibot.android.KiBotApplication ?: return
-        val running = app.container.repository.toggleBot()
-        if (running) {
-            updateNotification(currentPair = app.container.liveStatusStore.current().activePair, isRunning = true)
-        } else {
-            updateNotification(currentPair = null, isRunning = false)
-            stopSelf()
-        }
     }
 
     private fun publishLiveStatus(
@@ -232,7 +198,6 @@ class BotForegroundService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val ACTION_START = "com.kibot.android.runtime.START"
         private const val ACTION_STOP = "com.kibot.android.runtime.STOP"
-        private const val ACTION_TOGGLE = "com.kibot.android.runtime.TOGGLE"
 
         fun start(context: Context) {
             val intent = Intent(context, BotForegroundService::class.java)

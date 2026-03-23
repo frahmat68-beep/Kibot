@@ -61,6 +61,7 @@ enum class CommandType {
     SYNC_NOW,
     FORCE_STANDBY,
     RESUME_FROM_SAFE_MODE,
+    TOGGLE_LIVE_EXECUTION,
 }
 
 @Serializable

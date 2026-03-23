@@ -256,11 +256,11 @@ class PairSelector(
                 quote.mediumTermReturnPct >= 0.55 &&
                 quote.recentTradeActivityScore >= 0.60 &&
                 trendQualityScore >= 0.62 &&
-                fillQualityScore >= 0.60 -> 0.24
+                fillQualityScore >= 0.60 -> 0.42
             quote.shortTermReturnPct >= 0.65 &&
                 quote.mediumTermReturnPct >= 0.40 &&
                 quote.recentTradeActivityScore >= 0.54 &&
-                fillQualityScore >= 0.58 -> 0.12
+                fillQualityScore >= 0.58 -> 0.22
             else -> 0.0
         }
         return (baseOpportunityPct + expectancyAssistPct + qualityAssistPct + momentumAssistPct + explosiveBreakoutBonusPct)

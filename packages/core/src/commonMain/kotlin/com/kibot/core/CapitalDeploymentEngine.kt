@@ -6,6 +6,7 @@ import com.kibot.shared.models.CapitalDeploymentPlan
 import com.kibot.shared.models.CandidateOpportunity
 import com.kibot.shared.models.PairScore
 import com.kibot.shared.models.PortfolioSnapshot
+import com.kibot.shared.models.PositionSnapshot
 import com.kibot.shared.models.PositionState
 import com.kibot.shared.models.RiskLadderLevel
 import kotlin.math.absoluteValue
@@ -79,8 +80,8 @@ class CapitalDeploymentEngine(
             ).toInt().coerceAtLeast(1)
         }.let { rawCap ->
             when {
-                currentEquity < 120_000.0 -> rawCap.coerceAtMost(4)
-                currentEquity < 200_000.0 -> rawCap.coerceAtMost(5)
+                currentEquity < 120_000.0 -> rawCap.coerceAtMost(3)
+                currentEquity < 200_000.0 -> rawCap.coerceAtMost(4)
                 else -> rawCap
             }
         }.coerceAtMost(config.maxConcurrentPositions)
@@ -148,15 +149,15 @@ class CapitalDeploymentEngine(
             currentEquity * (1.0 - effectiveReservePct).coerceIn(0.0, 1.0) * config.maxPerPositionBudgetPct,
             if (speculativePocketReady) currentEquity * config.speculativePocketMaxEquityPct else Double.MAX_VALUE,
         ).coerceAtLeast(0.0)
+        val rotatableWinners = portfolio.positions.filter { position ->
+            position.state != PositionState.CLOSED && position.hasClearRotationProfit(config)
+        }
         val allowRotation = mode.mode != BotMode.SAFE &&
             !speculativePocketReady &&
             openPositions > 0 &&
             candidates.firstOrNull()?.rankingScore?.let { it >= 0.74 } == true &&
             candidates.firstOrNull()?.expectedNetProfitabilityPct?.let { it >= (config.rotationMinNetUpgradePct + 0.20) } == true &&
-            portfolio.positions.any {
-                it.state != PositionState.CLOSED &&
-                    it.unrealizedPnlIdr.toDoubleOrZero() > 0.0
-            } &&
+            rotatableWinners.isNotEmpty() &&
             (
                 topCandidateGap >= (config.rotationRankingGapMin + 0.02) ||
                     top1DeployableConcentration >= config.top1DeployableConcentrationMaxPct ||
@@ -177,7 +178,7 @@ class CapitalDeploymentEngine(
             if (top2DeployableConcentration >= config.top2DeployableConcentrationMaxPct) add("Dua aset teratas sudah mendominasi modal aktif, jadi penyebaran modal harus lebih disiplin.")
             if (loserHeatPct >= config.loserHeatCautionPct) add("Loser heat portofolio sedang naik, jadi entry baru harus benar-benar mengalahkan posisi yang lemah.")
             if (dominantTierAReady) add("Cash reserve diringankan sedikit karena kandidat tier A terlihat dominan dan market masih sehat.")
-            if (allowRotation) add("Boleh pertimbangkan rotasi jika kandidat baru jauh lebih unggul.")
+            if (allowRotation) add("Rotasi hanya boleh dari posisi yang sudah hijau bersih setelah fee.")
         }
 
         return CapitalDeploymentPlan(
@@ -194,4 +195,12 @@ class CapitalDeploymentEngine(
     }
 
     private fun Double?.orZero(): Double = this ?: 0.0
+
+    private fun PositionSnapshot.hasClearRotationProfit(config: RiskConfig): Boolean {
+        val costBasisIdr = quantity.toDoubleOrZero() * averageEntryPrice.toDoubleOrZero()
+        if (costBasisIdr <= 0.0) return false
+        val pnlIdr = unrealizedPnlIdr.toDoubleOrZero()
+        val pnlPct = (pnlIdr / costBasisIdr) * 100.0
+        return pnlIdr >= config.rotationMinClearProfitIdr && pnlPct >= config.rotationMinClearProfitPct
+    }
 }

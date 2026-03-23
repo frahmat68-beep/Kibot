@@ -1,55 +1,39 @@
 #!/bin/bash
 
-# KiBot Auto-Recovery Script
-# This script checks if the Mac engine is running and restarts it if not
+# KiBot Auto-Recovery Script for Oracle server
+
+set -euo pipefail
 
 LOG_FILE="/home/ubuntu/KiBot/kibot-recovery.log"
-ENGINE_PID_FILE="/home/ubuntu/KiBot/mac-engine.pid"
+HEALTH_URL="http://127.0.0.1:8787/api/state"
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
 }
 
 check_engine() {
-    # Check if Java process is running
-    if pgrep -f "gradle.*mac-engine" > /dev/null; then
-        log "Engine is running"
+    if systemctl is-active --quiet kibot-engine; then
+        log "Engine service is active"
         return 0
     else
-        log "Engine is not running"
+        log "Engine service is not active"
         return 1
     fi
 }
 
 start_engine() {
-    log "Starting Mac engine..."
-    cd /home/ubuntu/KiBot
-
-    # Kill any existing processes
-    pkill -9 -f gradle
-    pkill -9 -f java
-    sleep 2
-
-    # Start engine in background
-    nohup /home/ubuntu/KiBot/gradle-8.5/bin/gradle :apps:mac-engine:run --no-daemon > /home/ubuntu/KiBot/engine.out 2>&1 &
-    echo $! > "$ENGINE_PID_FILE"
-
-    sleep 10
-
-    if check_engine; then
-        log "Engine started successfully"
-    else
-        log "Failed to start engine"
-    fi
+    log "Restarting kibot-engine service"
+    sudo systemctl restart kibot-engine
+    sleep 8
+    check_engine && log "Engine restarted successfully" || log "Engine restart failed"
 }
 
 check_dashboard() {
-    # Check if dashboard is responding
-    if curl -s --max-time 5 http://localhost:8787/ > /dev/null; then
-        log "Dashboard is accessible"
+    if curl -fsS --max-time 5 "$HEALTH_URL" > /dev/null; then
+        log "Dashboard/API is accessible"
         return 0
     else
-        log "Dashboard is not accessible"
+        log "Dashboard/API is not accessible"
         return 1
     fi
 }
@@ -63,7 +47,7 @@ main() {
     fi
 
     if ! check_dashboard; then
-        log "Dashboard not accessible, restarting engine..."
+        log "Dashboard/API unhealthy, restarting engine..."
         start_engine
     fi
 

@@ -2,7 +2,11 @@ name: Deploy KiBot
 
 on:
   push:
-    branches: [ main ] # Ganti 'master' kalau branch lu namanya master
+    branches: [ main ]
+
+concurrency:
+  group: kibot-oracle-deploy
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -17,26 +21,45 @@ jobs:
         java-version: '21'
         distribution: 'temurin'
 
-    - name: Build Fat JAR
+    - name: Validate Core Builds
       run: |
         chmod +x gradlew
-        ./gradlew :apps:mac-engine:fatJar
+        ./gradlew :packages:core:jvmTest :apps:mac-engine:test :apps:mac-engine:fatJar --no-daemon
 
-    - name: Copy JAR to Server
+    - name: Stage Oracle Runtime Bundle
+      run: |
+        mkdir -p .deploy
+        cp apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar .deploy/mac-engine-all.jar
+        cp kibot-engine.service .deploy/kibot-engine.service
+        cp kibot-recovery.sh .deploy/kibot-recovery.sh
+        cp setup-autorecover.sh .deploy/setup-autorecover.sh
+
+    - name: Copy Runtime Bundle to Server
       uses: appleboy/scp-action@v0.1.7
       with:
         host: ${{ secrets.HOST }}
         username: ${{ secrets.USERNAME }}
         key: ${{ secrets.SSH_KEY }}
-        source: "apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar"
-        target: "/home/ubuntu/"
-        strip_components: 4
+        source: ".deploy/*"
+        target: "/home/ubuntu/KiBot/"
+        strip_components: 1
 
-    - name: Restart Bot di Server
+    - name: Install and Restart Oracle Bot
       uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ secrets.HOST }}
         username: ${{ secrets.USERNAME }}
         key: ${{ secrets.SSH_KEY }}
         script: |
+          set -euo pipefail
+          mkdir -p /home/ubuntu/KiBot/server
+          mv /home/ubuntu/KiBot/mac-engine-all.jar /home/ubuntu/KiBot/server/mac-engine-all.jar
+          chmod +x /home/ubuntu/KiBot/kibot-recovery.sh
+          chmod +x /home/ubuntu/KiBot/setup-autorecover.sh
+          sudo cp /home/ubuntu/KiBot/kibot-engine.service /etc/systemd/system/kibot-engine.service
+          sudo systemctl daemon-reload
+          sudo systemctl enable kibot-engine
           sudo systemctl restart kibot-engine
+          sudo systemctl is-active --quiet kibot-engine
+          curl -fsS --retry 10 --retry-delay 3 http://127.0.0.1:8787/api/state >/tmp/kibot-state.json
+          cat /tmp/kibot-state.json | head -c 800

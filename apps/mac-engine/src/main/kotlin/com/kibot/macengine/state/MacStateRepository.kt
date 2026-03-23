@@ -120,4 +120,5 @@ private fun MacCommand.defaultStatusMessage(): String = when (this) {
     MacCommand.SYNC_NOW -> "Manual sync requested."
     MacCommand.START_BOT -> "Bot start requested."
     MacCommand.STOP_BOT -> "Bot stop requested."
+    MacCommand.TOGGLE_LIVE_EXECUTION -> "Toggle live execution requested."
 }

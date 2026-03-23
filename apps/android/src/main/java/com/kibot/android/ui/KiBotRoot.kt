@@ -32,8 +32,6 @@ import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -65,7 +63,7 @@ import kotlin.math.absoluteValue
 private enum class RootTab(val title: String) {
     Dashboard("Dashboard"),
     Portfolio("Portfolio"),
-    Control("Control"),
+    Control("Server"),
     Logs("Logs"),
 }
 
@@ -115,9 +113,9 @@ fun KiBotRoot(
                 .padding(padding),
         ) {
             when (currentTab) {
-                RootTab.Dashboard -> DashboardScreen(state = state, onToggleBot = onToggleBot)
+                RootTab.Dashboard -> DashboardScreen(state = state)
                 RootTab.Portfolio -> PortfolioScreen(state = state)
-                RootTab.Control -> EngineControlScreen(state = state, onCommand = onCommand)
+                RootTab.Control -> EngineControlScreen(state = state)
                 RootTab.Logs -> LogsScreen(state = state)
             }
         }
@@ -127,14 +125,13 @@ fun KiBotRoot(
 @Composable
 private fun DashboardScreen(
     state: KiBotUiState,
-    onToggleBot: () -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        item { HeroCard(state = state, onToggleBot = onToggleBot) }
+        item { HeroCard(state = state) }
         item { PairRadarCard(modifier = Modifier.fillMaxWidth(), state = state) }
         item {
             HoldingsPreviewCard(
@@ -416,7 +413,6 @@ private fun AllocationStrip(items: List<PortfolioAllocationUi>) {
 @Composable
 private fun HeroCard(
     state: KiBotUiState,
-    onToggleBot: () -> Unit,
 ) {
     val pnlColor = pnlColor(state.pnlTodayIdr)
     val pingState = pingVisual(state.isBotRunning, state.internetPingLabel)
@@ -500,17 +496,17 @@ private fun HeroCard(
                     )
                 }
             }
-            FilledTonalButton(
-                onClick = onToggleBot,
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.filledTonalButtonColors(
-                    containerColor = if (state.isBotRunning) Color(0xFF2B3557) else Color(0xFF1E40AF),
-                    contentColor = Color(0xFFF8FAFC),
-                ),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
-                    if (state.isBotRunning) "Matikan Bot" else "Nyalakan Bot",
-                    fontWeight = FontWeight.Bold,
+                StatusChip(
+                    label = if (state.isBotRunning) "Oracle Server Live" else "Oracle Server Sync",
+                    tint = if (state.isBotRunning) Color(0xFF22C55E) else Color(0xFF94A3B8),
+                )
+                StatusChip(
+                    label = state.lastUpdatedLabel,
+                    tint = Color(0xFF60A5FA),
                 )
             }
         }
@@ -831,7 +827,6 @@ private fun LiveActivityCard(
 @Composable
 private fun EngineControlScreen(
     state: KiBotUiState,
-    onCommand: (EngineAction) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -841,14 +836,14 @@ private fun EngineControlScreen(
     ) {
         SurfaceCard {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text("Engine Control", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Text("Server View", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatusChip("Active ${state.activeEngine}", Color(0xFF1D4ED8))
-                    StatusChip("Standby ${state.standbyEngine}", Color(0xFF64748B))
+                    StatusChip("Engine ${state.activeEngine}", Color(0xFF1D4ED8))
+                    StatusChip(state.syncPathLabel, Color(0xFF0EA5E9))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatusChip(visiblePairLabel(state), Color(0xFF8B5CF6))
-                    StatusChip(state.syncPathLabel, Color(0xFF0EA5E9))
+                    StatusChip(state.syncHealth, Color(0xFF22C55E))
                 }
                 Text(
                     engineSummaryLine(state),
@@ -864,63 +859,55 @@ private fun EngineControlScreen(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    "Aksi Aman",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.Bold,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    FilledTonalButton(
-                        onClick = { onCommand(EngineAction.RequestTakeover) },
-                        modifier = Modifier.weight(1f),
+                Surface(
+                    color = Color.White.copy(alpha = 0.04f),
+                    shape = RoundedCornerShape(18.dp),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text("Takeover")
-                    }
-                    FilledTonalButton(
-                        onClick = { onCommand(EngineAction.SyncNow) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Sync Now")
+                        StatusRow("Portfolio", state.modalSaatIniIdr)
+                        StatusRow("PnL Hari Ini", state.pnlTodayIdr)
+                        StatusRow("Lease Term", "#${state.leaseTerm}")
+                        StatusRow("Update", state.lastUpdatedLabel)
                     }
                 }
                 Text(
-                    "Aksi Berisiko",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.Bold,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    FilledTonalButton(
-                        onClick = { onCommand(EngineAction.ForceSafeTakeover) },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = Color(0xFFFFF7ED),
-                            contentColor = Color(0xFFEA580C),
-                        ),
-                    ) {
-                        Text("Force Safe")
-                    }
-                    FilledTonalButton(
-                        onClick = { onCommand(EngineAction.ReleaseControl) },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = Color(0xFFFBEAEC),
-                            contentColor = Color(0xFFBE123C),
-                        ),
-                    ) {
-                        Text("Release")
-                    }
-                }
-                Text(
-                    "Takeover tetap aman. Kalau state ambigu, bot tetap blok entry baru.",
+                    "Kontrol manual dimatikan. Server Oracle jalan 24/7 dan app ini hanya untuk pantau status, portfolio, dan trade.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun StatusRow(
+    label: String,
+    value: String,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.End,
+        )
     }
 }
 

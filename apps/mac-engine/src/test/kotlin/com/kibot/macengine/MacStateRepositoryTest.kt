@@ -42,6 +42,10 @@ class MacStateRepositoryTest {
                 lastUpdatedLabel = "08:15 WIB",
                 statusMessage = "Mac currently holds the master lease.",
                 lastUpdatedEpochMs = 1L,
+                serverLocation = "Oracle Cloud Singapore",
+                serverUptime = "02h 15m",
+                heldAssets = listOf("DOGE", "TRX"),
+                exchangePingMs = "84",
             ),
         )
 

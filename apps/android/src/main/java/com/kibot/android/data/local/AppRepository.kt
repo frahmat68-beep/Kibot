@@ -194,6 +194,9 @@ class AppRepository(
         val riskHistory = riskHistoryDeferred.await()
         val liveBalances = liveBalancesDeferred.await()
         val liveQuotes = liveQuotesDeferred.await()
+        val liveIdrBalance = liveBalances
+            .firstOrNull { it.asset.equals("idr", ignoreCase = true) }
+            ?.let { it.free.toDoubleOrZero() + it.locked.toDoubleOrZero() }
         val lanSnapshot = lanSnapshotDeferred.await()
         val auxiliary = fetchAuxiliaryData(gateway, now)
         val logs = auxiliary.logs
@@ -247,6 +250,7 @@ class AppRepository(
             pnlTodayPctLabel = pnlTodayPctLabel,
             risk = risk,
             holdings = valuedHoldings,
+            cashReadyIdrOverride = liveIdrBalance,
         )
 
         val activeDeviceId = lease?.currentHolder ?: botState.activeDeviceId
@@ -468,6 +472,7 @@ class AppRepository(
         pnlTodayPctLabel: String,
         risk: com.kibot.shared.models.DailyRiskSnapshot?,
         holdings: List<ValuedHolding>,
+        cashReadyIdrOverride: Double?,
     ): PortfolioSectionUi {
         val currentEquity = totalEquityIdr ?: totalEquityLabel.parseRupiahLabel() ?: 0.0
         val allocationSource = holdings
@@ -480,10 +485,13 @@ class AppRepository(
             .filter { it.valueIdr > 0.0 }
 
         val investedValue = allocationSource.sumOf { it.valueIdr }
-        val cashReadyIdr = (currentEquity - investedValue).coerceAtLeast(0.0)
+        val cashReadyIdr = cashReadyIdrOverride
+            ?.takeIf { it >= 0.0 }
+            ?: (currentEquity - investedValue).coerceAtLeast(0.0)
         val cashReadyPct = if (currentEquity > 0.0) cashReadyIdr / currentEquity else 0.0
-        val totalUnrealized = risk?.unrealizedPnlIdr?.toDoubleOrZero()
-            ?: holdings.sumOf { it.pnlIdrLabel.parseRupiahLabel() ?: 0.0 }
+        val holdingsUnrealized = holdings.sumOf { it.pnlIdrLabel.parseRupiahLabel() ?: 0.0 }
+        val totalUnrealized = holdingsUnrealized.takeIf { it != 0.0 }
+            ?: risk?.unrealizedPnlIdr?.toDoubleOrZero()
             ?: 0.0
         val topConcentrationPct = allocationSource.maxOfOrNull { it.valueIdr }
             ?.let { largest -> if (currentEquity > 0.0) largest / currentEquity else 0.0 }
@@ -641,12 +649,19 @@ class AppRepository(
         if (asset.equals("idr", ignoreCase = true)) return 1.0
         val directPair = "${asset.lowercase()}_idr"
         val directQuote = quotes.firstOrNull { it.pairId.value.equals(directPair, ignoreCase = true) }
-        if (directQuote != null) return directQuote.midPrice.toDoubleOrZero()
+        if (directQuote != null) {
+            return directQuote.bestBid.toDoubleOrZero().takeIf { it > 0.0 }
+                ?: directQuote.midPrice.toDoubleOrZero()
+        }
 
         val usdtAssetQuote = quotes.firstOrNull { it.pairId.value.equals("${asset.lowercase()}_usdt", ignoreCase = true) }
         val usdtIdrQuote = quotes.firstOrNull { it.pairId.value.equals("usdt_idr", ignoreCase = true) }
         if (usdtAssetQuote != null && usdtIdrQuote != null) {
-            return usdtAssetQuote.midPrice.toDoubleOrZero() * usdtIdrQuote.midPrice.toDoubleOrZero()
+            val usdtAssetPrice = usdtAssetQuote.bestBid.toDoubleOrZero().takeIf { it > 0.0 }
+                ?: usdtAssetQuote.midPrice.toDoubleOrZero()
+            val usdtIdrPrice = usdtIdrQuote.bestBid.toDoubleOrZero().takeIf { it > 0.0 }
+                ?: usdtIdrQuote.midPrice.toDoubleOrZero()
+            return usdtAssetPrice * usdtIdrPrice
         }
         return null
     }

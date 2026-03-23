@@ -208,6 +208,7 @@ class StrategyOrchestrator(
             modeSnapshot = modeSnapshot,
             marketSnapshot = marketSnapshot,
             heldPairs = heldPairs,
+            weeklySummary = weeklySummary,
         )
         val dominantPairId = deploymentPlan.candidates
             .take(2)
@@ -618,8 +619,8 @@ class StrategyOrchestrator(
         val estimatedRoundTripCostIdr = budgetIdr * (estimatedRoundTripCostPct / 100.0)
         val minimumRequiredNetProfitIdr = maxOf(
             minExpectedNetProfitIdr,
-            estimatedRoundTripCostIdr * executionConfig.minProfitToCostMultiplier,
-            estimatedRoundTripCostIdr + executionConfig.minProfitAfterFeesBufferIdr,
+            executionConfig.minProfitAfterFeesBufferIdr,
+            estimatedRoundTripCostIdr * (executionConfig.minProfitToCostMultiplier - 1.0),
         )
         if (projectedNetProfitIdr < minimumRequiredNetProfitIdr) return null
         val quantity = budgetQuoteUnits / effectivePriceInQuoteAsset

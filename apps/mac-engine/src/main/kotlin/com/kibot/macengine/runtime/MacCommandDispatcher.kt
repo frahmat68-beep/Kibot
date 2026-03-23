@@ -72,6 +72,15 @@ class MacCommandDispatcher(
                 )
                 repository.noteStatus("Sync requested for Mac engine.")
             }
+            MacCommand.TOGGLE_LIVE_EXECUTION -> {
+                controlPlane.enqueueCommand(
+                    botId = config.controlPlane.botId,
+                    createdBy = config.device.deviceId,
+                    commandType = CommandType.TOGGLE_LIVE_EXECUTION,
+                    targetDeviceId = config.device.deviceId,
+                )
+                repository.noteStatus("Toggle live execution requested for Mac engine.")
+            }
         }
     }
 }

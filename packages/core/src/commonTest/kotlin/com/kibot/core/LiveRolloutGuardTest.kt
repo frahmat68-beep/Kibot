@@ -55,6 +55,7 @@ class LiveRolloutGuardTest {
                 shadowMinExpectedEdgePct = 0.99,
                 shadowMinBotHealthScore = 0.99,
                 shadowMinOpportunityScore = 0.99,
+                minimumWeeklyTradeSamples = 5,
             ),
         )
         val cycle = healthyCycle()
@@ -112,7 +113,7 @@ class LiveRolloutGuardTest {
         val decision = guard.evaluate(cycle, summary)
 
         assertTrue(decision.allowed)
-        assertEquals("shadow_seed", decision.phase)
+        assertEquals("guarded_live", decision.phase)
     }
 
     private fun healthyCycle() = orchestrator.analyze(

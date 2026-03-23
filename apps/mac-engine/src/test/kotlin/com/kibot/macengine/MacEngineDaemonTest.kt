@@ -348,6 +348,8 @@ class MacEngineDaemonTest {
                     bestBid = DecimalValue("106500"),
                     bestAsk = DecimalValue("106700"),
                     midPrice = DecimalValue("106600"),
+                    shortTermReturnPct = -0.12,
+                    mediumTermReturnPct = 0.52,
                 ),
             ),
             balances = mutableListOf(BalanceSnapshot("btc", DecimalValue("0.2"))),

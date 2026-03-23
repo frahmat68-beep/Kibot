@@ -7,15 +7,19 @@ Wants=network.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/KiBot
+EnvironmentFile=-/home/ubuntu/KiBot/.env.server
 Environment=SUPABASE_URL=https://txdvrhkxkylnlxnkpmfl.supabase.co
 Environment=SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR4ZHZyaGt4a3lsbmx4bmtwbWZsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4ODgwNTIsImV4cCI6MjA4OTQ2NDA1Mn0.Tz_8veCdatdTMpxwbSDmSCxvBTX50O3bYc1koFmUiKw
 Environment=DEVICE_DISPLAY_NAME="Oracle Cloud Server"
 Environment=MAC_ENGINE_BIND_HOST=0.0.0.0
 Environment=MAC_ENGINE_PORT=8787
-ExecStart=/usr/bin/java -Xmx256m -jar /home/ubuntu/KiBot/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar
-ExecStop=/bin/bash -c 'pkill -f "/home/ubuntu/KiBot/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar"'
+Environment=JAVA_OPTS=-XX:+UseSerialGC -XX:MaxRAMPercentage=70 -XX:InitialRAMPercentage=20 -Dfile.encoding=UTF-8
+ExecStart=/bin/bash -lc '/usr/bin/java $JAVA_OPTS -jar /home/ubuntu/KiBot/server/mac-engine-all.jar'
 Restart=always
-RestartSec=10
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGTERM
+SuccessExitStatus=143
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=kibot-engine

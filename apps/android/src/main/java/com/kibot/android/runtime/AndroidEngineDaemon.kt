@@ -495,6 +495,11 @@ class AndroidEngineDaemon(
                 controlPlane.updateCommandStatus(command.commandId, CommandStatus.SUCCEEDED)
                 "Command ${command.commandType.name} diakui."
             }
+
+            CommandType.TOGGLE_LIVE_EXECUTION -> {
+                controlPlane.updateCommandStatus(command.commandId, CommandStatus.SUCCEEDED)
+                "Command ${command.commandType.name} diakui."
+            }
         }
     }
 
@@ -847,7 +852,9 @@ class AndroidEngineDaemon(
             return "Masih pegang ${executionPlan.signal.pairId.value} dan posisinya belum cukup hijau, jadi bot tidak averaging dulu."
         }
 
-        val profitablePositions = managedPositions.filter { it.unrealizedPnlPct >= 0.20 }
+        val profitablePositions = managedPositions.filter {
+            it.unrealizedPnlPct >= 0.90 && it.unrealizedPnlIdr.toDoubleOrZero() >= 140.0
+        }
         val redPositions = managedPositions.filter { it.unrealizedPnlPct <= -0.45 }
         val slotsAreFull = managedPositions.size >= cycle.deploymentPlan.maxActivePositions.coerceAtLeast(1)
 
