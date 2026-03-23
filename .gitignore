@@ -19,6 +19,7 @@ captures/
 .tooling/
 .wrapper-bootstrap/
 apps/mac-engine/.env
+apps/mac-engine/bin/
 infra/supabase/.temp/
 infra/supabase/.branches/
 infra/supabase/.generated/
