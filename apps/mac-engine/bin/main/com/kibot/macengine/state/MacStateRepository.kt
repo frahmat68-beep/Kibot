@@ -14,6 +14,7 @@ enum class MacCommand {
     SYNC_NOW,
     START_BOT,
     STOP_BOT,
+    TOGGLE_LIVE_EXECUTION,
 }
 
 @Serializable
@@ -39,6 +40,8 @@ data class MacDashboardState(
     val lastUpdatedLabel: String,
     val statusMessage: String,
     val lastUpdatedEpochMs: Long,
+    val serverLocation: String,
+    val serverUptime: String,
 ) {
     companion object {
         fun preview(): MacDashboardState = MacDashboardState(
@@ -63,6 +66,8 @@ data class MacDashboardState(
             lastUpdatedLabel = "Baru saja",
             statusMessage = "Mac standby is booting.",
             lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
+            serverLocation = "Oracle Cloud (24/7)",
+            serverUptime = "0m",
         )
     }
 }
@@ -72,7 +77,19 @@ class MacStateRepository {
     val state: StateFlow<MacDashboardState> = _state.asStateFlow()
 
     fun applyRuntimeState(next: MacDashboardState) {
-        _state.value = next.copy(lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds())
+        val uptimeMs = Clock.System.now().toEpochMilliseconds() - next.lastUpdatedEpochMs
+        val uptimeText = formatUptime(uptimeMs)
+        _state.value = next.copy(
+            lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
+            serverUptime = uptimeText,
+        )
+    }
+
+    private fun formatUptime(ms: Long): String {
+        val totalSeconds = (ms / 1000).toInt()
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        return "%02dh %02dm".format(hours, minutes)
     }
 
     fun noteStatus(message: String) {

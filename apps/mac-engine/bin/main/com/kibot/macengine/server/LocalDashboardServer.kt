@@ -108,6 +108,8 @@ class LocalDashboardServer(
                                       document.getElementById('weekly-learning').textContent = state.weeklyLearningSummary;
                                       document.getElementById('weekly-adaptation').textContent = state.weeklyAdaptationSummary;
                                       document.getElementById('bot-running').textContent = state.isBotRunning ? 'RUNNING' : 'STOPPED';
+                                      document.getElementById('server-location').textContent = state.serverLocation;
+                                      document.getElementById('server-uptime').textContent = state.serverUptime;
                                     });
                                 }, 5000);
                                 document.addEventListener('click', async (event) => {
@@ -193,6 +195,7 @@ private fun String.toMacCommand(): MacCommand = when (uppercase()) {
     "SYNC_NOW" -> MacCommand.SYNC_NOW
     "START_BOT" -> MacCommand.START_BOT
     "STOP_BOT" -> MacCommand.STOP_BOT
+    "TOGGLE_LIVE_EXECUTION" -> MacCommand.TOGGLE_LIVE_EXECUTION
     else -> error("Unknown action: $this")
 }
 
@@ -214,6 +217,7 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbe
             div("hero-actions") {
                 commandButton("Start Bot", "START_BOT")
                 commandButton("Stop Bot", "STOP_BOT")
+                commandButton("Toggle Live Execution", "TOGGLE_LIVE_EXECUTION")
                 commandButton("Request Takeover", "REQUEST_TAKEOVER")
                 commandButton("Force Safe Takeover", "FORCE_SAFE_TAKEOVER")
                 commandButton("Release Control", "RELEASE_CONTROL")
@@ -239,8 +243,8 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbe
                 statusLine("Active Engine", state.activeEngine, "active-engine")
                 statusLine("Standby Engine", state.standbyEngine, "standby-engine")
                 statusLine("Sync", state.syncHealth, "sync-health")
-                statusLine("Path", state.syncPathLabel, "sync-path")
-            }
+                statusLine("Path", state.syncPathLabel, "sync-path")                statusLine("Server", state.serverLocation, "server-location")
+                statusLine("Uptime", state.serverUptime, "server-uptime")            }
             div("card") {
                 h2 { +"Strategy Brain" }
                 statusLine("Mode", state.operatingMode, "operating-mode")
