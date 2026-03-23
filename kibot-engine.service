@@ -13,7 +13,22 @@ Environment=SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzd
 Environment=DEVICE_DISPLAY_NAME="Oracle Cloud Server"
 Environment=MAC_ENGINE_BIND_HOST=0.0.0.0
 Environment=MAC_ENGINE_PORT=8787
-Environment=JAVA_OPTS=-XX:+UseSerialGC -XX:MaxRAMPercentage=70 -XX:InitialRAMPercentage=20 -Dfile.encoding=UTF-8
+Environment=BOT_POLL_INTERVAL_MS=8000
+Environment=BOT_EXCHANGE_PING_REFRESH_INTERVAL_MS=8000
+Environment=BOT_BALANCE_REFRESH_INTERVAL_MS=12000
+Environment=BOT_OPEN_ORDERS_REFRESH_INTERVAL_MS=12000
+Environment=BOT_DAILY_RISK_REFRESH_INTERVAL_MS=15000
+Environment=BOT_DEVICES_REFRESH_INTERVAL_MS=30000
+Environment=BOT_COMMANDS_REFRESH_INTERVAL_MS=10000
+Environment=BOT_WEEKLY_SUMMARY_REFRESH_INTERVAL_MS=60000
+Environment=BOT_RECENT_ORDERS_REFRESH_INTERVAL_MS=15000
+Environment=BOT_RECENT_FILLS_REFRESH_INTERVAL_MS=15000
+Environment=BOT_ANALYSIS_PUBLISH_INTERVAL_MS=45000
+Environment=BOT_STRATEGY_METRICS_PUBLISH_INTERVAL_MS=600000
+Environment=MAC_ENGINE_ENABLE_LAN_ADVERTISE=false
+Environment=MAC_DASHBOARD_STATE_POLL_INTERVAL_MS=15000
+Environment=MAC_DASHBOARD_LOG_POLL_INTERVAL_MS=20000
+Environment=JAVA_OPTS=-XX:+UseSerialGC -XX:MaxRAMPercentage=60 -XX:InitialRAMPercentage=15 -XX:ActiveProcessorCount=1 -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=4 -Dfile.encoding=UTF-8
 ExecStart=/bin/bash -lc '/usr/bin/java $JAVA_OPTS -jar /home/ubuntu/KiBot/server/mac-engine-all.jar'
 Restart=always
 RestartSec=5

@@ -48,9 +48,12 @@ class LocalDashboardServer(
     private val host: String = "0.0.0.0",
     private val port: Int = 8787,
     private val androidReleaseDirectory: Path,
+    private val enableLanAdvertising: Boolean = true,
+    private val statePollIntervalMillis: Long = 15_000L,
+    private val logPollIntervalMillis: Long = 20_000L,
 ) {
     private val lanProbeUrl = detectLanProbeUrl(host, port)
-    private val lanServiceAdvertiser = LanServiceAdvertiser(host, port)
+    private val lanServiceAdvertiser = if (enableLanAdvertising) LanServiceAdvertiser(host, port) else null
 
     private val server = embeddedServer(CIO, host = host, port = port) {
         install(CallLogging)
@@ -120,7 +123,7 @@ class LocalDashboardServer(
                                         });
                                       }
                                     });
-                                }, 5000);
+                                }, ${statePollIntervalMillis});
                                 
                                 setInterval(() => {
                                   fetch('/api/logs')
@@ -140,7 +143,7 @@ class LocalDashboardServer(
                                         });
                                       }
                                     });
-                                }, 5000);
+                                }, ${logPollIntervalMillis});
                                 """.trimIndent()
                             }
                         }
@@ -155,7 +158,7 @@ class LocalDashboardServer(
             get("/api/logs") {
                 val logFile = File(System.getProperty("java.io.tmpdir"), "kibot-mac-engine.log")
                 if (logFile.exists()) {
-                    val lines = logFile.readLines().takeLast(50)
+                    val lines = logFile.readLines().takeLast(25)
                     call.respond(lines)
                 } else {
                     call.respond(HttpStatusCode.NotFound, emptyList<String>())
@@ -194,12 +197,12 @@ class LocalDashboardServer(
     }
 
     fun start() {
-        lanServiceAdvertiser.start()
+        lanServiceAdvertiser?.start()
         server.start(wait = true)
     }
 
     fun stop() {
-        lanServiceAdvertiser.stop()
+        lanServiceAdvertiser?.stop()
         server.stop(1_000, 2_000)
     }
 }

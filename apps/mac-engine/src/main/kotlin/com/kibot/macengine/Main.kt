@@ -53,6 +53,9 @@ fun main(args: Array<String>) {
         port = config.port,
         dispatchCommand = { dispatcher.dispatch(it) },
         androidReleaseDirectory = Paths.get("").toAbsolutePath().resolve(".dist/android/stable"),
+        enableLanAdvertising = config.enableLanAdvertising,
+        statePollIntervalMillis = config.dashboardStatePollIntervalMillis,
+        logPollIntervalMillis = config.dashboardLogPollIntervalMillis,
     )
 
     Runtime.getRuntime().addShutdownHook(

@@ -89,8 +89,29 @@ class MacEngineDaemon(
     private var lastSuccessfulControlPlaneAt: Instant? = null
     private var smoothedExchangePingMs: Double? = null
     private var lastSuccessfulExchangePingAt: Instant? = null
+    private var lastExchangeProbeAt: Instant? = null
+    private var lastExchangeReachable: Boolean = false
+    private var lastExchangePingMs: Long? = null
     private var lastExecutionPolicyLogSignature: String? = null
     private var lastExecutionPolicyLoggedAt: Instant? = null
+    private var lastObservedLeaseTerm: com.kibot.shared.models.LeaseTerm? = null
+    private var cachedDevices: List<DeviceDescriptor> = emptyList()
+    private var devicesFetchedAt: Instant? = null
+    private var cachedDailyRisk: DailyRiskSnapshot? = null
+    private var cachedDailyRiskDate: kotlinx.datetime.LocalDate? = null
+    private var dailyRiskFetchedAt: Instant? = null
+    private var commandsFetchedAt: Instant? = null
+    private var cachedWeeklyReview: com.kibot.shared.models.WeeklyLearningSummary? = null
+    private var weeklyReviewFetchedAt: Instant? = null
+    private var cachedBalances: List<BalanceSnapshot> = emptyList()
+    private var balancesFetchedAt: Instant? = null
+    private var cachedOpenOrders: List<com.kibot.shared.models.OrderSnapshot> = emptyList()
+    private var openOrdersFetchedAt: Instant? = null
+    private var cachedRecentOrders: List<com.kibot.shared.models.OrderSnapshot> = emptyList()
+    private var recentOrdersFetchedAt: Instant? = null
+    private var cachedRecentFills: List<com.kibot.shared.models.FillSnapshot> = emptyList()
+    private var recentFillsFetchedAt: Instant? = null
+    private var cachedRecentFillsKey: String? = null
 
     suspend fun run() {
         logger.info("Mac engine daemon loop started.")
@@ -112,19 +133,14 @@ class MacEngineDaemon(
         val jakartaDate = jakartaNowDate(now)
         val botState = controlPlane.fetchBotState(config.controlPlane.botId) ?: error("Bot state not found in Supabase.")
         val lease = controlPlane.fetchLease(config.controlPlane.botId)
-        val devices = controlPlane.fetchDevices(config.controlPlane.botId)
-        val dailyRisk = controlPlane.fetchDailyRisk(config.controlPlane.botId, jakartaDate)
-        val commands = controlPlane.fetchPendingCommands(config.controlPlane.botId, config.device.deviceId)
-        val weeklyReview = runCatching {
-            controlPlane.fetchLatestWeeklyLearningSummary(config.controlPlane.botId)
-        }.getOrNull()
+        lastObservedLeaseTerm = lease?.term ?: botState.currentTerm
+        val devices = refreshDevices(now)
+        val dailyRisk = refreshDailyRisk(now, jakartaDate)
+        val commands = refreshPendingCommands(now)
+        val weeklyReview = refreshWeeklyReview(now)
         lastSuccessfulControlPlaneAt = now
 
-        val pingStartedAtNs = System.nanoTime()
-        val exchangeReachable = runCatching { exchange.ping() }.getOrElse { false }
-        val exchangePingMs = ((System.nanoTime() - pingStartedAtNs) / 1_000_000L)
-            .takeIf { exchangeReachable }
-            ?.coerceAtLeast(1L)
+        val (exchangeReachable, exchangePingMs) = probeExchange(now)
         val displayPingMs = recordDisplayPing(
             now = now,
             exchangeReachable = exchangeReachable,
@@ -152,6 +168,7 @@ class MacEngineDaemon(
                 healthWarnings += result
             }
         }
+        commandsFetchedAt = now
 
         val localHealth = buildLocalHealth(
             exchangeReachable = exchangeReachable,
@@ -185,14 +202,15 @@ class MacEngineDaemon(
 
         val initialBotState = controlPlane.fetchBotState(config.controlPlane.botId) ?: botStateAfterCommands
         val initialLease = controlPlane.fetchLease(config.controlPlane.botId)
+        lastObservedLeaseTerm = initialLease?.term ?: initialBotState.currentTerm
         val isMaster = initialLease.isHeldBy(config.device.deviceId, now)
         val balancesDeferred: kotlinx.coroutines.Deferred<List<BalanceSnapshot>>? = if (exchangeReachable) {
-            async { runCatching { exchange.fetchBalances() }.getOrDefault(emptyList()) }
+            async { refreshBalances(now) }
         } else {
             null
         }
         val openOrdersDeferred: kotlinx.coroutines.Deferred<List<com.kibot.shared.models.OrderSnapshot>>? = if (exchangeReachable) {
-            async { runCatching { exchange.fetchOpenOrders() }.getOrDefault(emptyList()) }
+            async { refreshOpenOrders(now) }
         } else {
             null
         }
@@ -201,8 +219,8 @@ class MacEngineDaemon(
         } else {
             null
         }
-        val resolvedBalances = balancesDeferred?.await().orEmpty()
-        val resolvedOpenOrders = openOrdersDeferred?.await().orEmpty()
+        val resolvedBalances = balancesDeferred?.await() ?: cachedBalances
+        val resolvedOpenOrders = openOrdersDeferred?.await() ?: cachedOpenOrders
         val resolvedMarketQuotes = marketQuotesDeferred?.await().orEmpty()
         if (exchangeReachable && resolvedMarketQuotes.isEmpty()) {
             healthWarnings += "Market quote feed kosong."
@@ -249,22 +267,23 @@ class MacEngineDaemon(
             null
         }
         val recentPersistedOrders = if (isMaster && exchangeReachable) {
-            runCatching { controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 500) }.getOrDefault(emptyList())
+            refreshRecentOrders(now)
         } else {
-            emptyList()
+            cachedRecentOrders
         }
         val recentFills = if (isMaster && exchangeReachable) {
-            relevantFillPairs(
+            refreshRecentFills(
+                now = now,
+                pairIds = relevantFillPairs(
                 balances = resolvedBalances,
                 marketQuotes = resolvedMarketQuotes,
                 openOrders = resolvedOpenOrders,
                 persistedOrders = recentPersistedOrders,
                 cycle = strategyCycle,
-            ).flatMap { pairId ->
-                runCatching { exchange.fetchRecentFills(pairId, limit = 30) }.getOrDefault(emptyList())
-            }
+                ),
+            )
         } else {
-            emptyList()
+            cachedRecentFills
         }
         val reconciledOrderUpdates = if (isMaster && recentPersistedOrders.isNotEmpty()) {
             tradeAutomationCoordinator.reconcileOrders(
@@ -287,6 +306,8 @@ class MacEngineDaemon(
             base = recentPersistedOrders,
             updates = reconciledOrderUpdates,
         )
+        cachedRecentOrders = effectiveRecentOrders
+        recentOrdersFetchedAt = now
 
         var runtimeBotState = initialBotState
         var runtimeLease = initialLease
@@ -305,6 +326,9 @@ class MacEngineDaemon(
                 date = jakartaDate,
                 snapshot = effectiveDailyRisk,
             )
+            cachedDailyRisk = effectiveDailyRisk
+            cachedDailyRiskDate = jakartaDate
+            dailyRiskFetchedAt = now
         }
         if (isMaster && runtimeLease != null && strategyCycle != null) {
             effectiveWeeklyReview = maybePublishWeeklyLearningSummary(
@@ -338,6 +362,7 @@ class MacEngineDaemon(
             )
             runtimeBotState = controlPlane.fetchBotState(config.controlPlane.botId) ?: runtimeBotState
             runtimeLease = controlPlane.fetchLease(config.controlPlane.botId)
+            lastObservedLeaseTerm = runtimeLease?.term ?: runtimeBotState.currentTerm
         }
 
         controlPlane.appendHeartbeat(
@@ -494,13 +519,13 @@ class MacEngineDaemon(
         }
         val balances = runCatching { exchange.fetchBalances() }.getOrDefault(emptyList())
         val openOrders = runCatching { exchange.fetchOpenOrders() }.getOrDefault(emptyList())
-        val recentPersistedOrders = controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 500)
+        val recentPersistedOrders = controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 200)
         val reconciliationPairs = (openOrders.map { it.pairId } + recentPersistedOrders.map { it.pairId })
             .distinct()
-            .take(12)
+            .take(4)
         val fills = reconciliationPairs
             .flatMap { pairId ->
-                runCatching { exchange.fetchRecentFills(pairId, limit = 20) }.getOrDefault(emptyList())
+                runCatching { exchange.fetchRecentFills(pairId, limit = 12) }.getOrDefault(emptyList())
             }
         val reconciliation = reconciliationService.reconcile(
             portfolio = PortfolioSnapshot(
@@ -544,6 +569,7 @@ class MacEngineDaemon(
             deviceId = config.device.deviceId,
             ttlSeconds = config.leaseTtlSeconds,
         )
+        lastObservedLeaseTerm = acquiredLease.term
 
         appendAuditLog(
             level = LogLevel.WARN,
@@ -613,6 +639,124 @@ class MacEngineDaemon(
         return stalenessMs <= graceWindowMs
     }
 
+    private fun shouldRefresh(
+        now: Instant,
+        lastFetchedAt: Instant?,
+        intervalMillis: Long,
+        force: Boolean = false,
+    ): Boolean {
+        if (force || lastFetchedAt == null) return true
+        return (now - lastFetchedAt).inWholeMilliseconds >= intervalMillis
+    }
+
+    private suspend fun probeExchange(now: Instant): Pair<Boolean, Long?> {
+        if (!shouldRefresh(now, lastExchangeProbeAt, config.exchangePingRefreshIntervalMillis, force = lastExchangeProbeAt == null)) {
+            return lastExchangeReachable to lastExchangePingMs
+        }
+        val pingStartedAtNs = System.nanoTime()
+        val exchangeReachable = runCatching { exchange.ping() }.getOrElse { false }
+        val exchangePingMs = ((System.nanoTime() - pingStartedAtNs) / 1_000_000L)
+            .takeIf { exchangeReachable }
+            ?.coerceAtLeast(1L)
+        lastExchangeProbeAt = now
+        lastExchangeReachable = exchangeReachable
+        lastExchangePingMs = exchangePingMs
+        return exchangeReachable to exchangePingMs
+    }
+
+    private suspend fun refreshDevices(now: Instant): List<DeviceDescriptor> {
+        if (!shouldRefresh(now, devicesFetchedAt, config.devicesRefreshIntervalMillis, force = cachedDevices.isEmpty())) {
+            return cachedDevices
+        }
+        cachedDevices = runCatching { controlPlane.fetchDevices(config.controlPlane.botId) }.getOrElse { cachedDevices }
+        devicesFetchedAt = now
+        return cachedDevices
+    }
+
+    private suspend fun refreshDailyRisk(
+        now: Instant,
+        date: kotlinx.datetime.LocalDate,
+    ): DailyRiskSnapshot? {
+        val force = cachedDailyRiskDate != date
+        if (!shouldRefresh(now, dailyRiskFetchedAt, config.dailyRiskRefreshIntervalMillis, force = force)) {
+            return cachedDailyRisk
+        }
+        cachedDailyRisk = runCatching { controlPlane.fetchDailyRisk(config.controlPlane.botId, date) }.getOrElse { cachedDailyRisk }
+        cachedDailyRiskDate = date
+        dailyRiskFetchedAt = now
+        return cachedDailyRisk
+    }
+
+    private suspend fun refreshPendingCommands(now: Instant): List<CommandEnvelope> {
+        if (!shouldRefresh(now, commandsFetchedAt, config.commandsRefreshIntervalMillis, force = commandsFetchedAt == null)) {
+            return emptyList()
+        }
+        commandsFetchedAt = now
+        return runCatching {
+            controlPlane.fetchPendingCommands(config.controlPlane.botId, config.device.deviceId)
+        }.getOrDefault(emptyList())
+    }
+
+    private suspend fun refreshWeeklyReview(now: Instant): com.kibot.shared.models.WeeklyLearningSummary? {
+        if (!shouldRefresh(now, weeklyReviewFetchedAt, config.weeklySummaryRefreshIntervalMillis, force = weeklyReviewFetchedAt == null && cachedWeeklyReview == null)) {
+            return cachedWeeklyReview
+        }
+        cachedWeeklyReview = runCatching {
+            controlPlane.fetchLatestWeeklyLearningSummary(config.controlPlane.botId)
+        }.getOrElse { cachedWeeklyReview }
+        weeklyReviewFetchedAt = now
+        return cachedWeeklyReview
+    }
+
+    private suspend fun refreshBalances(now: Instant): List<BalanceSnapshot> {
+        if (!shouldRefresh(now, balancesFetchedAt, config.balanceRefreshIntervalMillis, force = cachedBalances.isEmpty())) {
+            return cachedBalances
+        }
+        cachedBalances = runCatching { exchange.fetchBalances() }.getOrElse { cachedBalances }
+        balancesFetchedAt = now
+        return cachedBalances
+    }
+
+    private suspend fun refreshOpenOrders(now: Instant): List<com.kibot.shared.models.OrderSnapshot> {
+        if (!shouldRefresh(now, openOrdersFetchedAt, config.openOrdersRefreshIntervalMillis, force = openOrdersFetchedAt == null)) {
+            return cachedOpenOrders
+        }
+        cachedOpenOrders = runCatching { exchange.fetchOpenOrders() }.getOrElse { cachedOpenOrders }
+        openOrdersFetchedAt = now
+        return cachedOpenOrders
+    }
+
+    private suspend fun refreshRecentOrders(now: Instant): List<com.kibot.shared.models.OrderSnapshot> {
+        if (!shouldRefresh(now, recentOrdersFetchedAt, config.recentOrdersRefreshIntervalMillis, force = recentOrdersFetchedAt == null)) {
+            return cachedRecentOrders
+        }
+        cachedRecentOrders = runCatching {
+            controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 200)
+        }.getOrElse { cachedRecentOrders }
+        recentOrdersFetchedAt = now
+        return cachedRecentOrders
+    }
+
+    private suspend fun refreshRecentFills(
+        now: Instant,
+        pairIds: List<com.kibot.shared.models.PairId>,
+    ): List<com.kibot.shared.models.FillSnapshot> {
+        val pairKey = pairIds.joinToString("|") { it.value }
+        val shouldRefresh = shouldRefresh(
+            now = now,
+            lastFetchedAt = recentFillsFetchedAt,
+            intervalMillis = config.recentFillsRefreshIntervalMillis,
+            force = recentFillsFetchedAt == null || pairKey != cachedRecentFillsKey,
+        )
+        if (!shouldRefresh) return cachedRecentFills
+        cachedRecentFills = pairIds.flatMap { pairId ->
+            runCatching { exchange.fetchRecentFills(pairId, limit = 12) }.getOrDefault(emptyList())
+        }
+        recentFillsFetchedAt = now
+        cachedRecentFillsKey = pairKey
+        return cachedRecentFills
+    }
+
     private suspend fun publishAnalysisIfNeeded(
         now: Instant,
         lease: EngineLeaseSnapshot,
@@ -678,6 +822,7 @@ class MacEngineDaemon(
             marketQuotes = marketQuotes,
             recentOrders = recentOrders,
         )
+        cachedRecentOrders = entryStabilizedOrders
         val preExitManagedPositions = tradeAutomationCoordinator.deriveManagedPositions(
             balances = balances,
             marketQuotes = marketQuotes,
@@ -692,6 +837,7 @@ class MacEngineDaemon(
             marketQuotes = marketQuotes,
             recentOrders = entryStabilizedOrders,
         )
+        cachedRecentOrders = stabilizedOrders
         val activePersistedOrders = stabilizedOrders.filter { it.status in activeOrderStatuses }
         val managedPositions = tradeAutomationCoordinator.deriveManagedPositions(
             balances = balances,
@@ -723,6 +869,10 @@ class MacEngineDaemon(
                 exchange = exchange,
                 controlPlane = controlPlane,
             )
+            result.order?.let {
+                cachedRecentOrders = mergeRecentOrders(stabilizedOrders, listOf(it))
+                recentOrdersFetchedAt = now
+            }
             appendAuditLog(
                 level = when {
                     result.failSafeTriggered -> LogLevel.ERROR
@@ -786,6 +936,10 @@ class MacEngineDaemon(
             exchange = exchange,
             controlPlane = controlPlane,
         )
+        result.order?.let {
+            cachedRecentOrders = mergeRecentOrders(activePersistedOrders, listOf(it))
+            recentOrdersFetchedAt = now
+        }
 
         appendAuditLog(
             level = when {
@@ -1046,6 +1200,8 @@ class MacEngineDaemon(
             recentOrders = recentOrders,
         ) ?: return currentWeeklyReview
         controlPlane.upsertWeeklyLearningSummary(summary)
+        cachedWeeklyReview = summary
+        weeklyReviewFetchedAt = now
         lastWeeklyReviewPublishedAt = now
         return summary
     }
@@ -1106,7 +1262,7 @@ class MacEngineDaemon(
                     level = level,
                     category = category,
                     deviceId = config.device.deviceId,
-                    term = controlPlane.fetchLease(config.controlPlane.botId)?.term,
+                    term = lastObservedLeaseTerm,
                     message = message,
                 ),
             )
@@ -1265,7 +1421,7 @@ class MacEngineDaemon(
                         .firstOrNull { it in quotePairs }
                         ?.let(::add)
                 }
-        }.take(10)
+        }.take(4)
     }
 
     private fun mergeRecentOrders(
