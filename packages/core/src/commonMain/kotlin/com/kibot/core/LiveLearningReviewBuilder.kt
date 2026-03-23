@@ -20,8 +20,8 @@ data class LiveLearningReviewConfig(
     val maxRecentOrders: Int = 80,
     val publishIntervalHours: Int = 6,
     val missedOpportunityThreshold: Double = 0.70,
-    val minimumMeaningfulNetProfitIdr: Double = 300.0,
-    val minimumMeaningfulNetProfitPct: Double = 0.85,
+    val minimumMeaningfulNetProfitIdr: Double = 180.0,
+    val minimumMeaningfulNetProfitPct: Double = 1.20,
 ) {
     val lookbackWindowMs: Long = lookbackDays * 86_400_000L
 }

@@ -888,6 +888,19 @@ class MacEngineDaemon(
         val executionPlan = cycle.executionPlan ?: return
         if (!cycle.modeSnapshot.tradingAllowed) return
         if (cycle.riskDecision.allowNewEntries.not()) return
+        entryBlockedByPortfolioState(
+            cycle = cycle,
+            executionPlan = executionPlan,
+            managedPositions = managedPositions,
+        )?.let { blockedReason ->
+            appendThrottledAuditLog(
+                now = now,
+                level = LogLevel.INFO,
+                category = "ENTRY_POLICY",
+                message = blockedReason,
+            )
+            return
+        }
         val rolloutDecision = liveRolloutGuard.evaluate(cycle, weeklyReview)
         if (!rolloutDecision.allowed) {
             appendAuditLog(LogLevel.INFO, "ROLLOUT_GUARD", rolloutDecision.reason)
@@ -1022,6 +1035,36 @@ class MacEngineDaemon(
                 blockedReason = "Ping merah ${latencyMs}ms. Entry baru ${executionPlan.signal.pairId.value} diblokir sampai feed pulih; bot hanya fokus monitor/exit aman.",
             )
         }
+    }
+
+    private fun entryBlockedByPortfolioState(
+        cycle: com.kibot.core.StrategyCycleResult,
+        executionPlan: com.kibot.shared.models.ExecutionPlan,
+        managedPositions: List<com.kibot.core.ManagedPosition>,
+    ): String? {
+        if (managedPositions.isEmpty()) return null
+
+        val samePairExposure = managedPositions.firstOrNull { it.pairId == executionPlan.signal.pairId }
+        if (samePairExposure != null && samePairExposure.unrealizedPnlPct < 0.20) {
+            return "Masih pegang ${executionPlan.signal.pairId.value} dan posisinya belum cukup hijau, jadi bot tidak averaging dulu."
+        }
+
+        val profitablePositions = managedPositions.filter {
+            it.unrealizedPnlPct >= 1.20 && it.unrealizedPnlIdr.toDoubleOrZero() >= 180.0
+        }
+        val redPositions = managedPositions.filter { it.unrealizedPnlPct <= -0.45 }
+        val slotsAreFull = managedPositions.size >= cycle.deploymentPlan.maxActivePositions.coerceAtLeast(1)
+
+        if (cycle.deploymentPlan.allowRotation && profitablePositions.isEmpty()) {
+            return "Rotasi ditunda karena belum ada posisi yang sudah hijau bersih setelah biaya."
+        }
+        if (slotsAreFull && redPositions.isNotEmpty() && profitablePositions.isEmpty()) {
+            return "Entry baru ditahan karena portofolio masih merah dan belum ada posisi hijau untuk rotasi."
+        }
+        if (redPositions.size >= 2 && profitablePositions.isEmpty()) {
+            return "Terlalu banyak posisi masih merah, jadi bot tahan entry baru sampai ada recovery nyata."
+        }
+        return null
     }
 
     private suspend fun manageStaleEntryOrders(

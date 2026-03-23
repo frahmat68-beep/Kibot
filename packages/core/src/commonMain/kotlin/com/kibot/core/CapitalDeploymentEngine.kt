@@ -80,8 +80,8 @@ class CapitalDeploymentEngine(
             ).toInt().coerceAtLeast(1)
         }.let { rawCap ->
             when {
-                currentEquity < 120_000.0 -> rawCap.coerceAtMost(3)
-                currentEquity < 200_000.0 -> rawCap.coerceAtMost(4)
+                currentEquity < 120_000.0 -> rawCap.coerceAtMost(2)
+                currentEquity < 200_000.0 -> rawCap.coerceAtMost(3)
                 else -> rawCap
             }
         }.coerceAtMost(config.maxConcurrentPositions)
@@ -149,14 +149,27 @@ class CapitalDeploymentEngine(
             currentEquity * (1.0 - effectiveReservePct).coerceIn(0.0, 1.0) * config.maxPerPositionBudgetPct,
             if (speculativePocketReady) currentEquity * config.speculativePocketMaxEquityPct else Double.MAX_VALUE,
         ).coerceAtLeast(0.0)
+        val rankedByPair = rankedPairs.associateBy { it.pairId }
         val rotatableWinners = portfolio.positions.filter { position ->
-            position.state != PositionState.CLOSED && position.hasClearRotationProfit(config)
+            position.state != PositionState.CLOSED &&
+                position.hasClearRotationProfit(config) &&
+                position.isWeakRotationCandidate(rankedByPair[position.pairId])
         }
+        val topCandidateLooksLikeBreakout = firstCandidate?.let { candidate ->
+            candidate.speculativePocket ||
+                (
+                    candidate.preferredHorizon == com.kibot.shared.models.TradingHorizon.TACTICAL &&
+                        candidate.marketOpportunityScore >= 0.66 &&
+                        candidate.expectedNetProfitabilityPct >= (config.rotationMinNetUpgradePct + 0.25)
+                    )
+        } == true
         val allowRotation = mode.mode != BotMode.SAFE &&
             !speculativePocketReady &&
             openPositions > 0 &&
-            candidates.firstOrNull()?.rankingScore?.let { it >= 0.74 } == true &&
-            candidates.firstOrNull()?.expectedNetProfitabilityPct?.let { it >= (config.rotationMinNetUpgradePct + 0.20) } == true &&
+            topCandidateLooksLikeBreakout &&
+            candidates.firstOrNull()?.rankingScore?.let { it >= 0.78 } == true &&
+            candidates.firstOrNull()?.marketOpportunityScore?.let { it >= 0.64 } == true &&
+            candidates.firstOrNull()?.expectedNetProfitabilityPct?.let { it >= (config.rotationMinNetUpgradePct + 0.25) } == true &&
             rotatableWinners.isNotEmpty() &&
             (
                 topCandidateGap >= (config.rotationRankingGapMin + 0.02) ||
@@ -202,5 +215,13 @@ class CapitalDeploymentEngine(
         val pnlIdr = unrealizedPnlIdr.toDoubleOrZero()
         val pnlPct = (pnlIdr / costBasisIdr) * 100.0
         return pnlIdr >= config.rotationMinClearProfitIdr && pnlPct >= config.rotationMinClearProfitPct
+    }
+
+    private fun PositionSnapshot.isWeakRotationCandidate(pairScore: PairScore?): Boolean {
+        if (pairScore == null) return true
+        return !pairScore.allowed ||
+            pairScore.marketOpportunityScore < 0.56 ||
+            pairScore.trendQualityScore < 0.54 ||
+            pairScore.recentHealthScore < 0.58
     }
 }

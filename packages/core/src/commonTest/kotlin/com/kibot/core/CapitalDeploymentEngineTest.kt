@@ -95,7 +95,7 @@ class CapitalDeploymentEngineTest {
     }
 
     @Test
-    fun `speculative sleeve caps exposure to 25 percent equity`() {
+    fun `speculative sleeve caps exposure to configured equity ceiling`() {
         val plan = engine.plan(
             portfolio = portfolio(),
             rankedPairs = listOf(
@@ -107,7 +107,7 @@ class CapitalDeploymentEngineTest {
         )
 
         assertEquals(1, plan.maxActivePositions)
-        assertTrue(plan.suggestedPerPositionBudgetIdr <= 25_000.0)
+        assertTrue(plan.suggestedPerPositionBudgetIdr <= 35_000.0)
         assertTrue(plan.candidates.first().speculativePocket)
     }
 

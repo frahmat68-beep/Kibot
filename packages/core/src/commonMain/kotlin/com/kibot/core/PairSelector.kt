@@ -1,6 +1,7 @@
 package com.kibot.core
 
 import com.kibot.shared.models.MarketQuote
+import com.kibot.shared.models.PairId
 import com.kibot.shared.models.PairScore
 import com.kibot.shared.models.PairTier
 import com.kibot.shared.models.TradingHorizon
@@ -21,10 +22,12 @@ class PairSelector(
     }
 
     private fun prefilter(quotes: List<MarketQuote>): List<MarketQuote> {
+        val eligibleQuotes = quotes.filterNot(::isDormantStablePair)
+        if (eligibleQuotes.isEmpty()) return emptyList()
         val poolSize = policy.prefilterCandidatePoolSize.coerceAtLeast(policy.shortlistSize)
-        if (quotes.size <= poolSize) return quotes
+        if (eligibleQuotes.size <= poolSize) return eligibleQuotes
 
-        val lenientCandidates = quotes.asSequence()
+        val lenientCandidates = eligibleQuotes.asSequence()
             .filter { quote ->
                 (
                     quote.quoteVolume24h.toDoubleOrZero() >= policy.minDailyQuoteVolumeIdr * 0.25 ||
@@ -45,12 +48,13 @@ class PairSelector(
 
         if (lenientCandidates.isNotEmpty()) return lenientCandidates
 
-        return quotes
+        return eligibleQuotes
             .sortedByDescending(::prefilterScore)
             .take(poolSize)
     }
 
     private fun scoreQuote(quote: MarketQuote): PairScore {
+        val momentumAccelerationScore = deriveMomentumAccelerationScore(quote)
         val liquidityScore = normalizeRatio(
             value = quote.quoteVolume24h.toDoubleOrZero(),
             baseline = policy.minDailyQuoteVolumeIdr,
@@ -106,7 +110,11 @@ class PairSelector(
             historicalExpectancyScore = historicalExpectancyScore,
             fillQualityScore = fillQualityScore,
         )
-        val rankingScore = weightedAverage(
+        val stagnantPair = !speculativePocket &&
+            abs(quote.shortTermReturnPct) <= policy.stagnantShortTermReturnPctMax &&
+            abs(quote.mediumTermReturnPct) <= policy.stagnantMediumTermReturnPctMax &&
+            quote.recentTradeActivityScore < 0.72
+        val rankingScoreBase = weightedAverage(
             liquidityScore to 0.10,
             depthScore to 0.10,
             spreadScore to 0.12,
@@ -115,15 +123,18 @@ class PairSelector(
             volumeConsistencyScore to 0.07,
             volatilityQualityScore to 0.08,
             trendQualityScore to 0.08,
+            momentumAccelerationScore to 0.08,
             historicalExpectancyScore to 0.11,
             recentHealthScore to 0.08,
             fillQualityScore to 0.08,
-            holdabilityScore to 0.04,
+            holdabilityScore to 0.06,
         )
+        val rankingScore = (rankingScoreBase - if (stagnantPair) 0.12 else 0.0).coerceIn(0.0, 1.0)
         val marketOpportunityScore = averageOf(
             rankingScore,
             recentHealthScore,
             maxOf(trendQualityScore, volatilityQualityScore),
+            momentumAccelerationScore,
         )
         val preferredHorizon = if (
             !smallCapitalEligible &&
@@ -147,8 +158,16 @@ class PairSelector(
             speculativePocket = speculativePocket,
         )
         val feeAdjustedEdgePct = grossEdgePct - roundTripCostPct
+        val dormantStablePair = isDormantStablePair(quote)
 
         val rejectionReasons = buildList {
+            val minimumHistoricalExpectancyScore = if (speculativePocket) {
+                policy.speculativeMinHistoricalExpectancyScore
+            } else {
+                policy.minHistoricalExpectancyScore
+            }
+            if (dormantStablePair) add("Pair datar/stable tidak dipakai untuk growth trading.")
+            if (stagnantPair) add("Pergerakan pair terlalu datar untuk mode agresif.")
             if (quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr && !smallCapitalEligible) {
                 add("Likuiditas harian terlalu rendah.")
             }
@@ -160,7 +179,7 @@ class PairSelector(
                 add("Depth order book belum cukup aman untuk modal kecil.")
             }
             if (fillQualityScore < policy.minFillQualityScore) add("Kualitas fill memburuk.")
-            if (historicalExpectancyScore < policy.minHistoricalExpectancyScore) add("Expectancy historis belum cukup sehat.")
+            if (historicalExpectancyScore < minimumHistoricalExpectancyScore) add("Expectancy historis belum cukup sehat.")
             if (feeAdjustedEdgePct < policy.minFeeAdjustedEdgeScore) add("Net edge setelah biaya belum layak.")
         }
 
@@ -252,15 +271,19 @@ class PairSelector(
                 maxOf(recentHealthScore - 0.50, 0.0) * 0.45
             )
         val explosiveBreakoutBonusPct = when {
-            quote.shortTermReturnPct >= 0.90 &&
-                quote.mediumTermReturnPct >= 0.55 &&
+            quote.shortTermReturnPct >= 18.0 &&
+                quote.mediumTermReturnPct >= 6.0 &&
                 quote.recentTradeActivityScore >= 0.60 &&
                 trendQualityScore >= 0.62 &&
-                fillQualityScore >= 0.60 -> 0.42
-            quote.shortTermReturnPct >= 0.65 &&
-                quote.mediumTermReturnPct >= 0.40 &&
+                fillQualityScore >= 0.60 -> 0.88
+            quote.shortTermReturnPct >= 8.0 &&
+                quote.mediumTermReturnPct >= 3.0 &&
                 quote.recentTradeActivityScore >= 0.54 &&
-                fillQualityScore >= 0.58 -> 0.22
+                fillQualityScore >= 0.58 -> 0.48
+            quote.shortTermReturnPct >= 4.5 &&
+                quote.mediumTermReturnPct >= 1.5 &&
+                quote.recentTradeActivityScore >= 0.52 &&
+                fillQualityScore >= 0.56 -> 0.26
             else -> 0.0
         }
         return (baseOpportunityPct + expectancyAssistPct + qualityAssistPct + momentumAssistPct + explosiveBreakoutBonusPct)
@@ -315,13 +338,26 @@ class PairSelector(
                 ?: quote.recentTradeActivityScore.coerceIn(0.0, 1.0),
         )
         val stabilityScore = quote.orderBookStabilityScore.coerceIn(0.0, 1.0)
+        val momentumScore = deriveMomentumAccelerationScore(quote)
         return weightedAverage(
             liquidityScore to 0.26,
             depthScore to 0.16,
-            spreadScore to 0.20,
-            slippageScore to 0.20,
+            spreadScore to 0.17,
+            slippageScore to 0.17,
             tradeFlowScore to 0.14,
+            momentumScore to 0.16,
             stabilityScore to 0.04,
+        )
+    }
+
+    private fun deriveMomentumAccelerationScore(quote: MarketQuote): Double {
+        val shortTermScore = (quote.shortTermReturnPct / 18.0).coerceIn(0.0, 1.0)
+        val mediumTermScore = (quote.mediumTermReturnPct / 7.0).coerceIn(0.0, 1.0)
+        return weightedAverage(
+            shortTermScore to 0.42,
+            mediumTermScore to 0.28,
+            quote.recentTradeActivityScore.coerceIn(0.0, 1.0) to 0.18,
+            quote.fillQualityScore.coerceIn(0.0, 1.0) to 0.12,
         )
     }
 
@@ -360,6 +396,27 @@ class PairSelector(
             fillQualityScore >= 0.56 &&
             quote.spreadPct <= policy.smallCapitalMaxSpreadPct &&
             quote.estimatedSlippagePct <= policy.smallCapitalMaxSlippagePct
+    }
+
+    private fun isDormantStablePair(quote: MarketQuote): Boolean {
+        val assets = quote.pairId.assets()
+        if (assets.quoteAsset != "idr") return false
+        if (quote.pairId.value.lowercase() in policy.blockedBaseAssets.map { "${it}_idr" }.toSet()) return true
+        return assets.baseAsset in policy.blockedBaseAssets
+    }
+
+    private data class PairParts(
+        val baseAsset: String,
+        val quoteAsset: String,
+    )
+
+    private fun PairId.assets(): PairParts {
+        val parts = value.lowercase().split("_")
+        return if (parts.size == 2) {
+            PairParts(parts[0], parts[1])
+        } else {
+            PairParts(value.lowercase(), "idr")
+        }
     }
 
     private fun inverseThresholdScore(value: Double, maxAllowed: Double): Double {

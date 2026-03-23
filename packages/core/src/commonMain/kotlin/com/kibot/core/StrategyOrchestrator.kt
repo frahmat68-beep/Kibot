@@ -198,7 +198,8 @@ class StrategyOrchestrator(
         openOrders: List<com.kibot.shared.models.OrderSnapshot>,
         weeklySummary: WeeklyLearningSummary?,
     ): StrategySignal? {
-        if (!modeSnapshot.tradingAllowed || openOrders.isNotEmpty() || !deploymentPlan.allowNewEntries) return null
+        val hasPendingBuyOrder = openOrders.any { it.side == OrderSide.BUY }
+        if (!modeSnapshot.tradingAllowed || hasPendingBuyOrder || !deploymentPlan.allowNewEntries) return null
         val heldPairs = positions
             .filter { it.state != PositionState.CLOSED }
             .map { it.pairId }
@@ -353,17 +354,28 @@ class StrategyOrchestrator(
                 weeklySummary.missedOpportunityRate >= 0.12 -> 0.015
             else -> 0.0
         }
+        val breakoutIdleBias = if (
+            productiveIdleBiasActive &&
+            marketSnapshot.marketOpportunityScore >= 0.62 &&
+            marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC
+        ) {
+            0.03
+        } else {
+            0.0
+        }
         return EntryThresholds(
             minRankingScore = (
                 baseRankingScore -
                     if (productiveIdleBiasActive) executionConfig.productiveIdleRankingDelta else 0.0 -
-                    learningAggressionBias
+                    learningAggressionBias -
+                    breakoutIdleBias
                 )
                 .coerceAtLeast(0.0),
             minOpportunityScore = (
                 executionConfig.minExpectedOpportunityScore -
                     if (productiveIdleBiasActive) executionConfig.productiveIdleOpportunityDelta else 0.0 -
-                    (learningAggressionBias * 0.75)
+                    (learningAggressionBias * 0.75) -
+                    (breakoutIdleBias * 0.70)
                 ).coerceAtLeast(0.0),
             productiveIdleBiasActive = productiveIdleBiasActive,
         )
@@ -521,10 +533,10 @@ class StrategyOrchestrator(
                 quote.shortTermReturnPct >= executionConfig.breakoutAggressiveEntryMinShortTermReturnPct &&
                 quote.mediumTermReturnPct >= executionConfig.breakoutAggressiveEntryMinMediumTermReturnPct &&
                 pairScore.feeAdjustedEdgeScore >= executionConfig.breakoutAggressiveEntryMinExpectedNetProfitPct ->
-                0.075
+                0.14
             setupReadiness.signalType == StrategySignalType.BREAKOUT_ENTRY &&
                 pairScore.feeAdjustedEdgeScore >= executionConfig.marketEntryMinExpectedNetProfitPct ->
-                0.030
+                0.07
             else -> 0.0
         }
 
@@ -566,13 +578,7 @@ class StrategyOrchestrator(
             .coerceAtLeast(0.0)
         if (budgetIdr < executionConfig.minOrderNotionalIdr) return null
 
-        val minExpectedNetProfitIdr = if (speculativePocket) {
-            executionConfig.minExpectedNetProfitIdrSpeculative
-        } else {
-            executionConfig.minExpectedNetProfitIdr
-        }
         val projectedNetProfitIdr = budgetIdr * (expectedNetProfitabilityPct / 100.0)
-        if (projectedNetProfitIdr < minExpectedNetProfitIdr) return null
 
         val priceInQuoteAsset = entryPrice?.toDoubleOrZero()?.takeIf { it > 0.0 } ?: return null
         val budgetQuoteUnits = if (pairParts.quoteAsset == "idr") {
@@ -617,11 +623,16 @@ class StrategyOrchestrator(
             speculativePocket = speculativePocket,
         )
         val estimatedRoundTripCostIdr = budgetIdr * (estimatedRoundTripCostPct / 100.0)
-        val minimumRequiredNetProfitIdr = maxOf(
-            minExpectedNetProfitIdr,
+        val dynamicNetProfitFloorIdr = maxOf(
             executionConfig.minProfitAfterFeesBufferIdr,
-            estimatedRoundTripCostIdr * (executionConfig.minProfitToCostMultiplier - 1.0),
+            budgetIdr * if (speculativePocket) 0.0085 else 0.0060,
+            estimatedRoundTripCostIdr * executionConfig.minProfitToCostMultiplier,
         )
+        val minimumRequiredNetProfitIdr = if (speculativePocket) {
+            maxOf(executionConfig.minExpectedNetProfitIdrSpeculative, dynamicNetProfitFloorIdr)
+        } else {
+            maxOf(executionConfig.minExpectedNetProfitIdr, dynamicNetProfitFloorIdr)
+        }
         if (projectedNetProfitIdr < minimumRequiredNetProfitIdr) return null
         val quantity = budgetQuoteUnits / effectivePriceInQuoteAsset
         if (quantity <= 0.0) return null
@@ -723,6 +734,8 @@ class StrategyOrchestrator(
         val adaptationPlan = weeklySummary?.adaptationPlan ?: return rankedPairs
         val whitelist = adaptationPlan.whitelistPairs.toSet()
         val blacklist = adaptationPlan.temporaryBlacklistPairs.toSet()
+        val bestPairs = weeklySummary.bestPairs.toSet()
+        val worstPairs = weeklySummary.worstPairs.toSet()
         val activeHours = adaptationPlan.activeHours.toSet()
         val currentHour = observedAt.toString().substring(11, 13).toIntOrNull() ?: 0
         val outsideActiveHoursPenalty = if (activeHours.isNotEmpty() && currentHour !in activeHours) 0.03 else 0.0
@@ -731,8 +744,10 @@ class StrategyOrchestrator(
             .map { pairScore ->
                 if (!pairScore.allowed) return@map pairScore
                 val bias = when (pairScore.pairId) {
-                    in whitelist -> 0.035
-                    in blacklist -> -0.08
+                    in whitelist -> 0.05
+                    in bestPairs -> 0.02
+                    in blacklist -> -0.14
+                    in worstPairs -> -0.10
                     else -> 0.0
                 } - outsideActiveHoursPenalty
                 if (bias == 0.0) return@map pairScore

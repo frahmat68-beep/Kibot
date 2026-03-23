@@ -25,24 +25,24 @@ import kotlin.math.max
 data class TradeAutomationConfig(
     val minTrackedPositionValueIdr: Double = 12_000.0,
     val thesisInvalidRankingFloor: Double = 0.46,
-    val thesisInvalidAgeHours: Double = 2.5,
-    val timeExitGraceMultiplier: Double = 1.60,
+    val thesisInvalidAgeHours: Double = 4.0,
+    val timeExitGraceMultiplier: Double = 2.25,
     val maxStaleLossPctForTimeExit: Double = 0.10,
     val orderFillTolerancePct: Double = 0.0025,
     val emergencyMarketExitLossPct: Double = -2.2,
-    val ambiguousOrderGraceMinutes: Double = 10.0,
+    val ambiguousOrderGraceMinutes: Double = 4.0,
     val estimatedRoundTripCostPct: Double = 0.66,
-    val breakEvenExitBufferPct: Double = 0.12,
-    val speculativeWinnerRunMinPnlPct: Double = 1.8,
+    val breakEvenExitBufferPct: Double = 0.18,
+    val speculativeWinnerRunMinPnlPct: Double = 1.2,
     val speculativeWinnerRunMinTrendScore: Double = 0.62,
     val speculativeWinnerRunMinHealthScore: Double = 0.60,
     val speculativeWinnerRunMinOpportunityScore: Double = 0.60,
-    val breakoutWinnerRunMinPnlPct: Double = 1.05,
+    val breakoutWinnerRunMinPnlPct: Double = 0.75,
     val breakoutWinnerRunMinTrendScore: Double = 0.60,
     val breakoutWinnerRunMinHealthScore: Double = 0.58,
     val breakoutWinnerRunMinOpportunityScore: Double = 0.58,
-    val minMeaningfulNonEmergencyExitProfitPct: Double = 0.90,
-    val minMeaningfulNonEmergencyExitProfitIdr: Double = 140.0,
+    val minMeaningfulNonEmergencyExitProfitPct: Double = 1.20,
+    val minMeaningfulNonEmergencyExitProfitIdr: Double = 180.0,
 )
 
 data class ManagedPosition(
@@ -212,7 +212,7 @@ class TradeAutomationCoordinator(
             val takeProfitPrice = DecimalValue.fromDouble(
                 weightedEntryPrice *
                     when {
-                        speculativePocket -> 1.10
+                        speculativePocket -> 1.14
                         horizon == TradingHorizon.SWING -> 1.075
                         else -> 1.04
                     },
@@ -220,7 +220,7 @@ class TradeAutomationCoordinator(
             val stopPrice = DecimalValue.fromDouble(
                 weightedEntryPrice *
                     when {
-                        speculativePocket -> 0.982
+                        speculativePocket -> 0.976
                         horizon == TradingHorizon.SWING -> 0.96
                         else -> 0.985
                     },
@@ -333,9 +333,9 @@ class TradeAutomationCoordinator(
             riskDecision.profitProtectionStatus != com.kibot.shared.models.ProfitProtectionStatus.INACTIVE &&
                 position.unrealizedPnlPct >= (if (position.speculativePocket) 2.6 else 1.4) &&
                 currentBid < takeProfitPrice * when {
-                    keepWinnerRunning && position.speculativePocket -> 0.970
+                    keepWinnerRunning && position.speculativePocket -> 0.960
                     keepWinnerRunning -> 0.982
-                    position.speculativePocket -> 0.985
+                    position.speculativePocket -> 0.980
                     else -> 0.992
                 } ->
                 ExitReason.PROFIT_PROTECTION_EXIT

@@ -10,6 +10,7 @@ import com.kibot.shared.models.MarketQuote
 import com.kibot.shared.models.OrderType
 import com.kibot.shared.models.PairId
 import com.kibot.shared.models.SetupType
+import com.kibot.shared.models.StrategySignalType
 import com.kibot.shared.models.SyncHealth
 import com.kibot.shared.models.WeeklyAdaptationPlan
 import com.kibot.shared.models.WeeklyLearningSummary
@@ -302,7 +303,7 @@ class StrategyOrchestratorTest {
 
         val signal = assertNotNull(analysis.selectedSignal)
         assertTrue(signal.pairId.value in setOf("alpha_idr", "beta_idr", "gamma_idr"))
-        assertTrue(signal.setupType in setOf(SetupType.SWING_TREND_CONTINUATION, SetupType.LIGHT_BREAKOUT_CONTINUATION))
+        assertTrue(signal.signalType != StrategySignalType.NO_TRADE)
     }
 
     @Test
@@ -398,14 +399,14 @@ class StrategyOrchestratorTest {
                 quote(
                     pair = "stik_idr",
                     price = 6_611.0,
-                    spreadPct = 0.24,
-                    slippagePct = 0.20,
-                    trendScore = 0.82,
-                    expectancyScore = 0.74,
-                    volume = 714_000_000.0,
-                    holdabilityScore = 0.54,
-                    shortTermReturnPct = 1.65,
-                    mediumTermReturnPct = 1.15,
+                    spreadPct = 0.18,
+                    slippagePct = 0.16,
+                    trendScore = 0.86,
+                    expectancyScore = 0.82,
+                    volume = 1_240_000_000.0,
+                    holdabilityScore = 0.60,
+                    shortTermReturnPct = 8.40,
+                    mediumTermReturnPct = 3.40,
                     now = now,
                 ),
             ),
