@@ -38,6 +38,7 @@ import kotlinx.html.style
 import kotlinx.html.title
 import kotlinx.html.unsafe
 import kotlinx.serialization.Serializable
+import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Collections
@@ -99,8 +100,79 @@ class LocalDashboardServer(
                                       document.getElementById('market-regime').textContent = state.marketRegime;
                                       document.getElementById('top-candidate').textContent = state.topCandidate;
                                       document.getElementById('edge-confidence').textContent = state.edgeConfidence;
+                                      document.getElementById('exchange-ping').textContent = state.exchangePingMs;
+                                      
+                                      const heldAssetsDiv = document.getElementById('held-assets');
+                                      heldAssetsDiv.innerHTML = '';
+                                      if (state.heldAssets.length === 0) {
+                                        const p = document.createElement('p');
+                                        p.textContent = 'No assets held.';
+                                        heldAssetsDiv.appendChild(p);
+                                      } else {
+                                        state.heldAssets.forEach(asset => {
+                                          const p = document.createElement('p');
+                                          p.textContent = asset;
+                                          heldAssetsDiv.appendChild(p);
+                                        });
+                                      }
                                     });
                                 }, 5000);
+                                
+                                setInterval(() => {
+                                  fetch('/api/logs')
+                                    .then(r => r.json())
+                                    .then(logs => {
+                                      const logLinesDiv = document.getElementById('log-lines');
+                                      logLinesDiv.innerHTML = '';
+                                      if (logs.length === 0) {
+                                        const p = document.createElement('p');
+                                        p.textContent = 'No logs available.';
+                                        logLinesDiv.appendChild(p);
+                                      } else {
+                                        logs.forEach(line => {
+                                          const p = document.createElement('p');
+                                          p.textContent = line;
+                                          logLinesDiv.appendChild(p);
+                                        });
+                                      }
+                                    });
+                                }, 5000);
+                                """.trimIndent()
+                            }
+                        }
+                        script {
+                            unsafe {
+                                +"""
+                                const commandStatus = document.getElementById('command-status');
+                                const buttons = document.querySelectorAll('.command-button');
+                                buttons.forEach(button => {
+                                  button.addEventListener('click', () => {
+                                    const action = button.dataset.action;
+                                    commandStatus.textContent = 'Sending ' + action + '...';
+                                    buttons.forEach(b => b.disabled = true);
+                                    
+                                    const formData = new URLSearchParams();
+                                    formData.append('action', action);
+
+                                    fetch('/command', {
+                                      method: 'POST',
+                                      body: formData
+                                    }).then(r => {
+                                      if (r.ok) {
+                                        commandStatus.textContent = 'Command ' + action + ' sent successfully.';
+                                      } else {
+                                        commandStatus.textContent = 'Error sending ' + action + '.';
+                                      }
+                                    }).catch(err => {
+                                        commandStatus.textContent = 'Network error.';
+                                    }).finally(() => {
+                                        setTimeout(() => {
+                                            buttons.forEach(b => b.disabled = false);
+                                            commandStatus.textContent = '';
+                                        }, 2000);
+                                    });
+                                  });
+                                });
                                 """.trimIndent()
                             }
                         }
@@ -110,6 +182,16 @@ class LocalDashboardServer(
 
             get("/api/state") {
                 call.respond(repository.state.value)
+            }
+
+            get("/api/logs") {
+                val logFile = File(System.getProperty("java.io.tmpdir"), "kibot-mac-engine.log")
+                if (logFile.exists()) {
+                    val lines = logFile.readLines().takeLast(50)
+                    call.respond(lines)
+                } else {
+                    call.respond(HttpStatusCode.NotFound, emptyList<String>())
+                }
             }
 
             get("/api/lan/ping") {
@@ -181,6 +263,16 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbe
                     metricTile("Update", state.lastUpdatedLabel, "last-updated")
                 }
             }
+            div("hero-actions") {
+                commandButton("START BOT", "START_BOT")
+                commandButton("STOP BOT", "STOP_BOT")
+                commandButton("FORCE TAKEOVER", "FORCE_SAFE_TAKEOVER")
+                commandButton("RELEASE CONTROL", "RELEASE_CONTROL")
+                p("command-status") {
+                    attributes["id"] = "command-status"
+                    +""
+                }
+            }
         }
 
         div("grid") {
@@ -197,12 +289,33 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbe
                 statusLine("Execution", if (state.liveExecutionEnabled) "LIVE" else "SHADOW", "live-execution")
                 statusLine("Server", "Singapore (Oracle Cloud)", "server-location")
                 statusLine("Uptime", state.serverUptime, "server-uptime")
+                statusLine("Ping", state.exchangePingMs, "exchange-ping")
             }
             div("card") {
                 h2 { +"Market Info" }
                 statusLine("Regime", state.marketRegime, "market-regime")
                 statusLine("Top Candidate", state.topCandidate, "top-candidate")
                 statusLine("Edge Confidence", state.edgeConfidence, "edge-confidence")
+            }
+            div("card") {
+                h2 { +"Held Assets" }
+                div("status-list") {
+                    attributes["id"] = "held-assets"
+                    if (state.heldAssets.isEmpty()) {
+                        p { +"No assets held." }
+                    } else {
+                        state.heldAssets.forEach {
+                            p { +it }
+                        }
+                    }
+                }
+            }
+            div("card full-width") {
+                h2 { +"Logs" }
+                div("log-list") {
+                    attributes["id"] = "log-lines"
+                    p { +"Loading logs..." }
+                }
             }
         }
     }
@@ -229,7 +342,10 @@ private fun FlowContent.metricTile(label: String, value: String, idValue: String
 }
 
 private fun FlowContent.commandButton(label: String, action: String) {
-    // Removed: No manual controls, bot runs automatically
+    button(classes = "command-button") {
+        attributes["data-action"] = action
+        +label
+    }
 }
 
 private fun MacDashboardState.isBotRunningLabel(): String = if (isBotRunning) "RUNNING" else "STOPPED"
@@ -335,7 +451,7 @@ private fun dashboardStyles(): String = """
     }
     .grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 18px;
       margin-top: 20px;
     }
@@ -345,6 +461,20 @@ private fun dashboardStyles(): String = """
       background: var(--card);
       border: 1px solid var(--stroke);
       backdrop-filter: blur(14px);
+    }
+    .full-width {
+        grid-column: 1 / -1;
+    }
+    .log-list {
+        height: 200px;
+        overflow-y: auto;
+        font-family: "SF Mono", "Menlo", monospace;
+        font-size: 12px;
+        color: var(--muted);
+    }
+    .log-list p {
+        margin: 0;
+        padding: 4px 0;
     }
     .accent {
       background: linear-gradient(135deg, rgba(123,211,255,0.14), rgba(142,255,193,0.09));
@@ -371,6 +501,15 @@ private fun dashboardStyles(): String = """
     .status-value {
       font-weight: 700;
       text-align: right;
+    }
+    .status-list p {
+      margin: 0;
+      padding: 8px 0;
+      font-size: 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .status-list p:last-child {
+      border-bottom: none;
     }
     @media (max-width: 900px) {
       .hero, .grid {

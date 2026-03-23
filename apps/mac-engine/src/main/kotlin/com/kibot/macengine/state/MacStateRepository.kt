@@ -42,6 +42,8 @@ data class MacDashboardState(
     val lastUpdatedEpochMs: Long,
     val serverLocation: String,
     val serverUptime: String,
+    val heldAssets: List<String>,
+    val exchangePingMs: String,
 ) {
     companion object {
         fun preview(): MacDashboardState = MacDashboardState(
@@ -68,6 +70,8 @@ data class MacDashboardState(
             lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
             serverLocation = "Oracle Cloud (24/7)",
             serverUptime = "0m",
+            heldAssets = emptyList(),
+            exchangePingMs = "--",
         )
     }
 }

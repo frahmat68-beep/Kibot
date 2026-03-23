@@ -1192,6 +1192,9 @@ class MacEngineDaemon(
         val pnlToday = dailyRisk?.let {
             it.realizedPnlIdr.toDoubleOrZero() + it.unrealizedPnlIdr.toDoubleOrZero()
         } ?: 0.0
+        val heldAssets = balances
+            .filterNot { it.asset.equals("idr", ignoreCase = true) }
+            .map { "${it.asset.uppercase()}: ${formatDecimal(it.free.toDoubleOrZero(), 6)}" }
 
         return com.kibot.macengine.state.MacDashboardState(
             isBotRunning = botState.desiredState == BotDesiredState.ON,
@@ -1229,6 +1232,8 @@ class MacEngineDaemon(
                 else -> "Mac standby is monitoring lease and waiting for a safe takeover window."
             },
             lastUpdatedEpochMs = now.toEpochMilliseconds(),
+            heldAssets = heldAssets,
+            exchangePingMs = localHealth.feedLatencyMs?.let { "${it}ms" } ?: "--",
         )
     }
 
