@@ -86,54 +86,21 @@ class LocalDashboardServer(
                                   fetch('/api/state')
                                     .then(r => r.json())
                                     .then(state => {
-                                      document.getElementById('status-message').textContent = state.statusMessage;
+                                      document.getElementById('status-message').textContent = 'Bot trading otomatis 24/7 di server Singapore. Tidak ada kontrol manual.';
                                       document.getElementById('portfolio-value').textContent = state.portfolioValueIdr;
                                       document.getElementById('portfolio-value-card').textContent = state.portfolioValueIdr;
                                       document.getElementById('pnl-today').textContent = state.pnlTodayIdr;
                                       document.getElementById('pnl-today-card').textContent = state.pnlTodayIdr;
                                       document.getElementById('last-updated').textContent = state.lastUpdatedLabel;
                                       document.getElementById('last-updated-card').textContent = state.lastUpdatedLabel;
-                                      document.getElementById('active-engine').textContent = state.activeEngine;
-                                      document.getElementById('standby-engine').textContent = state.standbyEngine;
-                                      document.getElementById('sync-health').textContent = state.syncHealth;
-                                      document.getElementById('sync-path').textContent = state.syncPathLabel;
-                                      document.getElementById('operating-mode').textContent = state.operatingMode;
-                                      document.getElementById('edge-confidence').textContent = state.edgeConfidence;
+                                      document.getElementById('lease-term').textContent = '#' + state.leaseTerm;
+                                      document.getElementById('live-execution').textContent = state.liveExecutionEnabled ? 'LIVE' : 'SHADOW';
+                                      document.getElementById('server-uptime').textContent = state.serverUptime;
                                       document.getElementById('market-regime').textContent = state.marketRegime;
                                       document.getElementById('top-candidate').textContent = state.topCandidate;
-                                      document.getElementById('live-execution').textContent = state.liveExecutionEnabled ? 'ENABLED' : 'SHADOW';
-                                      document.getElementById('lease-term').textContent = '#' + state.leaseTerm;
-                                      document.getElementById('heartbeat').textContent = state.lastHeartbeatLabel;
-                                      document.getElementById('health-summary').textContent = state.healthSummary;
-                                      document.getElementById('weekly-learning').textContent = state.weeklyLearningSummary;
-                                      document.getElementById('weekly-adaptation').textContent = state.weeklyAdaptationSummary;
-                                      document.getElementById('bot-running').textContent = state.isBotRunning ? 'RUNNING' : 'STOPPED';
-                                      document.getElementById('server-location').textContent = state.serverLocation;
-                                      document.getElementById('server-uptime').textContent = state.serverUptime;
+                                      document.getElementById('edge-confidence').textContent = state.edgeConfidence;
                                     });
                                 }, 5000);
-                                document.addEventListener('click', async (event) => {
-                                  const button = event.target.closest('[data-command-action]');
-                                  if (!button) return;
-                                  event.preventDefault();
-                                  const action = button.dataset.commandAction;
-                                  const form = new URLSearchParams();
-                                  form.set('action', action);
-                                  const statusNode = document.getElementById('command-status');
-                                  button.disabled = true;
-                                  try {
-                                    await fetch('/command', {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                                      body: form.toString(),
-                                    });
-                                    statusNode.textContent = 'Command terkirim: ' + action;
-                                  } catch (error) {
-                                    statusNode.textContent = 'Command gagal: ' + action;
-                                  } finally {
-                                    setTimeout(() => { button.disabled = false; }, 700);
-                                  }
-                                });
                                 """.trimIndent()
                             }
                         }
@@ -203,28 +170,15 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbe
     div("page-shell") {
         div("hero") {
             div("hero-copy") {
-                h1 { +"KiBot Mac Engine" }
+                h1 { +"KiBot Dashboard" }
                 p {
                     attributes["id"] = "status-message"
-                    +state.statusMessage
+                    +"Bot trading otomatis 24/7 di server Singapore. Tidak ada kontrol manual."
                 }
                 div("hero-metrics") {
                     metricTile("Portfolio", state.portfolioValueIdr, "portfolio-value")
                     metricTile("PnL Hari Ini", state.pnlTodayIdr, "pnl-today")
                     metricTile("Update", state.lastUpdatedLabel, "last-updated")
-                }
-            }
-            div("hero-actions") {
-                commandButton("Start Bot", "START_BOT")
-                commandButton("Stop Bot", "STOP_BOT")
-                commandButton("Toggle Live Execution", "TOGGLE_LIVE_EXECUTION")
-                commandButton("Request Takeover", "REQUEST_TAKEOVER")
-                commandButton("Force Safe Takeover", "FORCE_SAFE_TAKEOVER")
-                commandButton("Release Control", "RELEASE_CONTROL")
-                commandButton("Sync Status Now", "SYNC_NOW")
-                p("command-status") {
-                    attributes["id"] = "command-status"
-                    +"Mac standby siap. Tombol di sini mengirim command ke control plane."
                 }
             }
         }
@@ -238,44 +192,17 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbe
                 statusLine("Update", state.lastUpdatedLabel, "last-updated-card")
             }
             div("card") {
-                h2 { +"Control Plane" }
-                statusLine("Bot", state.isBotRunningLabel(), "bot-running")
-                statusLine("Active Engine", state.activeEngine, "active-engine")
-                statusLine("Standby Engine", state.standbyEngine, "standby-engine")
-                statusLine("Sync", state.syncHealth, "sync-health")
-                statusLine("Path", state.syncPathLabel, "sync-path")                statusLine("Server", state.serverLocation, "server-location")
-                statusLine("Uptime", state.serverUptime, "server-uptime")            }
+                h2 { +"Status Bot" }
+                statusLine("Status", "RUNNING (Otomatis 24/7)", "bot-running")
+                statusLine("Execution", if (state.liveExecutionEnabled) "LIVE" else "SHADOW", "live-execution")
+                statusLine("Server", "Singapore (Oracle Cloud)", "server-location")
+                statusLine("Uptime", state.serverUptime, "server-uptime")
+            }
             div("card") {
-                h2 { +"Strategy Brain" }
-                statusLine("Mode", state.operatingMode, "operating-mode")
-                statusLine("Edge", state.edgeConfidence, "edge-confidence")
+                h2 { +"Market Info" }
                 statusLine("Regime", state.marketRegime, "market-regime")
                 statusLine("Top Candidate", state.topCandidate, "top-candidate")
-                statusLine("Execution", if (state.liveExecutionEnabled) "ENABLED" else "SHADOW", "live-execution")
-            }
-            div("card") {
-                h2 { +"Lease & Health" }
-                statusLine("Last Heartbeat", state.lastHeartbeatLabel, "heartbeat")
-                statusLine("Health", state.healthSummary, "health-summary")
-            }
-            div("card") {
-                h2 { +"Weekly Learning" }
-                statusLine("Summary", state.weeklyLearningSummary, "weekly-learning")
-                statusLine("Adaptation", state.weeklyAdaptationSummary, "weekly-adaptation")
-            }
-            div("card") {
-                h2 { +"Backup Flow" }
-                p { +"Biarkan daemon Mac tetap jalan di laptop. Saat HP mati atau service HP berhenti, lease Android akan habis lalu Mac bisa takeover aman." }
-                p { +"Halaman web ini hanya panel kontrol. Yang menjadi backup engine adalah proses daemon Mac, bukan tab browser." }
-                p { +"Jika conflict atau status order ambigu terdeteksi, Mac tidak akan entry baru dan bot dipaksa ke safe mode." }
-            }
-            div("card") {
-                h2 { +"LAN & Update Feed" }
-                p { +"LAN probe: ${lanProbeUrl ?: "unavailable"}" }
-                p { +"Jika Android dan Mac ada di Wi-Fi yang sama, endpoint ini bisa dipakai untuk probe sinkronisasi lokal yang lebih cepat." }
-                p { +"Latest signed APK is served locally from the laptop when available." }
-                p { +"Manifest: /api/releases/android/latest" }
-                p { +"APK: /releases/android/kibot-android-latest.apk" }
+                statusLine("Edge Confidence", state.edgeConfidence, "edge-confidence")
             }
         }
     }
@@ -302,10 +229,7 @@ private fun FlowContent.metricTile(label: String, value: String, idValue: String
 }
 
 private fun FlowContent.commandButton(label: String, action: String) {
-    button(type = kotlinx.html.ButtonType.button, classes = "command-button") {
-        attributes["data-command-action"] = action
-        +label
-    }
+    // Removed: No manual controls, bot runs automatically
 }
 
 private fun MacDashboardState.isBotRunningLabel(): String = if (isBotRunning) "RUNNING" else "STOPPED"
