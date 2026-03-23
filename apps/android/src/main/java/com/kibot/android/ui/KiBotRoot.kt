@@ -28,8 +28,6 @@ import androidx.compose.material.icons.automirrored.outlined.Notes
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Sync
-import androidx.compose.material.icons.outlined.Wifi
-import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -56,6 +54,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.kibot.shared.models.BotEffectiveState
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlin.math.absoluteValue
@@ -70,8 +69,6 @@ private enum class RootTab(val title: String) {
 @Composable
 fun KiBotRoot(
     state: KiBotUiState,
-    onToggleBot: () -> Unit,
-    onCommand: (EngineAction) -> Unit,
 ) {
     var currentTab by rememberSaveable { mutableStateOf(RootTab.Dashboard) }
     val background = Brush.verticalGradient(
@@ -415,7 +412,7 @@ private fun HeroCard(
     state: KiBotUiState,
 ) {
     val pnlColor = pnlColor(state.pnlTodayIdr)
-    val pingState = pingVisual(state.isBotRunning, state.internetPingLabel)
+    val serverState = serverStatusVisual(state)
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         shape = RoundedCornerShape(28.dp),
@@ -443,27 +440,16 @@ private fun HeroCard(
             ) {
                 Text("KiBot", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                 Surface(
-                    color = pingState.tint.copy(alpha = 0.18f),
+                    color = serverState.tint.copy(alpha = 0.18f),
                     shape = RoundedCornerShape(16.dp),
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            imageVector = if (pingState.online) Icons.Outlined.Wifi else Icons.Outlined.WifiOff,
-                            contentDescription = "Ping internet",
-                            tint = pingState.tint,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(
-                            pingState.label,
-                            color = pingState.tint,
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                    }
+                    Text(
+                        text = serverState.label,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                        color = serverState.tint,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
                 }
             }
             Text(
@@ -501,8 +487,8 @@ private fun HeroCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 StatusChip(
-                    label = if (state.isBotRunning) "Server Oracle Aktif" else "Server Oracle Siap",
-                    tint = if (state.isBotRunning) Color(0xFF22C55E) else Color(0xFF94A3B8),
+                    label = serverState.summary,
+                    tint = serverState.tint,
                 )
                 StatusChip(
                     label = state.lastUpdatedLabel,
@@ -542,6 +528,7 @@ private fun PairRadarCard(
 ) {
     val livePair = visiblePairLabel(state)
     val radarPairs = radarPairs(state)
+    val serverState = serverStatusVisual(state)
     SurfaceCard(modifier = modifier) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -550,8 +537,8 @@ private fun PairRadarCard(
         ) {
             Text("Live Pair", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             StatusChip(
-                label = if (state.isBotRunning) "LIVE" else "OFF",
-                tint = if (state.isBotRunning) Color(0xFF2DD881) else Color(0xFF94A3B8),
+                label = serverState.label,
+                tint = serverState.tint,
             )
         }
         Surface(
@@ -579,6 +566,13 @@ private fun PairRadarCard(
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            state.statusMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
@@ -1234,29 +1228,42 @@ private fun StatusLine(label: String, value: String) {
     }
 }
 
-private data class PingVisualState(
+private data class ServerVisualState(
     val label: String,
     val tint: Color,
-    val online: Boolean,
+    val summary: String,
 )
 
-private fun pingVisual(
-    isBotRunning: Boolean,
-    label: String,
-): PingVisualState {
-    if (!isBotRunning) {
-        return PingVisualState("OFF", Color(0xFF94A3B8), online = false)
+private fun serverStatusVisual(state: KiBotUiState): ServerVisualState {
+    return when {
+        state.effectiveState == BotEffectiveState.SAFE_MODE -> ServerVisualState(
+            label = "SAFE",
+            tint = Color(0xFFF97316),
+            summary = "Server aman-terbatas",
+        )
+        state.syncHealth.equals("BROKEN", ignoreCase = true) -> ServerVisualState(
+            label = "LAG",
+            tint = Color(0xFFEF4444),
+            summary = "Feed server terlambat",
+        )
+        state.effectiveState == BotEffectiveState.DEGRADED ||
+            state.syncHealth.equals("DEGRADED", ignoreCase = true) -> ServerVisualState(
+            label = "WARM",
+            tint = Color(0xFFF59E0B),
+            summary = "Server tetap jalan",
+        )
+        state.effectiveState == BotEffectiveState.RUNNING ||
+            state.effectiveState == BotEffectiveState.STARTING -> ServerVisualState(
+            label = "LIVE",
+            tint = Color(0xFF2DD881),
+            summary = "Server Oracle aktif",
+        )
+        else -> ServerVisualState(
+            label = "OFF",
+            tint = Color(0xFF94A3B8),
+            summary = "Server belum aktif",
+        )
     }
-    val ms = label.substringBefore(" ").toLongOrNull()
-    if (ms == null) {
-        return PingVisualState("--", Color(0xFFF59E0B), online = false)
-    }
-    val tint = when {
-        ms <= 220L -> Color(0xFF2DD881)
-        ms <= 520L -> Color(0xFFF59E0B)
-        else -> Color(0xFFEF4444)
-    }
-    return PingVisualState("${ms} ms", tint, online = true)
 }
 
 private fun assetAccent(symbol: String): Color {

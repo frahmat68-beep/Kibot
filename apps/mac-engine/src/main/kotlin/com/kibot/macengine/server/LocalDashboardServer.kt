@@ -1,6 +1,5 @@
 package com.kibot.macengine.server
 
-import com.kibot.macengine.state.MacCommand
 import com.kibot.macengine.state.MacDashboardState
 import com.kibot.macengine.state.MacStateRepository
 import io.ktor.http.ContentType
@@ -20,14 +19,13 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.html.BODY
 import kotlinx.html.FlowContent
 import kotlinx.html.body
-import kotlinx.html.classes
 import kotlinx.html.div
 import kotlinx.html.h1
 import kotlinx.html.h2
 import kotlinx.html.head
-import kotlinx.html.link
 import kotlinx.html.meta
 import kotlinx.html.p
 import kotlinx.html.script
@@ -44,7 +42,6 @@ import java.net.NetworkInterface
 
 class LocalDashboardServer(
     private val repository: MacStateRepository,
-    private val dispatchCommand: suspend (MacCommand) -> Unit,
     private val host: String = "0.0.0.0",
     private val port: Int = 8787,
     private val androidReleaseDirectory: Path,
@@ -80,70 +77,110 @@ class LocalDashboardServer(
                         }
                     }
                     body {
-                        renderDashboard(repository.state.value, lanProbeUrl)
+                        renderDashboard(repository.state.value)
                         script {
                             unsafe {
                                 +"""
-                                setInterval(() => {
+                                function updateStatusBadge(state) {
+                                  const badge = document.getElementById('status-badge');
+                                  const label = document.getElementById('status-badge-label');
+                                  const effective = (state.effectiveState || '').toUpperCase();
+                                  const health = (state.syncHealth || '').toUpperCase();
+                                  let css = 'pill-live';
+                                  let text = 'LIVE';
+                                  if (effective === 'SAFE_MODE') {
+                                    css = 'pill-safe';
+                                    text = 'SAFE';
+                                  } else if (effective === 'DEGRADED' || health === 'DEGRADED') {
+                                    css = 'pill-warm';
+                                    text = 'WARM';
+                                  } else if (health === 'BROKEN') {
+                                    css = 'pill-lag';
+                                    text = 'LAG';
+                                  } else if (effective === 'STOPPED') {
+                                    css = 'pill-off';
+                                    text = 'OFF';
+                                  }
+                                  badge.className = 'pill ' + css;
+                                  label.textContent = text;
+                                }
+
+                                function renderHeldAssets(items) {
+                                  const container = document.getElementById('held-assets');
+                                  container.innerHTML = '';
+                                  if (!items || items.length === 0) {
+                                    const empty = document.createElement('p');
+                                    empty.textContent = 'Belum ada aset aktif.';
+                                    empty.className = 'muted-copy';
+                                    container.appendChild(empty);
+                                    return;
+                                  }
+                                  items.forEach(item => {
+                                    const row = document.createElement('div');
+                                    row.className = 'holding-row';
+                                    row.textContent = item;
+                                    container.appendChild(row);
+                                  });
+                                }
+
+                                function renderLogs(lines) {
+                                  const container = document.getElementById('log-lines');
+                                  container.innerHTML = '';
+                                  if (!lines || lines.length === 0) {
+                                    const empty = document.createElement('p');
+                                    empty.textContent = 'Belum ada aktivitas server terbaru.';
+                                    empty.className = 'muted-copy';
+                                    container.appendChild(empty);
+                                    return;
+                                  }
+                                  lines.forEach(line => {
+                                    const row = document.createElement('div');
+                                    row.className = 'timeline-row';
+                                    row.textContent = line;
+                                    container.appendChild(row);
+                                  });
+                                }
+
+                                function refreshState() {
                                   fetch('/api/state')
                                     .then(r => r.json())
                                     .then(state => {
-                                      document.getElementById('status-message').textContent = 'View-only monitor hasil trade server Oracle. Semua kontrol manual dimatikan.';
+                                      updateStatusBadge(state);
                                       document.getElementById('portfolio-value').textContent = state.portfolioValueIdr;
-                                      document.getElementById('portfolio-value-card').textContent = state.portfolioValueIdr;
-                                      document.getElementById('pnl-today').textContent = state.pnlTodayIdr;
-                                      document.getElementById('pnl-today-card').textContent = state.pnlTodayIdr;
+                                      document.getElementById('hero-pnl').textContent = state.pnlTodayIdr;
                                       document.getElementById('last-updated').textContent = state.lastUpdatedLabel;
-                                      document.getElementById('last-updated-card').textContent = state.lastUpdatedLabel;
-                                      document.getElementById('lease-term').textContent = '#' + state.leaseTerm;
-                                      document.getElementById('live-execution').textContent = state.liveExecutionEnabled ? 'LIVE' : 'SHADOW';
-                                      document.getElementById('server-uptime').textContent = state.serverUptime;
-                                      document.getElementById('market-regime').textContent = state.marketRegime;
+                                      document.getElementById('hero-summary').textContent = state.statusMessage;
                                       document.getElementById('top-candidate').textContent = state.topCandidate;
-                                      document.getElementById('top-candidate-card').textContent = state.topCandidate;
+                                      document.getElementById('market-regime').textContent = state.marketRegime;
                                       document.getElementById('edge-confidence').textContent = state.edgeConfidence;
-                                      document.getElementById('exchange-ping').textContent = state.exchangePingMs;
-                                      document.getElementById('exchange-ping-card').textContent = state.exchangePingMs;
-                                      document.getElementById('sync-path').textContent = state.syncPathLabel;
-                                      document.getElementById('sync-path-card').textContent = state.syncPathLabel;
+                                      document.getElementById('operating-mode').textContent = state.operatingMode;
+                                      document.getElementById('feed-label').textContent = state.syncPathLabel;
+                                      document.getElementById('health-summary').textContent = state.healthSummary;
+                                      document.getElementById('active-engine').textContent = state.activeEngine;
                                       document.getElementById('sync-health').textContent = state.syncHealth;
-                                      document.getElementById('server-location').textContent = 'Oracle 24/7';
-                                      
-                                      const heldAssetsDiv = document.getElementById('held-assets');
-                                      heldAssetsDiv.innerHTML = '';
-                                      if (state.heldAssets.length === 0) {
-                                        const p = document.createElement('p');
-                                        p.textContent = 'Belum ada aset aktif.';
-                                        heldAssetsDiv.appendChild(p);
-                                      } else {
-                                        state.heldAssets.forEach(asset => {
-                                          const p = document.createElement('p');
-                                          p.textContent = asset;
-                                          heldAssetsDiv.appendChild(p);
-                                        });
-                                      }
+                                      document.getElementById('exchange-ping').textContent = state.exchangePingMs;
+                                      document.getElementById('server-uptime').textContent = state.serverUptime;
+                                      document.getElementById('heartbeat').textContent = state.lastHeartbeatLabel;
+                                      document.getElementById('portfolio-card').textContent = state.portfolioValueIdr;
+                                      document.getElementById('pnl-card').textContent = state.pnlTodayIdr;
+                                      document.getElementById('update-card').textContent = state.lastUpdatedLabel;
+                                      renderHeldAssets(state.heldAssets);
+                                    })
+                                    .catch(() => {
+                                      document.getElementById('hero-summary').textContent = 'Gagal ambil status server. Cek deploy Oracle atau health endpoint.';
                                     });
-                                }, ${statePollIntervalMillis});
-                                
-                                setInterval(() => {
+                                }
+
+                                function refreshLogs() {
                                   fetch('/api/logs')
                                     .then(r => r.json())
-                                    .then(logs => {
-                                      const logLinesDiv = document.getElementById('log-lines');
-                                      logLinesDiv.innerHTML = '';
-                                      if (logs.length === 0) {
-                                        const p = document.createElement('p');
-                                        p.textContent = 'No logs available.';
-                                        logLinesDiv.appendChild(p);
-                                      } else {
-                                        logs.forEach(line => {
-                                          const p = document.createElement('p');
-                                          p.textContent = line;
-                                          logLinesDiv.appendChild(p);
-                                        });
-                                      }
-                                    });
-                                }, ${logPollIntervalMillis});
+                                    .then(renderLogs);
+                                }
+
+                                refreshState();
+                                refreshLogs();
+                                setInterval(refreshState, ${statePollIntervalMillis});
+                                setInterval(refreshLogs, ${logPollIntervalMillis});
                                 """.trimIndent()
                             }
                         }
@@ -174,10 +211,7 @@ class LocalDashboardServer(
                 if (!Files.exists(manifestPath)) {
                     call.respond(HttpStatusCode.NotFound, mapOf("available" to false))
                 } else {
-                    call.respondText(
-                        Files.readString(manifestPath),
-                        ContentType.Application.Json,
-                    )
+                    call.respondText(Files.readString(manifestPath), ContentType.Application.Json)
                 }
             }
 
@@ -206,26 +240,19 @@ class LocalDashboardServer(
         server.stop(1_000, 2_000)
     }
 }
-private fun String.toMacCommand(): MacCommand = when (uppercase()) {
-    "REQUEST_TAKEOVER" -> MacCommand.REQUEST_TAKEOVER
-    "FORCE_SAFE_TAKEOVER" -> MacCommand.FORCE_SAFE_TAKEOVER
-    "RELEASE_CONTROL" -> MacCommand.RELEASE_CONTROL
-    "SYNC_NOW" -> MacCommand.SYNC_NOW
-    "START_BOT" -> MacCommand.START_BOT
-    "STOP_BOT" -> MacCommand.STOP_BOT
-    "TOGGLE_LIVE_EXECUTION" -> MacCommand.TOGGLE_LIVE_EXECUTION
-    else -> error("Unknown action: $this")
-}
 
-private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbeUrl: String?) {
+private fun BODY.renderDashboard(state: MacDashboardState) {
     div("page-shell") {
         div("hero-card") {
             div("hero-topbar") {
                 h1 { +"KiBot" }
                 div("hero-topbar-right") {
-                    div("live-pill") {
-                        attributes["id"] = "live-execution"
-                        +(if (state.liveExecutionEnabled) "LIVE" else "SHADOW")
+                    div("pill ${dashboardStatusClass(state)}") {
+                        attributes["id"] = "status-badge"
+                        span {
+                            attributes["id"] = "status-badge-label"
+                            +dashboardStatusLabel(state)
+                        }
                     }
                     p("hero-update") {
                         +"Update "
@@ -244,70 +271,59 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbe
             }
             div("hero-pnl-row") {
                 span("hero-pnl") {
-                    attributes["id"] = "pnl-today"
+                    attributes["id"] = "hero-pnl"
                     +state.pnlTodayIdr
                 }
-                span("hero-ping-pill") {
-                    attributes["id"] = "exchange-ping"
-                    +state.exchangePingMs
+                span("pill pill-neutral") {
+                    attributes["id"] = "feed-label"
+                    +state.syncPathLabel
                 }
             }
             p("hero-status") {
-                attributes["id"] = "status-message"
-                +"View-only monitor hasil trade server Oracle. Semua kontrol manual dimatikan."
+                attributes["id"] = "hero-summary"
+                +state.statusMessage
             }
+        }
+
+        div("hero-metrics-grid") {
+            metricCard("Portfolio", state.portfolioValueIdr, "portfolio-card")
+            metricCard("PnL Hari Ini", state.pnlTodayIdr, "pnl-card")
+            metricCard("Update", state.lastUpdatedLabel, "update-card")
         }
 
         div("dashboard-grid") {
             div("card live-pair-card") {
                 div("card-header-row") {
                     h2 { +"Live Pair" }
-                    div("chip chip-green") {
-                        attributes["id"] = "sync-path"
-                        +state.syncPathLabel
-                    }
+                    div("pill pill-blue") { +state.syncHealth }
                 }
                 div("pair-hero") {
                     attributes["id"] = "top-candidate"
                     +state.topCandidate
                 }
+                p("pair-support-copy") {
+                    attributes["id"] = "health-summary"
+                    +state.healthSummary
+                }
                 div("pair-meta-grid") {
-                    div("pair-meta-chip") {
-                        span("pair-meta-label") { +"Mode" }
-                        span("pair-meta-value") { +state.operatingMode }
-                    }
-                    div("pair-meta-chip") {
-                        span("pair-meta-label") { +"Regime" }
-                        span("pair-meta-value") {
-                            attributes["id"] = "market-regime"
-                            +state.marketRegime
-                        }
-                    }
-                    div("pair-meta-chip") {
-                        span("pair-meta-label") { +"Edge" }
-                        span("pair-meta-value") {
-                            attributes["id"] = "edge-confidence"
-                            +state.edgeConfidence
-                        }
-                    }
+                    metaChip("Mode", state.operatingMode, "operating-mode")
+                    metaChip("Regime", state.marketRegime, "market-regime")
+                    metaChip("Edge", state.edgeConfidence, "edge-confidence")
                 }
             }
 
             div("card") {
                 div("card-header-row") {
                     h2 { +"Holdings" }
-                    div("chip chip-blue") {
-                        attributes["id"] = "server-location"
-                        +"Oracle 24/7"
-                    }
+                    div("pill pill-neutral") { +"Oracle 24/7" }
                 }
-                div("status-list") {
+                div("holdings-list") {
                     attributes["id"] = "held-assets"
                     if (state.heldAssets.isEmpty()) {
-                        p { +"Belum ada aset aktif." }
+                        p("muted-copy") { +"Belum ada aset aktif." }
                     } else {
-                        state.heldAssets.forEach {
-                            p { +it }
+                        state.heldAssets.forEach { asset ->
+                            div("holding-row") { +asset }
                         }
                     }
                 }
@@ -315,86 +331,118 @@ private fun kotlinx.html.BODY.renderDashboard(state: MacDashboardState, lanProbe
 
             div("card") {
                 div("card-header-row") {
-                    h2 { +"Server" }
-                    div("chip chip-neutral") {
-                        attributes["id"] = "sync-health"
-                        +state.syncHealth
+                    h2 { +"Server Snapshot" }
+                    div("pill pill-neutral") {
+                        attributes["id"] = "exchange-ping"
+                        +state.exchangePingMs
                     }
                 }
-                statusLine("Saldo", state.portfolioValueIdr, "portfolio-value-card")
-                statusLine("PnL Hari Ini", state.pnlTodayIdr, "pnl-today-card")
-                statusLine("Feed", state.syncPathLabel, "sync-path-card")
-                statusLine("Latency", state.exchangePingMs, "exchange-ping-card")
+                statusLine("Runtime", state.effectiveState.name, "effective-state")
+                statusLine("Server", state.activeEngine, "active-engine")
+                statusLine("Sync", state.syncHealth, "sync-health")
+                statusLine("Heartbeat", state.lastHeartbeatLabel, "heartbeat")
                 statusLine("Uptime", state.serverUptime, "server-uptime")
-                statusLine("Lease Term", "#${state.leaseTerm}", "lease-term")
-                statusLine("Update", state.lastUpdatedLabel, "last-updated-card")
             }
 
             div("card activity-card") {
                 div("card-header-row") {
-                    h2 { +"Timeline" }
-                    div("chip chip-purple") {
-                        attributes["id"] = "top-candidate-card"
-                        +state.topCandidate
+                    h2 { +"Live Timeline" }
+                    div("pill pill-purple") {
+                        attributes["id"] = "feed-chip"
+                        +state.syncPathLabel
                     }
                 }
                 div("log-list") {
                     attributes["id"] = "log-lines"
-                    p { +"Loading logs..." }
+                    p("muted-copy") { +"Loading timeline..." }
                 }
             }
         }
     }
 }
 
-private fun FlowContent.statusLine(label: String, value: String, idValue: String) {
-    div("status-row") {
-        span("status-label") { +label }
-        span("status-value") {
-            attributes["id"] = idValue
+private fun FlowContent.metricCard(label: String, value: String, valueId: String) {
+    div("metric-card") {
+        span("metric-label") { +label }
+        span("metric-value") {
+            attributes["id"] = valueId
             +value
         }
     }
 }
 
-private fun MacDashboardState.isBotRunningLabel(): String = if (isBotRunning) "RUNNING" else "STOPPED"
+private fun FlowContent.metaChip(label: String, value: String, valueId: String) {
+    div("pair-meta-chip") {
+        span("pair-meta-label") { +label }
+        span("pair-meta-value") {
+            attributes["id"] = valueId
+            +value
+        }
+    }
+}
+
+private fun FlowContent.statusLine(label: String, value: String, valueId: String) {
+    div("status-row") {
+        span("status-label") { +label }
+        span("status-value") {
+            attributes["id"] = valueId
+            +value
+        }
+    }
+}
+
+private fun dashboardStatusLabel(state: MacDashboardState): String = when {
+    state.effectiveState.name == "SAFE_MODE" -> "SAFE"
+    state.syncHealth.equals("BROKEN", ignoreCase = true) -> "LAG"
+    state.effectiveState.name == "DEGRADED" || state.syncHealth.equals("DEGRADED", ignoreCase = true) -> "WARM"
+    state.effectiveState.name == "STOPPED" -> "OFF"
+    else -> "LIVE"
+}
+
+private fun dashboardStatusClass(state: MacDashboardState): String = when (dashboardStatusLabel(state)) {
+    "SAFE" -> "pill-safe"
+    "LAG" -> "pill-lag"
+    "WARM" -> "pill-warm"
+    "OFF" -> "pill-off"
+    else -> "pill-live"
+}
 
 private fun dashboardStyles(): String = """
     :root {
-      color-scheme: light dark;
+      color-scheme: dark;
       --bg-0: #0b1220;
-      --bg-1: #101a2d;
-      --card: rgba(255,255,255,0.08);
-      --stroke: rgba(255,255,255,0.12);
-      --text: #ebf1ff;
-      --muted: #8ca0c8;
-      --accent: #7bd3ff;
-      --accent-2: #8effc1;
+      --bg-1: #10182b;
+      --card: rgba(255,255,255,0.06);
+      --stroke: rgba(255,255,255,0.08);
+      --text: #ecf2ff;
+      --muted: #93a4c6;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
+      min-height: 100vh;
       font-family: "SF Pro Display", "Segoe UI", sans-serif;
       color: var(--text);
       background:
-        radial-gradient(circle at top left, rgba(123,211,255,0.16), transparent 28%),
-        radial-gradient(circle at top right, rgba(142,255,193,0.10), transparent 24%),
+        radial-gradient(circle at top left, rgba(96,165,250,0.18), transparent 28%),
+        radial-gradient(circle at top right, rgba(45,216,129,0.10), transparent 24%),
         linear-gradient(180deg, var(--bg-0), var(--bg-1));
-      min-height: 100vh;
     }
     .page-shell {
-      max-width: 1180px;
+      max-width: 1240px;
       margin: 0 auto;
-      padding: 32px 24px 48px;
+      padding: 28px 22px 44px;
     }
-    .hero-card {
-      padding: 28px;
-      border-radius: 28px;
-      background: linear-gradient(135deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04));
+    .hero-card,
+    .metric-card,
+    .card {
+      border-radius: 26px;
       border: 1px solid var(--stroke);
-      backdrop-filter: blur(18px);
-      box-shadow: 0 30px 70px rgba(0,0,0,0.28);
+      background: linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));
+      backdrop-filter: blur(16px);
+      box-shadow: 0 24px 56px rgba(0,0,0,0.24);
     }
+    .hero-card { padding: 28px; }
     .hero-topbar {
       display: flex;
       align-items: flex-start;
@@ -402,9 +450,10 @@ private fun dashboardStyles(): String = """
       gap: 18px;
     }
     .hero-topbar h1 {
-      margin: 0 0 12px;
-      font-size: 40px;
+      margin: 0;
+      font-size: 56px;
       line-height: 1;
+      letter-spacing: -0.04em;
     }
     .hero-topbar-right {
       display: flex;
@@ -415,10 +464,9 @@ private fun dashboardStyles(): String = """
     .hero-update {
       margin: 0;
       color: var(--muted);
-      font-size: 16px;
-      line-height: 1.2;
+      font-size: 15px;
     }
-    .live-pill, .chip {
+    .pill {
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -426,87 +474,74 @@ private fun dashboardStyles(): String = """
       border-radius: 999px;
       font-size: 13px;
       font-weight: 800;
-      letter-spacing: 0.03em;
+      letter-spacing: 0.04em;
       border: 1px solid rgba(255,255,255,0.10);
     }
-    .live-pill {
-      color: #2dd881;
-      background: rgba(45,216,129,0.10);
-      border-color: rgba(45,216,129,0.45);
-    }
-    .chip-green {
-      color: #2dd881;
-      background: rgba(45,216,129,0.10);
-    }
-    .chip-blue {
-      color: #7bd3ff;
-      background: rgba(123,211,255,0.10);
-    }
-    .chip-purple {
-      color: #b799ff;
-      background: rgba(183,153,255,0.12);
-    }
-    .chip-neutral {
-      color: #dbe7ff;
-      background: rgba(255,255,255,0.06);
-    }
+    .pill-live { color: #2dd881; background: rgba(45,216,129,0.12); border-color: rgba(45,216,129,0.28); }
+    .pill-safe { color: #fb923c; background: rgba(251,146,60,0.12); border-color: rgba(251,146,60,0.28); }
+    .pill-warm { color: #facc15; background: rgba(250,204,21,0.12); border-color: rgba(250,204,21,0.28); }
+    .pill-lag { color: #f87171; background: rgba(248,113,113,0.12); border-color: rgba(248,113,113,0.28); }
+    .pill-off { color: #cbd5e1; background: rgba(203,213,225,0.08); border-color: rgba(203,213,225,0.18); }
+    .pill-blue { color: #60a5fa; background: rgba(96,165,250,0.12); }
+    .pill-purple { color: #b799ff; background: rgba(183,153,255,0.14); }
+    .pill-neutral { color: #dbe7ff; background: rgba(255,255,255,0.08); }
     .hero-balance {
-      margin-top: 18px;
-      font-size: clamp(54px, 7vw, 82px);
+      margin-top: 20px;
+      font-size: clamp(56px, 7vw, 92px);
       font-weight: 900;
-      line-height: 0.98;
+      line-height: 0.96;
       letter-spacing: -0.05em;
     }
     .hero-pnl-row {
-      margin-top: 14px;
+      margin-top: 16px;
       display: flex;
+      gap: 10px;
       align-items: center;
-      gap: 12px;
       flex-wrap: wrap;
     }
     .hero-pnl {
       font-size: clamp(28px, 4vw, 44px);
       font-weight: 900;
-      color: var(--accent-2);
       line-height: 1;
-    }
-    .hero-ping-pill {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 8px 14px;
-      border-radius: 999px;
-      font-size: 14px;
-      font-weight: 800;
-      color: #facc15;
-      background: rgba(250,204,21,0.10);
-      border: 1px solid rgba(250,204,21,0.25);
+      color: #2dd881;
     }
     .hero-status {
-      margin: 16px 0 0;
+      margin: 18px 0 0;
       color: var(--muted);
       font-size: 16px;
-      line-height: 1.6;
+      line-height: 1.55;
     }
+    .hero-metrics-grid,
     .dashboard-grid {
       display: grid;
-      grid-template-columns: 1.15fr 1fr;
       gap: 18px;
-      margin-top: 20px;
     }
-    .card {
-      padding: 22px;
-      border-radius: 24px;
-      background: var(--card);
-      border: 1px solid var(--stroke);
-      backdrop-filter: blur(14px);
+    .hero-metrics-grid {
+      margin-top: 18px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }
-    .live-pair-card {
-      min-height: 220px;
+    .metric-card {
+      padding: 18px 20px;
+      display: grid;
+      gap: 8px;
     }
-    .activity-card {
-      min-height: 320px;
+    .metric-label {
+      color: var(--muted);
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
     }
+    .metric-value {
+      font-size: 22px;
+      font-weight: 800;
+    }
+    .dashboard-grid {
+      margin-top: 18px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .card { padding: 22px; }
+    .live-pair-card { min-height: 224px; }
+    .activity-card { min-height: 320px; }
     .card-header-row {
       display: flex;
       align-items: center;
@@ -514,25 +549,37 @@ private fun dashboardStyles(): String = """
       gap: 12px;
       margin-bottom: 14px;
     }
+    .card h2 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.2;
+    }
     .pair-hero {
-      font-size: clamp(34px, 5vw, 56px);
+      font-size: clamp(36px, 5vw, 58px);
       font-weight: 900;
       line-height: 1;
       letter-spacing: -0.04em;
       margin-bottom: 14px;
     }
+    .pair-support-copy,
+    .muted-copy {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
     .pair-meta-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 10px;
+      margin-top: 14px;
     }
     .pair-meta-chip {
-      display: grid;
-      gap: 6px;
       padding: 14px;
       border-radius: 18px;
       background: rgba(255,255,255,0.04);
       border: 1px solid rgba(255,255,255,0.06);
+      display: grid;
+      gap: 6px;
     }
     .pair-meta-label {
       color: var(--muted);
@@ -543,29 +590,15 @@ private fun dashboardStyles(): String = """
     .pair-meta-value {
       font-size: 16px;
       font-weight: 800;
-    }
-    .log-list {
-        height: 240px;
-        overflow-y: auto;
-        font-family: "SF Mono", "Menlo", monospace;
-        font-size: 12px;
-        color: var(--muted);
-    }
-    .log-list p {
-        margin: 0;
-        padding: 4px 0;
-    }
-    .card h2 {
-      margin: 0;
-      font-size: 18px;
+      word-break: break-word;
     }
     .status-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 16px;
+      gap: 14px;
       padding: 12px 0;
-      border-bottom: 1px solid rgba(255,255,255,0.08);
+      border-bottom: 1px solid rgba(255,255,255,0.07);
     }
     .status-row:last-child { border-bottom: 0; }
     .status-label {
@@ -578,28 +611,44 @@ private fun dashboardStyles(): String = """
       font-weight: 700;
       text-align: right;
     }
-    .status-list p {
-      margin: 0;
-      padding: 8px 0;
+    .holdings-list,
+    .log-list {
+      display: grid;
+      gap: 10px;
+    }
+    .holdings-list {
+      max-height: 260px;
+      overflow-y: auto;
+    }
+    .holding-row,
+    .timeline-row {
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.05);
+      line-height: 1.45;
+    }
+    .log-list {
+      max-height: 260px;
+      overflow-y: auto;
+      font-family: "SF Pro Text", "Segoe UI", sans-serif;
+      color: var(--muted);
       font-size: 14px;
-      border-bottom: 1px solid rgba(255,255,255,0.08);
     }
-    .status-list p:last-child {
-      border-bottom: none;
-    }
-    @media (max-width: 900px) {
-      .dashboard-grid {
-        grid-template-columns: 1fr;
-      }
+    @media (max-width: 920px) {
+      .hero-metrics-grid,
+      .dashboard-grid,
       .pair-meta-grid {
         grid-template-columns: 1fr;
       }
       .hero-topbar {
         flex-direction: column;
-        align-items: flex-start;
       }
       .hero-topbar-right {
         align-items: flex-start;
+      }
+      .page-shell {
+        padding: 20px 14px 36px;
       }
     }
 """.trimIndent()

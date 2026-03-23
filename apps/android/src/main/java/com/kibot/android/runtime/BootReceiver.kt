@@ -25,8 +25,5 @@ class BootReceiver : BroadcastReceiver() {
             PeriodicWorkRequestBuilder<ReconnectWorker>(15, TimeUnit.MINUTES).build(),
         )
 
-        if (RuntimePreferenceStore(context).isDesiredOn()) {
-            BotForegroundService.start(context)
-        }
     }
 }

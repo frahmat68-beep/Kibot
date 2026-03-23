@@ -29,6 +29,8 @@ import com.kibot.shared.models.CommandType
 import com.kibot.shared.models.DailyEquityHistoryPoint
 import com.kibot.shared.models.LogLevel
 import com.kibot.shared.models.MarketQuote
+import com.kibot.shared.models.OrderSnapshot
+import com.kibot.shared.models.OrderStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -85,74 +87,16 @@ class AppRepository(
     )
 
     fun toggleBot(): Boolean {
-        val current = _uiState.value
-        val nextRunning = !current.isBotRunning
-        _uiState.value = current.copy(
-            isBotRunning = nextRunning,
-            effectiveState = if (nextRunning) BotEffectiveState.RUNNING else BotEffectiveState.STOPPED,
-            statusMessage = if (nextRunning) "Bot start requested." else "Stop aman dimulai. Bot blok entry baru lalu rapikan posisi dulu.",
+        _uiState.value = _uiState.value.copy(
+            statusMessage = "App HP sekarang view-only. Kontrol bot berjalan penuh di server Oracle.",
         )
-        runtimePreferenceStore.setDesiredOn(nextRunning)
-
-        persistState()
-        scope.launch {
-            controlPlaneGateway?.setDesiredState(
-                botId = botId,
-                desiredState = if (nextRunning) BotDesiredState.ON else BotDesiredState.OFF,
-            )
-            syncNow()
-        }
-        return nextRunning
+        return _uiState.value.isBotRunning
     }
 
     fun dispatchCommand(action: EngineAction) {
-        val current = _uiState.value
-        _uiState.value = when (action) {
-            EngineAction.RequestTakeover -> current.copy(statusMessage = "Request takeover queued.")
-            EngineAction.ForceSafeTakeover -> current.copy(statusMessage = "Force safe takeover queued.")
-            EngineAction.ReleaseControl -> current.copy(statusMessage = "Release control queued.")
-            EngineAction.SyncNow -> current.copy(statusMessage = "Manual sync started.")
-        }
-
-        persistState()
-        scope.launch {
-            ensureDeviceRegistered()
-            val gateway = controlPlaneGateway ?: return@launch
-            val deviceId = deviceRegistration?.deviceId ?: return@launch
-            when (action) {
-                EngineAction.RequestTakeover -> {
-                    val activeDevice = gateway.fetchBotState(botId)?.activeDeviceId?.takeIf { it != deviceId }
-                    gateway.enqueueCommand(
-                        botId = botId,
-                        createdBy = deviceId,
-                        commandType = CommandType.REQUEST_TAKEOVER,
-                        targetDeviceId = activeDevice,
-                    )
-                }
-
-                EngineAction.ForceSafeTakeover -> gateway.enqueueCommand(
-                    botId = botId,
-                    createdBy = deviceId,
-                    commandType = CommandType.FORCE_SAFE_TAKEOVER,
-                    targetDeviceId = deviceId,
-                )
-
-                EngineAction.ReleaseControl -> gateway.enqueueCommand(
-                    botId = botId,
-                    createdBy = deviceId,
-                    commandType = CommandType.RELEASE_CONTROL,
-                    targetDeviceId = deviceId,
-                )
-
-                EngineAction.SyncNow -> gateway.enqueueCommand(
-                    botId = botId,
-                    createdBy = deviceId,
-                    commandType = CommandType.SYNC_NOW,
-                    targetDeviceId = deviceId,
-                )
-            }
-            syncNow()
-        }
+        _uiState.value = _uiState.value.copy(
+            statusMessage = "Perintah ${action.name} diblok. App ini hanya monitor hasil trade server Oracle.",
+        )
     }
 
     suspend fun syncNow() {
@@ -161,8 +105,7 @@ class AppRepository(
         val now = Clock.System.now()
         val jakartaDate = now.toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
         val storedLiveSnapshot = liveStatusStore.current().takeIf { it.updatedAtEpochMs > 0L }
-        val currentLiveSnapshot = storedLiveSnapshot?.takeIf { isFreshLiveSnapshot(it, now) }
-        val uiPreferredSnapshot = currentLiveSnapshot ?: storedLiveSnapshot?.takeIf { isUiUsableLiveSnapshot(it, now) }
+        val fallbackSnapshot = storedLiveSnapshot?.takeIf { isUiUsableLiveSnapshot(it, now) }
 
         val botStateDeferred = scope.async { gateway.fetchBotState(botId) }
         val leaseDeferred = scope.async { gateway.fetchLease(botId) }
@@ -179,7 +122,6 @@ class AppRepository(
                 days = 7,
             )
         }
-        val lanSnapshotDeferred = scope.async { fetchLanMacSnapshot() }
         val liveBalancesDeferred = scope.async {
             runCatching { exchangeGateway.fetchBalances() }.getOrDefault(emptyList())
         }
@@ -197,13 +139,12 @@ class AppRepository(
         val liveIdrBalance = liveBalances
             .firstOrNull { it.asset.equals("idr", ignoreCase = true) }
             ?.let { it.free.toDoubleOrZero() + it.locked.toDoubleOrZero() }
-        val lanSnapshot = lanSnapshotDeferred.await()
         val auxiliary = fetchAuxiliaryData(gateway, now)
         val logs = auxiliary.logs
         val orders = auxiliary.orders
         val weeklyReview = auxiliary.weeklyReview
         val liveEquityIdr = estimateEquityIdr(liveBalances, liveQuotes)
-            ?: uiPreferredSnapshot?.totalEquityIdr?.parseRupiahLabel()
+            ?: fallbackSnapshot?.totalEquityIdr?.parseRupiahLabel()
         val openingEquityIdr = when {
             risk?.openingEquityIdr != null -> risk.openingEquityIdr.toDoubleOrZero()
             liveEquityIdr != null -> runtimePreferenceStore.getOrRememberDailyOpeningEquity(
@@ -214,30 +155,30 @@ class AppRepository(
         }
         val livePnlTodayIdr = when {
             liveEquityIdr != null && openingEquityIdr != null -> liveEquityIdr - openingEquityIdr
-            uiPreferredSnapshot != null -> uiPreferredSnapshot.pnlTodayIdr.parseRupiahLabel()
+            fallbackSnapshot != null -> fallbackSnapshot.pnlTodayIdr.parseRupiahLabel()
             risk != null -> risk.realizedPnlIdr.toDoubleOrZero() + risk.unrealizedPnlIdr.toDoubleOrZero()
             else -> 0.0
         }
         val modalSaatIniLabel = liveEquityIdr?.let(::formatIdr)
-            ?: uiPreferredSnapshot?.totalEquityIdr
+            ?: fallbackSnapshot?.totalEquityIdr
             ?: risk?.currentEquityIdr?.let { formatIdr(it.toDoubleOrZero()) }
             ?: _uiState.value.modalSaatIniIdr
         val pnlTodayLabel = livePnlTodayIdr?.let(::formatSignedIdr)
-            ?: uiPreferredSnapshot?.pnlTodayIdr
+            ?: fallbackSnapshot?.pnlTodayIdr
             ?: formatSignedIdr(0.0)
         val pnlTodayPctLabel = when {
             livePnlTodayIdr != null && openingEquityIdr != null && openingEquityIdr > 0.0 ->
                 formatSignedPercent(livePnlTodayIdr / openingEquityIdr)
-            uiPreferredSnapshot != null -> uiPreferredSnapshot.derivedPnlPctLabel()
+            fallbackSnapshot != null -> fallbackSnapshot.derivedPnlPctLabel()
             else -> "+0.0%"
         }
         val valuedHoldings = when {
             liveBalances.isNotEmpty() && liveQuotes.isNotEmpty() -> buildValuedHoldings(
                 balances = liveBalances,
                 quotes = liveQuotes,
-                liveSnapshot = uiPreferredSnapshot,
+                liveSnapshot = fallbackSnapshot,
             )
-            !uiPreferredSnapshot?.holdings.isNullOrEmpty() -> buildSnapshotValuedHoldings(uiPreferredSnapshot!!)
+            !fallbackSnapshot?.holdings.isNullOrEmpty() -> buildSnapshotValuedHoldings(fallbackSnapshot!!)
             else -> emptyList()
         }
         val livePositions = buildLivePositions(valuedHoldings)
@@ -253,19 +194,30 @@ class AppRepository(
             cashReadyIdrOverride = liveIdrBalance,
         )
 
+        val blockedDisplayPairs = setOf("usdt_idr", "usdc_idr", "indr_idr")
         val activeDeviceId = lease?.currentHolder ?: botState.activeDeviceId
         val activeEngine = devices.firstOrNull { it.deviceId == activeDeviceId }?.displayName ?: "Unknown"
         val standbyEngine = devices.firstOrNull { it.deviceId != activeDeviceId && !it.isRevoked }?.displayName ?: "Waiting"
         val lastHeartbeatMillis = botState.lastHeartbeatAt?.toEpochMilliseconds() ?: System.currentTimeMillis()
         val syncLagMillis = (System.currentTimeMillis() - lastHeartbeatMillis).coerceAtLeast(0)
-        val candidateSummary = (uiPreferredSnapshot?.radarPairs ?: botState.activeCandidatePairs.map { it.value })
+        val displayRadarPairs = filterDisplayPairs(botState.activeCandidatePairs.map { it.value })
+        val candidateSummary = (displayRadarPairs.ifEmpty { fallbackSnapshot?.radarPairs.orEmpty() })
             .take(3)
             .takeIf { it.isNotEmpty() }
             ?.joinToString(" • ") { it.lowercase() }
-        runtimePreferenceStore.setDesiredOn(botState.desiredState == BotDesiredState.ON)
+        val serverTimeline = buildServerLiveEntries(
+            logs = logs,
+            orders = orders,
+            fallbackTimestamp = now.toEpochMilliseconds(),
+        )
+        val serverStatusMessage = serverTimeline.firstOrNull()?.message
+            ?: botState.safeModeReason
+            ?: candidateSummary?.let { "Server lagi pantau $it." }
+            ?: defaultStatusMessage(botState.effectiveState)
+        runtimePreferenceStore.setDesiredOn(botState.effectiveState != BotEffectiveState.STOPPED)
 
         _uiState.value = _uiState.value.copy(
-            isBotRunning = botState.desiredState == BotDesiredState.ON,
+            isBotRunning = botState.effectiveState != BotEffectiveState.STOPPED,
             effectiveState = botState.effectiveState,
             operatingMode = botState.operatingMode.name,
             edgeConfidence = botState.edgeConfidence.name,
@@ -275,32 +227,30 @@ class AppRepository(
             activeEngine = activeEngine,
             standbyEngine = standbyEngine,
             syncHealth = botState.syncHealth.name,
-            internetPingLabel = uiPreferredSnapshot?.internetPingLabel() ?: _uiState.value.internetPingLabel,
+            internetPingLabel = fallbackSnapshot?.internetPingLabel() ?: _uiState.value.internetPingLabel,
             pnlTodayIdr = pnlTodayLabel,
             pnlTodayPctLabel = pnlTodayPctLabel,
             modalSaatIniIdr = modalSaatIniLabel,
-            scanUniverseCount = uiPreferredSnapshot?.scanUniverseCount
+            scanUniverseCount = fallbackSnapshot?.scanUniverseCount
                 ?: _uiState.value.scanUniverseCount,
-            radarPairs = uiPreferredSnapshot?.radarPairs?.takeIf { it.isNotEmpty() }
-                ?: botState.activeCandidatePairs.map { it.value }.takeIf { it.isNotEmpty() }
+            radarPairs = displayRadarPairs.takeIf { it.isNotEmpty() }
+                ?: fallbackSnapshot?.radarPairs?.takeIf { it.isNotEmpty() }
                 ?: _uiState.value.radarPairs,
             drawdownPct = risk?.drawdownPct ?: _uiState.value.drawdownPct,
             dailyLossLimitPct = risk?.hardDailyLossLimitPct ?: _uiState.value.dailyLossLimitPct,
             riskBlocked = risk?.hardStopTriggered == true,
-            pairAktif = uiPreferredSnapshot?.activePair
-                ?.takeIf { it.isNotBlank() && it != "-" }
-                ?: botState.currentPair?.value
-                ?: botState.activeCandidatePairs.firstOrNull()?.value
+            pairAktif = botState.currentPair?.value
+                ?.lowercase()
+                ?.takeUnless { it in blockedDisplayPairs }
+                ?: displayRadarPairs.firstOrNull()
+                ?: fallbackSnapshot?.activePair?.takeIf { it.isNotBlank() && it != "-" }
                 ?: _uiState.value.radarPairs.firstOrNull()
                 ?: _uiState.value.pairAktif,
             leaseTerm = lease?.term?.value ?: botState.currentTerm.value,
             syncLagLabel = formatSyncLag(syncLagMillis),
-            syncPathLabel = resolveSyncPathLabel(lanSnapshot),
+            syncPathLabel = "Live Feed",
             lastUpdatedLabel = formatLastUpdated(now),
-            statusMessage = uiPreferredSnapshot?.statusMessage?.takeIf { it.isNotBlank() }
-                ?: botState.safeModeReason
-                ?: candidateSummary?.let { "Radar aktif: $it" }
-                ?: defaultStatusMessage(botState.effectiveState),
+            statusMessage = serverStatusMessage,
             weeklyLearningSummary = weeklyReview?.let {
                 "Week ${it.periodStart} - ${it.periodEnd} • no-trade ${(it.noTradeQualityScore * 100).toInt()}% • util ${(it.productiveUtilizationPct * 100).toInt()}%"
             } ?: "Belum ada review mingguan.",
@@ -309,8 +259,8 @@ class AppRepository(
                 ?: "Adaptasi mingguan belum tersedia.",
             positions = livePositions.ifEmpty { emptyList() },
             portfolio = portfolioSection,
-            liveLogEntries = uiPreferredSnapshot?.liveLogEntries ?: _uiState.value.liveLogEntries,
-            logs = logs.map {
+            liveLogEntries = serverTimeline,
+            logs = filterOperatorLogs(logs).map {
                 LogUi(
                     level = it.level.name,
                     category = it.category,
@@ -345,7 +295,7 @@ class AppRepository(
             },
         )
         val refreshedSnapshot = LiveStatusSnapshot(
-            updatedAtEpochMs = uiPreferredSnapshot?.updatedAtEpochMs ?: System.currentTimeMillis(),
+            updatedAtEpochMs = System.currentTimeMillis(),
             activePair = botState.currentPair?.value
                 ?: _uiState.value.pairAktif
                 .takeIf { it.isNotBlank() && it != "-" }
@@ -353,7 +303,7 @@ class AppRepository(
                 ?: "-",
             totalEquityIdr = modalSaatIniLabel,
             pnlTodayIdr = pnlTodayLabel,
-            internetPingMs = uiPreferredSnapshot?.internetPingMs,
+            internetPingMs = fallbackSnapshot?.internetPingMs,
             scanUniverseCount = _uiState.value.scanUniverseCount,
             radarPairs = _uiState.value.radarPairs,
             holdings = livePositions.map {
@@ -365,8 +315,8 @@ class AppRepository(
                     pnlPctLabel = it.pnl.substringAfter(" ", "").takeIf { label -> label.isNotBlank() } ?: "",
                 )
             },
-            statusMessage = _uiState.value.statusMessage,
-            liveLogEntries = uiPreferredSnapshot?.liveLogEntries ?: _uiState.value.liveLogEntries,
+            statusMessage = serverStatusMessage,
+            liveLogEntries = serverTimeline,
         )
         liveStatusStore.update(refreshedSnapshot)
         runCatching {
@@ -858,6 +808,104 @@ class AppRepository(
             .substringBeforeLast(' ')
             .replace(",", "")
         return numeric.toDoubleOrNull() ?: 0.0
+    }
+
+    private fun buildServerLiveEntries(
+        logs: List<com.kibot.shared.models.AuditLogRecord>,
+        orders: List<OrderSnapshot>,
+        fallbackTimestamp: Long,
+    ): List<com.kibot.android.runtime.LiveLogEntry> {
+        val tradeEntries = orders.mapNotNull(::toServerLiveEntry)
+        val operatorEntries = filterOperatorLogs(logs).mapNotNull(::toServerLiveEntry)
+        val merged = (tradeEntries + operatorEntries)
+            .sortedByDescending { it.timestampEpochMs }
+            .distinctBy { "${it.category}|${it.message}" }
+        return if (merged.isNotEmpty()) {
+            merged.take(10)
+        } else {
+            listOf(
+                com.kibot.android.runtime.LiveLogEntry(
+                    timestampEpochMs = fallbackTimestamp,
+                    category = "SYNC",
+                    message = "Server Oracle lagi sinkron dan pantau market.",
+                ),
+            )
+        }
+    }
+
+    private fun filterOperatorLogs(
+        logs: List<com.kibot.shared.models.AuditLogRecord>,
+    ): List<com.kibot.shared.models.AuditLogRecord> {
+        return logs
+            .filterNot { log ->
+                val category = log.category.uppercase()
+                val message = log.message.lowercase()
+                category == "AUTH" ||
+                    message.contains("registered with control-plane") ||
+                    message.contains("registered to control plane") ||
+                    message.contains("device registered") ||
+                    (
+                        category in setOf("ROTASI", "SCAN", "TARGET") &&
+                            (
+                                message.contains("usdt_idr") ||
+                                    message.contains("usdc_idr") ||
+                                    message.contains("indr_idr")
+                                )
+                        )
+            }
+            .sortedByDescending { it.recordedAt }
+    }
+
+    private fun toServerLiveEntry(
+        order: OrderSnapshot,
+    ): com.kibot.android.runtime.LiveLogEntry? {
+        val quantity = max(order.executedQuantity.toDoubleOrZero(), order.originalQuantity.toDoubleOrZero())
+        if (quantity <= 0.0) return null
+        val price = order.price.toDoubleOrZero()
+        val pair = order.pairId.value.lowercase()
+        val category = when (order.side) {
+            com.kibot.shared.models.OrderSide.BUY -> if (order.status == OrderStatus.OPEN) "TARGET" else "BUY"
+            com.kibot.shared.models.OrderSide.SELL -> if (order.status == OrderStatus.OPEN) "TARGET" else "SELL"
+        }
+        val message = when (order.status) {
+            OrderStatus.OPEN, OrderStatus.SUBMITTING ->
+                "Server pasang ${order.side.name.lowercase()} $pair @ ${formatIdr(price)} dan lagi tunggu fill."
+            OrderStatus.PARTIALLY_FILLED ->
+                "${order.side.name} $pair mulai keisi ${formatQuantity(quantity)} @ ${formatIdr(price)}."
+            OrderStatus.FILLED ->
+                "${order.side.name} $pair sukses ${formatQuantity(quantity)} @ ${formatIdr(price)}."
+            OrderStatus.CANCELED ->
+                "Order $pair dibatalkan karena momentum berubah."
+            else -> return null
+        }
+        return com.kibot.android.runtime.LiveLogEntry(
+            timestampEpochMs = order.updatedAt.toEpochMilliseconds(),
+            category = category,
+            message = message,
+        )
+    }
+
+    private fun toServerLiveEntry(
+        log: com.kibot.shared.models.AuditLogRecord,
+    ): com.kibot.android.runtime.LiveLogEntry? {
+        val message = log.message.trim()
+        if (message.isBlank()) return null
+        return com.kibot.android.runtime.LiveLogEntry(
+            timestampEpochMs = log.recordedAt.toEpochMilliseconds(),
+            category = log.category.uppercase(),
+            message = message,
+        )
+    }
+
+    private fun filterDisplayPairs(
+        pairs: List<String>,
+    ): List<String> {
+        val blocked = setOf("usdt_idr", "usdc_idr", "indr_idr")
+        return pairs
+            .map { it.lowercase() }
+            .filter { it.isNotBlank() && it !in blocked }
+            .distinct()
+            .take(10)
     }
 
     companion object {

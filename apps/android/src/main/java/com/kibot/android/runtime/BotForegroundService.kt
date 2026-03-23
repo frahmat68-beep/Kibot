@@ -11,8 +11,6 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.kibot.android.R
-import com.kibot.android.widget.KiBotWidgetProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,6 +21,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import com.kibot.shared.models.BotEffectiveState
 
 class BotForegroundService : Service() {
     private val loggerTag = "KiBotService"
@@ -97,25 +96,18 @@ class BotForegroundService : Service() {
 
         while (serviceScope.isActive) {
             try {
-                if (!app.container.repository.isDesiredOn()) {
-                    Log.i(loggerTag, "desired_on=false, foreground service dihentikan.")
-                    updateNotification(currentPair = null, isRunning = false)
-                    stopSelf()
-                    break
-                }
-
-                val tick = daemon.syncOnce()
-                publishLiveStatus(app, tick.liveStatusSnapshot, tick.liveLogEntry)
-                val pairLabel = tick.currentPair?.takeIf { it.isNotBlank() }?.lowercase()
-                val isRunning = app.container.repository.isDesiredOn()
-                Log.i(loggerTag, "tick ok: ${pairLabel ?: "menunggu pair"} • ${if (isRunning) "ON" else "OFF"}")
+                app.container.repository.syncNow()
+                val state = app.container.repository.uiState.value
+                val pairLabel = state.pairAktif.takeIf { it.isNotBlank() && it != "-" }?.lowercase()
+                val isRunning = state.effectiveState != BotEffectiveState.STOPPED
+                Log.i(loggerTag, "server sync ok: ${pairLabel ?: "menunggu pair"} • ${state.effectiveState.name}")
                 updateNotification(currentPair = pairLabel, isRunning = isRunning)
             } catch (error: Throwable) {
-                Log.e(loggerTag, "Loop engine Android gagal pada satu iterasi.", error)
+                Log.e(loggerTag, "Loop monitor Android gagal pada satu iterasi.", error)
                 updateNotification(currentPair = null, isRunning = false)
             }
 
-            delay(app.container.runtimeConfig.pollIntervalMillis)
+            delay(15_000L)
         }
     }
 
@@ -137,16 +129,6 @@ class BotForegroundService : Service() {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-    }
-
-    private fun publishLiveStatus(
-        app: com.kibot.android.KiBotApplication,
-        snapshot: LiveStatusSnapshot?,
-        event: LiveLogEntry?,
-    ) {
-        if (snapshot == null) return
-        app.container.liveStatusStore.publish(snapshot, event)
-        KiBotWidgetProvider.updateAll(this, app.container.liveStatusStore.current())
     }
 
     private fun buildNotificationDetail(snapshot: LiveStatusSnapshot, isRunning: Boolean): String {

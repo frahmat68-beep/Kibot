@@ -51,7 +51,6 @@ fun main(args: Array<String>) {
         repository = repository,
         host = config.bindHost,
         port = config.port,
-        dispatchCommand = { dispatcher.dispatch(it) },
         androidReleaseDirectory = Paths.get("").toAbsolutePath().resolve(".dist/android/stable"),
         enableLanAdvertising = config.enableLanAdvertising,
         statePollIntervalMillis = config.dashboardStatePollIntervalMillis,

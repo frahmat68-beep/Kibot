@@ -1400,7 +1400,7 @@ class MacEngineDaemon(
             .map { "${it.asset.uppercase()}: ${formatDecimal(it.free.toDoubleOrZero(), 6)}" }
 
         return com.kibot.macengine.state.MacDashboardState(
-            isBotRunning = botState.desiredState == BotDesiredState.ON,
+            isBotRunning = botState.effectiveState != BotEffectiveState.STOPPED,
             effectiveState = botState.effectiveState,
             operatingMode = strategyCycle?.modeSnapshot?.mode?.name ?: botState.operatingMode.name,
             edgeConfidence = strategyCycle?.modeSnapshot?.edgeConfidence?.name ?: botState.edgeConfidence.name,

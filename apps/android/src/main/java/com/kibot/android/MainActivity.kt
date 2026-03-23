@@ -9,7 +9,6 @@ import androidx.compose.runtime.getValue
 import androidx.lifecycle.lifecycleScope
 import com.kibot.android.runtime.BotForegroundService
 import com.kibot.android.ui.KiBotRoot
-import com.kibot.android.ui.withLiveSnapshot
 import com.kibot.android.ui.theme.KiBotTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -21,37 +20,23 @@ class MainActivity : ComponentActivity() {
         val app = application as KiBotApplication
         val repository = app.container.repository
 
+        BotForegroundService.stop(this)
+
         lifecycleScope.launch {
             repository.syncNow()
-            if (repository.uiState.value.syncPathLabel != "Live + LAN") {
-                delay(2_500)
+            while (true) {
+                delay(8_000)
                 repository.syncNow()
             }
-            if (repository.uiState.value.isBotRunning) {
-                BotForegroundService.start(this@MainActivity)
-            }
-        }
-        if (repository.isDesiredOn()) {
-            BotForegroundService.start(this)
         }
 
         setContent {
             val state by repository.uiState.collectAsState()
-            val live by app.container.liveStatusStore.state.collectAsState()
             KiBotTheme(
                 darkTheme = isSystemInDarkTheme(),
             ) {
                 KiBotRoot(
-                    state = state.withLiveSnapshot(live),
-                    onToggleBot = {
-                        val running = repository.toggleBot()
-                        if (running) {
-                            BotForegroundService.start(this)
-                        } else {
-                            BotForegroundService.stop(this)
-                        }
-                    },
-                    onCommand = repository::dispatchCommand,
+                    state = state,
                 )
             }
         }
