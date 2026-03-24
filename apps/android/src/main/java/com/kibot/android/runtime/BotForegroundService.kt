@@ -21,6 +21,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import com.kibot.android.BuildConfig
 import com.kibot.shared.models.BotEffectiveState
 
 class BotForegroundService : Service() {
@@ -100,7 +101,7 @@ class BotForegroundService : Service() {
                 updateNotification(currentPair = null, isRunning = false)
             }
 
-            delay(10_000L)
+            delay(BuildConfig.KIBOT_POLL_INTERVAL_MS.coerceAtLeast(3_000L))
         }
     }
 

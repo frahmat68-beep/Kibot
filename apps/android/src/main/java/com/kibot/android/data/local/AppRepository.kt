@@ -223,7 +223,6 @@ class AppRepository(
         val serverTimeline = buildServerLiveEntries(
             liveTimeline = emptyList(),
             serverLogs = emptyList(),
-            logs = logs,
             orders = orders,
             fallbackTimestamp = now.toEpochMilliseconds(),
         )
@@ -356,7 +355,6 @@ class AppRepository(
         val liveEntries = buildServerLiveEntries(
             liveTimeline = state.liveTimeline,
             serverLogs = serverBundle.serverLogs,
-            logs = serverBundle.logs,
             orders = serverBundle.orders,
             fallbackTimestamp = now.toEpochMilliseconds(),
         )
@@ -410,7 +408,7 @@ class AppRepository(
             positions = buildServerPositions(state),
             portfolio = portfolio,
             liveLogEntries = liveEntries,
-            logs = buildServerLogCards(state.liveTimeline, serverBundle.serverLogs, serverBundle.logs),
+            logs = buildServerLogCards(state.liveTimeline, serverBundle.serverLogs),
             trades = serverBundle.orders
                 .filter {
                     it.executedQuantity.toDoubleOrZero() > 0.0 ||
@@ -1146,7 +1144,6 @@ class AppRepository(
     private fun buildServerLiveEntries(
         liveTimeline: List<ServerTimelineEntry>,
         serverLogs: List<String>,
-        logs: List<com.kibot.shared.models.AuditLogRecord>,
         orders: List<OrderSnapshot>,
         fallbackTimestamp: Long,
     ): List<com.kibot.android.runtime.LiveLogEntry> {
@@ -1158,8 +1155,11 @@ class AppRepository(
             )
         }
         val tradeEntries = orders.mapNotNull(::toServerLiveEntry)
-        val operatorEntries = filterOperatorLogs(logs).mapNotNull(::toServerLiveEntry)
-        val merged = (timelineEntries + tradeEntries + operatorEntries + serverEntries)
+        val merged = if (timelineEntries.isNotEmpty()) {
+            timelineEntries + tradeEntries
+        } else {
+            tradeEntries + serverEntries
+        }
             .sortedByDescending { it.timestampEpochMs }
             .distinctBy { "${it.category}|${it.message}" }
         return if (merged.isNotEmpty()) {
@@ -1301,7 +1301,6 @@ class AppRepository(
     private fun buildServerLogCards(
         liveTimeline: List<ServerTimelineEntry>,
         serverLogs: List<String>,
-        logs: List<com.kibot.shared.models.AuditLogRecord>,
     ): List<LogUi> {
         val timelineCards = liveTimeline.mapNotNull(::toServerLogCard)
         val serverCards = serverLogs.map { line ->
@@ -1312,15 +1311,7 @@ class AppRepository(
                 timeLabel = formatLastUpdated(Clock.System.now()),
             )
         }
-        val operatorCards = filterOperatorLogs(logs).map {
-            LogUi(
-                level = it.level.name,
-                category = it.category,
-                message = it.message,
-                timeLabel = formatMomentLabel(it.recordedAt),
-            )
-        }
-        return (timelineCards + operatorCards + serverCards)
+        return (timelineCards + serverCards)
             .filter { it.message.isNotBlank() }
             .distinctBy { "${it.category}|${it.message}" }
             .take(20)

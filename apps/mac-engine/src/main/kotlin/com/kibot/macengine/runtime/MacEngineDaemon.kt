@@ -1717,6 +1717,7 @@ class MacEngineDaemon(
         )
         val preservedOperatorEntries = existingTimeline
             .filterNot { it.category in setOf("STATUS", "HEALTH") }
+            .filter { shouldExposeToLiveTimeline(it.category, it.message) }
             .filter { now.toEpochMilliseconds() - it.timestampEpochMs <= 24 * 60 * 60 * 1000L }
         return (freshStatusEntries + preservedOperatorEntries)
             .sortedByDescending { it.timestampEpochMs }
