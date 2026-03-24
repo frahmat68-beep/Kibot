@@ -1,11 +1,12 @@
 [Unit]
-Description=KiBot Mac Engine Trading Bot
+Description=KiBot Oracle Trading Engine
 After=network.target
 Wants=network.target
 
 [Service]
 Type=simple
 User=ubuntu
+PermissionsStartOnly=true
 WorkingDirectory=/home/ubuntu/KiBot
 EnvironmentFile=-/home/ubuntu/KiBot/.env.server
 Environment=SUPABASE_URL=https://txdvrhkxkylnlxnkpmfl.supabase.co
@@ -31,7 +32,12 @@ Environment=BOT_STRATEGY_METRICS_PUBLISH_INTERVAL_MS=600000
 Environment=MAC_ENGINE_ENABLE_LAN_ADVERTISE=false
 Environment=MAC_DASHBOARD_STATE_POLL_INTERVAL_MS=15000
 Environment=MAC_DASHBOARD_LOG_POLL_INTERVAL_MS=20000
-Environment=JAVA_OPTS=-XX:+UseSerialGC -XX:MaxRAMPercentage=60 -XX:InitialRAMPercentage=15 -XX:ActiveProcessorCount=1 -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=4 -Dfile.encoding=UTF-8
+Environment="JAVA_OPTS=-XX:+UseSerialGC -XX:MaxRAMPercentage=60 -XX:InitialRAMPercentage=15 -XX:ActiveProcessorCount=1 -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=4 -Dfile.encoding=UTF-8"
+ExecStartPre=-/usr/bin/pkill -f gradle.*:apps:mac-engine:run
+ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/KiBot/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar
+ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/mac-engine-0.1.0-all.jar
+ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/KiBot/server/mac-engine-all.jar
+ExecStartPre=-/usr/bin/fuser -k 8787/tcp
 ExecStart=/bin/bash -lc '/usr/bin/java $JAVA_OPTS -jar /home/ubuntu/KiBot/server/mac-engine-all.jar'
 Restart=always
 RestartSec=5

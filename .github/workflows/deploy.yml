@@ -53,12 +53,20 @@ jobs:
         script: |
           set -euo pipefail
           mkdir -p /home/ubuntu/KiBot/server
+          rm -f /home/ubuntu/KiBot/server/mac-engine-all.jar
           mv /home/ubuntu/KiBot/mac-engine-all.jar /home/ubuntu/KiBot/server/mac-engine-all.jar
           chmod +x /home/ubuntu/KiBot/kibot-recovery.sh
           chmod +x /home/ubuntu/KiBot/setup-autorecover.sh
           sudo cp /home/ubuntu/KiBot/kibot-engine.service /etc/systemd/system/kibot-engine.service
+          sudo systemctl stop kibot.service || true
+          sudo systemctl disable kibot.service || true
+          sudo rm -f /etc/systemd/system/kibot.service
           sudo systemctl stop kibot-engine || true
+          sudo pkill -f 'gradle.*:apps:mac-engine:run' || true
+          sudo pkill -f '/home/ubuntu/KiBot/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar' || true
+          sudo pkill -f '/home/ubuntu/mac-engine-0.1.0-all.jar' || true
           sudo pkill -f '/home/ubuntu/KiBot/server/mac-engine-all.jar' || true
+          rm -f /home/ubuntu/mac-engine-0.1.0-all.jar
           sudo fuser -k 8787/tcp || true
           sudo systemctl daemon-reload
           sudo systemctl enable kibot-engine
@@ -67,6 +75,7 @@ jobs:
           curl -fsS --retry 10 --retry-delay 3 http://127.0.0.1:8787/api/state >/tmp/kibot-state.json
           curl -fsS --retry 10 --retry-delay 3 http://127.0.0.1:8787/api/logs >/tmp/kibot-logs.json
           curl -fsS --retry 10 --retry-delay 3 http://127.0.0.1:8787/ >/tmp/kibot-root.html
+          ! systemctl is-active --quiet kibot.service
           grep 'KiBot Server Monitor' /tmp/kibot-root.html
           grep 'server-monitor-v3' /tmp/kibot-root.html
           cat /tmp/kibot-state.json | head -c 800
