@@ -452,41 +452,29 @@ class AppRepository(
         now: Instant,
     ) {
         val previousState = _uiState.value
-        val fallbackSnapshot = liveStatusStore.current().takeIf { isUiUsableLiveSnapshot(it, now) }
-        val activePair = fallbackSnapshot?.activePair
-            ?.takeIf { it.isNotBlank() && it != "-" }
-            ?: previousState.pairAktif
-        val radarPairs = fallbackSnapshot?.radarPairs
-            ?.map { it.lowercase() }
-            ?.filter { it !in HIDDEN_STABLE_PAIRS }
-            ?.take(10)
-            ?.takeIf { it.isNotEmpty() }
-            ?: previousState.radarPairs
-        val positions = fallbackSnapshot?.toPositionCards()
-            ?.takeIf { it.isNotEmpty() }
-            ?: previousState.positions
-        val fallbackStatus = "Feed server Oracle belum terhubung. App tetap menahan snapshot terakhir."
-        val fallbackLogs = fallbackSnapshot?.liveLogEntries
-            ?.takeIf { it.isNotEmpty() }
-            ?: previousState.liveLogEntries
+        val fallbackStatus = "Feed server Oracle belum terhubung. App tunggu snapshot live berikutnya."
+        val fallbackEntries = listOf(
+            com.kibot.android.runtime.LiveLogEntry(
+                timestampEpochMs = now.toEpochMilliseconds(),
+                category = "SYNC",
+                message = fallbackStatus,
+            ),
+        )
         _uiState.value = previousState.copy(
-            isBotRunning = previousState.effectiveState != BotEffectiveState.STOPPED,
-            effectiveState = if (previousState.effectiveState == BotEffectiveState.STOPPED) {
-                BotEffectiveState.DEGRADED
-            } else {
-                previousState.effectiveState
-            },
+            isBotRunning = false,
+            effectiveState = BotEffectiveState.DEGRADED,
             activeEngine = "Oracle Cloud Server",
             standbyEngine = "-",
             syncHealth = "DEGRADED",
             syncPathLabel = "Live Server",
             syncLagLabel = "--",
-            pairAktif = activePair ?: "-",
-            radarPairs = radarPairs,
-            positions = positions,
+            pairAktif = "-",
+            scanUniverseCount = 0,
+            radarPairs = emptyList(),
+            positions = emptyList(),
             statusMessage = fallbackStatus,
             lastUpdatedLabel = formatLastUpdated(now),
-            liveLogEntries = fallbackLogs,
+            liveLogEntries = fallbackEntries,
             logs = listOf(
                 LogUi(
                     level = LogLevel.WARN.name,
@@ -505,6 +493,22 @@ class AppRepository(
                 ),
             ),
         )
+        val degradedSnapshot = LiveStatusSnapshot(
+            updatedAtEpochMs = now.toEpochMilliseconds(),
+            activePair = "-",
+            totalEquityIdr = previousState.modalSaatIniIdr,
+            pnlTodayIdr = previousState.pnlTodayIdr,
+            internetPingMs = null,
+            scanUniverseCount = 0,
+            radarPairs = emptyList(),
+            holdings = emptyList(),
+            statusMessage = fallbackStatus,
+            liveLogEntries = fallbackEntries,
+        )
+        liveStatusStore.update(degradedSnapshot)
+        runCatching {
+            KiBotWidgetProvider.updateAll(appContext, degradedSnapshot)
+        }
     }
 
     private suspend fun fetchAuxiliaryData(
@@ -1233,6 +1237,15 @@ class AppRepository(
         if (message.isBlank()) return null
         val category = inferServerLogCategory(message)
         if (
+            category == "AUTH" ||
+            message.lowercase().contains("control-plane") ||
+            message.lowercase().contains("registered with control-plane") ||
+            message.lowercase().contains("registered to control plane") ||
+            message.lowercase().contains("device registered")
+        ) {
+            return null
+        }
+        if (
             category in setOf("ROTASI", "SCAN", "TARGET") &&
             HIDDEN_STABLE_PAIRS.any { pair -> message.lowercase().contains(pair) }
         ) {
@@ -1282,13 +1295,18 @@ class AppRepository(
                 )
             }
         }
-        val serverCards = serverLogs.map { line ->
-            LogUi(
-                level = "INFO",
-                category = inferServerLogCategory(line),
-                message = line.trim(),
-                timeLabel = formatLastUpdated(Clock.System.now()),
-            )
+        val serverCards = serverLogs.mapIndexedNotNull { index, line ->
+            toServerLiveEntry(
+                line = line,
+                fallbackTimestamp = Clock.System.now().toEpochMilliseconds() - (index * 1_000L),
+            )?.let { entry ->
+                LogUi(
+                    level = "INFO",
+                    category = entry.category,
+                    message = entry.message,
+                    timeLabel = formatMomentLabel(Instant.fromEpochMilliseconds(entry.timestampEpochMs)),
+                )
+            }
         }
         return (timelineCards + tradeCards + serverCards)
             .filter { it.message.isNotBlank() }

@@ -1058,14 +1058,13 @@ class MacEngineDaemon(
         val redPositions = managedPositions.filter { it.unrealizedPnlPct <= -0.45 }
         val slotsAreFull = managedPositions.size >= cycle.deploymentPlan.maxActivePositions.coerceAtLeast(1)
 
+        if (!slotsAreFull) return null
+
         if (cycle.deploymentPlan.allowRotation && profitablePositions.isEmpty()) {
             return "Rotasi ditunda karena belum ada posisi yang sudah hijau bersih setelah biaya."
         }
-        if (slotsAreFull && redPositions.isNotEmpty() && profitablePositions.isEmpty()) {
+        if (redPositions.isNotEmpty() && profitablePositions.isEmpty()) {
             return "Entry baru ditahan karena portofolio masih merah dan belum ada posisi hijau untuk rotasi."
-        }
-        if (redPositions.size >= 2 && profitablePositions.isEmpty()) {
-            return "Terlalu banyak posisi masih merah, jadi bot tahan entry baru sampai ada recovery nyata."
         }
         return null
     }
@@ -1438,15 +1437,20 @@ class MacEngineDaemon(
             }
             .sortedByDescending { detail -> detail.valueIdrLabel.parseRupiahLabel() ?: 0.0 }
         val scanUniverseCount = marketQuotes.size
+        val displayHeartbeatLabel = when {
+            localHealth.syncHealth == SyncHealth.HEALTHY && botState.effectiveState != BotEffectiveState.STOPPED -> "baru saja"
+            localHealth.syncHealth == SyncHealth.DEGRADED && botState.effectiveState != BotEffectiveState.STOPPED -> "beberapa saat lalu"
+            else -> heartbeatInstant?.let { formatAge(now, it) } ?: "Never"
+        }
         val statusMessage = when {
             botState.effectiveState == BotEffectiveState.SAFE_MODE || lease?.conflictDetected == true ->
                 "Safe mode aktif. Tunggu status trade dan data exchange benar-benar bersih."
             localHealth.status == HealthStatus.CRITICAL ->
                 "Server Oracle lagi bermasalah: ${localHealth.warnings.firstOrNull().orEmpty()}".trim()
             holdingsDetailed.isNotEmpty() && topCandidate != "-" ->
-                "Server jaga ${holdingsDetailed.size} aset sambil pantau $topCandidate."
+                "Server pegang ${holdingsDetailed.size} aset dan fokus cari entry baru di $topCandidate."
             topCandidate != "-" && scanUniverseCount > 0 ->
-                "Server scan $scanUniverseCount pair dan fokus ke $topCandidate."
+                "Server scan $scanUniverseCount pair dan fokus entry breakout $topCandidate."
             scanUniverseCount > 0 ->
                 "Server scan $scanUniverseCount pair dan cari momentum yang layak."
             else -> "Server Oracle lagi sinkron dan pantau market."
@@ -1505,7 +1509,7 @@ class MacEngineDaemon(
             weeklyAdaptationSummary = weeklyReview?.adaptationPlan?.notes?.joinToString(" ")
                 ?.takeIf { it.isNotBlank() }
                 ?: "Adaptasi mingguan belum tersedia.",
-            lastHeartbeatLabel = heartbeatInstant?.let { formatAge(now, it) } ?: "Never",
+            lastHeartbeatLabel = displayHeartbeatLabel,
             lastUpdatedLabel = formatUpdatedLabel(now),
             statusMessage = statusMessage,
             lastUpdatedEpochMs = now.toEpochMilliseconds(),
@@ -1738,7 +1742,7 @@ class MacEngineDaemon(
         val preservedOperatorEntries = existingTimeline
             .filterNot { it.category in setOf("STATUS", "HEALTH") }
             .filter { shouldExposeToLiveTimeline(it.category, it.message) }
-            .filter { now.toEpochMilliseconds() - it.timestampEpochMs <= 24 * 60 * 60 * 1000L }
+            .filter { now.toEpochMilliseconds() - it.timestampEpochMs <= 2 * 60 * 60 * 1000L }
         return (freshStatusEntries + orderEntries + preservedOperatorEntries)
             .sortedByDescending { it.timestampEpochMs }
             .distinctBy { "${it.category}|${it.message}" }
@@ -1757,9 +1761,9 @@ class MacEngineDaemon(
             botState.effectiveState == BotEffectiveState.SAFE_MODE ->
                 "Server masuk safe mode dan tahan entry baru."
             holdingsDetailed.isNotEmpty() && topCandidate != "-" ->
-                "Server pegang ${holdingsDetailed.size} aset sambil awasi $topCandidate."
+                "Server pegang ${holdingsDetailed.size} aset dan awasi entry cepat $topCandidate."
             topCandidate != "-" ->
-                "Server sedang bidik $topCandidate dari $scanUniverseCount pair."
+                "Server lagi bidik $topCandidate dari $scanUniverseCount pair."
             else ->
                 "Server lagi sinkron dan scan market live."
         }
@@ -1770,6 +1774,23 @@ class MacEngineDaemon(
                 message = primaryMessage,
             ),
         )
+        if (topCandidate != "-") {
+            entries += com.kibot.macengine.state.MacTimelineEntry(
+                timestampEpochMs = now.toEpochMilliseconds() - 500L,
+                category = "TARGET",
+                message = "Fokus server sekarang $topCandidate. Entry akan ditembak kalau breakout lanjut dan biaya masih masuk akal.",
+            )
+        }
+        if (holdingsDetailed.isNotEmpty()) {
+            val watchedHoldings = holdingsDetailed
+                .take(3)
+                .joinToString(" • ") { it.assetCode }
+            entries += com.kibot.macengine.state.MacTimelineEntry(
+                timestampEpochMs = now.toEpochMilliseconds() - 750L,
+                category = "HOLD",
+                message = "Server sedang jaga ${holdingsDetailed.size} aset: $watchedHoldings.",
+            )
+        }
         if (healthSummary.isNotBlank()) {
             entries += com.kibot.macengine.state.MacTimelineEntry(
                 timestampEpochMs = now.toEpochMilliseconds() - 1_000L,
