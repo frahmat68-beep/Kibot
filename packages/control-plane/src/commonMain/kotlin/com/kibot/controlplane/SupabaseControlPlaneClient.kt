@@ -39,6 +39,9 @@ import com.kibot.shared.models.OrderStatus
 import com.kibot.shared.models.OrderType
 import com.kibot.shared.models.PairId
 import com.kibot.shared.models.PairScore
+import com.kibot.shared.models.PositionId
+import com.kibot.shared.models.PositionSnapshot
+import com.kibot.shared.models.PositionState
 import com.kibot.shared.models.ProfitProtectionStatus
 import com.kibot.shared.models.RiskLadderLevel
 import com.kibot.shared.models.RuntimeIntelligenceUpdate
@@ -538,6 +541,18 @@ class SupabaseControlPlaneClient internal constructor(
             orderBy = "updated_at.desc",
             limit = 100,
         ).map(OrderRow::toOrderSnapshot)
+    }
+
+    override suspend fun fetchActivePositions(botId: BotId): List<PositionSnapshot> {
+        return selectList<PositionRow>(
+            table = "positions",
+            filters = mapOf(
+                "bot_id" to "eq.${botId.value}",
+                "state" to "in.(OPENING,OPEN,CLOSING)",
+            ),
+            orderBy = "updated_at.desc",
+            limit = 50,
+        ).map(PositionRow::toPositionSnapshot)
     }
 
     override suspend fun upsertOrderSnapshot(
@@ -1134,6 +1149,35 @@ private fun OrderRow.toOrderSnapshot(): OrderSnapshot = OrderSnapshot(
     remainingQuantity = DecimalValue(remainingQuantity.toDecimalString()),
     feePaid = DecimalValue(feePaid.toDecimalString()),
     createdAt = openedAt,
+    updatedAt = updatedAt,
+)
+
+@Serializable
+private data class PositionRow(
+    @SerialName("position_id") val positionId: String,
+    @SerialName("pair_id") val pairId: String,
+    @SerialName("base_asset") val baseAsset: String,
+    @SerialName("quote_asset") val quoteAsset: String,
+    val state: String,
+    val quantity: DecimalValue,
+    @SerialName("average_entry_price") val averageEntryPrice: DecimalValue,
+    @SerialName("realized_pnl_idr") val realizedPnlIdr: DecimalValue,
+    @SerialName("unrealized_pnl_idr") val unrealizedPnlIdr: DecimalValue,
+    @SerialName("opened_at") val openedAt: Instant,
+    @SerialName("updated_at") val updatedAt: Instant,
+)
+
+private fun PositionRow.toPositionSnapshot(): PositionSnapshot = PositionSnapshot(
+    positionId = PositionId(positionId),
+    pairId = PairId(pairId),
+    baseAsset = baseAsset,
+    quoteAsset = quoteAsset,
+    state = PositionState.valueOf(state),
+    quantity = quantity,
+    averageEntryPrice = averageEntryPrice,
+    realizedPnlIdr = realizedPnlIdr,
+    unrealizedPnlIdr = unrealizedPnlIdr,
+    openedAt = openedAt,
     updatedAt = updatedAt,
 )
 

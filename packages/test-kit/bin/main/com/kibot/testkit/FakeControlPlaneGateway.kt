@@ -25,6 +25,7 @@ import com.kibot.shared.models.LeaseState
 import com.kibot.shared.models.LeaseTerm
 import com.kibot.shared.models.OrderSnapshot
 import com.kibot.shared.models.PairScore
+import com.kibot.shared.models.PositionSnapshot
 import com.kibot.shared.models.RuntimeIntelligenceUpdate
 import com.kibot.shared.models.UserId
 import com.kibot.shared.models.WeeklyLearningSummary
@@ -44,6 +45,7 @@ class FakeControlPlaneGateway(
     private val commands = mutableListOf<CommandEnvelope>()
     private val logs = mutableListOf<AuditLogRecord>()
     private val recentOrders = mutableListOf<OrderSnapshot>()
+    private val activePositions = mutableListOf<PositionSnapshot>()
     val strategyMetrics = mutableListOf<PairScore>()
     val updateRecommendations = mutableListOf<BotUpdateRecommendation>()
     var runtimeIntelligence: RuntimeIntelligenceUpdate? = null
@@ -323,6 +325,8 @@ class FakeControlPlaneGateway(
         )
     }
 
+    override suspend fun fetchActivePositions(botId: BotId): List<PositionSnapshot> = activePositions.toList()
+
     override suspend fun upsertOrderSnapshot(botId: BotId, term: Long, deviceId: DeviceId, order: OrderSnapshot) {
         val index = recentOrders.indexOfFirst { it.clientOrderId == order.clientOrderId }
         if (index >= 0) {
@@ -352,6 +356,11 @@ class FakeControlPlaneGateway(
     fun seedPersistedOrders(vararg orders: OrderSnapshot) {
         recentOrders.clear()
         recentOrders += orders
+    }
+
+    fun seedActivePositions(vararg positions: PositionSnapshot) {
+        activePositions.clear()
+        activePositions += positions
     }
 
     fun seedCommand(command: CommandEnvelope) {

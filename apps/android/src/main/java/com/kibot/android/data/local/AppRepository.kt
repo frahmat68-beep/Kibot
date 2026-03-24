@@ -110,6 +110,11 @@ class AppRepository(
             persistState()
             return
         }
+        if (normalizedServerMonitorBaseUrl != null) {
+            syncFromUnavailableServerFeed(now)
+            persistState()
+            return
+        }
 
         val gateway = controlPlaneGateway ?: return
         ensureDeviceRegistered()
@@ -446,6 +451,65 @@ class AppRepository(
         runCatching {
             KiBotWidgetProvider.updateAll(appContext, refreshedSnapshot)
         }
+    }
+
+    private fun syncFromUnavailableServerFeed(
+        now: Instant,
+    ) {
+        val previousState = _uiState.value
+        val fallbackSnapshot = liveStatusStore.current().takeIf { isUiUsableLiveSnapshot(it, now) }
+        val activePair = fallbackSnapshot?.activePair
+            ?.takeIf { it.isNotBlank() && it != "-" }
+            ?: previousState.pairAktif
+        val radarPairs = fallbackSnapshot?.radarPairs
+            ?.map { it.lowercase() }
+            ?.filter { it !in HIDDEN_STABLE_PAIRS }
+            ?.take(10)
+            ?.takeIf { it.isNotEmpty() }
+            ?: previousState.radarPairs
+        val positions = fallbackSnapshot?.toPositionCards()
+            ?.takeIf { it.isNotEmpty() }
+            ?: previousState.positions
+        val fallbackStatus = "Feed server Oracle belum terhubung. App tetap menahan snapshot terakhir."
+        val fallbackLogs = fallbackSnapshot?.liveLogEntries
+            ?.takeIf { it.isNotEmpty() }
+            ?: previousState.liveLogEntries
+        _uiState.value = previousState.copy(
+            isBotRunning = previousState.effectiveState != BotEffectiveState.STOPPED,
+            effectiveState = if (previousState.effectiveState == BotEffectiveState.STOPPED) {
+                BotEffectiveState.DEGRADED
+            } else {
+                previousState.effectiveState
+            },
+            activeEngine = "Oracle Cloud Server",
+            standbyEngine = "-",
+            syncHealth = "DEGRADED",
+            syncPathLabel = "Live Server",
+            syncLagLabel = "--",
+            pairAktif = activePair ?: "-",
+            radarPairs = radarPairs,
+            positions = positions,
+            statusMessage = fallbackStatus,
+            lastUpdatedLabel = formatLastUpdated(now),
+            liveLogEntries = fallbackLogs,
+            logs = listOf(
+                LogUi(
+                    level = LogLevel.WARN.name,
+                    category = "SERVER",
+                    message = fallbackStatus,
+                    timeLabel = formatLastUpdated(now),
+                ),
+            ),
+            devices = listOf(
+                DeviceStatusUi(
+                    name = "Oracle Cloud Server",
+                    online = false,
+                    active = true,
+                    heartbeat = "--",
+                    health = "DEGRADED",
+                ),
+            ),
+        )
     }
 
     private suspend fun fetchAuxiliaryData(

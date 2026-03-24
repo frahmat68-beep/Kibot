@@ -10,9 +10,12 @@ WorkingDirectory=/home/ubuntu/KiBot
 EnvironmentFile=-/home/ubuntu/KiBot/.env.server
 Environment=SUPABASE_URL=https://txdvrhkxkylnlxnkpmfl.supabase.co
 Environment=SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR4ZHZyaGt4a3lsbmx4bmtwbWZsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4ODgwNTIsImV4cCI6MjA4OTQ2NDA1Mn0.Tz_8veCdatdTMpxwbSDmSCxvBTX50O3bYc1koFmUiKw
+Environment=DEVICE_ID=oracle-main
 Environment=DEVICE_DISPLAY_NAME="Oracle Cloud Server"
+Environment=DEVICE_ROLE=PRIMARY
 Environment=MAC_ENGINE_BIND_HOST=0.0.0.0
 Environment=MAC_ENGINE_PORT=8787
+Environment=BOT_ENABLE_LIVE_EXECUTION=true
 Environment=BOT_POLL_INTERVAL_MS=8000
 Environment=BOT_EXCHANGE_PING_REFRESH_INTERVAL_MS=8000
 Environment=BOT_BALANCE_REFRESH_INTERVAL_MS=12000

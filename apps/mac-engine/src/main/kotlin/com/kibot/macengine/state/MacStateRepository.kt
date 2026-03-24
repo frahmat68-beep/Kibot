@@ -18,6 +18,14 @@ enum class MacCommand {
 }
 
 @Serializable
+data class MacHoldingDetail(
+    val assetCode: String,
+    val assetLabel: String,
+    val quantityLabel: String,
+    val valueIdrLabel: String,
+)
+
+@Serializable
 data class MacDashboardState(
     val isBotRunning: Boolean,
     val effectiveState: BotEffectiveState,
@@ -25,9 +33,12 @@ data class MacDashboardState(
     val edgeConfidence: String,
     val marketRegime: String,
     val topCandidate: String,
+    val radarPairs: List<String>,
+    val scanUniverseCount: Int,
     val liveExecutionEnabled: Boolean,
     val portfolioValueIdr: String,
     val pnlTodayIdr: String,
+    val pnlTodayPctLabel: String,
     val syncPathLabel: String,
     val activeEngine: String,
     val standbyEngine: String,
@@ -43,6 +54,7 @@ data class MacDashboardState(
     val serverLocation: String,
     val serverUptime: String,
     val heldAssets: List<String>,
+    val holdingsDetailed: List<MacHoldingDetail>,
     val exchangePingMs: String,
 ) {
     companion object {
@@ -53,12 +65,15 @@ data class MacDashboardState(
             edgeConfidence = "MEDIUM",
             marketRegime = "HIGH_VOLATILITY_UNCLEAR",
             topCandidate = "-",
+            radarPairs = emptyList(),
+            scanUniverseCount = 0,
             liveExecutionEnabled = false,
             portfolioValueIdr = "Rp0",
             pnlTodayIdr = "+Rp0",
-            syncPathLabel = "Live Feed",
-            activeEngine = "Android",
-            standbyEngine = "Mac",
+            pnlTodayPctLabel = "+0.0%",
+            syncPathLabel = "Live Server",
+            activeEngine = "Oracle Cloud Server",
+            standbyEngine = "View Only",
             syncHealth = "DEGRADED",
             leaseTerm = 0,
             healthSummary = "Waiting for live server connection.",
@@ -71,6 +86,7 @@ data class MacDashboardState(
             serverLocation = "Oracle Cloud (24/7)",
             serverUptime = "0m",
             heldAssets = emptyList(),
+            holdingsDetailed = emptyList(),
             exchangePingMs = "--",
         )
     }

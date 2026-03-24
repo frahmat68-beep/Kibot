@@ -21,6 +21,7 @@ import com.kibot.shared.models.ExecutionActionId
 import com.kibot.shared.models.ExecutionActionTicket
 import com.kibot.shared.models.OrderSnapshot
 import com.kibot.shared.models.PairScore
+import com.kibot.shared.models.PositionSnapshot
 import com.kibot.shared.models.RuntimeIntelligenceUpdate
 import com.kibot.shared.models.WeeklyLearningSummary
 import kotlinx.datetime.LocalDate
@@ -111,6 +112,8 @@ interface ControlPlaneGateway {
     suspend fun fetchRecentOrders(botId: BotId, limit: Int = 50): List<OrderSnapshot>
 
     suspend fun fetchOpenPersistedOrders(botId: BotId): List<OrderSnapshot>
+
+    suspend fun fetchActivePositions(botId: BotId): List<PositionSnapshot>
 
     suspend fun upsertOrderSnapshot(
         botId: BotId,

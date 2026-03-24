@@ -60,6 +60,10 @@ object MacRuntimeConfigLoader {
         val botId = BotId(optional("BOT_ID") ?: "main")
         val apiKey = optional("INDODAX_API_KEY")
         val apiSecret = optional("INDODAX_API_SECRET")
+        val deviceRole = optional("DEVICE_ROLE")
+            ?.uppercase()
+            ?.let { raw -> runCatching { DeviceRole.valueOf(raw) }.getOrNull() }
+            ?: DeviceRole.PRIMARY
 
         return MacRuntimeConfig(
             port = optional("MAC_ENGINE_PORT")?.toIntOrNull() ?: 8787,
@@ -72,10 +76,10 @@ object MacRuntimeConfigLoader {
                 botId = botId,
             ),
             device = DeviceRegistration(
-                deviceId = DeviceId(optional("DEVICE_ID") ?: "macbook-main"),
+                deviceId = DeviceId(optional("DEVICE_ID") ?: "oracle-main"),
                 displayName = optional("DEVICE_DISPLAY_NAME") ?: defaultDisplayName(),
                 platform = DevicePlatform.MACOS,
-                role = DeviceRole.STANDBY,
+                role = deviceRole,
             ),
             pollIntervalMillis = optional("BOT_POLL_INTERVAL_MS")?.toLongOrNull() ?: 5_000L,
             exchangePingRefreshIntervalMillis = optional("BOT_EXCHANGE_PING_REFRESH_INTERVAL_MS")?.toLongOrNull() ?: 8_000L,

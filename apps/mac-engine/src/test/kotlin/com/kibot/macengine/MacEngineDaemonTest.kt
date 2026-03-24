@@ -93,7 +93,7 @@ class MacEngineDaemonTest {
         val lease = controlPlane.fetchLease(botId)
         assertEquals(macId, lease?.currentHolder)
         assertEquals(BotEffectiveState.RUNNING, controlPlane.fetchBotState(botId)?.effectiveState)
-        assertTrue(repository.state.value.activeEngine.contains("Mac", ignoreCase = true))
+        assertTrue(repository.state.value.activeEngine.contains("Oracle", ignoreCase = true))
         assertEquals(BotMode.ATTACK, controlPlane.runtimeIntelligence?.operatingMode)
         assertEquals(PairId("btc_idr"), controlPlane.runtimeIntelligence?.currentPair)
     }
