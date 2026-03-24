@@ -57,9 +57,16 @@ jobs:
           chmod +x /home/ubuntu/KiBot/kibot-recovery.sh
           chmod +x /home/ubuntu/KiBot/setup-autorecover.sh
           sudo cp /home/ubuntu/KiBot/kibot-engine.service /etc/systemd/system/kibot-engine.service
+          sudo systemctl stop kibot-engine || true
+          sudo pkill -f '/home/ubuntu/KiBot/server/mac-engine-all.jar' || true
+          sudo fuser -k 8787/tcp || true
           sudo systemctl daemon-reload
           sudo systemctl enable kibot-engine
           sudo systemctl restart kibot-engine
           sudo systemctl is-active --quiet kibot-engine
           curl -fsS --retry 10 --retry-delay 3 http://127.0.0.1:8787/api/state >/tmp/kibot-state.json
+          curl -fsS --retry 10 --retry-delay 3 http://127.0.0.1:8787/api/logs >/tmp/kibot-logs.json
+          curl -fsS --retry 10 --retry-delay 3 http://127.0.0.1:8787/ >/tmp/kibot-root.html
+          grep 'KiBot Server Monitor' /tmp/kibot-root.html
+          grep 'server-monitor-v3' /tmp/kibot-root.html
           cat /tmp/kibot-state.json | head -c 800

@@ -10,7 +10,6 @@ import androidx.lifecycle.lifecycleScope
 import com.kibot.android.runtime.BotForegroundService
 import com.kibot.android.ui.KiBotRoot
 import com.kibot.android.ui.theme.KiBotTheme
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -20,14 +19,10 @@ class MainActivity : ComponentActivity() {
         val app = application as KiBotApplication
         val repository = app.container.repository
 
-        BotForegroundService.stop(this)
+        BotForegroundService.start(this)
 
         lifecycleScope.launch {
             repository.syncNow()
-            while (true) {
-                delay(8_000)
-                repository.syncNow()
-            }
         }
 
         setContent {

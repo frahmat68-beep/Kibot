@@ -6,6 +6,8 @@ set -euo pipefail
 
 LOG_FILE="/home/ubuntu/KiBot/kibot-recovery.log"
 HEALTH_URL="http://127.0.0.1:8787/api/state"
+ROOT_URL="http://127.0.0.1:8787/"
+LOGS_URL="http://127.0.0.1:8787/api/logs"
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
@@ -23,13 +25,18 @@ check_engine() {
 
 start_engine() {
     log "Restarting kibot-engine service"
+    sudo systemctl stop kibot-engine || true
+    sudo pkill -f '/home/ubuntu/KiBot/server/mac-engine-all.jar' || true
+    sudo fuser -k 8787/tcp || true
     sudo systemctl restart kibot-engine
     sleep 8
     check_engine && log "Engine restarted successfully" || log "Engine restart failed"
 }
 
 check_dashboard() {
-    if curl -fsS --max-time 5 "$HEALTH_URL" > /dev/null; then
+    if curl -fsS --max-time 5 "$HEALTH_URL" > /dev/null && \
+       curl -fsS --max-time 5 "$ROOT_URL" > /dev/null && \
+       curl -fsS --max-time 5 "$LOGS_URL" > /dev/null; then
         log "Dashboard/API is accessible"
         return 0
     else

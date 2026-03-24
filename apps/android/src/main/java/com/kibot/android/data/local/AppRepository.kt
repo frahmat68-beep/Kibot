@@ -24,8 +24,6 @@ import com.kibot.core.ExchangeGateway
 import com.kibot.shared.models.BalanceSnapshot
 import com.kibot.shared.models.BotEffectiveState
 import com.kibot.shared.models.BotId
-import com.kibot.shared.models.BotDesiredState
-import com.kibot.shared.models.CommandType
 import com.kibot.shared.models.DailyEquityHistoryPoint
 import com.kibot.shared.models.LogLevel
 import com.kibot.shared.models.MarketQuote
@@ -63,6 +61,7 @@ class AppRepository(
     private val deviceRegistration: DeviceRegistration? = null,
     private val botId: BotId = BotId("main"),
     private val macLanSyncBaseUrl: String? = null,
+    private val serverMonitorBaseUrl: String? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _uiState = MutableStateFlow(KiBotUiState.preview())
@@ -76,6 +75,10 @@ class AppRepository(
         ?.removeSuffix("/api/lan/ping")
         ?.takeIf { it.isNotBlank() }
         ?.let { CachedLanEndpoint(it, 0L) }
+    private val normalizedServerMonitorBaseUrl = serverMonitorBaseUrl
+        ?.trim()
+        ?.removeSuffix("/")
+        ?.takeIf { it.isNotBlank() }
     private var lastLanDiscoveryAttemptEpochMs: Long = 0L
 
     private data class ValuedHolding(
@@ -100,9 +103,16 @@ class AppRepository(
     }
 
     suspend fun syncNow() {
+        val now = Clock.System.now()
+        val serverMonitor = fetchServerMonitorState()
+        if (serverMonitor != null) {
+            syncFromServerMonitor(serverMonitor, now)
+            persistState()
+            return
+        }
+
         val gateway = controlPlaneGateway ?: return
         ensureDeviceRegistered()
-        val now = Clock.System.now()
         val jakartaDate = now.toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
         val storedLiveSnapshot = liveStatusStore.current().takeIf { it.updatedAtEpochMs > 0L }
         val fallbackSnapshot = storedLiveSnapshot?.takeIf { isUiUsableLiveSnapshot(it, now) }
@@ -206,6 +216,7 @@ class AppRepository(
             .takeIf { it.isNotEmpty() }
             ?.joinToString(" • ") { it.lowercase() }
         val serverTimeline = buildServerLiveEntries(
+            serverLogs = emptyList(),
             logs = logs,
             orders = orders,
             fallbackTimestamp = now.toEpochMilliseconds(),
@@ -325,6 +336,118 @@ class AppRepository(
         persistState()
     }
 
+    private suspend fun syncFromServerMonitor(
+        serverBundle: ServerMonitorBundle,
+        now: Instant,
+    ) {
+        val state = serverBundle.state
+        val totalEquityIdr = state.portfolioValueIdr.parseRupiahLabel()
+        val valuedHoldings = buildServerValuedHoldings(state)
+        val filteredRadarPairs = filterDisplayPairs(state.radarPairs)
+        val livePair = state.topCandidate.lowercase().takeUnless { it in HIDDEN_STABLE_PAIRS }
+            ?: filteredRadarPairs.firstOrNull()
+            ?: "-"
+        val liveEntries = buildServerLiveEntries(
+            serverLogs = serverBundle.serverLogs,
+            logs = serverBundle.logs,
+            orders = serverBundle.orders,
+            fallbackTimestamp = now.toEpochMilliseconds(),
+        )
+        val statusMessage = state.statusMessage
+            .takeIf { it.isNotBlank() }
+            ?: liveEntries.firstOrNull()?.message
+            ?: "Server Oracle sedang memantau market live."
+        val portfolio = buildPortfolioSection(
+            now = now,
+            history = serverBundle.riskHistory,
+            totalEquityLabel = state.portfolioValueIdr,
+            totalEquityIdr = totalEquityIdr,
+            pnlTodayLabel = state.pnlTodayIdr,
+            pnlTodayPctLabel = state.pnlTodayPctLabel,
+            risk = null,
+            holdings = valuedHoldings,
+            cashReadyIdrOverride = buildServerCashReady(totalEquityIdr, valuedHoldings),
+        )
+
+        _uiState.value = _uiState.value.copy(
+            isBotRunning = state.isBotRunning || state.effectiveState != BotEffectiveState.STOPPED,
+            effectiveState = state.effectiveState,
+            operatingMode = state.operatingMode,
+            edgeConfidence = state.edgeConfidence,
+            marketRegime = state.marketRegime,
+            activeEngine = state.activeEngine.ifBlank { "Oracle Cloud Server" },
+            standbyEngine = state.serverLocation.ifBlank { "-" },
+            syncHealth = state.syncHealth,
+            internetPingLabel = state.exchangePingMs.ifBlank { "--" },
+            pnlTodayIdr = state.pnlTodayIdr,
+            pnlTodayPctLabel = state.pnlTodayPctLabel,
+            modalSaatIniIdr = state.portfolioValueIdr,
+            scanUniverseCount = state.scanUniverseCount,
+            radarPairs = filteredRadarPairs,
+            pairAktif = livePair,
+            syncLagLabel = state.lastHeartbeatLabel.ifBlank { "--" },
+            syncPathLabel = "Live Server",
+            lastUpdatedLabel = state.lastUpdatedLabel.ifBlank { formatLastUpdated(now) },
+            statusMessage = statusMessage,
+            weeklyLearningSummary = state.weeklyLearningSummary
+                .takeIf { it.isNotBlank() }
+                ?: serverBundle.weeklyReview?.let {
+                    "Week ${it.periodStart} - ${it.periodEnd} • no-trade ${(it.noTradeQualityScore * 100).toInt()}% • util ${(it.productiveUtilizationPct * 100).toInt()}%"
+                }
+                ?: "Belum ada review mingguan.",
+            weeklyAdaptationSummary = state.weeklyAdaptationSummary
+                .takeIf { it.isNotBlank() }
+                ?: serverBundle.weeklyReview?.adaptationPlan?.notes?.joinToString(" ")
+                    ?.takeIf { it.isNotBlank() }
+                ?: "Adaptasi mingguan belum tersedia.",
+            positions = buildServerPositions(state),
+            portfolio = portfolio,
+            liveLogEntries = liveEntries,
+            logs = buildServerLogCards(serverBundle.serverLogs, serverBundle.logs),
+            trades = serverBundle.orders
+                .filter {
+                    it.executedQuantity.toDoubleOrZero() > 0.0 ||
+                        it.status == OrderStatus.FILLED ||
+                        it.status == OrderStatus.PARTIALLY_FILLED
+                }
+                .map {
+                    TradeUi(
+                        pair = it.pairId.value.lowercase(),
+                        side = "${it.side.name} • ${it.orderType.name}",
+                        status = it.status.name,
+                        detail = "${formatQuantity(max(it.executedQuantity.toDoubleOrZero(), it.originalQuantity.toDoubleOrZero()))} @ ${formatIdr(max(it.price.toDoubleOrZero(), 0.0))}",
+                        timeLabel = formatMomentLabel(it.updatedAt),
+                    )
+                },
+            devices = listOf(
+                DeviceStatusUi(
+                    name = state.serverLocation.ifBlank { "Oracle Cloud Server" },
+                    online = true,
+                    active = true,
+                    heartbeat = state.lastHeartbeatLabel.ifBlank { "--" },
+                    health = state.syncHealth,
+                ),
+            ),
+        )
+
+        val refreshedSnapshot = LiveStatusSnapshot(
+            updatedAtEpochMs = state.lastUpdatedEpochMs.takeIf { it > 0L } ?: System.currentTimeMillis(),
+            activePair = livePair,
+            totalEquityIdr = state.portfolioValueIdr,
+            pnlTodayIdr = state.pnlTodayIdr,
+            internetPingMs = state.exchangePingMs.parsePingMs(),
+            scanUniverseCount = state.scanUniverseCount,
+            radarPairs = filteredRadarPairs,
+            holdings = buildServerLiveHoldings(state),
+            statusMessage = statusMessage,
+            liveLogEntries = liveEntries,
+        )
+        liveStatusStore.update(refreshedSnapshot)
+        runCatching {
+            KiBotWidgetProvider.updateAll(appContext, refreshedSnapshot)
+        }
+    }
+
     private suspend fun fetchAuxiliaryData(
         gateway: ControlPlaneGateway,
         now: Instant,
@@ -347,6 +470,32 @@ class AppRepository(
         }
         cachedAuxiliaryData = refreshed
         return refreshed
+    }
+
+    private suspend fun fetchServerMonitorState(): ServerMonitorBundle? {
+        val baseUrl = normalizedServerMonitorBaseUrl ?: return null
+        val stateDeferred = scope.async { fetchJsonObject("$baseUrl/api/state") }
+        val logsDeferred = scope.async { fetchJsonArrayStrings("$baseUrl/api/logs") }
+        val auxiliaryDeferred = scope.async {
+            val gateway = controlPlaneGateway ?: return@async null
+            runCatching { fetchAuxiliaryData(gateway, Clock.System.now()) }.getOrNull()
+        }
+        val riskHistoryDeferred = scope.async {
+            val gateway = controlPlaneGateway ?: return@async emptyList()
+            runCatching { gateway.fetchDailyRiskHistory(botId, days = 7) }.getOrDefault(emptyList())
+        }
+
+        val stateJson = stateDeferred.await() ?: return null
+        val parsedState = parseServerMonitorState(stateJson) ?: return null
+        val auxiliary = auxiliaryDeferred.await()
+        return ServerMonitorBundle(
+            state = parsedState,
+            serverLogs = logsDeferred.await(),
+            logs = auxiliary?.logs.orEmpty(),
+            orders = auxiliary?.orders.orEmpty(),
+            weeklyReview = auxiliary?.weeklyReview,
+            riskHistory = riskHistoryDeferred.await(),
+        )
     }
 
     fun isDesiredOn(): Boolean = runtimePreferenceStore.isDesiredOn()
@@ -411,6 +560,55 @@ class AppRepository(
                 )
             }
             .sortedByDescending { extractCurrencyValue(it.value) }
+    }
+
+    private fun buildServerPositions(
+        state: ServerMonitorState,
+    ): List<PositionCardUi> {
+        return state.holdingsDetailed
+            .map { holding ->
+                PositionCardUi(
+                    pair = holding.assetCode.uppercase(),
+                    quantity = holding.quantityLabel,
+                    value = holding.valueIdrLabel,
+                )
+            }
+            .sortedByDescending { extractCurrencyValue(it.value) }
+    }
+
+    private fun buildServerLiveHoldings(
+        state: ServerMonitorState,
+    ): List<LiveHoldingUi> {
+        return state.holdingsDetailed.map { holding ->
+            LiveHoldingUi(
+                asset = holding.assetCode.uppercase(),
+                amount = holding.quantityLabel,
+                valueIdr = holding.valueIdrLabel,
+            )
+        }
+    }
+
+    private fun buildServerValuedHoldings(
+        state: ServerMonitorState,
+    ): List<ValuedHolding> {
+        return state.holdingsDetailed
+            .mapNotNull { holding ->
+                val valueIdr = holding.valueIdrLabel.parseRupiahLabel() ?: return@mapNotNull null
+                ValuedHolding(
+                    asset = holding.assetCode.uppercase(),
+                    quantity = extractQuantityValue(holding.quantityLabel),
+                    valueIdr = valueIdr,
+                )
+            }
+            .sortedByDescending { it.valueIdr }
+    }
+
+    private fun buildServerCashReady(
+        totalEquityIdr: Double?,
+        holdings: List<ValuedHolding>,
+    ): Double? {
+        val equity = totalEquityIdr ?: return null
+        return (equity - holdings.sumOf { it.valueIdr }).coerceAtLeast(0.0)
     }
 
     private fun buildPortfolioSection(
@@ -810,14 +1008,89 @@ class AppRepository(
         return numeric.toDoubleOrNull() ?: 0.0
     }
 
+    private fun fetchJsonObject(url: String): JSONObject? {
+        return runCatching {
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 3_000
+                readTimeout = 3_000
+                requestMethod = "GET"
+                setRequestProperty("Cache-Control", "no-cache")
+            }
+            connection.inputStream.bufferedReader().use { reader ->
+                JSONObject(reader.readText())
+            }
+        }.getOrNull()
+    }
+
+    private fun fetchJsonArrayStrings(url: String): List<String> {
+        return runCatching {
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 3_000
+                readTimeout = 3_000
+                requestMethod = "GET"
+                setRequestProperty("Cache-Control", "no-cache")
+            }
+            connection.inputStream.bufferedReader().use { reader ->
+                val body = reader.readText()
+                val array = org.json.JSONArray(body)
+                List(array.length()) { index -> array.optString(index) }.filter { it.isNotBlank() }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun parseServerMonitorState(
+        json: JSONObject,
+    ): ServerMonitorState? {
+        val effectiveState = runCatching {
+            BotEffectiveState.valueOf(json.optString("effectiveState", BotEffectiveState.STOPPED.name))
+        }.getOrDefault(BotEffectiveState.STOPPED)
+        val portfolioValueIdr = json.optString("portfolioValueIdr").takeIf { it.isNotBlank() } ?: return null
+        return ServerMonitorState(
+            isBotRunning = json.optBoolean("isBotRunning", effectiveState != BotEffectiveState.STOPPED),
+            effectiveState = effectiveState,
+            operatingMode = json.optString("operatingMode", "-"),
+            edgeConfidence = json.optString("edgeConfidence", "-"),
+            marketRegime = json.optString("marketRegime", "-"),
+            topCandidate = json.optString("topCandidate", "-"),
+            radarPairs = json.optJSONArray("radarPairs").toStringList(),
+            scanUniverseCount = json.optInt("scanUniverseCount", 0),
+            portfolioValueIdr = portfolioValueIdr,
+            pnlTodayIdr = json.optString("pnlTodayIdr", "+Rp0"),
+            pnlTodayPctLabel = json.optString("pnlTodayPctLabel", "+0.0%"),
+            syncPathLabel = json.optString("syncPathLabel", "Live Server"),
+            activeEngine = json.optString("activeEngine", "Oracle Cloud Server"),
+            standbyEngine = json.optString("standbyEngine", "-"),
+            syncHealth = json.optString("syncHealth", "UNKNOWN"),
+            leaseTerm = json.optLong("leaseTerm", 0L),
+            healthSummary = json.optString("healthSummary", "-"),
+            weeklyLearningSummary = json.optString("weeklyLearningSummary", ""),
+            weeklyAdaptationSummary = json.optString("weeklyAdaptationSummary", ""),
+            lastHeartbeatLabel = json.optString("lastHeartbeatLabel", ""),
+            lastUpdatedLabel = json.optString("lastUpdatedLabel", ""),
+            statusMessage = json.optString("statusMessage", ""),
+            lastUpdatedEpochMs = json.optLong("lastUpdatedEpochMs", 0L),
+            serverLocation = json.optString("serverLocation", "Oracle Cloud Server"),
+            serverUptime = json.optString("serverUptime", "-"),
+            exchangePingMs = json.optString("exchangePingMs", "--"),
+            holdingsDetailed = json.optJSONArray("holdingsDetailed").toHoldingDetailList(),
+        )
+    }
+
     private fun buildServerLiveEntries(
+        serverLogs: List<String>,
         logs: List<com.kibot.shared.models.AuditLogRecord>,
         orders: List<OrderSnapshot>,
         fallbackTimestamp: Long,
     ): List<com.kibot.android.runtime.LiveLogEntry> {
+        val serverEntries = serverLogs.mapIndexedNotNull { index, line ->
+            toServerLiveEntry(
+                line = line,
+                fallbackTimestamp = fallbackTimestamp - (index * 1_000L),
+            )
+        }
         val tradeEntries = orders.mapNotNull(::toServerLiveEntry)
         val operatorEntries = filterOperatorLogs(logs).mapNotNull(::toServerLiveEntry)
-        val merged = (tradeEntries + operatorEntries)
+        val merged = (serverEntries + tradeEntries + operatorEntries)
             .sortedByDescending { it.timestampEpochMs }
             .distinctBy { "${it.category}|${it.message}" }
         return if (merged.isNotEmpty()) {
@@ -841,15 +1114,14 @@ class AppRepository(
                 val category = log.category.uppercase()
                 val message = log.message.lowercase()
                 category == "AUTH" ||
+                    message.contains("control-plane") ||
                     message.contains("registered with control-plane") ||
                     message.contains("registered to control plane") ||
                     message.contains("device registered") ||
                     (
                         category in setOf("ROTASI", "SCAN", "TARGET") &&
                             (
-                                message.contains("usdt_idr") ||
-                                    message.contains("usdc_idr") ||
-                                    message.contains("indr_idr")
+                                HIDDEN_STABLE_PAIRS.any { pair -> message.contains(pair) }
                                 )
                         )
             }
@@ -897,18 +1169,64 @@ class AppRepository(
         )
     }
 
+    private fun toServerLiveEntry(
+        line: String,
+        fallbackTimestamp: Long,
+    ): com.kibot.android.runtime.LiveLogEntry? {
+        val message = line.trim()
+        if (message.isBlank()) return null
+        val category = inferServerLogCategory(message)
+        if (
+            category in setOf("ROTASI", "SCAN", "TARGET") &&
+            HIDDEN_STABLE_PAIRS.any { pair -> message.lowercase().contains(pair) }
+        ) {
+            return null
+        }
+        return com.kibot.android.runtime.LiveLogEntry(
+            timestampEpochMs = fallbackTimestamp,
+            category = category,
+            message = message,
+        )
+    }
+
+    private fun buildServerLogCards(
+        serverLogs: List<String>,
+        logs: List<com.kibot.shared.models.AuditLogRecord>,
+    ): List<LogUi> {
+        val serverCards = serverLogs.map { line ->
+            LogUi(
+                level = "INFO",
+                category = inferServerLogCategory(line),
+                message = line.trim(),
+                timeLabel = formatLastUpdated(Clock.System.now()),
+            )
+        }
+        val operatorCards = filterOperatorLogs(logs).map {
+            LogUi(
+                level = it.level.name,
+                category = it.category,
+                message = it.message,
+                timeLabel = formatMomentLabel(it.recordedAt),
+            )
+        }
+        return (serverCards + operatorCards)
+            .filter { it.message.isNotBlank() }
+            .distinctBy { "${it.category}|${it.message}" }
+            .take(20)
+    }
+
     private fun filterDisplayPairs(
         pairs: List<String>,
     ): List<String> {
-        val blocked = setOf("usdt_idr", "usdc_idr", "indr_idr")
         return pairs
             .map { it.lowercase() }
-            .filter { it.isNotBlank() && it !in blocked }
+            .filter { it.isNotBlank() && it !in HIDDEN_STABLE_PAIRS }
             .distinct()
             .take(10)
     }
 
     companion object {
+        private val HIDDEN_STABLE_PAIRS = setOf("usdt_idr", "usdc_idr", "indr_idr")
         private const val MIN_VISIBLE_HOLDING_IDR = 1.0
         private const val AUXILIARY_CACHE_TTL_MS = 20_000L
         private const val LIVE_SNAPSHOT_FRESHNESS_MS = 15_000L
@@ -940,6 +1258,52 @@ private data class AuxiliarySyncCache(
     val weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
 )
 
+private data class ServerMonitorBundle(
+    val state: ServerMonitorState,
+    val serverLogs: List<String>,
+    val logs: List<com.kibot.shared.models.AuditLogRecord>,
+    val orders: List<com.kibot.shared.models.OrderSnapshot>,
+    val weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
+    val riskHistory: List<DailyEquityHistoryPoint>,
+)
+
+private data class ServerMonitorState(
+    val isBotRunning: Boolean,
+    val effectiveState: BotEffectiveState,
+    val operatingMode: String,
+    val edgeConfidence: String,
+    val marketRegime: String,
+    val topCandidate: String,
+    val radarPairs: List<String>,
+    val scanUniverseCount: Int,
+    val portfolioValueIdr: String,
+    val pnlTodayIdr: String,
+    val pnlTodayPctLabel: String,
+    val syncPathLabel: String,
+    val activeEngine: String,
+    val standbyEngine: String,
+    val syncHealth: String,
+    val leaseTerm: Long,
+    val healthSummary: String,
+    val weeklyLearningSummary: String,
+    val weeklyAdaptationSummary: String,
+    val lastHeartbeatLabel: String,
+    val lastUpdatedLabel: String,
+    val statusMessage: String,
+    val lastUpdatedEpochMs: Long,
+    val serverLocation: String,
+    val serverUptime: String,
+    val exchangePingMs: String,
+    val holdingsDetailed: List<ServerHoldingDetail>,
+)
+
+private data class ServerHoldingDetail(
+    val assetCode: String,
+    val assetLabel: String,
+    val quantityLabel: String,
+    val valueIdrLabel: String,
+)
+
 private data class CachedLanEndpoint(
     val baseUrl: String,
     val verifiedAtEpochMs: Long,
@@ -949,3 +1313,46 @@ private data class AllocationSource(
     val label: String,
     val valueIdr: Double,
 )
+
+private fun org.json.JSONArray?.toStringList(): List<String> {
+    if (this == null) return emptyList()
+    return List(length()) { index -> optString(index) }
+        .filter { it.isNotBlank() }
+}
+
+private fun org.json.JSONArray?.toHoldingDetailList(): List<ServerHoldingDetail> {
+    if (this == null) return emptyList()
+    return List(length()) { index -> optJSONObject(index) }
+        .mapNotNull { item ->
+            item ?: return@mapNotNull null
+            val assetCode = item.optString("assetCode").ifBlank { return@mapNotNull null }
+            ServerHoldingDetail(
+                assetCode = assetCode,
+                assetLabel = item.optString("assetLabel", assetCode),
+                quantityLabel = item.optString("quantityLabel", "-"),
+                valueIdrLabel = item.optString("valueIdrLabel", "Rp0"),
+            )
+        }
+}
+
+private fun String.parsePingMs(): Long? {
+    return lowercase()
+        .replace("ms", "")
+        .replace(" ", "")
+        .toLongOrNull()
+}
+
+private fun inferServerLogCategory(message: String): String {
+    val normalized = message.lowercase()
+    return when {
+        normalized.contains("buy") || normalized.contains("beli") -> "BUY"
+        normalized.contains("sell") || normalized.contains("jual") -> "SELL"
+        normalized.contains("rotasi") -> "ROTASI"
+        normalized.contains("scan") -> "SCAN"
+        normalized.contains("target") || normalized.contains("bidik") -> "TARGET"
+        normalized.contains("risk") || normalized.contains("stop") -> "RISK"
+        normalized.contains("profit") -> "PROFIT"
+        normalized.contains("loss") || normalized.contains("minus") -> "LOSS"
+        else -> "SYNC"
+    }
+}

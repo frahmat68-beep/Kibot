@@ -27,7 +27,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Notes
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.Dashboard
-import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -62,7 +61,6 @@ import kotlin.math.absoluteValue
 private enum class RootTab(val title: String) {
     Dashboard("Dashboard"),
     Portfolio("Portfolio"),
-    Control("Server"),
     Logs("Logs"),
 }
 
@@ -91,7 +89,6 @@ fun KiBotRoot(
                                 imageVector = when (tab) {
                                     RootTab.Dashboard -> Icons.Outlined.Dashboard
                                     RootTab.Portfolio -> Icons.Outlined.AccountBalanceWallet
-                                    RootTab.Control -> Icons.Outlined.Sync
                                     RootTab.Logs -> Icons.AutoMirrored.Outlined.Notes
                                 },
                                 contentDescription = tab.title,
@@ -112,7 +109,6 @@ fun KiBotRoot(
             when (currentTab) {
                 RootTab.Dashboard -> DashboardScreen(state = state)
                 RootTab.Portfolio -> PortfolioScreen(state = state)
-                RootTab.Control -> EngineControlScreen(state = state)
                 RootTab.Logs -> LogsScreen(state = state)
             }
         }
@@ -566,13 +562,6 @@ private fun PairRadarCard(
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            state.statusMessage,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }

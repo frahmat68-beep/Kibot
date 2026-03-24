@@ -20,6 +20,7 @@ data class AndroidRuntimeConfig(
     val enableLiveExecution: Boolean,
     val trialExitPair: String?,
     val macLanSyncBaseUrl: String?,
+    val serverMonitorBaseUrl: String?,
     val aiSupportConfig: GeminiSupportConfig?,
     val indodaxCredentials: IndodaxCredentials?,
     val indodaxClientConfig: IndodaxClientConfig,
@@ -93,6 +94,7 @@ object AndroidRuntimeConfigLoader {
             enableLiveExecution = BuildConfig.KIBOT_ENABLE_LIVE_EXECUTION,
             trialExitPair = BuildConfig.KIBOT_TRIAL_EXIT_PAIR.takeIf { it.isNotBlank() }?.lowercase(),
             macLanSyncBaseUrl = BuildConfig.KIBOT_MAC_LAN_SYNC_URL.takeIf { it.isNotBlank() },
+            serverMonitorBaseUrl = BuildConfig.KIBOT_SERVER_MONITOR_BASE_URL.takeIf { it.isNotBlank() },
             aiSupportConfig = aiSupportConfig,
             indodaxCredentials = credentials,
             indodaxClientConfig = IndodaxClientConfig(

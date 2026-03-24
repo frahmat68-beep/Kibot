@@ -2,9 +2,6 @@ package com.kibot.android
 
 import android.app.Application
 import android.content.Context
-import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.PeriodicWorkRequestBuilder
-import androidx.work.WorkManager
 import com.kibot.aisupport.GeminiSupportClient
 import com.kibot.aisupport.GeminiSupportCoordinator
 import com.kibot.android.data.local.AppDatabase
@@ -13,14 +10,11 @@ import com.kibot.android.runtime.AndroidEngineDaemon
 import com.kibot.android.runtime.AndroidPassiveExchangeGateway
 import com.kibot.android.runtime.AndroidRuntimeConfig
 import com.kibot.android.runtime.AndroidRuntimeConfigLoader
-import com.kibot.android.runtime.HeartbeatWorker
 import com.kibot.android.runtime.LiveStatusStore
-import com.kibot.android.runtime.ReconnectWorker
 import com.kibot.android.runtime.RuntimePreferenceStore
 import com.kibot.android.security.SecureCredentialStore
 import com.kibot.controlplane.SupabaseControlPlaneClient
 import com.kibot.indodax.IndodaxGateway
-import java.util.concurrent.TimeUnit
 
 class KiBotApplication : Application() {
     lateinit var container: AppContainer
@@ -35,22 +29,6 @@ class KiBotApplication : Application() {
             runtimePreferenceStore = RuntimePreferenceStore(applicationContext),
             liveStatusStore = LiveStatusStore(applicationContext),
             runtimeConfig = AndroidRuntimeConfigLoader.load(),
-        )
-
-        scheduleWatchdogs()
-    }
-
-    private fun scheduleWatchdogs() {
-        val workManager = WorkManager.getInstance(this)
-        workManager.enqueueUniquePeriodicWork(
-            HeartbeatWorker.UNIQUE_NAME,
-            ExistingPeriodicWorkPolicy.UPDATE,
-            PeriodicWorkRequestBuilder<HeartbeatWorker>(15, TimeUnit.MINUTES).build(),
-        )
-        workManager.enqueueUniquePeriodicWork(
-            ReconnectWorker.UNIQUE_NAME,
-            ExistingPeriodicWorkPolicy.UPDATE,
-            PeriodicWorkRequestBuilder<ReconnectWorker>(15, TimeUnit.MINUTES).build(),
         )
     }
 }
@@ -89,6 +67,7 @@ data class AppContainer(
             deviceRegistration = runtimeConfig.device,
             botId = runtimeConfig.controlPlane?.botId ?: com.kibot.shared.models.BotId("main"),
             macLanSyncBaseUrl = runtimeConfig.macLanSyncBaseUrl,
+            serverMonitorBaseUrl = runtimeConfig.serverMonitorBaseUrl,
         )
     }
 

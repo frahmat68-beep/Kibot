@@ -12,6 +12,7 @@ import io.ktor.server.html.respondHtml
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
 import io.ktor.server.response.respondText
@@ -63,6 +64,9 @@ class LocalDashboardServer(
 
         routing {
             get("/") {
+                call.response.header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                call.response.header("Pragma", "no-cache")
+                call.response.header("Expires", "0")
                 call.respondHtml {
                     head {
                         title("KiBot Server Monitor")
@@ -77,6 +81,7 @@ class LocalDashboardServer(
                         }
                     }
                     body {
+                        div("sr-only") { +"server-monitor-v3" }
                         renderDashboard(repository.state.value)
                         script {
                             unsafe {
@@ -142,7 +147,7 @@ class LocalDashboardServer(
                                 }
 
                                 function refreshState() {
-                                  fetch('/api/state')
+                                  fetch('/api/state', { cache: 'no-store' })
                                     .then(r => r.json())
                                     .then(state => {
                                       updateStatusBadge(state);
@@ -172,7 +177,7 @@ class LocalDashboardServer(
                                 }
 
                                 function refreshLogs() {
-                                  fetch('/api/logs')
+                                  fetch('/api/logs', { cache: 'no-store' })
                                     .then(r => r.json())
                                     .then(renderLogs);
                                 }
@@ -189,16 +194,18 @@ class LocalDashboardServer(
             }
 
             get("/api/state") {
+                call.response.header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
                 call.respond(repository.state.value)
             }
 
             get("/api/logs") {
+                call.response.header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
                 val logFile = File(System.getProperty("java.io.tmpdir"), "kibot-mac-engine.log")
                 if (logFile.exists()) {
                     val lines = logFile.readLines().takeLast(25)
                     call.respond(lines)
                 } else {
-                    call.respond(HttpStatusCode.NotFound, emptyList<String>())
+                    call.respond(emptyList<String>())
                 }
             }
 

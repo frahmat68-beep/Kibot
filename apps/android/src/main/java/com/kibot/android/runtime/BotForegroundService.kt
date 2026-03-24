@@ -87,27 +87,20 @@ class BotForegroundService : Service() {
 
     private suspend fun runLoop() {
         val app = application as? com.kibot.android.KiBotApplication ?: return
-        val daemon = app.container.androidDaemon
-        if (daemon == null) {
-            Log.e(loggerTag, "Android daemon tidak tersedia karena config control-plane belum lengkap.")
-            updateNotification(currentPair = null, isRunning = false)
-            return
-        }
-
         while (serviceScope.isActive) {
             try {
                 app.container.repository.syncNow()
                 val state = app.container.repository.uiState.value
                 val pairLabel = state.pairAktif.takeIf { it.isNotBlank() && it != "-" }?.lowercase()
                 val isRunning = state.effectiveState != BotEffectiveState.STOPPED
-                Log.i(loggerTag, "server sync ok: ${pairLabel ?: "menunggu pair"} • ${state.effectiveState.name}")
+                Log.i(loggerTag, "server feed ok: ${pairLabel ?: "menunggu pair"} • ${state.effectiveState.name}")
                 updateNotification(currentPair = pairLabel, isRunning = isRunning)
             } catch (error: Throwable) {
                 Log.e(loggerTag, "Loop monitor Android gagal pada satu iterasi.", error)
                 updateNotification(currentPair = null, isRunning = false)
             }
 
-            delay(15_000L)
+            delay(10_000L)
         }
     }
 

@@ -2,6 +2,7 @@ package com.kibot.macengine
 
 import com.kibot.macengine.state.MacCommand
 import com.kibot.macengine.state.MacDashboardState
+import com.kibot.macengine.state.MacHoldingDetail
 import com.kibot.macengine.state.MacStateRepository
 import com.kibot.shared.models.BotEffectiveState
 import kotlin.test.Test
@@ -27,9 +28,12 @@ class MacStateRepositoryTest {
                 edgeConfidence = "HIGH",
                 marketRegime = "HEALTHY_UPTREND",
                 topCandidate = "btc_idr",
+                radarPairs = listOf("btc_idr", "eth_idr"),
+                scanUniverseCount = 120,
                 liveExecutionEnabled = false,
                 portfolioValueIdr = "Rp100.000",
                 pnlTodayIdr = "+Rp2.500",
+                pnlTodayPctLabel = "+2.5%",
                 syncPathLabel = "Supabase + LAN",
                 activeEngine = "MacBook Pro",
                 standbyEngine = "Android Poco M3",
@@ -45,6 +49,14 @@ class MacStateRepositoryTest {
                 serverLocation = "Oracle Cloud Singapore",
                 serverUptime = "02h 15m",
                 heldAssets = listOf("DOGE", "TRX"),
+                holdingsDetailed = listOf(
+                    MacHoldingDetail(
+                        assetCode = "DOGE",
+                        assetLabel = "Doge",
+                        quantityLabel = "10 DOGE",
+                        valueIdrLabel = "Rp12.000",
+                    ),
+                ),
                 exchangePingMs = "84",
             ),
         )

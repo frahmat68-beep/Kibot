@@ -78,12 +78,12 @@ class LiveStatusStore(context: Context) {
         val effectiveTimestamp = snapshot.updatedAtEpochMs.takeIf { it > 0L } ?: System.currentTimeMillis()
         val dateKey = dateKey(effectiveTimestamp)
         val currentDateKey = prefs.getString(KEY_LOG_DATE, null)
-        val retainedLogs = if (currentDateKey == dateKey) {
-            current.liveLogEntries
-        } else {
-            emptyList()
+        val baseLogs = when {
+            snapshot.liveLogEntries.isNotEmpty() -> snapshot.liveLogEntries.take(MAX_LIVE_LOG_ITEMS)
+            currentDateKey == dateKey -> current.liveLogEntries
+            else -> emptyList()
         }
-        val mergedLogs = appendLog(retainedLogs, event, effectiveTimestamp)
+        val mergedLogs = appendLog(baseLogs, event, effectiveTimestamp)
         return snapshot.copy(
             statusMessage = snapshot.statusMessage.ifBlank { current.statusMessage },
             liveLogEntries = mergedLogs,

@@ -387,6 +387,7 @@ class MacEngineDaemon(
                 localHealth = finalHealth,
                 dailyRisk = dailyRisk,
                 balances = resolvedBalances,
+                marketQuotes = resolvedMarketQuotes,
                 strategyCycle = strategyCycle,
                 weeklyReview = effectiveWeeklyReview,
                 healthDecisionSummary = if (healthDecision.reasons.isEmpty()) {
@@ -518,6 +519,7 @@ class MacEngineDaemon(
             return false
         }
         val balances = runCatching { exchange.fetchBalances() }.getOrDefault(emptyList())
+        val marketQuotes = runCatching { exchange.fetchMarketQuotes() }.getOrDefault(emptyList())
         val openOrders = runCatching { exchange.fetchOpenOrders() }.getOrDefault(emptyList())
         val recentPersistedOrders = controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 200)
         val reconciliationPairs = (openOrders.map { it.pairId } + recentPersistedOrders.map { it.pairId })
@@ -533,7 +535,7 @@ class MacEngineDaemon(
                 balances = balances,
                 openOrders = openOrders,
                 positions = emptyList<PositionSnapshot>(),
-                totalEquityIdr = estimatePortfolioValue(balances),
+                totalEquityIdr = estimatePortfolioValue(balances, marketQuotes),
                 lastSyncedAt = now,
             ),
             recentFills = fills,
@@ -1381,23 +1383,66 @@ class MacEngineDaemon(
         localHealth: EngineHealthSnapshot,
         dailyRisk: DailyRiskSnapshot?,
         balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
         strategyCycle: com.kibot.core.StrategyCycleResult?,
         weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
         healthDecisionSummary: String,
     ): com.kibot.macengine.state.MacDashboardState {
-        val activeDevice = devices.firstOrNull { it.deviceId == (lease?.currentHolder ?: botState.activeDeviceId) }
-        val standbyDevice = devices.firstOrNull { it.deviceId != activeDevice?.deviceId && !it.isRevoked }
         val heartbeatInstant = lease?.lastHeartbeatAt ?: botState.lastHeartbeatAt
-        val portfolioValue = estimatePortfolioValue(balances).toDoubleOrZero()
+        val filteredRadarPairs = buildDisplayRadarPairs(
+            strategyCycle = strategyCycle,
+            botState = botState,
+        )
+        val topCandidate = preferredDisplayPair(
+            primary = strategyCycle?.topCandidate?.value ?: strategyCycle?.selectedSignal?.pairId?.value,
+            fallback = filteredRadarPairs.firstOrNull(),
+        )
+        val portfolioValue = estimatePortfolioValue(balances, marketQuotes).toDoubleOrZero()
             .takeIf { it > 0.0 }
             ?: dailyRisk?.currentEquityIdr?.toDoubleOrZero()
             ?: 0.0
         val pnlToday = dailyRisk?.let {
             it.realizedPnlIdr.toDoubleOrZero() + it.unrealizedPnlIdr.toDoubleOrZero()
         } ?: 0.0
+        val openingEquity = (portfolioValue - pnlToday).takeIf { it > 0.0 }
+        val pnlTodayPctLabel = openingEquity
+            ?.let { formatSignedPercent(pnlToday / it) }
+            ?: "+0.0%"
         val heldAssets = balances
             .filterNot { it.asset.equals("idr", ignoreCase = true) }
+            .filter { it.free.toDoubleOrZero() + it.locked.toDoubleOrZero() > 0.0 }
             .map { "${it.asset.uppercase()}: ${formatDecimal(it.free.toDoubleOrZero(), 6)}" }
+        val holdingsDetailed = balances
+            .filterNot { it.asset.equals("idr", ignoreCase = true) }
+            .mapNotNull { balance ->
+                val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+                if (quantity <= 0.0) return@mapNotNull null
+                val assetCode = balance.asset.uppercase()
+                val assetValueIdr = balance.totalValueInIdr?.toDoubleOrZero()
+                    ?: quoteAssetPriceIdr(balance.asset, marketQuotes)?.let { it * quantity }
+                    ?: 0.0
+                com.kibot.macengine.state.MacHoldingDetail(
+                    assetCode = assetCode,
+                    assetLabel = displayAssetLabel(balance.asset),
+                    quantityLabel = "${formatDecimal(quantity, 8)} $assetCode",
+                    valueIdrLabel = formatIdr(assetValueIdr),
+                )
+            }
+            .sortedByDescending { detail -> detail.valueIdrLabel.parseRupiahLabel() ?: 0.0 }
+        val scanUniverseCount = marketQuotes.size
+        val statusMessage = when {
+            botState.effectiveState == BotEffectiveState.SAFE_MODE || lease?.conflictDetected == true ->
+                "Safe mode aktif. Tunggu status trade dan data exchange benar-benar bersih."
+            localHealth.status == HealthStatus.CRITICAL ->
+                "Server Oracle lagi bermasalah: ${localHealth.warnings.firstOrNull().orEmpty()}".trim()
+            holdingsDetailed.isNotEmpty() && topCandidate != "-" ->
+                "Server jaga ${holdingsDetailed.size} aset sambil pantau $topCandidate."
+            topCandidate != "-" && scanUniverseCount > 0 ->
+                "Server scan $scanUniverseCount pair dan fokus ke $topCandidate."
+            scanUniverseCount > 0 ->
+                "Server scan $scanUniverseCount pair dan cari momentum yang layak."
+            else -> "Server Oracle lagi sinkron dan pantau market."
+        }
 
         return com.kibot.macengine.state.MacDashboardState(
             isBotRunning = botState.effectiveState != BotEffectiveState.STOPPED,
@@ -1405,13 +1450,16 @@ class MacEngineDaemon(
             operatingMode = strategyCycle?.modeSnapshot?.mode?.name ?: botState.operatingMode.name,
             edgeConfidence = strategyCycle?.modeSnapshot?.edgeConfidence?.name ?: botState.edgeConfidence.name,
             marketRegime = strategyCycle?.marketSnapshot?.regime?.name ?: botState.marketRegime.name,
-            topCandidate = strategyCycle?.topCandidate?.value ?: botState.activeCandidatePairs.firstOrNull()?.value ?: "-",
+            topCandidate = topCandidate,
+            radarPairs = filteredRadarPairs,
+            scanUniverseCount = scanUniverseCount,
             liveExecutionEnabled = config.enableLiveExecution,
             portfolioValueIdr = formatIdr(portfolioValue),
             pnlTodayIdr = formatSignedIdr(pnlToday),
-            syncPathLabel = if (config.bindHost == "127.0.0.1" || config.bindHost == "localhost") "Live Feed" else "Live + LAN",
-            activeEngine = activeDevice?.displayName ?: "None",
-            standbyEngine = standbyDevice?.displayName ?: "Waiting",
+            pnlTodayPctLabel = pnlTodayPctLabel,
+            syncPathLabel = "Live Server",
+            activeEngine = "Oracle Cloud Server",
+            standbyEngine = "View Only",
             syncHealth = localHealth.syncHealth.name,
             leaseTerm = lease?.term?.value ?: botState.currentTerm.value,
             healthSummary = if (botState.effectiveState == BotEffectiveState.SAFE_MODE || lease?.conflictDetected == true) {
@@ -1427,15 +1475,10 @@ class MacEngineDaemon(
                 ?: "Adaptasi mingguan belum tersedia.",
             lastHeartbeatLabel = heartbeatInstant?.let { formatAge(now, it) } ?: "Never",
             lastUpdatedLabel = formatUpdatedLabel(now),
-            statusMessage = when {
-                botState.effectiveState == BotEffectiveState.SAFE_MODE || lease?.conflictDetected == true ->
-                    "Safe mode aktif. Tunggu status trade dan data exchange benar-benar bersih."
-                localHealth.status == HealthStatus.CRITICAL -> "Mac cannot trade safely yet. ${localHealth.warnings.firstOrNull().orEmpty()}".trim()
-                lease.isHeldBy(config.device.deviceId, now) -> "Server Oracle sedang memegang engine trading utama."
-                else -> "Server Oracle sedang sinkron dan memantau market."
-            },
+            statusMessage = statusMessage,
             lastUpdatedEpochMs = now.toEpochMilliseconds(),
             heldAssets = heldAssets,
+            holdingsDetailed = holdingsDetailed,
             exchangePingMs = localHealth.feedLatencyMs?.let { "${it}ms" } ?: "--",
             serverLocation = "Oracle Cloud (24/7)",
             serverUptime = "0m",
@@ -1479,10 +1522,19 @@ class MacEngineDaemon(
         return merged.values.toList()
     }
 
-    private fun estimatePortfolioValue(balances: List<BalanceSnapshot>): DecimalValue {
+    private fun estimatePortfolioValue(
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    ): DecimalValue {
         val total = balances.sumOf { balance ->
-            balance.totalValueInIdr?.toDoubleOrZero()
-                ?: (balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero())
+            val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+            val totalValueInIdr = balance.totalValueInIdr
+            when {
+                quantity <= 0.0 -> 0.0
+                balance.asset.equals("idr", ignoreCase = true) -> quantity
+                totalValueInIdr != null -> totalValueInIdr.toDoubleOrZero()
+                else -> (quoteAssetPriceIdr(balance.asset, marketQuotes) ?: 0.0) * quantity
+            }
         }
         return DecimalValue.fromDouble(total.coerceAtLeast(0.0))
     }
@@ -1599,7 +1651,58 @@ class MacEngineDaemon(
         return prefix + formatIdr(kotlin.math.abs(value))
     }
 
+    private fun formatSignedPercent(value: Double): String {
+        val pct = value * 100.0
+        val prefix = if (pct >= 0.0) "+" else "-"
+        return "$prefix${formatDecimal(kotlin.math.abs(pct), 1)}%"
+    }
+
     private fun formatDecimal(value: Double, digits: Int): String = "%.${digits}f".format(java.util.Locale.US, value)
+
+    private fun buildDisplayRadarPairs(
+        strategyCycle: com.kibot.core.StrategyCycleResult?,
+        botState: BotStateSnapshot,
+    ): List<String> {
+        return buildList {
+            strategyCycle?.selectedSignal?.pairId?.value?.let(::add)
+            strategyCycle?.topCandidate?.value?.let(::add)
+            strategyCycle?.deploymentPlan?.candidates?.mapTo(this) { it.pairId.value }
+        }.asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .filterNot { hiddenStablePairs.contains(it.lowercase()) }
+            .distinct()
+            .take(10)
+            .toList()
+    }
+
+    private fun preferredDisplayPair(primary: String?, fallback: String?): String {
+        return primary?.takeIf { it.isNotBlank() }
+            ?: fallback?.takeIf { it.isNotBlank() }
+            ?: "-"
+    }
+
+    private fun displayAssetLabel(asset: String): String = when (asset.lowercase()) {
+        "idr" -> "Rupiah"
+        "usdt" -> "Tether"
+        "usdc" -> "USD Coin"
+        "btc" -> "Bitcoin"
+        "eth" -> "Ethereum"
+        "xrp" -> "XRP"
+        "trx" -> "Tron"
+        "sol" -> "Solana"
+        "doge" -> "Doge"
+        else -> asset.uppercase()
+    }
+
+    private fun String.parseRupiahLabel(): Double? {
+        val normalized = replace("Rp", "")
+            .replace(".", "")
+            .replace(",", ".")
+            .replace(" ", "")
+            .trim()
+        return normalized.toDoubleOrNull()
+    }
 
     private fun latencyLabel(latencyMs: Long?): String = when {
         latencyMs == null -> "--"
@@ -1617,6 +1720,7 @@ class MacEngineDaemon(
         private const val aggressiveLimitFallbackLatencyMs = 650L
         private const val entryBlockLatencyMs = 900L
         private const val executionPolicyLogCooldownMinutes = 2L
+        private val hiddenStablePairs = setOf("usdt_idr", "usdc_idr", "indr_idr")
         private val activeOrderStatuses = setOf(
             com.kibot.shared.models.OrderStatus.CREATED,
             com.kibot.shared.models.OrderStatus.SUBMITTING,
