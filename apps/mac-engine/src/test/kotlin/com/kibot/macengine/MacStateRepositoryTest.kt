@@ -58,6 +58,7 @@ class MacStateRepositoryTest {
                     ),
                 ),
                 exchangePingMs = "84",
+                liveTimeline = emptyList(),
             ),
         )
 

@@ -221,6 +221,7 @@ class AppRepository(
             .takeIf { it.isNotEmpty() }
             ?.joinToString(" • ") { it.lowercase() }
         val serverTimeline = buildServerLiveEntries(
+            liveTimeline = emptyList(),
             serverLogs = emptyList(),
             logs = logs,
             orders = orders,
@@ -353,6 +354,7 @@ class AppRepository(
             ?: filteredRadarPairs.firstOrNull()
             ?: "-"
         val liveEntries = buildServerLiveEntries(
+            liveTimeline = state.liveTimeline,
             serverLogs = serverBundle.serverLogs,
             logs = serverBundle.logs,
             orders = serverBundle.orders,
@@ -408,7 +410,7 @@ class AppRepository(
             positions = buildServerPositions(state),
             portfolio = portfolio,
             liveLogEntries = liveEntries,
-            logs = buildServerLogCards(serverBundle.serverLogs, serverBundle.logs),
+            logs = buildServerLogCards(state.liveTimeline, serverBundle.serverLogs, serverBundle.logs),
             trades = serverBundle.orders
                 .filter {
                     it.executedQuantity.toDoubleOrZero() > 0.0 ||
@@ -1137,15 +1139,18 @@ class AppRepository(
             serverUptime = json.optString("serverUptime", "-"),
             exchangePingMs = json.optString("exchangePingMs", "--"),
             holdingsDetailed = json.optJSONArray("holdingsDetailed").toHoldingDetailList(),
+            liveTimeline = json.optJSONArray("liveTimeline").toTimelineEntryList(),
         )
     }
 
     private fun buildServerLiveEntries(
+        liveTimeline: List<ServerTimelineEntry>,
         serverLogs: List<String>,
         logs: List<com.kibot.shared.models.AuditLogRecord>,
         orders: List<OrderSnapshot>,
         fallbackTimestamp: Long,
     ): List<com.kibot.android.runtime.LiveLogEntry> {
+        val timelineEntries = liveTimeline.mapNotNull(::toServerLiveEntry)
         val serverEntries = serverLogs.mapIndexedNotNull { index, line ->
             toServerLiveEntry(
                 line = line,
@@ -1154,7 +1159,7 @@ class AppRepository(
         }
         val tradeEntries = orders.mapNotNull(::toServerLiveEntry)
         val operatorEntries = filterOperatorLogs(logs).mapNotNull(::toServerLiveEntry)
-        val merged = (serverEntries + tradeEntries + operatorEntries)
+        val merged = (timelineEntries + tradeEntries + operatorEntries + serverEntries)
             .sortedByDescending { it.timestampEpochMs }
             .distinctBy { "${it.category}|${it.message}" }
         return if (merged.isNotEmpty()) {
@@ -1190,6 +1195,25 @@ class AppRepository(
                         )
             }
             .sortedByDescending { it.recordedAt }
+    }
+
+    private fun toServerLiveEntry(
+        entry: ServerTimelineEntry,
+    ): com.kibot.android.runtime.LiveLogEntry? {
+        val message = entry.message.trim()
+        if (message.isBlank()) return null
+        val category = entry.category.uppercase().ifBlank { inferServerLogCategory(message) }
+        if (
+            category in setOf("ROTASI", "SCAN", "TARGET") &&
+            HIDDEN_STABLE_PAIRS.any { pair -> message.lowercase().contains(pair) }
+        ) {
+            return null
+        }
+        return com.kibot.android.runtime.LiveLogEntry(
+            timestampEpochMs = entry.timestampEpochMs,
+            category = category,
+            message = message,
+        )
     }
 
     private fun toServerLiveEntry(
@@ -1253,10 +1277,33 @@ class AppRepository(
         )
     }
 
+    private fun toServerLogCard(
+        entry: ServerTimelineEntry,
+    ): LogUi? {
+        val message = entry.message.trim()
+        if (message.isBlank()) return null
+        val category = entry.category.uppercase().ifBlank { inferServerLogCategory(message) }
+        if (
+            category == "AUTH" ||
+            message.lowercase().contains("control-plane") ||
+            message.lowercase().contains("registered with control-plane")
+        ) {
+            return null
+        }
+        return LogUi(
+            level = "INFO",
+            category = category,
+            message = message,
+            timeLabel = formatMomentLabel(Instant.fromEpochMilliseconds(entry.timestampEpochMs)),
+        )
+    }
+
     private fun buildServerLogCards(
+        liveTimeline: List<ServerTimelineEntry>,
         serverLogs: List<String>,
         logs: List<com.kibot.shared.models.AuditLogRecord>,
     ): List<LogUi> {
+        val timelineCards = liveTimeline.mapNotNull(::toServerLogCard)
         val serverCards = serverLogs.map { line ->
             LogUi(
                 level = "INFO",
@@ -1273,7 +1320,7 @@ class AppRepository(
                 timeLabel = formatMomentLabel(it.recordedAt),
             )
         }
-        return (serverCards + operatorCards)
+        return (timelineCards + operatorCards + serverCards)
             .filter { it.message.isNotBlank() }
             .distinctBy { "${it.category}|${it.message}" }
             .take(20)
@@ -1359,6 +1406,7 @@ private data class ServerMonitorState(
     val serverUptime: String,
     val exchangePingMs: String,
     val holdingsDetailed: List<ServerHoldingDetail>,
+    val liveTimeline: List<ServerTimelineEntry>,
 )
 
 private data class ServerHoldingDetail(
@@ -1366,6 +1414,12 @@ private data class ServerHoldingDetail(
     val assetLabel: String,
     val quantityLabel: String,
     val valueIdrLabel: String,
+)
+
+private data class ServerTimelineEntry(
+    val timestampEpochMs: Long,
+    val category: String,
+    val message: String,
 )
 
 private data class CachedLanEndpoint(
@@ -1395,6 +1449,21 @@ private fun org.json.JSONArray?.toHoldingDetailList(): List<ServerHoldingDetail>
                 assetLabel = item.optString("assetLabel", assetCode),
                 quantityLabel = item.optString("quantityLabel", "-"),
                 valueIdrLabel = item.optString("valueIdrLabel", "Rp0"),
+            )
+        }
+}
+
+private fun org.json.JSONArray?.toTimelineEntryList(): List<ServerTimelineEntry> {
+    if (this == null) return emptyList()
+    return List(length()) { index -> optJSONObject(index) }
+        .mapNotNull { item ->
+            item ?: return@mapNotNull null
+            val message = item.optString("message").trim()
+            if (message.isBlank()) return@mapNotNull null
+            ServerTimelineEntry(
+                timestampEpochMs = item.optLong("timestampEpochMs", 0L),
+                category = item.optString("category", inferServerLogCategory(message)),
+                message = message,
             )
         }
 }

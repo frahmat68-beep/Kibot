@@ -1299,6 +1299,12 @@ class MacEngineDaemon(
     }
 
     private suspend fun appendAuditLog(level: LogLevel, category: String, message: String) {
+        if (shouldExposeToLiveTimeline(category, message)) {
+            repository.recordTimeline(
+                category = category.uppercase(),
+                message = message,
+            )
+        }
         runCatching {
             controlPlane.appendLog(
                 botId = config.controlPlane.botId,
@@ -1443,6 +1449,16 @@ class MacEngineDaemon(
                 "Server scan $scanUniverseCount pair dan cari momentum yang layak."
             else -> "Server Oracle lagi sinkron dan pantau market."
         }
+        val liveTimeline = repository.state.value.liveTimeline.ifEmpty {
+            buildSyntheticTimeline(
+                now = now,
+                botState = botState,
+                topCandidate = topCandidate,
+                holdingsDetailed = holdingsDetailed,
+                scanUniverseCount = scanUniverseCount,
+                healthSummary = healthDecisionSummary,
+            )
+        }
 
         return com.kibot.macengine.state.MacDashboardState(
             isBotRunning = botState.effectiveState != BotEffectiveState.STOPPED,
@@ -1482,6 +1498,7 @@ class MacEngineDaemon(
             exchangePingMs = localHealth.feedLatencyMs?.let { "${it}ms" } ?: "--",
             serverLocation = "Oracle Cloud (24/7)",
             serverUptime = "0m",
+            liveTimeline = liveTimeline,
         )
     }
 
@@ -1680,6 +1697,63 @@ class MacEngineDaemon(
         return primary?.takeIf { it.isNotBlank() }
             ?: fallback?.takeIf { it.isNotBlank() }
             ?: "-"
+    }
+
+    private fun buildSyntheticTimeline(
+        now: Instant,
+        botState: BotStateSnapshot,
+        topCandidate: String,
+        holdingsDetailed: List<com.kibot.macengine.state.MacHoldingDetail>,
+        scanUniverseCount: Int,
+        healthSummary: String,
+    ): List<com.kibot.macengine.state.MacTimelineEntry> {
+        val primaryMessage = when {
+            botState.effectiveState == BotEffectiveState.SAFE_MODE ->
+                "Server masuk safe mode dan tahan entry baru."
+            holdingsDetailed.isNotEmpty() && topCandidate != "-" ->
+                "Server pegang ${holdingsDetailed.size} aset sambil awasi $topCandidate."
+            topCandidate != "-" ->
+                "Server sedang bidik $topCandidate dari $scanUniverseCount pair."
+            else ->
+                "Server lagi sinkron dan scan market live."
+        }
+        val entries = mutableListOf(
+            com.kibot.macengine.state.MacTimelineEntry(
+                timestampEpochMs = now.toEpochMilliseconds(),
+                category = "STATUS",
+                message = primaryMessage,
+            ),
+        )
+        if (healthSummary.isNotBlank()) {
+            entries += com.kibot.macengine.state.MacTimelineEntry(
+                timestampEpochMs = now.toEpochMilliseconds() - 1_000L,
+                category = "HEALTH",
+                message = healthSummary,
+            )
+        }
+        return entries
+    }
+
+    private fun shouldExposeToLiveTimeline(category: String, message: String): Boolean {
+        val normalizedCategory = category.uppercase()
+        val normalizedMessage = message.lowercase()
+        if (normalizedMessage.isBlank()) return false
+        if (
+            normalizedCategory == "AUTH" ||
+            normalizedMessage.contains("control-plane") ||
+            normalizedMessage.contains("registered with control-plane") ||
+            normalizedMessage.contains("registered to control plane") ||
+            normalizedMessage.contains("device registered")
+        ) {
+            return false
+        }
+        if (
+            normalizedCategory in setOf("ROTASI", "SCAN", "TARGET") &&
+            hiddenStablePairs.any { normalizedMessage.contains(it) }
+        ) {
+            return false
+        }
+        return true
     }
 
     private fun displayAssetLabel(asset: String): String = when (asset.lowercase()) {

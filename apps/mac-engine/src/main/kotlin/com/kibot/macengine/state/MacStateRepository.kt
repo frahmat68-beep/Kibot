@@ -26,6 +26,13 @@ data class MacHoldingDetail(
 )
 
 @Serializable
+data class MacTimelineEntry(
+    val timestampEpochMs: Long,
+    val category: String,
+    val message: String,
+)
+
+@Serializable
 data class MacDashboardState(
     val isBotRunning: Boolean,
     val effectiveState: BotEffectiveState,
@@ -56,6 +63,7 @@ data class MacDashboardState(
     val heldAssets: List<String>,
     val holdingsDetailed: List<MacHoldingDetail>,
     val exchangePingMs: String,
+    val liveTimeline: List<MacTimelineEntry>,
 ) {
     companion object {
         fun preview(): MacDashboardState = MacDashboardState(
@@ -88,6 +96,7 @@ data class MacDashboardState(
             heldAssets = emptyList(),
             holdingsDetailed = emptyList(),
             exchangePingMs = "--",
+            liveTimeline = emptyList(),
         )
     }
 }
@@ -102,6 +111,11 @@ class MacStateRepository {
         _state.value = next.copy(
             lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
             serverUptime = uptimeText,
+            liveTimeline = if (next.liveTimeline.isNotEmpty()) {
+                next.liveTimeline
+            } else {
+                _state.value.liveTimeline
+            },
         )
     }
 
@@ -119,12 +133,47 @@ class MacStateRepository {
         )
     }
 
+    fun recordTimeline(
+        category: String,
+        message: String,
+        timestampEpochMs: Long = Clock.System.now().toEpochMilliseconds(),
+    ) {
+        val normalizedMessage = message.trim()
+        if (normalizedMessage.isBlank()) return
+        val normalizedCategory = category.trim().ifBlank { "STATUS" }
+        val nextEntry = MacTimelineEntry(
+            timestampEpochMs = timestampEpochMs,
+            category = normalizedCategory,
+            message = normalizedMessage,
+        )
+        val existing = _state.value.liveTimeline
+        val top = existing.firstOrNull()
+        val merged = if (
+            top != null &&
+            top.category == nextEntry.category &&
+            top.message == nextEntry.message &&
+            kotlin.math.abs(top.timestampEpochMs - nextEntry.timestampEpochMs) <= 20_000L
+        ) {
+            existing
+        } else {
+            listOf(nextEntry) + existing
+        }
+        _state.value = _state.value.copy(
+            liveTimeline = merged
+                .distinctBy { "${it.category}|${it.message}" }
+                .take(18),
+            statusMessage = _state.value.statusMessage,
+            lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
+        )
+    }
+
     fun applyAndReturn(command: MacCommand): MacDashboardState {
         val next = _state.value.copy(
             statusMessage = command.defaultStatusMessage(),
             lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
         )
         _state.value = next
+        recordTimeline("SYNC", command.defaultStatusMessage())
         return next
     }
 }

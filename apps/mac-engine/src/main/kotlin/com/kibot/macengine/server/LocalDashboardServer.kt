@@ -128,20 +128,21 @@ class LocalDashboardServer(
                                   });
                                 }
 
-                                function renderLogs(lines) {
+                                function renderTimeline(entries) {
                                   const container = document.getElementById('log-lines');
                                   container.innerHTML = '';
-                                  if (!lines || lines.length === 0) {
+                                  if (!entries || entries.length === 0) {
                                     const empty = document.createElement('p');
                                     empty.textContent = 'Belum ada aktivitas server terbaru.';
                                     empty.className = 'muted-copy';
                                     container.appendChild(empty);
                                     return;
                                   }
-                                  lines.forEach(line => {
+                                  entries.forEach(entry => {
                                     const row = document.createElement('div');
                                     row.className = 'timeline-row';
-                                    row.textContent = line;
+                                    const category = entry.category ? entry.category + ' • ' : '';
+                                    row.textContent = category + entry.message;
                                     container.appendChild(row);
                                   });
                                 }
@@ -170,22 +171,15 @@ class LocalDashboardServer(
                                       document.getElementById('pnl-card').textContent = state.pnlTodayIdr;
                                       document.getElementById('update-card').textContent = state.lastUpdatedLabel;
                                       renderHeldAssets(state.heldAssets);
+                                      renderTimeline(state.liveTimeline || []);
                                     })
                                     .catch(() => {
                                       document.getElementById('hero-summary').textContent = 'Gagal ambil status server. Cek deploy Oracle atau health endpoint.';
                                     });
                                 }
 
-                                function refreshLogs() {
-                                  fetch('/api/logs', { cache: 'no-store' })
-                                    .then(r => r.json())
-                                    .then(renderLogs);
-                                }
-
                                 refreshState();
-                                refreshLogs();
                                 setInterval(refreshState, ${statePollIntervalMillis});
-                                setInterval(refreshLogs, ${logPollIntervalMillis});
                                 """.trimIndent()
                             }
                         }
@@ -200,13 +194,7 @@ class LocalDashboardServer(
 
             get("/api/logs") {
                 call.response.header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-                val logFile = File(System.getProperty("java.io.tmpdir"), "kibot-mac-engine.log")
-                if (logFile.exists()) {
-                    val lines = logFile.readLines().takeLast(25)
-                    call.respond(lines)
-                } else {
-                    call.respond(emptyList<String>())
-                }
+                call.respond(repository.state.value.liveTimeline.map { "${it.category} • ${it.message}" })
             }
 
             get("/api/lan/ping") {
