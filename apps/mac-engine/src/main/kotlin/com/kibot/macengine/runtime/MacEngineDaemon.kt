@@ -390,6 +390,7 @@ class MacEngineDaemon(
                 marketQuotes = resolvedMarketQuotes,
                 strategyCycle = strategyCycle,
                 weeklyReview = effectiveWeeklyReview,
+                recentOrders = effectiveRecentOrders,
                 healthDecisionSummary = if (healthDecision.reasons.isEmpty()) {
                     if (runtimeLease.isHeldBy(config.device.deviceId, now)) {
                         strategyCycle?.summary?.joinToString(" ") ?: "Master healthy. Lease fenced and heartbeat current."
@@ -1392,9 +1393,10 @@ class MacEngineDaemon(
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
         strategyCycle: com.kibot.core.StrategyCycleResult?,
         weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
+        recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
         healthDecisionSummary: String,
     ): com.kibot.macengine.state.MacDashboardState {
-        val heartbeatInstant = lease?.lastHeartbeatAt ?: botState.lastHeartbeatAt
+        val heartbeatInstant = botState.lastHeartbeatAt ?: lease?.lastHeartbeatAt
         val filteredRadarPairs = buildDisplayRadarPairs(
             strategyCycle = strategyCycle,
             botState = botState,
@@ -1449,6 +1451,20 @@ class MacEngineDaemon(
                 "Server scan $scanUniverseCount pair dan cari momentum yang layak."
             else -> "Server Oracle lagi sinkron dan pantau market."
         }
+        val recentOrderCards = recentOrders
+            .sortedByDescending { it.updatedAt }
+            .map { order ->
+                val quantity = max(order.executedQuantity.toDoubleOrZero(), order.originalQuantity.toDoubleOrZero())
+                val price = order.price.toDoubleOrZero()
+                com.kibot.macengine.state.MacRecentOrder(
+                    timestampEpochMs = order.updatedAt.toEpochMilliseconds(),
+                    pair = order.pairId.value.lowercase(),
+                    side = order.side.name,
+                    status = order.status.name,
+                    detail = "${formatDecimal(quantity, 8)} @ ${formatIdr(price)}",
+                )
+            }
+            .take(18)
         val liveTimeline = buildLiveTimeline(
             now = now,
             existingTimeline = repository.state.value.liveTimeline,
@@ -1457,6 +1473,7 @@ class MacEngineDaemon(
             holdingsDetailed = holdingsDetailed,
             scanUniverseCount = scanUniverseCount,
             healthSummary = healthDecisionSummary,
+            recentOrders = recentOrderCards,
         )
 
         return com.kibot.macengine.state.MacDashboardState(
@@ -1496,8 +1513,9 @@ class MacEngineDaemon(
             holdingsDetailed = holdingsDetailed,
             exchangePingMs = localHealth.feedLatencyMs?.let { "${it}ms" } ?: "--",
             serverLocation = "Oracle Cloud (24/7)",
-            serverUptime = "0m",
+            serverUptime = repository.state.value.serverUptime,
             liveTimeline = liveTimeline,
+            recentOrders = recentOrderCards,
         )
     }
 
@@ -1706,6 +1724,7 @@ class MacEngineDaemon(
         holdingsDetailed: List<com.kibot.macengine.state.MacHoldingDetail>,
         scanUniverseCount: Int,
         healthSummary: String,
+        recentOrders: List<com.kibot.macengine.state.MacRecentOrder>,
     ): List<com.kibot.macengine.state.MacTimelineEntry> {
         val freshStatusEntries = buildSyntheticTimeline(
             now = now,
@@ -1715,11 +1734,12 @@ class MacEngineDaemon(
             scanUniverseCount = scanUniverseCount,
             healthSummary = healthSummary,
         )
+        val orderEntries = recentOrders.mapNotNull(::toTimelineEntry)
         val preservedOperatorEntries = existingTimeline
             .filterNot { it.category in setOf("STATUS", "HEALTH") }
             .filter { shouldExposeToLiveTimeline(it.category, it.message) }
             .filter { now.toEpochMilliseconds() - it.timestampEpochMs <= 24 * 60 * 60 * 1000L }
-        return (freshStatusEntries + preservedOperatorEntries)
+        return (freshStatusEntries + orderEntries + preservedOperatorEntries)
             .sortedByDescending { it.timestampEpochMs }
             .distinctBy { "${it.category}|${it.message}" }
             .take(18)
@@ -1758,6 +1778,28 @@ class MacEngineDaemon(
             )
         }
         return entries
+    }
+
+    private fun toTimelineEntry(
+        order: com.kibot.macengine.state.MacRecentOrder,
+    ): com.kibot.macengine.state.MacTimelineEntry? {
+        val status = order.status.uppercase()
+        val message = when (status) {
+            "FILLED" -> "${order.side} ${order.pair} fill ${order.detail}."
+            "PARTIALLY_FILLED" -> "${order.side} ${order.pair} mulai fill ${order.detail}."
+            "OPEN", "SUBMITTING" -> "Pasang ${order.side.lowercase()} ${order.pair} ${order.detail}."
+            "CANCELED" -> "Order ${order.pair} dibatalkan karena setup berubah."
+            else -> return null
+        }
+        return com.kibot.macengine.state.MacTimelineEntry(
+            timestampEpochMs = order.timestampEpochMs,
+            category = when (order.side.uppercase()) {
+                "BUY" -> if (status == "FILLED" || status == "PARTIALLY_FILLED") "BUY" else "TARGET"
+                "SELL" -> if (status == "FILLED" || status == "PARTIALLY_FILLED") "SELL" else "TARGET"
+                else -> "SYNC"
+            },
+            message = message,
+        )
     }
 
     private fun shouldExposeToLiveTimeline(category: String, message: String): Boolean {

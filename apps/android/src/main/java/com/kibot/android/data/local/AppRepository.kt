@@ -223,7 +223,7 @@ class AppRepository(
         val serverTimeline = buildServerLiveEntries(
             liveTimeline = emptyList(),
             serverLogs = emptyList(),
-            orders = orders,
+            orders = orders.map(::toServerRecentOrder),
             fallbackTimestamp = now.toEpochMilliseconds(),
         )
         val serverStatusMessage = serverTimeline.firstOrNull()?.message
@@ -355,7 +355,7 @@ class AppRepository(
         val liveEntries = buildServerLiveEntries(
             liveTimeline = state.liveTimeline,
             serverLogs = serverBundle.serverLogs,
-            orders = serverBundle.orders,
+            orders = state.recentOrders,
             fallbackTimestamp = now.toEpochMilliseconds(),
         )
         val statusMessage = state.statusMessage
@@ -364,7 +364,7 @@ class AppRepository(
             ?: "Server Oracle sedang memantau market live."
         val portfolio = buildPortfolioSection(
             now = now,
-            history = serverBundle.riskHistory,
+            history = emptyList(),
             totalEquityLabel = state.portfolioValueIdr,
             totalEquityIdr = totalEquityIdr,
             pnlTodayLabel = state.pnlTodayIdr,
@@ -396,32 +396,27 @@ class AppRepository(
             statusMessage = statusMessage,
             weeklyLearningSummary = state.weeklyLearningSummary
                 .takeIf { it.isNotBlank() }
-                ?: serverBundle.weeklyReview?.let {
-                    "Week ${it.periodStart} - ${it.periodEnd} • no-trade ${(it.noTradeQualityScore * 100).toInt()}% • util ${(it.productiveUtilizationPct * 100).toInt()}%"
-                }
                 ?: "Belum ada review mingguan.",
             weeklyAdaptationSummary = state.weeklyAdaptationSummary
                 .takeIf { it.isNotBlank() }
-                ?: serverBundle.weeklyReview?.adaptationPlan?.notes?.joinToString(" ")
-                    ?.takeIf { it.isNotBlank() }
                 ?: "Adaptasi mingguan belum tersedia.",
             positions = buildServerPositions(state),
             portfolio = portfolio,
             liveLogEntries = liveEntries,
-            logs = buildServerLogCards(state.liveTimeline, serverBundle.serverLogs),
-            trades = serverBundle.orders
-                .filter {
-                    it.executedQuantity.toDoubleOrZero() > 0.0 ||
-                        it.status == OrderStatus.FILLED ||
-                        it.status == OrderStatus.PARTIALLY_FILLED
-                }
+            logs = buildServerLogCards(
+                liveTimeline = state.liveTimeline,
+                serverLogs = serverBundle.serverLogs,
+                recentOrders = state.recentOrders,
+            ),
+            trades = state.recentOrders
+                .filter { it.status == "FILLED" || it.status == "PARTIALLY_FILLED" }
                 .map {
                     TradeUi(
-                        pair = it.pairId.value.lowercase(),
-                        side = "${it.side.name} • ${it.orderType.name}",
-                        status = it.status.name,
-                        detail = "${formatQuantity(max(it.executedQuantity.toDoubleOrZero(), it.originalQuantity.toDoubleOrZero()))} @ ${formatIdr(max(it.price.toDoubleOrZero(), 0.0))}",
-                        timeLabel = formatMomentLabel(it.updatedAt),
+                        pair = it.pair,
+                        side = it.side,
+                        status = it.status,
+                        detail = it.detail,
+                        timeLabel = formatMomentLabel(Instant.fromEpochMilliseconds(it.timestampEpochMs)),
                     )
                 },
             devices = listOf(
@@ -540,25 +535,12 @@ class AppRepository(
         val baseUrl = normalizedServerMonitorBaseUrl ?: return null
         val stateDeferred = scope.async { fetchJsonObject("$baseUrl/api/state") }
         val logsDeferred = scope.async { fetchJsonArrayStrings("$baseUrl/api/logs") }
-        val auxiliaryDeferred = scope.async {
-            val gateway = controlPlaneGateway ?: return@async null
-            runCatching { fetchAuxiliaryData(gateway, Clock.System.now()) }.getOrNull()
-        }
-        val riskHistoryDeferred = scope.async {
-            val gateway = controlPlaneGateway ?: return@async emptyList()
-            runCatching { gateway.fetchDailyRiskHistory(botId, days = 7) }.getOrDefault(emptyList())
-        }
 
         val stateJson = stateDeferred.await() ?: return null
         val parsedState = parseServerMonitorState(stateJson) ?: return null
-        val auxiliary = auxiliaryDeferred.await()
         return ServerMonitorBundle(
             state = parsedState,
             serverLogs = logsDeferred.await(),
-            logs = auxiliary?.logs.orEmpty(),
-            orders = auxiliary?.orders.orEmpty(),
-            weeklyReview = auxiliary?.weeklyReview,
-            riskHistory = riskHistoryDeferred.await(),
         )
     }
 
@@ -1138,13 +1120,14 @@ class AppRepository(
             exchangePingMs = json.optString("exchangePingMs", "--"),
             holdingsDetailed = json.optJSONArray("holdingsDetailed").toHoldingDetailList(),
             liveTimeline = json.optJSONArray("liveTimeline").toTimelineEntryList(),
+            recentOrders = json.optJSONArray("recentOrders").toRecentOrderList(),
         )
     }
 
     private fun buildServerLiveEntries(
         liveTimeline: List<ServerTimelineEntry>,
         serverLogs: List<String>,
-        orders: List<OrderSnapshot>,
+        orders: List<ServerRecentOrder>,
         fallbackTimestamp: Long,
     ): List<com.kibot.android.runtime.LiveLogEntry> {
         val timelineEntries = liveTimeline.mapNotNull(::toServerLiveEntry)
@@ -1217,42 +1200,27 @@ class AppRepository(
     }
 
     private fun toServerLiveEntry(
-        order: OrderSnapshot,
+        order: ServerRecentOrder,
     ): com.kibot.android.runtime.LiveLogEntry? {
-        val quantity = max(order.executedQuantity.toDoubleOrZero(), order.originalQuantity.toDoubleOrZero())
-        if (quantity <= 0.0) return null
-        val price = order.price.toDoubleOrZero()
-        val pair = order.pairId.value.lowercase()
-        val category = when (order.side) {
-            com.kibot.shared.models.OrderSide.BUY -> if (order.status == OrderStatus.OPEN) "TARGET" else "BUY"
-            com.kibot.shared.models.OrderSide.SELL -> if (order.status == OrderStatus.OPEN) "TARGET" else "SELL"
+        val category = when (order.side.uppercase()) {
+            "BUY" -> if (order.status == "OPEN" || order.status == "SUBMITTING") "TARGET" else "BUY"
+            "SELL" -> if (order.status == "OPEN" || order.status == "SUBMITTING") "TARGET" else "SELL"
+            else -> "SYNC"
         }
         val message = when (order.status) {
-            OrderStatus.OPEN, OrderStatus.SUBMITTING ->
-                "Server pasang ${order.side.name.lowercase()} $pair @ ${formatIdr(price)} dan lagi tunggu fill."
-            OrderStatus.PARTIALLY_FILLED ->
-                "${order.side.name} $pair mulai keisi ${formatQuantity(quantity)} @ ${formatIdr(price)}."
-            OrderStatus.FILLED ->
-                "${order.side.name} $pair sukses ${formatQuantity(quantity)} @ ${formatIdr(price)}."
-            OrderStatus.CANCELED ->
-                "Order $pair dibatalkan karena momentum berubah."
+            "OPEN", "SUBMITTING" ->
+                "Server pasang ${order.side.lowercase()} ${order.pair} ${order.detail.lowercase()}."
+            "PARTIALLY_FILLED" ->
+                "${order.side} ${order.pair} mulai fill ${order.detail.lowercase()}."
+            "FILLED" ->
+                "${order.side} ${order.pair} sukses ${order.detail.lowercase()}."
+            "CANCELED" ->
+                "Order ${order.pair} dibatalkan karena momentum berubah."
             else -> return null
         }
         return com.kibot.android.runtime.LiveLogEntry(
-            timestampEpochMs = order.updatedAt.toEpochMilliseconds(),
+            timestampEpochMs = order.timestampEpochMs,
             category = category,
-            message = message,
-        )
-    }
-
-    private fun toServerLiveEntry(
-        log: com.kibot.shared.models.AuditLogRecord,
-    ): com.kibot.android.runtime.LiveLogEntry? {
-        val message = log.message.trim()
-        if (message.isBlank()) return null
-        return com.kibot.android.runtime.LiveLogEntry(
-            timestampEpochMs = log.recordedAt.toEpochMilliseconds(),
-            category = log.category.uppercase(),
             message = message,
         )
     }
@@ -1301,8 +1269,19 @@ class AppRepository(
     private fun buildServerLogCards(
         liveTimeline: List<ServerTimelineEntry>,
         serverLogs: List<String>,
+        recentOrders: List<ServerRecentOrder>,
     ): List<LogUi> {
         val timelineCards = liveTimeline.mapNotNull(::toServerLogCard)
+        val tradeCards = recentOrders.mapNotNull { order ->
+            toServerLiveEntry(order)?.let { entry ->
+                LogUi(
+                    level = "INFO",
+                    category = entry.category,
+                    message = entry.message,
+                    timeLabel = formatMomentLabel(Instant.fromEpochMilliseconds(entry.timestampEpochMs)),
+                )
+            }
+        }
         val serverCards = serverLogs.map { line ->
             LogUi(
                 level = "INFO",
@@ -1311,10 +1290,24 @@ class AppRepository(
                 timeLabel = formatLastUpdated(Clock.System.now()),
             )
         }
-        return (timelineCards + serverCards)
+        return (timelineCards + tradeCards + serverCards)
             .filter { it.message.isNotBlank() }
             .distinctBy { "${it.category}|${it.message}" }
             .take(20)
+    }
+
+    private fun toServerRecentOrder(
+        order: OrderSnapshot,
+    ): ServerRecentOrder {
+        val quantity = max(order.executedQuantity.toDoubleOrZero(), order.originalQuantity.toDoubleOrZero())
+        val safePrice = max(order.price.toDoubleOrZero(), 0.0)
+        return ServerRecentOrder(
+            timestampEpochMs = order.updatedAt.toEpochMilliseconds(),
+            pair = order.pairId.value,
+            side = order.side.name,
+            status = order.status.name,
+            detail = "${formatQuantity(quantity)} @ ${formatIdr(safePrice)}",
+        )
     }
 
     private fun filterDisplayPairs(
@@ -1363,10 +1356,6 @@ private data class AuxiliarySyncCache(
 private data class ServerMonitorBundle(
     val state: ServerMonitorState,
     val serverLogs: List<String>,
-    val logs: List<com.kibot.shared.models.AuditLogRecord>,
-    val orders: List<com.kibot.shared.models.OrderSnapshot>,
-    val weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
-    val riskHistory: List<DailyEquityHistoryPoint>,
 )
 
 private data class ServerMonitorState(
@@ -1398,6 +1387,7 @@ private data class ServerMonitorState(
     val exchangePingMs: String,
     val holdingsDetailed: List<ServerHoldingDetail>,
     val liveTimeline: List<ServerTimelineEntry>,
+    val recentOrders: List<ServerRecentOrder>,
 )
 
 private data class ServerHoldingDetail(
@@ -1411,6 +1401,14 @@ private data class ServerTimelineEntry(
     val timestampEpochMs: Long,
     val category: String,
     val message: String,
+)
+
+private data class ServerRecentOrder(
+    val timestampEpochMs: Long,
+    val pair: String,
+    val side: String,
+    val status: String,
+    val detail: String,
 )
 
 private data class CachedLanEndpoint(
@@ -1455,6 +1453,23 @@ private fun org.json.JSONArray?.toTimelineEntryList(): List<ServerTimelineEntry>
                 timestampEpochMs = item.optLong("timestampEpochMs", 0L),
                 category = item.optString("category", inferServerLogCategory(message)),
                 message = message,
+            )
+        }
+}
+
+private fun org.json.JSONArray?.toRecentOrderList(): List<ServerRecentOrder> {
+    if (this == null) return emptyList()
+    return List(length()) { index -> optJSONObject(index) }
+        .mapNotNull { item ->
+            item ?: return@mapNotNull null
+            val pair = item.optString("pair").trim()
+            if (pair.isBlank()) return@mapNotNull null
+            ServerRecentOrder(
+                timestampEpochMs = item.optLong("timestampEpochMs", 0L),
+                pair = pair,
+                side = item.optString("side", "-").uppercase(),
+                status = item.optString("status", "-").uppercase(),
+                detail = item.optString("detail", "").trim(),
             )
         }
 }

@@ -33,6 +33,15 @@ data class MacTimelineEntry(
 )
 
 @Serializable
+data class MacRecentOrder(
+    val timestampEpochMs: Long,
+    val pair: String,
+    val side: String,
+    val status: String,
+    val detail: String,
+)
+
+@Serializable
 data class MacDashboardState(
     val isBotRunning: Boolean,
     val effectiveState: BotEffectiveState,
@@ -64,6 +73,7 @@ data class MacDashboardState(
     val holdingsDetailed: List<MacHoldingDetail>,
     val exchangePingMs: String,
     val liveTimeline: List<MacTimelineEntry>,
+    val recentOrders: List<MacRecentOrder>,
 ) {
     companion object {
         fun preview(): MacDashboardState = MacDashboardState(
@@ -97,6 +107,7 @@ data class MacDashboardState(
             holdingsDetailed = emptyList(),
             exchangePingMs = "--",
             liveTimeline = emptyList(),
+            recentOrders = emptyList(),
         )
     }
 }
@@ -104,9 +115,10 @@ data class MacDashboardState(
 class MacStateRepository {
     private val _state = MutableStateFlow(MacDashboardState.preview())
     val state: StateFlow<MacDashboardState> = _state.asStateFlow()
+    private val startedAtEpochMs = Clock.System.now().toEpochMilliseconds()
 
     fun applyRuntimeState(next: MacDashboardState) {
-        val uptimeMs = Clock.System.now().toEpochMilliseconds() - next.lastUpdatedEpochMs
+        val uptimeMs = Clock.System.now().toEpochMilliseconds() - startedAtEpochMs
         val uptimeText = formatUptime(uptimeMs)
         _state.value = next.copy(
             lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
@@ -115,6 +127,11 @@ class MacStateRepository {
                 next.liveTimeline
             } else {
                 _state.value.liveTimeline
+            },
+            recentOrders = if (next.recentOrders.isNotEmpty()) {
+                next.recentOrders
+            } else {
+                _state.value.recentOrders
             },
         )
     }
