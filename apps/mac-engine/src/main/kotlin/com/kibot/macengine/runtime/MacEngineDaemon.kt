@@ -1449,16 +1449,15 @@ class MacEngineDaemon(
                 "Server scan $scanUniverseCount pair dan cari momentum yang layak."
             else -> "Server Oracle lagi sinkron dan pantau market."
         }
-        val liveTimeline = repository.state.value.liveTimeline.ifEmpty {
-            buildSyntheticTimeline(
-                now = now,
-                botState = botState,
-                topCandidate = topCandidate,
-                holdingsDetailed = holdingsDetailed,
-                scanUniverseCount = scanUniverseCount,
-                healthSummary = healthDecisionSummary,
-            )
-        }
+        val liveTimeline = buildLiveTimeline(
+            now = now,
+            existingTimeline = repository.state.value.liveTimeline,
+            botState = botState,
+            topCandidate = topCandidate,
+            holdingsDetailed = holdingsDetailed,
+            scanUniverseCount = scanUniverseCount,
+            healthSummary = healthDecisionSummary,
+        )
 
         return com.kibot.macengine.state.MacDashboardState(
             isBotRunning = botState.effectiveState != BotEffectiveState.STOPPED,
@@ -1697,6 +1696,32 @@ class MacEngineDaemon(
         return primary?.takeIf { it.isNotBlank() }
             ?: fallback?.takeIf { it.isNotBlank() }
             ?: "-"
+    }
+
+    private fun buildLiveTimeline(
+        now: Instant,
+        existingTimeline: List<com.kibot.macengine.state.MacTimelineEntry>,
+        botState: BotStateSnapshot,
+        topCandidate: String,
+        holdingsDetailed: List<com.kibot.macengine.state.MacHoldingDetail>,
+        scanUniverseCount: Int,
+        healthSummary: String,
+    ): List<com.kibot.macengine.state.MacTimelineEntry> {
+        val freshStatusEntries = buildSyntheticTimeline(
+            now = now,
+            botState = botState,
+            topCandidate = topCandidate,
+            holdingsDetailed = holdingsDetailed,
+            scanUniverseCount = scanUniverseCount,
+            healthSummary = healthSummary,
+        )
+        val preservedOperatorEntries = existingTimeline
+            .filterNot { it.category in setOf("STATUS", "HEALTH") }
+            .filter { now.toEpochMilliseconds() - it.timestampEpochMs <= 24 * 60 * 60 * 1000L }
+        return (freshStatusEntries + preservedOperatorEntries)
+            .sortedByDescending { it.timestampEpochMs }
+            .distinctBy { "${it.category}|${it.message}" }
+            .take(18)
     }
 
     private fun buildSyntheticTimeline(
