@@ -34,6 +34,7 @@ data class MacRuntimeConfig(
     val enableLanAdvertising: Boolean = true,
     val dashboardStatePollIntervalMillis: Long = 15_000L,
     val dashboardLogPollIntervalMillis: Long = 20_000L,
+    val releaseLabel: String,
     val aiSupportConfig: GeminiSupportConfig?,
     val analysisPublishIntervalMillis: Long,
     val strategyMetricsPublishIntervalMillis: Long,
@@ -96,6 +97,10 @@ object MacRuntimeConfigLoader {
             enableLanAdvertising = optional("MAC_ENGINE_ENABLE_LAN_ADVERTISE")?.equals("true", ignoreCase = true) ?: true,
             dashboardStatePollIntervalMillis = optional("MAC_DASHBOARD_STATE_POLL_INTERVAL_MS")?.toLongOrNull() ?: 15_000L,
             dashboardLogPollIntervalMillis = optional("MAC_DASHBOARD_LOG_POLL_INTERVAL_MS")?.toLongOrNull() ?: 20_000L,
+            releaseLabel = optional("KIBOT_RELEASE_LABEL")
+                ?: optional("KIBOT_RELEASE_TAG")
+                ?: optional("GITHUB_RUN_NUMBER")?.let { "#$it" }
+                ?: "#0",
             aiSupportConfig = optional("GEMINI_SUPPORT_API_KEY")
                 ?.takeIf { optional("GEMINI_SUPPORT_ENABLED")?.equals("true", ignoreCase = true) == true }
                 ?.let { apiKey ->

@@ -494,7 +494,7 @@ private fun HeroCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 StatusChip(
-                    label = "${serverState.summary} • scan ${state.scanUniverseCount}",
+                    label = "Oracle Active ${state.releaseLabel}",
                     tint = serverState.tint,
                 )
                 StatusChip(

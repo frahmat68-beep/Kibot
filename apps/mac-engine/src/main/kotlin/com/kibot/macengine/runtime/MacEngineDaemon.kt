@@ -1489,6 +1489,7 @@ class MacEngineDaemon(
             topCandidate = topCandidate,
             radarPairs = filteredRadarPairs,
             scanUniverseCount = scanUniverseCount,
+            releaseLabel = if (config.releaseLabel.startsWith("#")) config.releaseLabel else "#${config.releaseLabel}",
             liveExecutionEnabled = config.enableLiveExecution,
             portfolioValueIdr = formatIdr(portfolioValue),
             pnlTodayIdr = formatSignedIdr(pnlToday),

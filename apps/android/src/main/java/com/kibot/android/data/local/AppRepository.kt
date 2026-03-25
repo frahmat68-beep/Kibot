@@ -249,6 +249,7 @@ class AppRepository(
             modalSaatIniIdr = modalSaatIniLabel,
             scanUniverseCount = fallbackSnapshot?.scanUniverseCount
                 ?: _uiState.value.scanUniverseCount,
+            releaseLabel = _uiState.value.releaseLabel,
             radarPairs = displayRadarPairs.takeIf { it.isNotEmpty() }
                 ?: fallbackSnapshot?.radarPairs?.takeIf { it.isNotEmpty() }
                 ?: _uiState.value.radarPairs,
@@ -375,6 +376,7 @@ class AppRepository(
             pnlTodayPctLabel = state.pnlTodayPctLabel,
             modalSaatIniIdr = state.portfolioValueIdr,
             scanUniverseCount = state.scanUniverseCount,
+            releaseLabel = state.releaseLabel.ifBlank { _uiState.value.releaseLabel },
             radarPairs = filteredRadarPairs,
             pairAktif = livePair,
             syncLagLabel = state.lastHeartbeatLabel.ifBlank { "--" },
@@ -1081,6 +1083,7 @@ class AppRepository(
             topCandidate = json.optString("topCandidate", "-"),
             radarPairs = json.optJSONArray("radarPairs").toStringList(),
             scanUniverseCount = json.optInt("scanUniverseCount", 0),
+            releaseLabel = json.optString("releaseLabel", "#0"),
             portfolioValueIdr = portfolioValueIdr,
             pnlTodayIdr = json.optString("pnlTodayIdr", "+Rp0"),
             pnlTodayPctLabel = json.optString("pnlTodayPctLabel", "+0.0%"),
@@ -1493,6 +1496,7 @@ private data class ServerMonitorState(
     val topCandidate: String,
     val radarPairs: List<String>,
     val scanUniverseCount: Int,
+    val releaseLabel: String,
     val portfolioValueIdr: String,
     val pnlTodayIdr: String,
     val pnlTodayPctLabel: String,

@@ -156,11 +156,11 @@ class LocalDashboardServer(
                                       document.getElementById('hero-pnl').textContent = state.pnlTodayIdr;
                                       document.getElementById('last-updated').textContent = state.lastUpdatedLabel;
                                       document.getElementById('hero-summary').textContent = state.statusMessage;
+                                      document.getElementById('release-label').textContent = 'Oracle Active ' + (state.releaseLabel || '#0');
                                       document.getElementById('top-candidate').textContent = state.topCandidate;
                                       document.getElementById('market-regime').textContent = state.marketRegime;
                                       document.getElementById('edge-confidence').textContent = state.edgeConfidence;
                                       document.getElementById('operating-mode').textContent = state.operatingMode;
-                                      document.getElementById('feed-label').textContent = state.syncPathLabel;
                                       document.getElementById('health-summary').textContent = state.healthSummary;
                                       document.getElementById('active-engine').textContent = state.activeEngine;
                                       document.getElementById('sync-health').textContent = state.syncHealth;
@@ -270,8 +270,8 @@ private fun BODY.renderDashboard(state: MacDashboardState) {
                     +state.pnlTodayIdr
                 }
                 span("pill pill-neutral") {
-                    attributes["id"] = "feed-label"
-                    +state.syncPathLabel
+                    attributes["id"] = "release-label"
+                    +"Oracle Active ${state.releaseLabel}"
                 }
             }
             p("hero-status") {
@@ -415,18 +415,23 @@ private fun dashboardStyles(): String = """
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      min-height: 100vh;
+      height: 100vh;
       font-family: "SF Pro Display", "Segoe UI", sans-serif;
       color: var(--text);
       background:
         radial-gradient(circle at top left, rgba(96,165,250,0.18), transparent 28%),
         radial-gradient(circle at top right, rgba(45,216,129,0.10), transparent 24%),
         linear-gradient(180deg, var(--bg-0), var(--bg-1));
+      overflow: hidden;
     }
     .page-shell {
       max-width: 1240px;
       margin: 0 auto;
-      padding: 28px 22px 44px;
+      height: 100vh;
+      padding: 14px 18px 16px;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 10px;
     }
     .hero-card,
     .metric-card,
@@ -437,7 +442,7 @@ private fun dashboardStyles(): String = """
       backdrop-filter: blur(16px);
       box-shadow: 0 24px 56px rgba(0,0,0,0.24);
     }
-    .hero-card { padding: 28px; }
+    .hero-card { padding: 16px 18px; }
     .hero-topbar {
       display: flex;
       align-items: flex-start;
@@ -446,7 +451,7 @@ private fun dashboardStyles(): String = """
     }
     .hero-topbar h1 {
       margin: 0;
-      font-size: 56px;
+      font-size: 44px;
       line-height: 1;
       letter-spacing: -0.04em;
     }
@@ -454,7 +459,7 @@ private fun dashboardStyles(): String = """
       display: flex;
       flex-direction: column;
       align-items: flex-end;
-      gap: 10px;
+      gap: 6px;
     }
     .hero-update {
       margin: 0;
@@ -481,30 +486,30 @@ private fun dashboardStyles(): String = """
     .pill-purple { color: #b799ff; background: rgba(183,153,255,0.14); }
     .pill-neutral { color: #dbe7ff; background: rgba(255,255,255,0.08); }
     .hero-balance {
-      margin-top: 20px;
-      font-size: clamp(56px, 7vw, 92px);
+      margin-top: 10px;
+      font-size: clamp(42px, 5.4vw, 70px);
       font-weight: 900;
       line-height: 0.96;
       letter-spacing: -0.05em;
     }
     .hero-pnl-row {
-      margin-top: 16px;
+      margin-top: 10px;
       display: flex;
       gap: 10px;
       align-items: center;
       flex-wrap: wrap;
     }
     .hero-pnl {
-      font-size: clamp(28px, 4vw, 44px);
+      font-size: clamp(24px, 3.2vw, 34px);
       font-weight: 900;
       line-height: 1;
       color: #2dd881;
     }
     .hero-status {
-      margin: 18px 0 0;
+      margin: 10px 0 0;
       color: var(--muted);
-      font-size: 16px;
-      line-height: 1.55;
+      font-size: 14px;
+      line-height: 1.4;
     }
     .hero-metrics-grid,
     .dashboard-grid {
@@ -512,11 +517,11 @@ private fun dashboardStyles(): String = """
       gap: 18px;
     }
     .hero-metrics-grid {
-      margin-top: 18px;
+      margin-top: 0;
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
     .metric-card {
-      padding: 18px 20px;
+      padding: 10px 12px;
       display: grid;
       gap: 8px;
     }
@@ -527,49 +532,52 @@ private fun dashboardStyles(): String = """
       letter-spacing: 0.08em;
     }
     .metric-value {
-      font-size: 22px;
+      font-size: 18px;
       font-weight: 800;
     }
     .dashboard-grid {
-      margin-top: 18px;
+      margin-top: 0;
       grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: stretch;
+      min-height: 0;
     }
-    .card { padding: 22px; }
-    .live-pair-card { min-height: 224px; }
-    .activity-card { min-height: 320px; }
+    .card { padding: 14px; min-height: 0; }
+    .live-pair-card { min-height: 0; }
+    .activity-card { min-height: 0; }
     .card-header-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      margin-bottom: 14px;
+      margin-bottom: 8px;
     }
     .card h2 {
       margin: 0;
-      font-size: 20px;
+      font-size: 18px;
       line-height: 1.2;
     }
     .pair-hero {
-      font-size: clamp(36px, 5vw, 58px);
+      font-size: clamp(30px, 3vw, 40px);
       font-weight: 900;
       line-height: 1;
       letter-spacing: -0.04em;
-      margin-bottom: 14px;
+      margin-bottom: 8px;
     }
     .pair-support-copy,
     .muted-copy {
       margin: 0;
       color: var(--muted);
-      line-height: 1.55;
+      line-height: 1.35;
+      font-size: 13px;
     }
     .pair-meta-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-      margin-top: 14px;
+      gap: 8px;
+      margin-top: 8px;
     }
     .pair-meta-chip {
-      padding: 14px;
+      padding: 10px;
       border-radius: 18px;
       background: rgba(255,255,255,0.04);
       border: 1px solid rgba(255,255,255,0.06);
@@ -583,7 +591,7 @@ private fun dashboardStyles(): String = """
       letter-spacing: 0.08em;
     }
     .pair-meta-value {
-      font-size: 16px;
+      font-size: 14px;
       font-weight: 800;
       word-break: break-word;
     }
@@ -592,7 +600,7 @@ private fun dashboardStyles(): String = """
       align-items: center;
       justify-content: space-between;
       gap: 14px;
-      padding: 12px 0;
+      padding: 8px 0;
       border-bottom: 1px solid rgba(255,255,255,0.07);
     }
     .status-row:last-child { border-bottom: 0; }
@@ -609,26 +617,26 @@ private fun dashboardStyles(): String = """
     .holdings-list,
     .log-list {
       display: grid;
-      gap: 10px;
+      gap: 8px;
     }
     .holdings-list {
-      max-height: 260px;
+      max-height: 170px;
       overflow-y: auto;
     }
     .holding-row,
     .timeline-row {
-      padding: 12px 14px;
-      border-radius: 16px;
+      padding: 9px 11px;
+      border-radius: 12px;
       background: rgba(255,255,255,0.04);
       border: 1px solid rgba(255,255,255,0.05);
       line-height: 1.45;
     }
     .log-list {
-      max-height: 260px;
+      max-height: 170px;
       overflow-y: auto;
       font-family: "SF Pro Text", "Segoe UI", sans-serif;
       color: var(--muted);
-      font-size: 14px;
+      font-size: 12px;
     }
     @media (max-width: 920px) {
       .hero-metrics-grid,

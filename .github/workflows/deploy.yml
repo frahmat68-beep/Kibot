@@ -118,7 +118,14 @@ jobs:
         key: ${{ env.DEPLOY_KEY }}
         script: |
           set -euo pipefail
+          RELEASE_LABEL="#${{ github.run_number }}"
           mkdir -p /home/ubuntu/KiBot/server
+          touch /home/ubuntu/KiBot/.env.server
+          if grep -q '^KIBOT_RELEASE_LABEL=' /home/ubuntu/KiBot/.env.server; then
+            sed -i "s/^KIBOT_RELEASE_LABEL=.*/KIBOT_RELEASE_LABEL=${RELEASE_LABEL}/" /home/ubuntu/KiBot/.env.server
+          else
+            echo "KIBOT_RELEASE_LABEL=${RELEASE_LABEL}" >> /home/ubuntu/KiBot/.env.server
+          fi
           rm -f /home/ubuntu/KiBot/server/mac-engine-all.jar
           mv /home/ubuntu/KiBot/mac-engine-all.jar /home/ubuntu/KiBot/server/mac-engine-all.jar
           chmod +x /home/ubuntu/KiBot/kibot-recovery.sh
