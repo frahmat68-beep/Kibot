@@ -84,6 +84,8 @@ class MacEngineDaemon(
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val adaptiveAiPolicyLoader = AdaptiveAiPolicyLoader(config.adaptiveAiPolicyPath)
+    private val aiProviderStatusLoader = AiProviderStatusLoader()
+    private val dailyTargetPursuitBrain = DailyTargetPursuitBrain()
     private var registered = false
     private var lastAnalysisPublishedAt: Instant? = null
     private var lastStrategyMetricsPublishedAt: Instant? = null
@@ -184,7 +186,7 @@ class MacEngineDaemon(
         val localHealth = buildLocalHealth(
             exchangeReachable = exchangeReachable,
             warnings = healthWarnings,
-            feedLatencyMs = exchangePingMs,
+            feedLatencyMs = displayPingMs ?: exchangePingMs,
             marketFeedHealthy = exchangeReachable,
         )
         val masterBeforeTakeover = leaseAfterCommands.isHeldBy(config.device.deviceId, now)
@@ -239,7 +241,7 @@ class MacEngineDaemon(
         val finalHealth = buildLocalHealth(
             exchangeReachable = exchangeReachable,
             warnings = healthWarnings,
-            feedLatencyMs = exchangePingMs,
+            feedLatencyMs = displayPingMs ?: exchangePingMs,
             marketFeedHealthy = exchangeReachable && resolvedMarketQuotes.isNotEmpty(),
         )
         val healthDecision = healthAdvisor.evaluate(finalHealth)
@@ -269,7 +271,7 @@ class MacEngineDaemon(
             marketQuotes = resolvedMarketQuotes,
         ) ?: dailyRisk
         val strategyCycle = if (resolvedMarketQuotes.isNotEmpty()) {
-            strategyOrchestrator.analyze(
+            val baseCycle = strategyOrchestrator.analyze(
                 botId = config.controlPlane.botId,
                 balances = resolvedBalances,
                 openOrders = resolvedOpenOrders,
@@ -278,6 +280,13 @@ class MacEngineDaemon(
                 marketQuotes = resolvedMarketQuotes,
                 pairSupportHints = effectiveAiSupportHints,
                 weeklySummary = weeklyReview,
+            )
+            applyPursuitPolicy(
+                cycle = baseCycle,
+                adaptiveAiPolicy = adaptiveAiPolicy,
+                balances = resolvedBalances,
+                marketQuotes = resolvedMarketQuotes,
+                now = now,
             )
         } else {
             null
@@ -656,7 +665,7 @@ class MacEngineDaemon(
     private fun isControlPlaneReachable(now: Instant): Boolean {
         val lastSuccess = lastSuccessfulControlPlaneAt ?: return false
         val stalenessMs = (now.toEpochMilliseconds() - lastSuccess.toEpochMilliseconds()).coerceAtLeast(0L)
-        val graceWindowMs = (config.pollIntervalMillis * 3L).coerceAtLeast(12_000L)
+        val graceWindowMs = (config.pollIntervalMillis * 8L).coerceAtLeast(30_000L)
         return stalenessMs <= graceWindowMs
     }
 
@@ -1421,6 +1430,13 @@ class MacEngineDaemon(
             strategyCycle = strategyCycle,
             botState = botState,
         )
+        val targetPursuit = strategyCycle?.let {
+            dailyTargetPursuitBrain.evaluate(
+                cycle = it,
+                adaptiveAiPolicy = cachedAdaptiveAiPolicy,
+                now = now,
+            )
+        }
         val topCandidate = preferredDisplayPair(
             primary = strategyCycle?.topCandidate?.value ?: strategyCycle?.selectedSignal?.pairId?.value,
             fallback = filteredRadarPairs.firstOrNull(),
@@ -1468,6 +1484,8 @@ class MacEngineDaemon(
                 "Safe mode aktif. Tunggu status trade dan data exchange benar-benar bersih."
             localHealth.status == HealthStatus.CRITICAL ->
                 "Server Oracle lagi bermasalah: ${localHealth.warnings.firstOrNull().orEmpty()}".trim()
+            targetPursuit != null && targetPursuit.active && topCandidate != "-" ->
+                "Target 25% dikejar. Progress ${formatDecimal(targetPursuit.currentProfitPct, 2)}%, urgency ${formatDecimal(targetPursuit.urgency * 100.0, 0)}%, fokus entry cepat $topCandidate."
             holdingsDetailed.isNotEmpty() && topCandidate != "-" ->
                 "Server pegang ${holdingsDetailed.size} aset dan fokus cari entry baru di $topCandidate."
             topCandidate != "-" && scanUniverseCount > 0 ->
@@ -1499,6 +1517,8 @@ class MacEngineDaemon(
             scanUniverseCount = scanUniverseCount,
             healthSummary = healthDecisionSummary,
             recentOrders = recentOrderCards,
+            targetPursuit = targetPursuit,
+            aiProviderSummary = aiProviderStatusLoader.loadOrDefault(config.adaptiveAiPolicyPath).summaryLabel,
         )
         val weeklyBaseline = resolveReturnBaseline(
             history = equityHistory,
@@ -1516,6 +1536,7 @@ class MacEngineDaemon(
         val return7dPct = if (weeklyBaseline > 0.0) return7d / weeklyBaseline else 0.0
         val return30d = portfolioValue - monthlyBaseline
         val return30dPct = if (monthlyBaseline > 0.0) return30d / monthlyBaseline else 0.0
+        val aiProviderStatus = aiProviderStatusLoader.loadOrDefault(config.adaptiveAiPolicyPath)
 
         return com.kibot.macengine.state.MacDashboardState(
             isBotRunning = botState.effectiveState != BotEffectiveState.STOPPED,
@@ -1535,6 +1556,8 @@ class MacEngineDaemon(
             return7dPctLabel = formatSignedPercent(return7dPct),
             return30dIdr = formatSignedIdr(return30d),
             return30dPctLabel = formatSignedPercent(return30dPct),
+            targetPursuitLabel = targetPursuit?.phase ?: "TRACKING",
+            aiProviderSummary = aiProviderStatus.summaryLabel,
             syncPathLabel = "Live Server",
             activeEngine = "Oracle Cloud Server",
             standbyEngine = "View Only",
@@ -1543,7 +1566,13 @@ class MacEngineDaemon(
             healthSummary = if (botState.effectiveState == BotEffectiveState.SAFE_MODE || lease?.conflictDetected == true) {
                 botState.safeModeReason ?: "Safe mode active. Manual review is required."
             } else {
-                healthDecisionSummary
+                listOfNotNull(
+                    healthDecisionSummary.takeIf { it.isNotBlank() },
+                    targetPursuit?.takeIf { it.active }?.let {
+                        "${it.phase} ${formatDecimal(it.currentProfitPct, 2)}% / 25.00% • urgency ${formatDecimal(it.urgency * 100.0, 0)}% • slot +${it.extraSlots}"
+                    },
+                    aiProviderStatus.summaryLabel.takeIf { it.isNotBlank() },
+                ).joinToString(" • ")
             },
             weeklyLearningSummary = weeklyReview?.let {
                 "Week ${it.periodStart} - ${it.periodEnd} • no-trade ${(it.noTradeQualityScore * 100).toInt()}% • util ${(it.productiveUtilizationPct * 100).toInt()}%"
@@ -1771,6 +1800,8 @@ class MacEngineDaemon(
         scanUniverseCount: Int,
         healthSummary: String,
         recentOrders: List<com.kibot.macengine.state.MacRecentOrder>,
+        targetPursuit: DailyTargetPursuit?,
+        aiProviderSummary: String,
     ): List<com.kibot.macengine.state.MacTimelineEntry> {
         val freshStatusEntries = buildSyntheticTimeline(
             now = now,
@@ -1779,6 +1810,8 @@ class MacEngineDaemon(
             holdingsDetailed = holdingsDetailed,
             scanUniverseCount = scanUniverseCount,
             healthSummary = healthSummary,
+            targetPursuit = targetPursuit,
+            aiProviderSummary = aiProviderSummary,
         )
         val orderEntries = recentOrders.mapNotNull(::toTimelineEntry)
         val preservedOperatorEntries = existingTimeline
@@ -1798,10 +1831,16 @@ class MacEngineDaemon(
         holdingsDetailed: List<com.kibot.macengine.state.MacHoldingDetail>,
         scanUniverseCount: Int,
         healthSummary: String,
+        targetPursuit: DailyTargetPursuit?,
+        aiProviderSummary: String,
     ): List<com.kibot.macengine.state.MacTimelineEntry> {
         val primaryMessage = when {
             botState.effectiveState == BotEffectiveState.SAFE_MODE ->
                 "Server masuk safe mode dan tahan entry baru."
+            targetPursuit?.overdriveAllowed == true && topCandidate != "-" ->
+                "Target 25% sudah lewat. Bot masuk overdrive dan tetap buru lonjakan $topCandidate."
+            targetPursuit?.active == true && topCandidate != "-" ->
+                "Target 25% dikejar. Progress ${formatDecimal(targetPursuit.currentProfitPct, 2)}%, urgency ${formatDecimal(targetPursuit.urgency * 100.0, 0)}%, fokus entry cepat $topCandidate."
             holdingsDetailed.isNotEmpty() && topCandidate != "-" ->
                 "Server pegang ${holdingsDetailed.size} aset dan awasi entry cepat $topCandidate."
             topCandidate != "-" ->
@@ -1819,8 +1858,15 @@ class MacEngineDaemon(
         if (topCandidate != "-") {
             entries += com.kibot.macengine.state.MacTimelineEntry(
                 timestampEpochMs = now.toEpochMilliseconds() - 500L,
-                category = "TARGET",
-                message = "Fokus server sekarang $topCandidate. Entry akan ditembak kalau breakout lanjut dan biaya masih masuk akal.",
+                category = if (targetPursuit?.overdriveAllowed == true) "ROTASI" else "TARGET",
+                message = when {
+                    targetPursuit?.overdriveAllowed == true ->
+                        "Profit harian sudah lewat target, tapi $topCandidate sangat kuat. Bot tetap tekan winner sampai momentum patah."
+                    targetPursuit?.active == true ->
+                        "Fokus server sekarang $topCandidate. Entry ditembak lebih cepat karena target harian belum selesai."
+                    else ->
+                        "Fokus server sekarang $topCandidate. Entry akan ditembak kalau breakout lanjut dan biaya masih masuk akal."
+                },
             )
         }
         if (holdingsDetailed.isNotEmpty()) {
@@ -1838,6 +1884,13 @@ class MacEngineDaemon(
                 timestampEpochMs = now.toEpochMilliseconds() - 1_000L,
                 category = "HEALTH",
                 message = healthSummary,
+            )
+        }
+        if (aiProviderSummary.isNotBlank()) {
+            entries += com.kibot.macengine.state.MacTimelineEntry(
+                timestampEpochMs = now.toEpochMilliseconds() - 1_250L,
+                category = "AI",
+                message = aiProviderSummary,
             )
         }
         return entries
@@ -1959,26 +2012,141 @@ class MacEngineDaemon(
             }
     }
 
+    private fun applyPursuitPolicy(
+        cycle: com.kibot.core.StrategyCycleResult,
+        adaptiveAiPolicy: AdaptiveAiPolicy?,
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        now: Instant,
+    ): com.kibot.core.StrategyCycleResult {
+        val pursuit = dailyTargetPursuitBrain.evaluate(
+            cycle = cycle,
+            adaptiveAiPolicy = adaptiveAiPolicy,
+            now = now,
+        )
+        if (!pursuit.active && adaptiveAiPolicy == null) return cycle
+
+        val aiAdjustments = adaptiveAiPolicy?.adjustments ?: AdaptiveAiAdjustments()
+        val budgetBoostMultiplier = (
+            pursuit.budgetBoostMultiplier *
+                (1.0 + aiAdjustments.budgetBoostMultiplierDelta.coerceIn(0.0, 0.35))
+            ).coerceIn(1.0, 2.0)
+        val boostedBudget = (cycle.deploymentPlan.suggestedPerPositionBudgetIdr * budgetBoostMultiplier)
+            .coerceAtLeast(cycle.deploymentPlan.suggestedPerPositionBudgetIdr)
+        val boostedReservePct = (
+            cycle.deploymentPlan.targetCashReservePct -
+                pursuit.reserveReliefPct -
+                aiAdjustments.reserveReliefPctDelta.coerceIn(0.0, 0.08)
+            ).coerceIn(0.02, cycle.deploymentPlan.targetCashReservePct.coerceAtLeast(0.02))
+        val boostedActivePositions = (
+            cycle.deploymentPlan.maxActivePositions +
+                pursuit.extraSlots +
+                aiAdjustments.extraSlotsDelta.coerceIn(0, 2)
+            ).coerceAtLeast(cycle.deploymentPlan.maxActivePositions)
+            .coerceAtMost(6)
+        val existingCapitalTarget = cycle.deploymentPlan.capitalUtilizationTargetPct
+            .coerceIn(0.02, 0.98)
+        val boostedCapitalTarget = (1.0 - boostedReservePct).coerceIn(0.02, 0.98)
+
+        val updatedDeploymentPlan = cycle.deploymentPlan.copy(
+            allowRotation = cycle.deploymentPlan.allowRotation || pursuit.urgency >= 0.42,
+            maxActivePositions = boostedActivePositions,
+            suggestedPerPositionBudgetIdr = boostedBudget,
+            targetCashReservePct = boostedReservePct,
+            capitalUtilizationTargetPct = maxOf(existingCapitalTarget, boostedCapitalTarget),
+            rationale = cycle.deploymentPlan.rationale + pursuit.rationale,
+        )
+
+        val updatedExecutionPlan = cycle.executionPlan?.let { plan ->
+            scaleExecutionPlanForPursuit(
+                executionPlan = plan,
+                balances = balances,
+                marketQuotes = marketQuotes,
+                targetBudgetIdr = boostedBudget,
+                concentrationBoostPct = pursuit.concentrationBoostPct +
+                    aiAdjustments.allocationFocusPctDelta.coerceIn(0.0, 0.16),
+                executionBoostMultiplier = pursuit.executionBoostMultiplier,
+            )
+        }
+
+        return cycle.copy(
+            deploymentPlan = updatedDeploymentPlan,
+            executionPlan = updatedExecutionPlan,
+            summary = cycle.summary + buildList {
+                add("Daily target ${pursuit.phase}: ${formatDecimal(pursuit.currentProfitPct, 2)}% / 25.00% dengan urgency ${formatDecimal(pursuit.urgency * 100.0, 0)}%.")
+                if (pursuit.urgency >= 0.40) add("Sizing entry dinaikkan dan reserve dikendurkan untuk kejar target harian.")
+                if (pursuit.overdriveAllowed) add("Target tercapai tapi breakout masih ganas, jadi bot tetap tekan entry winner dan biarkan profit lanjut.")
+                if (updatedDeploymentPlan.allowRotation) add("Rotasi loser/stagnan dipercepat saat pair baru terlihat lebih eksplosif.")
+            },
+        )
+    }
+
+    private fun scaleExecutionPlanForPursuit(
+        executionPlan: com.kibot.shared.models.ExecutionPlan,
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        targetBudgetIdr: Double,
+        concentrationBoostPct: Double,
+        executionBoostMultiplier: Double,
+    ): com.kibot.shared.models.ExecutionPlan {
+        val pairAssets = executionPlan.signal.pairId.pairAssets()
+        val quoteAssetPriceIdr = quoteAssetPriceIdr(pairAssets.quoteAsset, marketQuotes) ?: return executionPlan
+        val quoteBalanceUnits = balances
+            .firstOrNull { it.asset.equals(pairAssets.quoteAsset, ignoreCase = true) }
+            ?.free
+            ?.toDoubleOrZero()
+            ?: return executionPlan
+        val availableBudgetIdr = if (pairAssets.quoteAsset.equals("idr", ignoreCase = true)) {
+            quoteBalanceUnits
+        } else {
+            quoteBalanceUnits * quoteAssetPriceIdr
+        }
+        val baseBudgetIdr = executionPlan.quoteBudget?.toDoubleOrZero()
+            ?: executionPlan.limitPrice?.toDoubleOrZero()?.let { price ->
+                executionPlan.quantity.toDoubleOrZero() * price * if (pairAssets.quoteAsset == "idr") 1.0 else quoteAssetPriceIdr
+            }
+            ?: return executionPlan
+        val boostedBudgetIdr = minOf(
+            targetBudgetIdr * (1.0 + concentrationBoostPct.coerceIn(0.0, 0.24)),
+            availableBudgetIdr * 0.985,
+            baseBudgetIdr * executionBoostMultiplier.coerceIn(1.0, 1.95),
+        ).coerceAtLeast(baseBudgetIdr)
+        if (boostedBudgetIdr <= baseBudgetIdr) return executionPlan
+        val ratio = (boostedBudgetIdr / baseBudgetIdr).coerceAtLeast(1.0)
+        return executionPlan.copy(
+            quantity = DecimalValue.fromDouble(executionPlan.quantity.toDoubleOrZero() * ratio),
+            quoteBudget = DecimalValue.fromDouble(boostedBudgetIdr),
+        )
+    }
+
     private fun buildAdaptiveTradeAutomationCoordinator(
         cycle: com.kibot.core.StrategyCycleResult,
     ): TradeAutomationCoordinator {
-        val adjustments = cachedAdaptiveAiPolicy?.adjustments ?: return tradeAutomationCoordinator
+        val pursuit = dailyTargetPursuitBrain.evaluate(
+            cycle = cycle,
+            adaptiveAiPolicy = cachedAdaptiveAiPolicy,
+            now = Clock.System.now(),
+        )
+        val adjustments = cachedAdaptiveAiPolicy?.adjustments
+        if (adjustments == null && !pursuit.active) return tradeAutomationCoordinator
+        val aiAdjustments = adjustments ?: AdaptiveAiAdjustments()
+        val defaults = TradeAutomationConfig()
         val adjusted = TradeAutomationConfig(
-            staleRotationMinAgeHours = (TradeAutomationConfig().staleRotationMinAgeHours + adjustments.rotationAgeHoursDelta)
+            staleRotationMinAgeHours = (defaults.staleRotationMinAgeHours + aiAdjustments.rotationAgeHoursDelta + pursuit.rotationAgeHoursDelta)
                 .coerceAtLeast(0.18),
-            staleRotationMinScoreGap = (TradeAutomationConfig().staleRotationMinScoreGap + adjustments.rotationScoreGapDelta)
+            staleRotationMinScoreGap = (defaults.staleRotationMinScoreGap + aiAdjustments.rotationScoreGapDelta + pursuit.rotationScoreGapDelta)
                 .coerceIn(0.02, 0.14),
-            loserRotationMinAgeHours = (TradeAutomationConfig().loserRotationMinAgeHours + (adjustments.rotationAgeHoursDelta * 0.75))
+            loserRotationMinAgeHours = (defaults.loserRotationMinAgeHours + ((aiAdjustments.rotationAgeHoursDelta + pursuit.rotationAgeHoursDelta) * 0.75))
                 .coerceAtLeast(0.12),
-            loserRotationMinScoreGap = (TradeAutomationConfig().loserRotationMinScoreGap + adjustments.rotationScoreGapDelta)
+            loserRotationMinScoreGap = (defaults.loserRotationMinScoreGap + aiAdjustments.rotationScoreGapDelta + pursuit.rotationScoreGapDelta)
                 .coerceIn(0.02, 0.10),
-            partialTakeProfitMinPnlPct = (TradeAutomationConfig().partialTakeProfitMinPnlPct + adjustments.partialTakeProfitPnlDelta)
-                .coerceIn(0.95, 2.2),
-            minMeaningfulNonEmergencyExitProfitPct = (TradeAutomationConfig().minMeaningfulNonEmergencyExitProfitPct + adjustments.meaningfulExitProfitDelta)
-                .coerceIn(0.22, 0.80),
-            breakoutWinnerRunMinPnlPct = (TradeAutomationConfig().breakoutWinnerRunMinPnlPct + adjustments.winnerRunPnlDelta)
+            partialTakeProfitMinPnlPct = (defaults.partialTakeProfitMinPnlPct + aiAdjustments.partialTakeProfitPnlDelta + pursuit.partialTakeProfitPnlDelta)
+                .coerceIn(0.95, 2.8),
+            minMeaningfulNonEmergencyExitProfitPct = (defaults.minMeaningfulNonEmergencyExitProfitPct + aiAdjustments.meaningfulExitProfitDelta + pursuit.meaningfulExitProfitDelta)
+                .coerceIn(0.22, 0.95),
+            breakoutWinnerRunMinPnlPct = (defaults.breakoutWinnerRunMinPnlPct + aiAdjustments.winnerRunPnlDelta + pursuit.winnerRunPnlDelta)
                 .coerceIn(0.35, 1.2),
-            speculativeWinnerRunMinPnlPct = (TradeAutomationConfig().speculativeWinnerRunMinPnlPct + adjustments.winnerRunPnlDelta)
+            speculativeWinnerRunMinPnlPct = (defaults.speculativeWinnerRunMinPnlPct + aiAdjustments.winnerRunPnlDelta + pursuit.winnerRunPnlDelta)
                 .coerceIn(0.80, 1.8),
         )
         return TradeAutomationCoordinator(config = adjusted)
@@ -2012,6 +2180,18 @@ class MacEngineDaemon(
             DayOfWeek.SUNDAY -> 6
         }
         return date.minus(DatePeriod(days = offset))
+    }
+
+    private data class PairAssetParts(
+        val baseAsset: String,
+        val quoteAsset: String,
+    )
+
+    private fun com.kibot.shared.models.PairId.pairAssets(): PairAssetParts {
+        val parts = value.lowercase().split("_")
+        val base = parts.getOrNull(0).orEmpty().ifBlank { value.lowercase() }
+        val quote = parts.getOrNull(1).orEmpty().ifBlank { "idr" }
+        return PairAssetParts(baseAsset = base, quoteAsset = quote)
     }
 
     private companion object {

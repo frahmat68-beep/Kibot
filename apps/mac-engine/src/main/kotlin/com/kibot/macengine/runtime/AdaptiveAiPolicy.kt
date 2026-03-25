@@ -36,6 +36,10 @@ data class AdaptiveAiAdjustments(
     @SerialName("partial_take_profit_pnl_delta") val partialTakeProfitPnlDelta: Double = 0.0,
     @SerialName("winner_run_pnl_delta") val winnerRunPnlDelta: Double = 0.0,
     @SerialName("meaningful_exit_profit_delta") val meaningfulExitProfitDelta: Double = 0.0,
+    @SerialName("budget_boost_multiplier_delta") val budgetBoostMultiplierDelta: Double = 0.0,
+    @SerialName("reserve_relief_pct_delta") val reserveReliefPctDelta: Double = 0.0,
+    @SerialName("allocation_focus_pct_delta") val allocationFocusPctDelta: Double = 0.0,
+    @SerialName("extra_slots_delta") val extraSlotsDelta: Int = 0,
 )
 
 data class AdaptiveAiPolicy(

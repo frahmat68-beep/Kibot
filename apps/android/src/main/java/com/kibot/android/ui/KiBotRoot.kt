@@ -228,52 +228,6 @@ private fun PortfolioSectionCard(
         if (portfolio.allocations.isNotEmpty()) {
             Text("Asset Allocation", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             AllocationDonutChart(items = portfolio.allocations)
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 180.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                portfolio.allocations.forEach { allocation ->
-                    Surface(
-                        color = Color.White.copy(alpha = 0.04f),
-                        shape = RoundedCornerShape(16.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(10.dp)
-                                        .background(assetAccent(allocation.label), CircleShape),
-                                )
-                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    Text(allocation.label, fontWeight = FontWeight.Bold)
-                                    Text(
-                                        allocation.valueLabel,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                            Text(
-                                allocation.pctLabel,
-                                color = assetAccent(allocation.label),
-                                fontWeight = FontWeight.Bold,
-                            )
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -374,8 +328,11 @@ private fun PortfolioSparkline(
 
 @Composable
 private fun AllocationDonutChart(items: List<PortfolioAllocationUi>) {
-    val visibleItems = items.filter { it.pct > 0.0 }
+    val visibleItems = items
+        .filter { it.pct > 0.0 }
+        .sortedByDescending { it.pct }
     if (visibleItems.isEmpty()) return
+    val topItem = visibleItems.first()
     Surface(
         color = Color.White.copy(alpha = 0.04f),
         shape = RoundedCornerShape(22.dp),
@@ -385,7 +342,7 @@ private fun AllocationDonutChart(items: List<PortfolioAllocationUi>) {
                 .fillMaxWidth()
                 .padding(14.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalAlignment = Alignment.Top,
         ) {
             Box(
                 modifier = Modifier
@@ -395,10 +352,11 @@ private fun AllocationDonutChart(items: List<PortfolioAllocationUi>) {
             ) {
                 Canvas(
                     modifier = Modifier
-                        .size(156.dp)
-                        .padding(6.dp),
+                        .size(168.dp)
+                        .padding(12.dp),
                 ) {
-                    val strokeWidth = size.minDimension * 0.18f
+                    val strokeWidth = size.minDimension * 0.15f
+                    val gapAngle = 1.6f
                     drawArc(
                         color = Color.White.copy(alpha = 0.08f),
                         startAngle = -90f,
@@ -409,38 +367,54 @@ private fun AllocationDonutChart(items: List<PortfolioAllocationUi>) {
                     )
                     var startAngle = -90f
                     visibleItems.forEach { item ->
-                        val sweep = (item.pct.coerceAtLeast(0.0) * 360.0).toFloat().coerceAtLeast(6f)
+                        val baseSweep = (item.pct.coerceAtLeast(0.0) * 360.0).toFloat()
+                        val sweep = (baseSweep - gapAngle).coerceAtLeast(5f)
                         drawArc(
                             color = assetAccent(item.label),
-                            startAngle = startAngle,
+                            startAngle = startAngle + (gapAngle / 2f),
                             sweepAngle = sweep,
                             useCenter = false,
                             style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
                             size = Size(size.width, size.height),
                         )
-                        startAngle += sweep
+                        startAngle += baseSweep
                     }
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Alloc", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
-                        visibleItems.firstOrNull()?.pctLabel ?: "--",
+                        topItem.label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        topItem.pctLabel,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
+                        color = assetAccent(topItem.label),
                     )
                 }
             }
             Column(
-                modifier = Modifier.weight(1.1f),
+                modifier = Modifier
+                    .weight(1.15f)
+                    .heightIn(max = 170.dp)
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                visibleItems.take(5).forEach { item ->
-                    Row(
+                visibleItems.forEach { item ->
+                    Surface(
+                        color = Color.White.copy(alpha = 0.03f),
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Row(
+                            modifier = Modifier.weight(1f),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -453,20 +427,27 @@ private fun AllocationDonutChart(items: List<PortfolioAllocationUi>) {
                                 item.label,
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        Text(
-                            item.pctLabel,
-                            color = assetAccent(item.label),
-                            fontWeight = FontWeight.Bold,
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.End,
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                item.pctLabel,
+                                color = assetAccent(item.label),
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
                     }
                 }
             }
         }
     }
 }
-
 @Composable
 private fun HeroCard(
     state: KiBotUiState,
@@ -561,10 +542,27 @@ private fun HeroCard(
                     tint = serverState.tint,
                 )
                 StatusChip(
+                    label = state.targetPursuitLabel,
+                    tint = when (state.targetPursuitLabel.uppercase()) {
+                        "OVERDRIVE" -> Color(0xFFF97316)
+                        "FULL_CHASE" -> Color(0xFFEF4444)
+                        "CHASE" -> Color(0xFF22C55E)
+                        "LOCK_PROFIT" -> Color(0xFF38BDF8)
+                        else -> Color(0xFF60A5FA)
+                    },
+                )
+                StatusChip(
                     label = state.lastUpdatedLabel,
                     tint = Color(0xFF60A5FA),
                 )
             }
+            Text(
+                text = state.aiProviderSummary,
+                color = Color(0xFFA8B7D7),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

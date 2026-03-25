@@ -254,6 +254,8 @@ class AppRepository(
             scanUniverseCount = fallbackSnapshot?.scanUniverseCount
                 ?: _uiState.value.scanUniverseCount,
             releaseLabel = _uiState.value.releaseLabel,
+            targetPursuitLabel = _uiState.value.targetPursuitLabel,
+            aiProviderSummary = _uiState.value.aiProviderSummary,
             radarPairs = displayRadarPairs.takeIf { it.isNotEmpty() }
                 ?: fallbackSnapshot?.radarPairs?.takeIf { it.isNotEmpty() }
                 ?: _uiState.value.radarPairs,
@@ -386,6 +388,8 @@ class AppRepository(
             modalSaatIniIdr = state.portfolioValueIdr,
             scanUniverseCount = state.scanUniverseCount,
             releaseLabel = state.releaseLabel.ifBlank { _uiState.value.releaseLabel },
+            targetPursuitLabel = state.targetPursuitLabel.ifBlank { "TRACKING" },
+            aiProviderSummary = state.aiProviderSummary.ifBlank { _uiState.value.aiProviderSummary },
             radarPairs = filteredRadarPairs,
             pairAktif = livePair,
             syncLagLabel = state.lastHeartbeatLabel.ifBlank { "--" },
@@ -777,8 +781,6 @@ class AppRepository(
         holdings: List<AllocationSource>,
     ): List<PortfolioAllocationUi> {
         val ranked = holdings.sortedByDescending { it.valueIdr }
-        val topHoldings = ranked.take(3)
-        val othersValue = ranked.drop(3).sumOf { it.valueIdr }
         return buildList {
             if (cashReadyIdr > 0.0) {
                 val pct = if (currentEquityIdr > 0.0) cashReadyIdr / currentEquityIdr else 0.0
@@ -791,7 +793,7 @@ class AppRepository(
                     ),
                 )
             }
-            topHoldings.forEach { holding ->
+            ranked.forEach { holding ->
                 val pct = if (currentEquityIdr > 0.0) holding.valueIdr / currentEquityIdr else 0.0
                 add(
                     PortfolioAllocationUi(
@@ -802,18 +804,8 @@ class AppRepository(
                     ),
                 )
             }
-            if (othersValue > 0.0) {
-                val pct = if (currentEquityIdr > 0.0) othersValue / currentEquityIdr else 0.0
-                add(
-                    PortfolioAllocationUi(
-                        label = "Others",
-                        valueLabel = formatIdr(othersValue),
-                        pct = pct,
-                        pctLabel = "%.0f%%".format(Locale.US, pct * 100.0),
-                    ),
-                )
-            }
         }
+            .sortedByDescending { it.pct }
     }
 
     private fun buildValuedHoldings(
@@ -1127,6 +1119,8 @@ class AppRepository(
             radarPairs = json.optJSONArray("radarPairs").toStringList(),
             scanUniverseCount = json.optInt("scanUniverseCount", 0),
             releaseLabel = json.optString("releaseLabel", "#0"),
+            targetPursuitLabel = json.optString("targetPursuitLabel", "TRACKING"),
+            aiProviderSummary = json.optString("aiProviderSummary", "AI summary belum siap."),
             portfolioValueIdr = portfolioValueIdr,
             pnlTodayIdr = json.optString("pnlTodayIdr", "+Rp0"),
             pnlTodayPctLabel = json.optString("pnlTodayPctLabel", "+0.0%"),
@@ -1558,6 +1552,8 @@ private data class ServerMonitorState(
     val radarPairs: List<String>,
     val scanUniverseCount: Int,
     val releaseLabel: String,
+    val targetPursuitLabel: String,
+    val aiProviderSummary: String,
     val portfolioValueIdr: String,
     val pnlTodayIdr: String,
     val pnlTodayPctLabel: String,

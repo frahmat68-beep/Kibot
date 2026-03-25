@@ -484,6 +484,10 @@ def build_adaptive_policy(
             "partial_take_profit_pnl_delta": round(-0.32 if late_exit_detected else -0.10 * consensus_strength, 4),
             "winner_run_pnl_delta": round(0.18 if missed_momentum_detected else 0.0, 4),
             "meaningful_exit_profit_delta": round(-0.10 if late_exit_detected else 0.0, 4),
+            "budget_boost_multiplier_delta": round(0.06 + (consensus_strength * 0.10), 4),
+            "reserve_relief_pct_delta": round(0.008 + (consensus_strength * 0.014), 4),
+            "allocation_focus_pct_delta": round(0.015 + (consensus_strength * 0.035), 4),
+            "extra_slots_delta": 1 if consensus_strength >= 0.67 else 0,
         },
         "signals": {
             "slow_rotation_detected": slow_rotation_detected,

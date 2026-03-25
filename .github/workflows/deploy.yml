@@ -97,6 +97,9 @@ jobs:
           set -euo pipefail
           mkdir -p /home/ubuntu/KiBot
           mkdir -p /home/ubuntu/KiBot/server
+          mkdir -p /home/ubuntu/KiBot/.tmp/ai-audits/latest
+          chmod 700 /home/ubuntu/KiBot
+          chmod 700 /home/ubuntu/KiBot/server
 
     - name: Copy Runtime Bundle to Server
       uses: appleboy/scp-action@v0.1.7
@@ -121,6 +124,7 @@ jobs:
           RELEASE_LABEL="#${{ github.run_number }}"
           mkdir -p /home/ubuntu/KiBot/server
           touch /home/ubuntu/KiBot/.env.server
+          chmod 600 /home/ubuntu/KiBot/.env.server
           if grep -q '^KIBOT_RELEASE_LABEL=' /home/ubuntu/KiBot/.env.server; then
             sed -i "s/^KIBOT_RELEASE_LABEL=.*/KIBOT_RELEASE_LABEL=${RELEASE_LABEL}/" /home/ubuntu/KiBot/.env.server
           else
@@ -154,5 +158,5 @@ jobs:
           curl -fsS --retry 10 --retry-delay 3 http://127.0.0.1:8787/ >/tmp/kibot-root.html
           ! systemctl is-active --quiet kibot.service
           grep 'KiBot Server Monitor' /tmp/kibot-root.html
-          grep 'server-monitor-v3' /tmp/kibot-root.html
+          grep 'Oracle Active' /tmp/kibot-root.html
           cat /tmp/kibot-state.json | head -c 800
