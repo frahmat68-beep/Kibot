@@ -43,11 +43,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.text.style.TextAlign
@@ -128,12 +131,6 @@ private fun DashboardScreen(
         item { HeroCard(state = state) }
         item { PairRadarCard(modifier = Modifier.fillMaxWidth(), state = state) }
         item {
-            HoldingsPreviewCard(
-                modifier = Modifier.fillMaxWidth(),
-                state = state,
-            )
-        }
-        item {
             LiveActivityCard(
                 modifier = Modifier.fillMaxWidth(),
                 state = state,
@@ -188,14 +185,10 @@ private fun PortfolioSectionCard(
             PortfolioMetricTile(
                 modifier = Modifier.weight(1f),
                 label = "Return 30D",
-                value = portfolio.cashReadyLabel,
-                caption = portfolio.cashReadyPctLabel,
-                tint = Color(0xFF60A5FA),
+                value = portfolio.thirtyDayReturnLabel,
+                caption = portfolio.thirtyDayReturnPctLabel,
+                tint = pnlColor(portfolio.thirtyDayReturnLabel),
             )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            StatusChip("Unrealized ${portfolio.totalUnrealizedLabel}", pnlColor(portfolio.totalUnrealizedLabel))
-            StatusChip(portfolio.concentrationLabel, Color(0xFF38BDF8))
         }
         Surface(
             color = Color.White.copy(alpha = 0.04f),
@@ -234,7 +227,7 @@ private fun PortfolioSectionCard(
         }
         if (portfolio.allocations.isNotEmpty()) {
             Text("Asset Allocation", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            AllocationStrip(items = portfolio.allocations)
+            AllocationDonutChart(items = portfolio.allocations)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -380,25 +373,95 @@ private fun PortfolioSparkline(
 }
 
 @Composable
-private fun AllocationStrip(items: List<PortfolioAllocationUi>) {
+private fun AllocationDonutChart(items: List<PortfolioAllocationUi>) {
     val visibleItems = items.filter { it.pct > 0.0 }
     if (visibleItems.isEmpty()) return
     Surface(
         color = Color.White.copy(alpha = 0.04f),
-        shape = RoundedCornerShape(999.dp),
+        shape = RoundedCornerShape(22.dp),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(18.dp),
+                .padding(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            visibleItems.forEach { item ->
-                Box(
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(20.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Canvas(
                     modifier = Modifier
-                        .weight(item.pct.toFloat().coerceAtLeast(0.05f))
-                        .fillMaxHeight()
-                        .background(assetAccent(item.label)),
-                )
+                        .size(156.dp)
+                        .padding(6.dp),
+                ) {
+                    val strokeWidth = size.minDimension * 0.18f
+                    drawArc(
+                        color = Color.White.copy(alpha = 0.08f),
+                        startAngle = -90f,
+                        sweepAngle = 360f,
+                        useCenter = false,
+                        style = Stroke(width = strokeWidth),
+                        size = Size(size.width, size.height),
+                    )
+                    var startAngle = -90f
+                    visibleItems.forEach { item ->
+                        val sweep = (item.pct.coerceAtLeast(0.0) * 360.0).toFloat().coerceAtLeast(6f)
+                        drawArc(
+                            color = assetAccent(item.label),
+                            startAngle = startAngle,
+                            sweepAngle = sweep,
+                            useCenter = false,
+                            style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
+                            size = Size(size.width, size.height),
+                        )
+                        startAngle += sweep
+                    }
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Alloc", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        visibleItems.firstOrNull()?.pctLabel ?: "--",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier.weight(1.1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                visibleItems.take(5).forEach { item ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(12.dp)
+                                    .background(assetAccent(item.label), CircleShape),
+                            )
+                            Text(
+                                item.label,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                        Text(
+                            item.pctLabel,
+                            color = assetAccent(item.label),
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
             }
         }
     }
@@ -733,7 +796,7 @@ private fun LiveActivityCard(
     state: KiBotUiState,
 ) {
     SurfaceCard(modifier = modifier) {
-        Text("Timeline Hari Ini", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text("Logs", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         val entries = dashboardTimelineEntries(state)
         if (entries.isEmpty()) {
             Surface(
@@ -1183,17 +1246,17 @@ private fun dashboardTimelineEntries(state: KiBotUiState): List<com.kibot.androi
         com.kibot.android.runtime.LiveLogEntry(
             timestampEpochMs = nowEpoch,
             category = "STATUS",
-            message = "Fokus sekarang $activePair. Ping ${state.internetPingLabel}, scan ${state.scanUniverseCount} pair.",
+            message = "Fokus sekarang $activePair. Ping ${state.internetPingLabel}, scan ${state.scanUniverseCount} pair, mode ${state.operatingMode}.",
         ),
         com.kibot.android.runtime.LiveLogEntry(
             timestampEpochMs = nowEpoch - 1_000L,
             category = "ROTASI",
-            message = "Jika $activePair stagnan/rugi, bot siap rotasi cepat ke $topCandidate.",
+            message = "Jika $activePair stagnan atau edge turun, bot siap rotasi cepat ke $topCandidate untuk jaga velocity modal.",
         ),
         com.kibot.android.runtime.LiveLogEntry(
             timestampEpochMs = nowEpoch - 2_000L,
             category = "TARGET",
-            message = "Target berikutnya $topCandidate. Profit harian sementara ${state.pnlTodayIdr}.",
+            message = "Target berikutnya $topCandidate. Profit 1D ${state.pnlTodayIdr}, return 7D ${state.portfolio.sevenDayReturnLabel}, return 30D ${state.portfolio.thirtyDayReturnLabel}.",
         ),
     ) + listOfNotNull(
         lastSell?.let {
@@ -1372,6 +1435,13 @@ private fun assetAccent(symbol: String): Color {
         "sol", "solana" -> Color(0xFF8B5CF6)
         "xrp" -> Color(0xFF60A5FA)
         "usdt" -> Color(0xFF22C55E)
+        "doge", "dogecoin" -> Color(0xFFFBBF24)
+        "trx", "tron" -> Color(0xFFEF4444)
+        "pepe" -> Color(0xFF34D399)
+        "ont", "ontology" -> Color(0xFF38BDF8)
+        "fartcoin" -> Color(0xFF14B8A6)
+        "cash" -> Color(0xFFC084FC)
+        "others" -> Color(0xFF94A3B8)
         else -> Color(0xFFA78BFA)
     }
 }

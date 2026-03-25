@@ -113,24 +113,6 @@ class LocalDashboardServer(
                                   label.textContent = text;
                                 }
 
-                                function renderHeldAssets(items) {
-                                  const container = document.getElementById('held-assets');
-                                  container.innerHTML = '';
-                                  if (!items || items.length === 0) {
-                                    const empty = document.createElement('p');
-                                    empty.textContent = 'Belum ada aset aktif.';
-                                    empty.className = 'muted-copy';
-                                    container.appendChild(empty);
-                                    return;
-                                  }
-                                  items.forEach(item => {
-                                    const row = document.createElement('div');
-                                    row.className = 'holding-row';
-                                    row.textContent = item;
-                                    container.appendChild(row);
-                                  });
-                                }
-
                                 function renderTimeline(entries) {
                                   const container = document.getElementById('log-lines');
                                   container.innerHTML = '';
@@ -141,11 +123,11 @@ class LocalDashboardServer(
                                     container.appendChild(empty);
                                     return;
                                   }
-                                  entries.forEach(entry => {
+                                  entries.slice(0, 12).forEach(entry => {
                                     const row = document.createElement('div');
                                     row.className = 'timeline-row';
-                                    const category = entry.category ? entry.category + ' • ' : '';
-                                    row.textContent = category + entry.message;
+                                    const timestamp = entry.timestampEpochMs ? new Date(entry.timestampEpochMs).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Jakarta' }) : '--:--';
+                                    row.innerHTML = '<div class="timeline-meta">' + (entry.category || 'LOG') + ' • ' + timestamp + '</div><div class="timeline-copy">' + (entry.message || '-') + '</div>';
                                     container.appendChild(row);
                                   });
                                 }
@@ -167,7 +149,8 @@ class LocalDashboardServer(
                                     const side = (entry.side || '-').toUpperCase();
                                     const status = (entry.status || '-').toUpperCase();
                                     const detail = entry.detail || '-';
-                                    row.textContent = side + ' ' + pair + ' • ' + detail + ' • ' + status;
+                                    const timestamp = entry.timestampEpochMs ? new Date(entry.timestampEpochMs).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Jakarta' }) : '--:--';
+                                    row.innerHTML = '<div class="timeline-meta">' + side + ' • ' + pair + ' • ' + timestamp + '</div><div class="timeline-copy">' + detail + ' • ' + status + '</div>';
                                     container.appendChild(row);
                                   });
                                 }
@@ -193,9 +176,11 @@ class LocalDashboardServer(
                                       document.getElementById('server-uptime').textContent = state.serverUptime;
                                       document.getElementById('heartbeat').textContent = state.lastHeartbeatLabel;
                                       document.getElementById('ret-1d').textContent = state.pnlTodayIdr;
-                                      document.getElementById('ret-7d').textContent = state.pnlTodayIdr;
-                                      document.getElementById('ret-30d').textContent = state.pnlTodayIdr;
-                                      renderHeldAssets(state.heldAssets);
+                                      document.getElementById('ret-7d').textContent = state.return7dIdr;
+                                      document.getElementById('ret-7d-pct').textContent = state.return7dPctLabel;
+                                      document.getElementById('ret-30d').textContent = state.return30dIdr;
+                                      document.getElementById('ret-30d-pct').textContent = state.return30dPctLabel;
+                                      document.getElementById('ret-1d-pct').textContent = state.pnlTodayPctLabel;
                                       renderTradeHistory(state.recentOrders || []);
                                       renderTimeline(state.liveTimeline || []);
                                     })
@@ -331,25 +316,9 @@ private fun BODY.renderDashboard(state: MacDashboardState) {
         div("row row-middle") {
             div("returns-wrap") {
                 div("returns-grid") {
-                    metricCard("Return 1D", state.pnlTodayIdr, "ret-1d")
-                    metricCard("Return 7D", state.pnlTodayIdr, "ret-7d")
-                    metricCard("Return 30D", state.pnlTodayIdr, "ret-30d")
-                }
-                div("card") {
-                    div("card-header-row") {
-                        h2 { +"Holdings" }
-                        div("pill pill-neutral") { +"Oracle 24/7" }
-                    }
-                    div("holdings-list") {
-                        attributes["id"] = "held-assets"
-                        if (state.heldAssets.isEmpty()) {
-                            p("muted-copy") { +"Belum ada aset aktif." }
-                        } else {
-                            state.heldAssets.forEach { asset ->
-                                div("holding-row") { +asset }
-                            }
-                        }
-                    }
+                    metricCard("Return 1D", state.pnlTodayIdr, state.pnlTodayPctLabel, "ret-1d", "ret-1d-pct")
+                    metricCard("Return 7D", state.return7dIdr, state.return7dPctLabel, "ret-7d", "ret-7d-pct")
+                    metricCard("Return 30D", state.return30dIdr, state.return30dPctLabel, "ret-30d", "ret-30d-pct")
                 }
             }
 
@@ -383,7 +352,7 @@ private fun BODY.renderDashboard(state: MacDashboardState) {
 
             div("card activity-card") {
                 div("card-header-row") {
-                    h2 { +"Timeline Logs" }
+                    h2 { +"Logs" }
                     div("pill pill-purple") {
                         attributes["id"] = "feed-chip"
                         +state.syncPathLabel
@@ -398,12 +367,16 @@ private fun BODY.renderDashboard(state: MacDashboardState) {
     }
 }
 
-private fun FlowContent.metricCard(label: String, value: String, valueId: String) {
+private fun FlowContent.metricCard(label: String, value: String, caption: String, valueId: String, captionId: String) {
     div("metric-card") {
         span("metric-label") { +label }
         span("metric-value") {
             attributes["id"] = valueId
             +value
+        }
+        span("metric-caption") {
+            attributes["id"] = captionId
+            +caption
         }
     }
 }
@@ -564,7 +537,7 @@ private fun dashboardStyles(): String = """
       min-height: 0;
     }
     .row-middle {
-      grid-template-columns: 1.1fr 1fr;
+      grid-template-columns: 1fr 0.92fr;
       align-items: stretch;
       min-height: 0;
     }
@@ -576,9 +549,9 @@ private fun dashboardStyles(): String = """
     }
     .returns-wrap {
       display: grid;
-      grid-template-rows: auto 1fr;
       gap: 12px;
       min-height: 0;
+      align-content: start;
     }
     .returns-grid {
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -597,6 +570,11 @@ private fun dashboardStyles(): String = """
     .metric-value {
       font-size: 18px;
       font-weight: 800;
+    }
+    .metric-caption {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
     }
     .card { padding: 14px; min-height: 0; }
     .live-pair-card { min-height: 0; }
@@ -671,22 +649,29 @@ private fun dashboardStyles(): String = """
       font-weight: 700;
       text-align: right;
     }
-    .holdings-list,
     .log-list {
       display: grid;
       gap: 8px;
     }
-    .holdings-list {
-      max-height: 170px;
-      overflow-y: auto;
-    }
-    .holding-row,
     .timeline-row {
       padding: 9px 11px;
       border-radius: 12px;
       background: rgba(255,255,255,0.04);
       border: 1px solid rgba(255,255,255,0.05);
       line-height: 1.45;
+      display: grid;
+      gap: 4px;
+    }
+    .timeline-meta {
+      color: #9ec5ff;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .timeline-copy {
+      color: var(--text);
+      font-size: 12px;
     }
     .log-list {
       max-height: 100%;

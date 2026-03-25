@@ -45,9 +45,13 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.datetime.Clock
+import kotlinx.datetime.DatePeriod
+import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.Instant
+import kotlinx.datetime.LocalDate
 import kotlinx.datetime.plus
 import kotlinx.datetime.TimeZone
+import kotlinx.datetime.minus
 import kotlinx.datetime.toLocalDateTime
 import org.slf4j.LoggerFactory
 import java.text.NumberFormat
@@ -136,6 +140,9 @@ class MacEngineDaemon(
         lastObservedLeaseTerm = lease?.term ?: botState.currentTerm
         val devices = refreshDevices(now)
         val dailyRisk = refreshDailyRisk(now, jakartaDate)
+        val equityHistory = runCatching {
+            controlPlane.fetchDailyRiskHistory(config.controlPlane.botId, days = 40)
+        }.getOrDefault(emptyList())
         val commands = refreshPendingCommands(now)
         val weeklyReview = refreshWeeklyReview(now)
         lastSuccessfulControlPlaneAt = now
@@ -381,11 +388,13 @@ class MacEngineDaemon(
         repository.applyRuntimeState(
             buildDashboardState(
                 now = now,
+                jakartaDate = jakartaDate,
                 botState = runtimeBotState,
                 lease = runtimeLease,
                 devices = devices,
                 localHealth = finalHealth,
                 dailyRisk = dailyRisk,
+                equityHistory = equityHistory,
                 balances = resolvedBalances,
                 marketQuotes = resolvedMarketQuotes,
                 strategyCycle = strategyCycle,
@@ -1383,11 +1392,13 @@ class MacEngineDaemon(
 
     private fun buildDashboardState(
         now: Instant,
+        jakartaDate: LocalDate,
         botState: BotStateSnapshot,
         lease: EngineLeaseSnapshot?,
         devices: List<DeviceDescriptor>,
         localHealth: EngineHealthSnapshot,
         dailyRisk: DailyRiskSnapshot?,
+        equityHistory: List<com.kibot.shared.models.DailyEquityHistoryPoint>,
         balances: List<BalanceSnapshot>,
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
         strategyCycle: com.kibot.core.StrategyCycleResult?,
@@ -1479,6 +1490,22 @@ class MacEngineDaemon(
             healthSummary = healthDecisionSummary,
             recentOrders = recentOrderCards,
         )
+        val weeklyBaseline = resolveReturnBaseline(
+            history = equityHistory,
+            currentDate = jakartaDate,
+            rangeStart = startOfWeek(jakartaDate),
+            fallbackEquity = portfolioValue,
+        )
+        val monthlyBaseline = resolveReturnBaseline(
+            history = equityHistory,
+            currentDate = jakartaDate,
+            rangeStart = LocalDate(jakartaDate.year, jakartaDate.month, 1),
+            fallbackEquity = portfolioValue,
+        )
+        val return7d = portfolioValue - weeklyBaseline
+        val return7dPct = if (weeklyBaseline > 0.0) return7d / weeklyBaseline else 0.0
+        val return30d = portfolioValue - monthlyBaseline
+        val return30dPct = if (monthlyBaseline > 0.0) return30d / monthlyBaseline else 0.0
 
         return com.kibot.macengine.state.MacDashboardState(
             isBotRunning = botState.effectiveState != BotEffectiveState.STOPPED,
@@ -1494,6 +1521,10 @@ class MacEngineDaemon(
             portfolioValueIdr = formatIdr(portfolioValue),
             pnlTodayIdr = formatSignedIdr(pnlToday),
             pnlTodayPctLabel = pnlTodayPctLabel,
+            return7dIdr = formatSignedIdr(return7d),
+            return7dPctLabel = formatSignedPercent(return7dPct),
+            return30dIdr = formatSignedIdr(return30d),
+            return30dPctLabel = formatSignedPercent(return30dPct),
             syncPathLabel = "Live Server",
             activeEngine = "Oracle Cloud Server",
             standbyEngine = "View Only",
@@ -1871,6 +1902,36 @@ class MacEngineDaemon(
     private fun latencyLabel(latencyMs: Long?): String = when {
         latencyMs == null -> "--"
         else -> "${latencyMs}ms"
+    }
+
+    private fun resolveReturnBaseline(
+        history: List<com.kibot.shared.models.DailyEquityHistoryPoint>,
+        currentDate: LocalDate,
+        rangeStart: LocalDate,
+        fallbackEquity: Double,
+    ): Double {
+        if (history.isEmpty()) return fallbackEquity
+        val sorted = history.sortedBy { it.date }
+        val inRange = sorted.filter { it.date >= rangeStart && it.date <= currentDate }
+        val anchor = inRange.firstOrNull() ?: sorted.lastOrNull { it.date < rangeStart } ?: sorted.firstOrNull()
+        return anchor?.openingEquityIdr?.toDoubleOrZero()
+            ?.takeIf { it > 0.0 }
+            ?: anchor?.currentEquityIdr?.toDoubleOrZero()
+            ?.takeIf { it > 0.0 }
+            ?: fallbackEquity
+    }
+
+    private fun startOfWeek(date: LocalDate): LocalDate {
+        val offset = when (date.dayOfWeek) {
+            DayOfWeek.MONDAY -> 0
+            DayOfWeek.TUESDAY -> 1
+            DayOfWeek.WEDNESDAY -> 2
+            DayOfWeek.THURSDAY -> 3
+            DayOfWeek.FRIDAY -> 4
+            DayOfWeek.SATURDAY -> 5
+            DayOfWeek.SUNDAY -> 6
+        }
+        return date.minus(DatePeriod(days = offset))
     }
 
     private companion object {

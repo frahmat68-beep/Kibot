@@ -39,8 +39,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
+import kotlinx.datetime.DatePeriod
+import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.Instant
+import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
+import kotlinx.datetime.minus
 import kotlinx.datetime.toLocalDateTime
 import org.json.JSONObject
 import java.net.URL
@@ -134,7 +138,7 @@ class AppRepository(
         val riskHistoryDeferred = scope.async {
             gateway.fetchDailyRiskHistory(
                 botId = botId,
-                days = 7,
+                days = 40,
             )
         }
         val liveBalancesDeferred = scope.async {
@@ -352,7 +356,7 @@ class AppRepository(
             ?: "Server Oracle sedang memantau market live."
         val portfolio = buildPortfolioSection(
             now = now,
-            history = emptyList(),
+            history = fetchServerEquityHistory(now),
             totalEquityLabel = state.portfolioValueIdr,
             totalEquityIdr = totalEquityIdr,
             pnlTodayLabel = state.pnlTodayIdr,
@@ -360,6 +364,11 @@ class AppRepository(
             risk = null,
             holdings = valuedHoldings,
             cashReadyIdrOverride = buildServerCashReady(totalEquityIdr, valuedHoldings),
+        ).copy(
+            sevenDayReturnLabel = state.return7dIdr,
+            sevenDayReturnPctLabel = state.return7dPctLabel,
+            thirtyDayReturnLabel = state.return30dIdr,
+            thirtyDayReturnPctLabel = state.return30dPctLabel,
         )
 
         _uiState.value = _uiState.value.copy(
@@ -651,6 +660,7 @@ class AppRepository(
         holdings: List<ValuedHolding>,
         cashReadyIdrOverride: Double?,
     ): PortfolioSectionUi {
+        val jakartaDate = now.toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
         val currentEquity = totalEquityIdr ?: totalEquityLabel.parseRupiahLabel() ?: 0.0
         val allocationSource = holdings
             .map {
@@ -665,32 +675,35 @@ class AppRepository(
         val cashReadyIdr = cashReadyIdrOverride
             ?.takeIf { it >= 0.0 }
             ?: (currentEquity - investedValue).coerceAtLeast(0.0)
-        val cashReadyPct = if (currentEquity > 0.0) cashReadyIdr / currentEquity else 0.0
-        val holdingsUnrealized = holdings.sumOf { it.pnlIdrLabel.parseRupiahLabel() ?: 0.0 }
-        val totalUnrealized = holdingsUnrealized.takeIf { it != 0.0 }
-            ?: risk?.unrealizedPnlIdr?.toDoubleOrZero()
-            ?: 0.0
-        val topConcentrationPct = allocationSource.maxOfOrNull { it.valueIdr }
-            ?.let { largest -> if (currentEquity > 0.0) largest / currentEquity else 0.0 }
-            ?: 0.0
         val chartPoints = buildPortfolioChartPoints(
             history = history,
             currentEquityIdr = currentEquity,
             now = now,
         )
-        val oldestEquity = chartPoints.firstOrNull()?.valueIdr?.takeIf { it > 0.0 } ?: currentEquity
-        val sevenDayDelta = currentEquity - oldestEquity
-        val sevenDayPct = if (oldestEquity > 0.0) sevenDayDelta / oldestEquity else 0.0
+        val weeklyBaseline = resolveReturnBaseline(
+            history = history,
+            currentDate = jakartaDate,
+            rangeStart = startOfWeek(jakartaDate),
+            fallbackEquity = currentEquity,
+        )
+        val monthlyBaseline = resolveReturnBaseline(
+            history = history,
+            currentDate = jakartaDate,
+            rangeStart = LocalDate(jakartaDate.year, jakartaDate.month, 1),
+            fallbackEquity = currentEquity,
+        )
+        val sevenDayDelta = currentEquity - weeklyBaseline
+        val sevenDayPct = if (weeklyBaseline > 0.0) sevenDayDelta / weeklyBaseline else 0.0
+        val thirtyDayDelta = currentEquity - monthlyBaseline
+        val thirtyDayPct = if (monthlyBaseline > 0.0) thirtyDayDelta / monthlyBaseline else 0.0
 
         return PortfolioSectionUi(
             oneDayReturnLabel = pnlTodayLabel,
             oneDayReturnPctLabel = pnlTodayPctLabel,
             sevenDayReturnLabel = formatSignedIdr(sevenDayDelta),
             sevenDayReturnPctLabel = formatSignedPercent(sevenDayPct),
-            cashReadyLabel = formatIdr(cashReadyIdr),
-            cashReadyPctLabel = "%.0f%%".format(Locale.US, cashReadyPct * 100.0),
-            totalUnrealizedLabel = formatSignedIdr(totalUnrealized),
-            concentrationLabel = "Top 1 %.0f%%".format(Locale.US, topConcentrationPct * 100.0),
+            thirtyDayReturnLabel = formatSignedIdr(thirtyDayDelta),
+            thirtyDayReturnPctLabel = formatSignedPercent(thirtyDayPct),
             chartPoints = chartPoints,
             allocations = buildAllocationItems(
                 currentEquityIdr = currentEquity,
@@ -726,6 +739,36 @@ class AppRepository(
         return points.takeLast(7).ifEmpty {
             listOf(PortfolioTrendPointUi("Hari ini", currentEquityIdr))
         }
+    }
+
+    private fun resolveReturnBaseline(
+        history: List<DailyEquityHistoryPoint>,
+        currentDate: LocalDate,
+        rangeStart: LocalDate,
+        fallbackEquity: Double,
+    ): Double {
+        if (history.isEmpty()) return fallbackEquity
+        val sorted = history.sortedBy { it.date }
+        val inRange = sorted.filter { it.date >= rangeStart && it.date <= currentDate }
+        val anchor = inRange.firstOrNull() ?: sorted.lastOrNull { it.date < rangeStart } ?: sorted.firstOrNull()
+        return anchor?.openingEquityIdr?.toDoubleOrZero()
+            ?.takeIf { it > 0.0 }
+            ?: anchor?.currentEquityIdr?.toDoubleOrZero()
+            ?.takeIf { it > 0.0 }
+            ?: fallbackEquity
+    }
+
+    private fun startOfWeek(date: LocalDate): LocalDate {
+        val offset = when (date.dayOfWeek) {
+            DayOfWeek.MONDAY -> 0
+            DayOfWeek.TUESDAY -> 1
+            DayOfWeek.WEDNESDAY -> 2
+            DayOfWeek.THURSDAY -> 3
+            DayOfWeek.FRIDAY -> 4
+            DayOfWeek.SATURDAY -> 5
+            DayOfWeek.SUNDAY -> 6
+        }
+        return date.minus(DatePeriod(days = offset))
     }
 
     private fun buildAllocationItems(
@@ -1087,6 +1130,10 @@ class AppRepository(
             portfolioValueIdr = portfolioValueIdr,
             pnlTodayIdr = json.optString("pnlTodayIdr", "+Rp0"),
             pnlTodayPctLabel = json.optString("pnlTodayPctLabel", "+0.0%"),
+            return7dIdr = json.optString("return7dIdr", "+Rp0"),
+            return7dPctLabel = json.optString("return7dPctLabel", "+0.0%"),
+            return30dIdr = json.optString("return30dIdr", "+Rp0"),
+            return30dPctLabel = json.optString("return30dPctLabel", "+0.0%"),
             syncPathLabel = json.optString("syncPathLabel", "Live Server"),
             activeEngine = json.optString("activeEngine", "Oracle Cloud Server"),
             standbyEngine = json.optString("standbyEngine", "-"),
@@ -1429,6 +1476,20 @@ class AppRepository(
         return trades.asReversed().take(20)
     }
 
+    private suspend fun fetchServerEquityHistory(
+        now: Instant,
+    ): List<DailyEquityHistoryPoint> {
+        val gateway = controlPlaneGateway ?: return emptyList()
+        return runCatching {
+            gateway.fetchDailyRiskHistory(botId = botId, days = 40)
+        }.getOrDefault(emptyList())
+            .filter { point ->
+                val pointDate = point.date
+                val currentDate = now.toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
+                pointDate <= currentDate
+            }
+    }
+
     private fun extractPriceValue(detail: String): Double {
         val raw = detail.substringAfter('@', "").trim()
         if (raw.isBlank()) return 0.0
@@ -1500,6 +1561,10 @@ private data class ServerMonitorState(
     val portfolioValueIdr: String,
     val pnlTodayIdr: String,
     val pnlTodayPctLabel: String,
+    val return7dIdr: String,
+    val return7dPctLabel: String,
+    val return30dIdr: String,
+    val return30dPctLabel: String,
     val syncPathLabel: String,
     val activeEngine: String,
     val standbyEngine: String,
