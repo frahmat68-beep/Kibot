@@ -49,7 +49,7 @@ class BotModeDeciderTest {
     }
 
     @Test
-    fun `forces safe when risk blocks entries`() {
+    fun `stays attack while blocking entries when risk blocks`() {
         val decision = BotModeDecider().decide(
             market = MarketOpportunitySnapshot(
                 regime = MarketRegime.HEALTHY_UPTREND,
@@ -81,7 +81,8 @@ class BotModeDeciderTest {
             ),
         )
 
-        assertEquals(BotMode.SAFE, decision.mode)
-        assertEquals(0.0, decision.aggressionScore)
+        assertEquals(BotMode.ATTACK, decision.mode)
+        assertEquals(false, decision.tradingAllowed)
+        assertTrue(decision.aggressionScore >= 0.72)
     }
 }
