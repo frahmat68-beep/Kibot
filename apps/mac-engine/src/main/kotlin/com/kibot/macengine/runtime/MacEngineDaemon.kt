@@ -13,6 +13,7 @@ import com.kibot.core.ReconciliationService
 import com.kibot.core.RiskConfig
 import com.kibot.core.SituationalLearningEngine
 import com.kibot.core.StrategyOrchestrator
+import com.kibot.core.TradeAutomationConfig
 import com.kibot.core.TradeAutomationCoordinator
 import com.kibot.macengine.config.MacRuntimeConfig
 import com.kibot.macengine.state.MacStateRepository
@@ -82,6 +83,7 @@ class MacEngineDaemon(
     private val aiSupportCoordinator: GeminiSupportCoordinator? = null,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
+    private val adaptiveAiPolicyLoader = AdaptiveAiPolicyLoader(config.adaptiveAiPolicyPath)
     private var registered = false
     private var lastAnalysisPublishedAt: Instant? = null
     private var lastStrategyMetricsPublishedAt: Instant? = null
@@ -116,6 +118,8 @@ class MacEngineDaemon(
     private var cachedRecentFills: List<com.kibot.shared.models.FillSnapshot> = emptyList()
     private var recentFillsFetchedAt: Instant? = null
     private var cachedRecentFillsKey: String? = null
+    private var cachedAdaptiveAiPolicy: AdaptiveAiPolicy? = null
+    private var adaptiveAiPolicyFetchedAt: Instant? = null
 
     suspend fun run() {
         logger.info("Mac engine daemon loop started.")
@@ -239,6 +243,7 @@ class MacEngineDaemon(
             marketFeedHealthy = exchangeReachable && resolvedMarketQuotes.isNotEmpty(),
         )
         val healthDecision = healthAdvisor.evaluate(finalHealth)
+        val adaptiveAiPolicy = refreshAdaptiveAiPolicy(now)
         val aiSupportEvaluation = if (isMaster && resolvedMarketQuotes.isNotEmpty()) {
             val shortlist = strategyOrchestrator.shortlistForSupport(resolvedMarketQuotes)
             aiSupportCoordinator?.evaluate(
@@ -254,6 +259,10 @@ class MacEngineDaemon(
             }
             evaluation.hints
         }.orEmpty()
+        val effectiveAiSupportHints = mergeAiSupportHints(
+            liveHints = aiSupportHints,
+            adaptivePolicy = adaptiveAiPolicy,
+        )
         val derivedDailyRisk = deriveDailyRiskSnapshot(
             previous = dailyRisk,
             balances = resolvedBalances,
@@ -267,7 +276,7 @@ class MacEngineDaemon(
                 dailyRisk = derivedDailyRisk,
                 health = finalHealth,
                 marketQuotes = resolvedMarketQuotes,
-                pairSupportHints = aiSupportHints,
+                pairSupportHints = effectiveAiSupportHints,
                 weeklySummary = weeklyReview,
             )
         } else {
@@ -827,6 +836,7 @@ class MacEngineDaemon(
         recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
     ) {
         if (!config.enableLiveExecution) return
+        val adaptiveCoordinator = buildAdaptiveTradeAutomationCoordinator(cycle)
         val entryStabilizedOrders = manageStaleEntryOrders(
             now = now,
             lease = lease,
@@ -835,7 +845,7 @@ class MacEngineDaemon(
             recentOrders = recentOrders,
         )
         cachedRecentOrders = entryStabilizedOrders
-        val preExitManagedPositions = tradeAutomationCoordinator.deriveManagedPositions(
+        val preExitManagedPositions = adaptiveCoordinator.deriveManagedPositions(
             balances = balances,
             marketQuotes = marketQuotes,
             reconciledOrders = entryStabilizedOrders,
@@ -851,14 +861,14 @@ class MacEngineDaemon(
         )
         cachedRecentOrders = stabilizedOrders
         val activePersistedOrders = stabilizedOrders.filter { it.status in activeOrderStatuses }
-        val managedPositions = tradeAutomationCoordinator.deriveManagedPositions(
+        val managedPositions = adaptiveCoordinator.deriveManagedPositions(
             balances = balances,
             marketQuotes = marketQuotes,
             reconciledOrders = stabilizedOrders,
             rankedPairs = cycle.rankedPairs,
             now = now,
         )
-        val exitDecision = tradeAutomationCoordinator.planExit(
+        val exitDecision = adaptiveCoordinator.planExit(
             now = now,
             cycle = cycle,
             managedPositions = managedPositions,
@@ -1902,6 +1912,76 @@ class MacEngineDaemon(
     private fun latencyLabel(latencyMs: Long?): String = when {
         latencyMs == null -> "--"
         else -> "${latencyMs}ms"
+    }
+
+    private fun refreshAdaptiveAiPolicy(now: Instant): AdaptiveAiPolicy? {
+        val fetchedAt = adaptiveAiPolicyFetchedAt
+        if (fetchedAt != null && (now - fetchedAt).inWholeSeconds < 60) {
+            return cachedAdaptiveAiPolicy
+        }
+        adaptiveAiPolicyFetchedAt = now
+        val loaded = runCatching { adaptiveAiPolicyLoader.loadOrNull(now) }
+            .onFailure { logger.warn("Adaptive AI policy load failed: {}", it.message) }
+            .getOrNull()
+        val previousSignature = cachedAdaptiveAiPolicy?.successfulProviders?.sorted().orEmpty().joinToString(",")
+        val nextSignature = loaded?.successfulProviders?.sorted().orEmpty().joinToString(",")
+        if (loaded != null && loaded.isActive && nextSignature != previousSignature) {
+            logger.info(
+                "Adaptive AI policy loaded providers={} consensus={} path={}",
+                loaded.successfulProviders.joinToString(","),
+                formatDecimal(loaded.consensusStrength, 2),
+                config.adaptiveAiPolicyPath,
+            )
+        }
+        cachedAdaptiveAiPolicy = loaded
+        return loaded
+    }
+
+    private fun mergeAiSupportHints(
+        liveHints: List<com.kibot.shared.models.AiPairSupportHint>,
+        adaptivePolicy: AdaptiveAiPolicy?,
+    ): List<com.kibot.shared.models.AiPairSupportHint> {
+        val adaptiveHints = adaptivePolicy?.pairHints.orEmpty()
+        if (liveHints.isEmpty() && adaptiveHints.isEmpty()) return emptyList()
+        val rankingScale = adaptivePolicy?.adjustments?.rankingBiasScale ?: 1.0
+        return (liveHints + adaptiveHints)
+            .groupBy { it.pairId }
+            .map { (pairId, hints) ->
+                val supportBias = hints.sumOf { it.supportBias }.coerceIn(0.0, 0.05) * rankingScale
+                val cautionBias = hints.sumOf { it.cautionBias }.coerceIn(0.0, 0.05)
+                val latest = hints.maxByOrNull { it.generatedAt.toEpochMilliseconds() } ?: hints.first()
+                latest.copy(
+                    pairId = pairId,
+                    supportBias = supportBias.coerceIn(0.0, 0.05),
+                    cautionBias = cautionBias.coerceIn(0.0, 0.05),
+                    rationale = hints.joinToString(" | ") { it.rationale }.take(240),
+                )
+            }
+    }
+
+    private fun buildAdaptiveTradeAutomationCoordinator(
+        cycle: com.kibot.core.StrategyCycleResult,
+    ): TradeAutomationCoordinator {
+        val adjustments = cachedAdaptiveAiPolicy?.adjustments ?: return tradeAutomationCoordinator
+        val adjusted = TradeAutomationConfig(
+            staleRotationMinAgeHours = (TradeAutomationConfig().staleRotationMinAgeHours + adjustments.rotationAgeHoursDelta)
+                .coerceAtLeast(0.18),
+            staleRotationMinScoreGap = (TradeAutomationConfig().staleRotationMinScoreGap + adjustments.rotationScoreGapDelta)
+                .coerceIn(0.02, 0.14),
+            loserRotationMinAgeHours = (TradeAutomationConfig().loserRotationMinAgeHours + (adjustments.rotationAgeHoursDelta * 0.75))
+                .coerceAtLeast(0.12),
+            loserRotationMinScoreGap = (TradeAutomationConfig().loserRotationMinScoreGap + adjustments.rotationScoreGapDelta)
+                .coerceIn(0.02, 0.10),
+            partialTakeProfitMinPnlPct = (TradeAutomationConfig().partialTakeProfitMinPnlPct + adjustments.partialTakeProfitPnlDelta)
+                .coerceIn(0.95, 2.2),
+            minMeaningfulNonEmergencyExitProfitPct = (TradeAutomationConfig().minMeaningfulNonEmergencyExitProfitPct + adjustments.meaningfulExitProfitDelta)
+                .coerceIn(0.22, 0.80),
+            breakoutWinnerRunMinPnlPct = (TradeAutomationConfig().breakoutWinnerRunMinPnlPct + adjustments.winnerRunPnlDelta)
+                .coerceIn(0.35, 1.2),
+            speculativeWinnerRunMinPnlPct = (TradeAutomationConfig().speculativeWinnerRunMinPnlPct + adjustments.winnerRunPnlDelta)
+                .coerceIn(0.80, 1.8),
+        )
+        return TradeAutomationCoordinator(config = adjusted)
     }
 
     private fun resolveReturnBaseline(

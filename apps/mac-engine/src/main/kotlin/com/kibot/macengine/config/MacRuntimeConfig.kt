@@ -36,6 +36,7 @@ data class MacRuntimeConfig(
     val dashboardLogPollIntervalMillis: Long = 20_000L,
     val releaseLabel: String,
     val aiSupportConfig: GeminiSupportConfig?,
+    val adaptiveAiPolicyPath: Path,
     val analysisPublishIntervalMillis: Long,
     val strategyMetricsPublishIntervalMillis: Long,
     val indodaxCredentials: IndodaxCredentials?,
@@ -117,6 +118,10 @@ object MacRuntimeConfigLoader {
                         failureCooldownMinutes = optional("GEMINI_SUPPORT_FAILURE_COOLDOWN_MINUTES")?.toIntOrNull() ?: 120,
                     )
                 },
+            adaptiveAiPolicyPath = Paths.get(
+                optional("KIBOT_AI_ADAPTIVE_POLICY_PATH")
+                    ?: cwd.resolve(".tmp/ai-audits/latest/adaptive_policy.json").toString(),
+            ),
             analysisPublishIntervalMillis = optional("BOT_ANALYSIS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 30_000L,
             strategyMetricsPublishIntervalMillis = optional("BOT_STRATEGY_METRICS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 300_000L,
             indodaxCredentials = when {

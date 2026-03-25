@@ -96,6 +96,14 @@ def load_env_files() -> Dict[str, str]:
     return result
 
 
+def env_first(env: Dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = env.get(key, "").strip()
+        if value:
+            return value
+    return ""
+
+
 def http_json(
     url: str,
     payload: Dict,
@@ -123,7 +131,7 @@ def build_user_prompt(trade_json: str) -> str:
 
 
 def call_gemini(trade_json: str, env: Dict[str, str], model_override: str = "") -> str:
-    api_key = env.get("GEMINI_SUPPORT_API_KEY") or env.get("GEMINI_API_KEY")
+    api_key = env_first(env, "GEMINI_SUPPORT_API_KEY", "GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("Gemini API key missing.")
     model = model_override or env.get("GEMINI_SUPPORT_MODEL", "gemini-2.0-flash-lite")
@@ -153,7 +161,7 @@ def call_gemini(trade_json: str, env: Dict[str, str], model_override: str = "") 
 
 
 def call_openrouter(trade_json: str, env: Dict[str, str], model_override: str = "") -> str:
-    api_key = env.get("OPENROUTER_API_KEY")
+    api_key = env_first(env, "OPENROUTER_API_KEY", "OPENROUTER_KEY")
     if not api_key:
         raise RuntimeError("OpenRouter API key missing.")
     model = model_override or env.get("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct")
@@ -174,7 +182,7 @@ def call_openrouter(trade_json: str, env: Dict[str, str], model_override: str = 
 
 
 def call_groq(trade_json: str, env: Dict[str, str], model_override: str = "") -> str:
-    api_key = env.get("GROQ_API_KEY")
+    api_key = env_first(env, "GROQ_API_KEY", "GROQ_KEY")
     if not api_key:
         raise RuntimeError("Groq API key missing.")
     model = model_override or env.get("GROQ_MODEL", "llama-3.1-8b-instant")
@@ -195,7 +203,7 @@ def call_groq(trade_json: str, env: Dict[str, str], model_override: str = "") ->
 
 
 def call_cohere(trade_json: str, env: Dict[str, str], model_override: str = "") -> str:
-    api_key = env.get("COHERE_API_KEY")
+    api_key = env_first(env, "COHERE_API_KEY", "COHERE_KEY")
     if not api_key:
         raise RuntimeError("Cohere API key missing.")
     preferred_model = model_override or env.get("COHERE_MODEL", "command-r")
@@ -260,14 +268,21 @@ def write_outputs(
     output_dir: Path,
     results: Dict[str, str],
     errors: Dict[str, str],
+    policy: Dict | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for provider, markdown_text in results.items():
         (output_dir / f"{provider}.md").write_text(markdown_text, encoding="utf-8")
+    if policy is not None:
+        (output_dir / "adaptive_policy.json").write_text(
+            json.dumps(policy, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     summary = {
         "successful_providers": sorted(results.keys()),
         "failed_providers": sorted(errors.keys()),
         "errors": errors,
+        "adaptive_policy_path": str((output_dir / "adaptive_policy.json").resolve()) if policy is not None else None,
         "adaptive_input": [
             {
                 "provider": provider,
@@ -280,6 +295,121 @@ def write_outputs(
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def extract_focus_pairs(markdown_text: str, candidate_pairs: List[str]) -> List[str]:
+    lowered = markdown_text.lower()
+    mentions = []
+    for pair in candidate_pairs:
+        count = lowered.count(pair.lower())
+        if count > 0:
+            mentions.append((pair, count))
+    return [pair for pair, _ in sorted(mentions, key=lambda item: (-item[1], item[0]))]
+
+
+def build_adaptive_policy(
+    payload: Dict,
+    results: Dict[str, str],
+    errors: Dict[str, str],
+) -> Dict:
+    state = payload.get("state", {}) if isinstance(payload, dict) else {}
+    candidate_pairs = []
+    top_candidate = str(state.get("topCandidate", "")).strip().lower()
+    if top_candidate and top_candidate != "-":
+        candidate_pairs.append(top_candidate)
+    candidate_pairs.extend(
+        pair.lower()
+        for pair in state.get("radarPairs", [])
+        if isinstance(pair, str) and pair.strip()
+    )
+    candidate_pairs = list(dict.fromkeys(candidate_pairs))[:8]
+
+    successful = sorted(results.keys())
+    consensus_strength = min(1.0, len(successful) / 3.0) if successful else 0.0
+    merged_text = "\n".join(results.values()).lower()
+
+    slow_rotation_detected = any(
+        keyword in merged_text
+        for keyword in [
+            "slow rotation",
+            "stagnan",
+            "stuck",
+            "funds are trapped",
+            "sideways",
+            "capital velocity",
+        ]
+    )
+    late_exit_detected = any(
+        keyword in merged_text
+        for keyword in [
+            "late exit",
+            "turning into losses",
+            "winning trades are turning into losses",
+            "late exits",
+            "giveback",
+        ]
+    )
+    missed_momentum_detected = any(
+        keyword in merged_text
+        for keyword in [
+            "missed momentum",
+            "breakout momentum",
+            "missing early breakout",
+            "missed breakout",
+            "breakout",
+        ]
+    )
+
+    focus_counter: Dict[str, int] = {}
+    for provider_text in results.values():
+        for pair in extract_focus_pairs(provider_text, candidate_pairs):
+            focus_counter[pair] = focus_counter.get(pair, 0) + 1
+
+    if not focus_counter and top_candidate and top_candidate != "-":
+        focus_counter[top_candidate] = max(1, len(successful))
+
+    focus_pairs = [
+        pair for pair, _ in sorted(focus_counter.items(), key=lambda item: (-item[1], item[0]))
+    ][:4]
+
+    pair_biases = []
+    for index, pair in enumerate(focus_pairs):
+        mention_score = focus_counter.get(pair, 1)
+        support_bias = min(0.05, 0.014 + (consensus_strength * 0.012) + (mention_score - 1) * 0.006 - (index * 0.002))
+        caution_bias = 0.0
+        if "micro-cap" in merged_text or "liquidity trap" in merged_text:
+            caution_bias = min(0.03, 0.006 + (index * 0.003))
+        pair_biases.append(
+            {
+                "pair_id": pair,
+                "support_bias": round(max(0.0, support_bias), 4),
+                "caution_bias": round(max(0.0, caution_bias), 4),
+                "rationale": "Consensus AI audit boost.",
+            }
+        )
+
+    policy = {
+        "generated_at_utc": payload.get("generated_at_utc"),
+        "successful_providers": successful,
+        "failed_providers": sorted(errors.keys()),
+        "consensus_strength": round(consensus_strength, 4),
+        "focus_pairs": focus_pairs,
+        "pair_biases": pair_biases,
+        "adjustments": {
+            "ranking_bias_scale": round(1.0 + (consensus_strength * 0.28), 4),
+            "rotation_age_hours_delta": round(-0.18 if slow_rotation_detected else -0.08 * consensus_strength, 4),
+            "rotation_score_gap_delta": round(-0.03 if slow_rotation_detected else 0.0, 4),
+            "partial_take_profit_pnl_delta": round(-0.32 if late_exit_detected else -0.10 * consensus_strength, 4),
+            "winner_run_pnl_delta": round(0.18 if missed_momentum_detected else 0.0, 4),
+            "meaningful_exit_profit_delta": round(-0.10 if late_exit_detected else 0.0, 4),
+        },
+        "signals": {
+            "slow_rotation_detected": slow_rotation_detected,
+            "late_exit_detected": late_exit_detected,
+            "missed_momentum_detected": missed_momentum_detected,
+        },
+    }
+    return policy
 
 
 def main() -> int:
@@ -324,8 +454,10 @@ def main() -> int:
             errors[provider] = msg
             ordered_errors.append((provider, msg))
 
+    policy = build_adaptive_policy(parsed, results, errors) if results else None
+
     if args.output_dir:
-        write_outputs(Path(args.output_dir), results, errors)
+        write_outputs(Path(args.output_dir), results, errors, policy=policy)
 
     if args.all_providers:
         print(
@@ -334,6 +466,7 @@ def main() -> int:
                     "successful_providers": sorted(results.keys()),
                     "failed_providers": sorted(errors.keys()),
                     "output_dir": str(Path(args.output_dir).resolve()) if args.output_dir else None,
+                    "adaptive_policy": policy,
                 },
                 ensure_ascii=False,
                 indent=2,

@@ -1,0 +1,86 @@
+package com.kibot.macengine.runtime
+
+import com.kibot.shared.models.AiPairSupportHint
+import com.kibot.shared.models.PairId
+import kotlinx.datetime.Clock
+import kotlinx.datetime.Instant
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import java.nio.file.Files
+import java.nio.file.Path
+
+@Serializable
+data class AdaptiveAiPolicyFile(
+    @SerialName("generated_at_utc") val generatedAtUtc: String? = null,
+    @SerialName("successful_providers") val successfulProviders: List<String> = emptyList(),
+    @SerialName("consensus_strength") val consensusStrength: Double = 0.0,
+    @SerialName("focus_pairs") val focusPairs: List<String> = emptyList(),
+    @SerialName("pair_biases") val pairBiases: List<AdaptiveAiPairBias> = emptyList(),
+    val adjustments: AdaptiveAiAdjustments = AdaptiveAiAdjustments(),
+)
+
+@Serializable
+data class AdaptiveAiPairBias(
+    @SerialName("pair_id") val pairId: String,
+    @SerialName("support_bias") val supportBias: Double = 0.0,
+    @SerialName("caution_bias") val cautionBias: Double = 0.0,
+    val rationale: String = "",
+)
+
+@Serializable
+data class AdaptiveAiAdjustments(
+    @SerialName("ranking_bias_scale") val rankingBiasScale: Double = 1.0,
+    @SerialName("rotation_age_hours_delta") val rotationAgeHoursDelta: Double = 0.0,
+    @SerialName("rotation_score_gap_delta") val rotationScoreGapDelta: Double = 0.0,
+    @SerialName("partial_take_profit_pnl_delta") val partialTakeProfitPnlDelta: Double = 0.0,
+    @SerialName("winner_run_pnl_delta") val winnerRunPnlDelta: Double = 0.0,
+    @SerialName("meaningful_exit_profit_delta") val meaningfulExitProfitDelta: Double = 0.0,
+)
+
+data class AdaptiveAiPolicy(
+    val generatedAt: Instant? = null,
+    val successfulProviders: List<String> = emptyList(),
+    val consensusStrength: Double = 0.0,
+    val pairHints: List<AiPairSupportHint> = emptyList(),
+    val adjustments: AdaptiveAiAdjustments = AdaptiveAiAdjustments(),
+) {
+    val isActive: Boolean = successfulProviders.isNotEmpty() || pairHints.isNotEmpty()
+}
+
+class AdaptiveAiPolicyLoader(
+    private val path: Path,
+) {
+    private val json = Json {
+        ignoreUnknownKeys = true
+        explicitNulls = false
+        isLenient = true
+    }
+
+    fun loadOrNull(now: Instant = Clock.System.now()): AdaptiveAiPolicy? {
+        if (!Files.exists(path)) return null
+        val raw = Files.readString(path)
+        if (raw.isBlank()) return null
+        val parsed = json.decodeFromString(AdaptiveAiPolicyFile.serializer(), raw)
+        val generatedAt = runCatching { parsed.generatedAtUtc?.let(Instant::parse) }.getOrNull()
+        val pairHints = parsed.pairBiases.mapNotNull { bias ->
+            val pair = bias.pairId.trim().lowercase()
+            if (pair.isBlank()) return@mapNotNull null
+            AiPairSupportHint(
+                pairId = PairId(pair),
+                supportBias = bias.supportBias.coerceIn(0.0, 0.05),
+                cautionBias = bias.cautionBias.coerceIn(0.0, 0.05),
+                cheapNominalWatch = false,
+                rationale = bias.rationale.ifBlank { "Adaptive AI policy" },
+                generatedAt = generatedAt ?: now,
+            )
+        }
+        return AdaptiveAiPolicy(
+            generatedAt = generatedAt,
+            successfulProviders = parsed.successfulProviders,
+            consensusStrength = parsed.consensusStrength.coerceIn(0.0, 1.0),
+            pairHints = pairHints,
+            adjustments = parsed.adjustments,
+        )
+    }
+}
