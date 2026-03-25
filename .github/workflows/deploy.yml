@@ -56,11 +56,35 @@ jobs:
           exit 1
         fi
 
+    - name: Normalize Deploy Target
+      run: |
+        set -euo pipefail
+        HOST="${DEPLOY_HOST}"
+        HOST="${HOST#http://}"
+        HOST="${HOST#https://}"
+        HOST="${HOST%%/*}"
+        PORT="${DEPLOY_PORT:-22}"
+
+        if [[ "$HOST" == *:* && "$HOST" != \[*\]* ]]; then
+          if [[ "$PORT" == "22" ]]; then
+            PORT="${HOST##*:}"
+          fi
+          HOST="${HOST%%:*}"
+        fi
+
+        if [ -z "$HOST" ]; then
+          echo "Normalized host is empty after cleanup."
+          exit 1
+        fi
+
+        echo "DEPLOY_HOST_CLEAN=$HOST" >> "$GITHUB_ENV"
+        echo "DEPLOY_PORT_CLEAN=$PORT" >> "$GITHUB_ENV"
+
     - name: Ensure Remote Runtime Directory
       uses: appleboy/ssh-action@v1.0.3
       with:
-        host: ${{ env.DEPLOY_HOST }}
-        port: ${{ env.DEPLOY_PORT }}
+        host: ${{ env.DEPLOY_HOST_CLEAN }}
+        port: ${{ env.DEPLOY_PORT_CLEAN }}
         username: ${{ env.DEPLOY_USER }}
         key: ${{ env.DEPLOY_KEY }}
         script: |
@@ -71,8 +95,8 @@ jobs:
     - name: Copy Runtime Bundle to Server
       uses: appleboy/scp-action@v0.1.7
       with:
-        host: ${{ env.DEPLOY_HOST }}
-        port: ${{ env.DEPLOY_PORT }}
+        host: ${{ env.DEPLOY_HOST_CLEAN }}
+        port: ${{ env.DEPLOY_PORT_CLEAN }}
         username: ${{ env.DEPLOY_USER }}
         key: ${{ env.DEPLOY_KEY }}
         source: ".deploy/*"
@@ -82,8 +106,8 @@ jobs:
     - name: Install and Restart Oracle Bot
       uses: appleboy/ssh-action@v1.0.3
       with:
-        host: ${{ env.DEPLOY_HOST }}
-        port: ${{ env.DEPLOY_PORT }}
+        host: ${{ env.DEPLOY_HOST_CLEAN }}
+        port: ${{ env.DEPLOY_PORT_CLEAN }}
         username: ${{ env.DEPLOY_USER }}
         key: ${{ env.DEPLOY_KEY }}
         script: |
