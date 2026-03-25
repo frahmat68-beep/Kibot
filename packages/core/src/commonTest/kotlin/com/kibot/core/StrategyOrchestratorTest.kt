@@ -317,6 +317,10 @@ class StrategyOrchestratorTest {
                 marketEntryMaxSlippagePct = 1.0,
                 marketEntryMinTradeActivityScore = 0.0,
                 marketEntryMinTrendScore = 0.0,
+                minExpectedNetProfitIdr = 0.0,
+                minExpectedNetProfitIdrSpeculative = 0.0,
+                minProfitToCostMultiplier = 0.05,
+                minProfitAfterFeesBufferIdr = 0.0,
             ),
         )
         val analysis = marketAwareOrchestrator.analyze(

@@ -451,6 +451,21 @@ class StrategyOrchestrator(
                 rationale = "Spread dan fill sehat, jadi pullback taktis boleh dipakai saat harga sedang rehat sehat."
             }
 
+            // Buy-low with confirmation: short-term dip, but medium trend and microstructure still healthy.
+            quote.shortTermReturnPct in -3.8..-0.35 &&
+                quote.mediumTermReturnPct >= 0.75 &&
+                pairScore.trendQualityScore >= 0.57 &&
+                pairScore.fillQualityScore >= 0.58 &&
+                quote.recentTradeActivityScore >= 0.54 &&
+                pairScore.feeAdjustedEdgeScore >= 0.40 &&
+                marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC -> {
+                setupType = com.kibot.shared.models.SetupType.HEALTHY_SHORT_TERM_PULLBACK
+                signalType = StrategySignalType.MEAN_REVERSION_ENTRY
+                adjustedOpportunityFloor = (baseOpportunityFloor - 0.02).coerceAtLeast(0.0)
+                expectedHoldingHours = 9.0
+                rationale = "Harga sedang pullback jangka pendek tapi tren menengah tetap sehat, jadi bot boleh akumulasi bertahap saat diskon."
+            }
+
             quote.mediumTermReturnPct >= 0.70 &&
                 quote.shortTermReturnPct >= 0.18 -> {
                 setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION
@@ -622,6 +637,8 @@ class StrategyOrchestrator(
             useMarketBuy = useMarketBuy,
             speculativePocket = speculativePocket,
         )
+        val netEdgeAfterCostsPct = expectedNetProfitabilityPct - estimatedRoundTripCostPct
+        if (netEdgeAfterCostsPct < executionConfig.minNetEdgeAfterCostsBufferPct) return null
         val estimatedRoundTripCostIdr = budgetIdr * (estimatedRoundTripCostPct / 100.0)
         val dynamicNetProfitFloorIdr = maxOf(
             executionConfig.minProfitAfterFeesBufferIdr,
@@ -659,13 +676,13 @@ class StrategyOrchestrator(
         speculativePocket: Boolean,
     ): Double {
         val feePct = when {
-            useMarketBuy || speculativePocket -> 0.78
-            else -> 0.52
+            useMarketBuy || speculativePocket -> 0.92
+            else -> 0.62
         }
-        val slippagePct = quote.estimatedSlippagePct.coerceAtLeast(0.0) * if (useMarketBuy) 0.95 else 0.70
-        val spreadPct = quote.spreadPct.coerceAtLeast(0.0) * if (useMarketBuy) 0.55 else 0.40
-        val stabilityPenaltyPct = ((1.0 - quote.orderBookStabilityScore.coerceIn(0.0, 1.0)) * 0.18)
-        return feePct + slippagePct + spreadPct + stabilityPenaltyPct + 0.08
+        val slippagePct = quote.estimatedSlippagePct.coerceAtLeast(0.0) * if (useMarketBuy) 1.10 else 0.85
+        val spreadPct = quote.spreadPct.coerceAtLeast(0.0) * if (useMarketBuy) 0.65 else 0.50
+        val stabilityPenaltyPct = ((1.0 - quote.orderBookStabilityScore.coerceIn(0.0, 1.0)) * 0.24)
+        return feePct + slippagePct + spreadPct + stabilityPenaltyPct + 0.12
     }
 
     private fun buildDistrustLabels(

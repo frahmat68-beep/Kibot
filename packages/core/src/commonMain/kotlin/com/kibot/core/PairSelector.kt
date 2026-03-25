@@ -232,8 +232,14 @@ class PairSelector(
         val explicit = quote.trendQualityScore.coerceIn(0.0, 1.0)
         if (explicit != 0.5 || quote.shortTermReturnPct != 0.0 || quote.mediumTermReturnPct != 0.0) {
             if (quote.shortTermReturnPct == 0.0 && quote.mediumTermReturnPct == 0.0) return explicit
-            val directionalBoost = ((quote.shortTermReturnPct * 0.4) + (quote.mediumTermReturnPct * 0.6)) / 6.0
-            return (0.5 + directionalBoost).coerceIn(0.0, 1.0)
+            val directionalScore = (0.5 + (((quote.shortTermReturnPct * 0.4) + (quote.mediumTermReturnPct * 0.6)) / 6.0))
+                .coerceIn(0.0, 1.0)
+            val trendAlignmentBoost = when {
+                quote.shortTermReturnPct > 0.0 && quote.mediumTermReturnPct > 0.0 -> 0.04
+                quote.shortTermReturnPct < 0.0 && quote.mediumTermReturnPct < 0.0 -> -0.09
+                else -> 0.0
+            }
+            return (directionalScore + trendAlignmentBoost).coerceIn(0.0, 1.0)
         }
         return explicit
     }
@@ -351,14 +357,21 @@ class PairSelector(
     }
 
     private fun deriveMomentumAccelerationScore(quote: MarketQuote): Double {
-        val shortTermScore = (quote.shortTermReturnPct / 18.0).coerceIn(0.0, 1.0)
+        val shortTermRaw = quote.shortTermReturnPct
+        val shortTermScore = (shortTermRaw / 18.0).coerceIn(0.0, 1.0)
         val mediumTermScore = (quote.mediumTermReturnPct / 7.0).coerceIn(0.0, 1.0)
+        val downsidePenalty = when {
+            shortTermRaw <= -8.0 && quote.mediumTermReturnPct <= -2.0 -> 0.18
+            shortTermRaw <= -4.5 && quote.mediumTermReturnPct <= -1.0 -> 0.10
+            shortTermRaw <= -2.0 -> 0.05
+            else -> 0.0
+        }
         return weightedAverage(
             shortTermScore to 0.42,
             mediumTermScore to 0.28,
             quote.recentTradeActivityScore.coerceIn(0.0, 1.0) to 0.18,
             quote.fillQualityScore.coerceIn(0.0, 1.0) to 0.12,
-        )
+        ).let { (it - downsidePenalty).coerceIn(0.0, 1.0) }
     }
 
     private fun isSmallCapitalOverrideEligible(

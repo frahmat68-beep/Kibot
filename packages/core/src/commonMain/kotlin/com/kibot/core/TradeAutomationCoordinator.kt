@@ -43,6 +43,10 @@ data class TradeAutomationConfig(
     val breakoutWinnerRunMinOpportunityScore: Double = 0.58,
     val minMeaningfulNonEmergencyExitProfitPct: Double = 1.20,
     val minMeaningfulNonEmergencyExitProfitIdr: Double = 180.0,
+    val loserRotationMinAgeHours: Double = 2.0,
+    val loserRotationMinLossPct: Double = -0.65,
+    val loserRotationMinTopCandidateRanking: Double = 0.66,
+    val loserRotationMinScoreGap: Double = 0.10,
 )
 
 data class ManagedPosition(
@@ -71,6 +75,7 @@ enum class ExitReason {
     TIME_EXIT,
     THESIS_INVALID_EXIT,
     PROFIT_PROTECTION_EXIT,
+    ROTATION_EXIT,
 }
 
 data class ExitDecision(
@@ -283,9 +288,11 @@ class TradeAutomationCoordinator(
                     now = now,
                     position = position,
                     pairScore = rankedByPair[position.pairId],
+                    topCandidate = cycle.deploymentPlan.candidates.firstOrNull(),
                     marketRegime = cycle.marketSnapshot.regime,
                     modeSnapshot = cycle.modeSnapshot,
                     riskDecision = cycle.riskDecision,
+                    allowRotation = cycle.deploymentPlan.allowRotation,
                 )
                 val pairActiveOrders = activeOrdersByPair[position.pairId].orEmpty()
                 when {
@@ -304,9 +311,11 @@ class TradeAutomationCoordinator(
         now: Instant,
         position: ManagedPosition,
         pairScore: PairScore?,
+        topCandidate: com.kibot.shared.models.CandidateOpportunity?,
         marketRegime: MarketRegime,
         modeSnapshot: BotModeSnapshot,
         riskDecision: RiskDecision,
+        allowRotation: Boolean,
     ): ExitDecision? {
         val currentBid = position.currentBidPrice.toDoubleOrZero()
         val breakEvenPrice = position.breakEvenPrice.toDoubleOrZero()
@@ -324,6 +333,13 @@ class TradeAutomationCoordinator(
             currentBid <= stopPrice -> ExitReason.STOP_LOSS_EXIT
             currentBid >= takeProfitPrice && !keepWinnerRunning -> ExitReason.PROFIT_EXIT
             marketRegime == MarketRegime.BREAKDOWN_PANIC -> ExitReason.THESIS_INVALID_EXIT
+            shouldRotateLoser(
+                position = position,
+                positionPairScore = pairScore,
+                topCandidate = topCandidate,
+                ageHours = ageHours,
+                allowRotation = allowRotation,
+            ) -> ExitReason.ROTATION_EXIT
             pairScore != null &&
                 (!pairScore.allowed || pairScore.rankingScore < config.thesisInvalidRankingFloor) &&
                 ageHours >= config.thesisInvalidAgeHours &&
@@ -484,6 +500,7 @@ class TradeAutomationCoordinator(
         ExitReason.PROFIT_PROTECTION_EXIT -> 3
         ExitReason.PROFIT_EXIT -> 2
         ExitReason.TIME_EXIT -> 1
+        ExitReason.ROTATION_EXIT -> 3
     }
 
     private fun exitReasonMessage(reason: ExitReason, position: ManagedPosition): String = when (reason) {
@@ -492,6 +509,25 @@ class TradeAutomationCoordinator(
         ExitReason.TIME_EXIT -> "Holding ${position.pairId.value} sudah terlalu lama tanpa kualitas yang cukup, bot menutup posisi."
         ExitReason.THESIS_INVALID_EXIT -> "Thesis ${position.pairId.value} melemah atau market memburuk, bot menutup posisi."
         ExitReason.PROFIT_PROTECTION_EXIT -> "Profit ${position.pairId.value} mulai giveback, bot mengunci hasil yang sudah ada."
+        ExitReason.ROTATION_EXIT -> "Posisi ${position.pairId.value} terlalu lama rugi dan ada kandidat yang jauh lebih kuat, bot melakukan rotasi modal."
+    }
+
+    private fun shouldRotateLoser(
+        position: ManagedPosition,
+        positionPairScore: PairScore?,
+        topCandidate: com.kibot.shared.models.CandidateOpportunity?,
+        ageHours: Double,
+        allowRotation: Boolean,
+    ): Boolean {
+        if (!allowRotation) return false
+        if (position.unrealizedPnlPct > config.loserRotationMinLossPct) return false
+        if (ageHours < config.loserRotationMinAgeHours) return false
+        val candidate = topCandidate ?: return false
+        if (candidate.pairId == position.pairId) return false
+        if (candidate.rankingScore < config.loserRotationMinTopCandidateRanking) return false
+        val positionScore = positionPairScore?.rankingScore ?: 0.50
+        val scoreGap = candidate.rankingScore - positionScore
+        return scoreGap >= config.loserRotationMinScoreGap
     }
 
     private fun quoteAssetPriceIdr(asset: String, quotes: List<MarketQuote>): Double? {
