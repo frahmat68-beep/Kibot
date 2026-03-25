@@ -35,7 +35,8 @@ sudo systemctl status kibot-engine --no-pager
 
 # Setup cron job for health check every 5 minutes
 CRON_JOB="*/5 * * * * /home/ubuntu/KiBot/kibot-recovery.sh"
-(crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
+AI_CRON_JOB="5 * * * * /home/ubuntu/KiBot/scripts/ai_learning_cycle.sh"
+(crontab -l 2>/dev/null; echo "$CRON_JOB"; echo "$AI_CRON_JOB") | awk '!seen[$0]++' | crontab -
 
 echo "Cron job added:"
 crontab -l | grep kibot
@@ -43,6 +44,7 @@ crontab -l | grep kibot
 # Make recovery script executable
 chmod +x /home/ubuntu/KiBot/kibot-recovery.sh
 chmod +x /home/ubuntu/KiBot/setup-autorecover.sh
+chmod +x /home/ubuntu/KiBot/scripts/ai_learning_cycle.sh
 
 echo "Setup complete! KiBot will auto-restart if it crashes."
 echo "Dashboard should be available at http://<oracle-ip>:8787"

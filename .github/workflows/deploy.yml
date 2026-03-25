@@ -39,6 +39,12 @@ jobs:
         cp kibot-engine.service .deploy/kibot-engine.service
         cp kibot-recovery.sh .deploy/kibot-recovery.sh
         cp setup-autorecover.sh .deploy/setup-autorecover.sh
+        mkdir -p .deploy/scripts
+        cp scripts/audit_trading_6h_ai.py .deploy/scripts/audit_trading_6h_ai.py
+        cp scripts/ai_learning_cycle.sh .deploy/scripts/ai_learning_cycle.sh
+        cp scripts/run_ai_auditors_hourly.sh .deploy/scripts/run_ai_auditors_hourly.sh
+        cp scripts/test_ai_auditors.sh .deploy/scripts/test_ai_auditors.sh
+        cp scripts/sync_env_to_server.sh .deploy/scripts/sync_env_to_server.sh
 
     - name: Validate Deploy Secrets
       run: |
@@ -117,6 +123,10 @@ jobs:
           mv /home/ubuntu/KiBot/mac-engine-all.jar /home/ubuntu/KiBot/server/mac-engine-all.jar
           chmod +x /home/ubuntu/KiBot/kibot-recovery.sh
           chmod +x /home/ubuntu/KiBot/setup-autorecover.sh
+          chmod +x /home/ubuntu/KiBot/scripts/ai_learning_cycle.sh
+          chmod +x /home/ubuntu/KiBot/scripts/run_ai_auditors_hourly.sh
+          chmod +x /home/ubuntu/KiBot/scripts/test_ai_auditors.sh
+          chmod +x /home/ubuntu/KiBot/scripts/sync_env_to_server.sh
           sudo cp /home/ubuntu/KiBot/kibot-engine.service /etc/systemd/system/kibot-engine.service
           sudo systemctl stop kibot.service || true
           sudo systemctl disable kibot.service || true

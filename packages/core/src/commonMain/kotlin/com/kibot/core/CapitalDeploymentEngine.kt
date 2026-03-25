@@ -155,6 +155,11 @@ class CapitalDeploymentEngine(
                 position.hasClearRotationProfit(config) &&
                 position.isWeakRotationCandidate(rankedByPair[position.pairId])
         }
+        val rotatableLosers = portfolio.positions.filter { position ->
+            position.state != PositionState.CLOSED &&
+                position.unrealizedPnlIdr.toDoubleOrZero() < 0.0 &&
+                position.isWeakRotationCandidate(rankedByPair[position.pairId])
+        }
         val topCandidateLooksLikeBreakout = firstCandidate?.let { candidate ->
             candidate.speculativePocket ||
                 (
@@ -167,12 +172,12 @@ class CapitalDeploymentEngine(
             !speculativePocketReady &&
             openPositions > 0 &&
             topCandidateLooksLikeBreakout &&
-            candidates.firstOrNull()?.rankingScore?.let { it >= 0.78 } == true &&
-            candidates.firstOrNull()?.marketOpportunityScore?.let { it >= 0.64 } == true &&
-            candidates.firstOrNull()?.expectedNetProfitabilityPct?.let { it >= (config.rotationMinNetUpgradePct + 0.25) } == true &&
-            rotatableWinners.isNotEmpty() &&
+            candidates.firstOrNull()?.rankingScore?.let { it >= 0.70 } == true &&
+            candidates.firstOrNull()?.marketOpportunityScore?.let { it >= 0.60 } == true &&
+            candidates.firstOrNull()?.expectedNetProfitabilityPct?.let { it >= (config.rotationMinNetUpgradePct + 0.10) } == true &&
+            (rotatableWinners.isNotEmpty() || rotatableLosers.isNotEmpty()) &&
             (
-                topCandidateGap >= (config.rotationRankingGapMin + 0.02) ||
+                topCandidateGap >= config.rotationRankingGapMin ||
                     top1DeployableConcentration >= config.top1DeployableConcentrationMaxPct ||
                     loserHeatPct >= config.loserHeatCautionPct
                 )
@@ -191,7 +196,7 @@ class CapitalDeploymentEngine(
             if (top2DeployableConcentration >= config.top2DeployableConcentrationMaxPct) add("Dua aset teratas sudah mendominasi modal aktif, jadi penyebaran modal harus lebih disiplin.")
             if (loserHeatPct >= config.loserHeatCautionPct) add("Loser heat portofolio sedang naik, jadi entry baru harus benar-benar mengalahkan posisi yang lemah.")
             if (dominantTierAReady) add("Cash reserve diringankan sedikit karena kandidat tier A terlihat dominan dan market masih sehat.")
-            if (allowRotation) add("Rotasi hanya boleh dari posisi yang sudah hijau bersih setelah fee.")
+            if (allowRotation) add("Rotasi dipercepat dari posisi lemah/loser saat ada kandidat baru yang jauh lebih eksplosif.")
         }
 
         return CapitalDeploymentPlan(

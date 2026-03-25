@@ -25,8 +25,8 @@ import kotlin.math.max
 data class TradeAutomationConfig(
     val minTrackedPositionValueIdr: Double = 12_000.0,
     val thesisInvalidRankingFloor: Double = 0.46,
-    val thesisInvalidAgeHours: Double = 4.0,
-    val timeExitGraceMultiplier: Double = 2.25,
+    val thesisInvalidAgeHours: Double = 2.0,
+    val timeExitGraceMultiplier: Double = 1.25,
     val maxStaleLossPctForTimeExit: Double = 0.10,
     val orderFillTolerancePct: Double = 0.0025,
     val emergencyMarketExitLossPct: Double = -2.2,
@@ -37,16 +37,16 @@ data class TradeAutomationConfig(
     val speculativeWinnerRunMinTrendScore: Double = 0.62,
     val speculativeWinnerRunMinHealthScore: Double = 0.60,
     val speculativeWinnerRunMinOpportunityScore: Double = 0.60,
-    val breakoutWinnerRunMinPnlPct: Double = 0.75,
+    val breakoutWinnerRunMinPnlPct: Double = 0.55,
     val breakoutWinnerRunMinTrendScore: Double = 0.60,
     val breakoutWinnerRunMinHealthScore: Double = 0.58,
     val breakoutWinnerRunMinOpportunityScore: Double = 0.58,
     val minMeaningfulNonEmergencyExitProfitPct: Double = 1.20,
     val minMeaningfulNonEmergencyExitProfitIdr: Double = 180.0,
-    val loserRotationMinAgeHours: Double = 2.0,
-    val loserRotationMinLossPct: Double = -0.65,
-    val loserRotationMinTopCandidateRanking: Double = 0.66,
-    val loserRotationMinScoreGap: Double = 0.10,
+    val loserRotationMinAgeHours: Double = 0.75,
+    val loserRotationMinLossPct: Double = -0.20,
+    val loserRotationMinTopCandidateRanking: Double = 0.58,
+    val loserRotationMinScoreGap: Double = 0.06,
 )
 
 data class ManagedPosition(
