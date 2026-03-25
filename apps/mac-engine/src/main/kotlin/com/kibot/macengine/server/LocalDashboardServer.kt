@@ -74,6 +74,9 @@ class LocalDashboardServer(
                             name = "viewport"
                             content = "width=device-width, initial-scale=1"
                         }
+                        unsafe {
+                            +"""<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23060d22'/%3E%3Ctext x='50%25' y='53%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial, Helvetica, sans-serif' font-size='30' font-weight='700' fill='%232dd881'%3EK%3C/text%3E%3C/svg%3E">"""
+                        }
                         style {
                             unsafe {
                                 +dashboardStyles()
@@ -147,6 +150,28 @@ class LocalDashboardServer(
                                   });
                                 }
 
+                                function renderTradeHistory(entries) {
+                                  const container = document.getElementById('trade-lines');
+                                  container.innerHTML = '';
+                                  if (!entries || entries.length === 0) {
+                                    const empty = document.createElement('p');
+                                    empty.textContent = 'Belum ada trade history.';
+                                    empty.className = 'muted-copy';
+                                    container.appendChild(empty);
+                                    return;
+                                  }
+                                  entries.slice(0, 10).forEach(entry => {
+                                    const row = document.createElement('div');
+                                    row.className = 'timeline-row';
+                                    const pair = (entry.pair || '-').toLowerCase();
+                                    const side = (entry.side || '-').toUpperCase();
+                                    const status = (entry.status || '-').toUpperCase();
+                                    const detail = entry.detail || '-';
+                                    row.textContent = side + ' ' + pair + ' • ' + detail + ' • ' + status;
+                                    container.appendChild(row);
+                                  });
+                                }
+
                                 function refreshState() {
                                   fetch('/api/state', { cache: 'no-store' })
                                     .then(r => r.json())
@@ -167,10 +192,11 @@ class LocalDashboardServer(
                                       document.getElementById('exchange-ping').textContent = state.exchangePingMs;
                                       document.getElementById('server-uptime').textContent = state.serverUptime;
                                       document.getElementById('heartbeat').textContent = state.lastHeartbeatLabel;
-                                      document.getElementById('portfolio-card').textContent = state.portfolioValueIdr;
-                                      document.getElementById('pnl-card').textContent = state.pnlTodayIdr;
-                                      document.getElementById('update-card').textContent = state.lastUpdatedLabel;
+                                      document.getElementById('ret-1d').textContent = state.pnlTodayIdr;
+                                      document.getElementById('ret-7d').textContent = state.pnlTodayIdr;
+                                      document.getElementById('ret-30d').textContent = state.pnlTodayIdr;
                                       renderHeldAssets(state.heldAssets);
+                                      renderTradeHistory(state.recentOrders || []);
                                       renderTimeline(state.liveTimeline || []);
                                     })
                                     .catch(() => {
@@ -238,55 +264,49 @@ class LocalDashboardServer(
 
 private fun BODY.renderDashboard(state: MacDashboardState) {
     div("page-shell") {
-        div("hero-card") {
-            div("hero-topbar") {
-                h1 { +"KiBot" }
-                div("hero-topbar-right") {
-                    div("pill ${dashboardStatusClass(state)}") {
-                        attributes["id"] = "status-badge"
-                        span {
-                            attributes["id"] = "status-badge-label"
-                            +dashboardStatusLabel(state)
+        div("row row-top") {
+            div("hero-card") {
+                div("hero-topbar") {
+                    h1 { +"KiBot" }
+                    div("hero-topbar-right") {
+                        div("pill ${dashboardStatusClass(state)}") {
+                            attributes["id"] = "status-badge"
+                            span {
+                                attributes["id"] = "status-badge-label"
+                                +dashboardStatusLabel(state)
+                            }
+                        }
+                        p("hero-update") {
+                            +"Update "
+                            span {
+                                attributes["id"] = "last-updated"
+                                +state.lastUpdatedLabel
+                            }
                         }
                     }
-                    p("hero-update") {
-                        +"Update "
-                        span {
-                            attributes["id"] = "last-updated"
-                            +state.lastUpdatedLabel
-                        }
+                }
+                div("hero-balance") {
+                    span {
+                        attributes["id"] = "portfolio-value"
+                        +state.portfolioValueIdr
                     }
                 }
-            }
-            div("hero-balance") {
-                span {
-                    attributes["id"] = "portfolio-value"
-                    +state.portfolioValueIdr
+                div("hero-pnl-row") {
+                    span("hero-pnl") {
+                        attributes["id"] = "hero-pnl"
+                        +state.pnlTodayIdr
+                    }
+                    span("pill pill-neutral") {
+                        attributes["id"] = "release-label"
+                        +"Oracle Active ${state.releaseLabel}"
+                    }
+                }
+                p("hero-status") {
+                    attributes["id"] = "hero-summary"
+                    +state.statusMessage
                 }
             }
-            div("hero-pnl-row") {
-                span("hero-pnl") {
-                    attributes["id"] = "hero-pnl"
-                    +state.pnlTodayIdr
-                }
-                span("pill pill-neutral") {
-                    attributes["id"] = "release-label"
-                    +"Oracle Active ${state.releaseLabel}"
-                }
-            }
-            p("hero-status") {
-                attributes["id"] = "hero-summary"
-                +state.statusMessage
-            }
-        }
 
-        div("hero-metrics-grid") {
-            metricCard("Portfolio", state.portfolioValueIdr, "portfolio-card")
-            metricCard("PnL Hari Ini", state.pnlTodayIdr, "pnl-card")
-            metricCard("Update", state.lastUpdatedLabel, "update-card")
-        }
-
-        div("dashboard-grid") {
             div("card live-pair-card") {
                 div("card-header-row") {
                     h2 { +"Live Pair" }
@@ -306,19 +326,28 @@ private fun BODY.renderDashboard(state: MacDashboardState) {
                     metaChip("Edge", state.edgeConfidence, "edge-confidence")
                 }
             }
+        }
 
-            div("card") {
-                div("card-header-row") {
-                    h2 { +"Holdings" }
-                    div("pill pill-neutral") { +"Oracle 24/7" }
+        div("row row-middle") {
+            div("returns-wrap") {
+                div("returns-grid") {
+                    metricCard("Return 1D", state.pnlTodayIdr, "ret-1d")
+                    metricCard("Return 7D", state.pnlTodayIdr, "ret-7d")
+                    metricCard("Return 30D", state.pnlTodayIdr, "ret-30d")
                 }
-                div("holdings-list") {
-                    attributes["id"] = "held-assets"
-                    if (state.heldAssets.isEmpty()) {
-                        p("muted-copy") { +"Belum ada aset aktif." }
-                    } else {
-                        state.heldAssets.forEach { asset ->
-                            div("holding-row") { +asset }
+                div("card") {
+                    div("card-header-row") {
+                        h2 { +"Holdings" }
+                        div("pill pill-neutral") { +"Oracle 24/7" }
+                    }
+                    div("holdings-list") {
+                        attributes["id"] = "held-assets"
+                        if (state.heldAssets.isEmpty()) {
+                            p("muted-copy") { +"Belum ada aset aktif." }
+                        } else {
+                            state.heldAssets.forEach { asset ->
+                                div("holding-row") { +asset }
+                            }
                         }
                     }
                 }
@@ -338,10 +367,23 @@ private fun BODY.renderDashboard(state: MacDashboardState) {
                 statusLine("Heartbeat", state.lastHeartbeatLabel, "heartbeat")
                 statusLine("Uptime", state.serverUptime, "server-uptime")
             }
+        }
+
+        div("row row-bottom") {
+            div("card activity-card") {
+                div("card-header-row") {
+                    h2 { +"Trade History" }
+                    div("pill pill-neutral") { +"Live" }
+                }
+                div("log-list") {
+                    attributes["id"] = "trade-lines"
+                    p("muted-copy") { +"Loading trade history..." }
+                }
+            }
 
             div("card activity-card") {
                 div("card-header-row") {
-                    h2 { +"Live Timeline" }
+                    h2 { +"Timeline Logs" }
                     div("pill pill-purple") {
                         attributes["id"] = "feed-chip"
                         +state.syncPathLabel
@@ -511,13 +553,34 @@ private fun dashboardStyles(): String = """
       font-size: 14px;
       line-height: 1.4;
     }
-    .hero-metrics-grid,
-    .dashboard-grid {
+    .row,
+    .returns-grid {
       display: grid;
-      gap: 18px;
+      gap: 12px;
     }
-    .hero-metrics-grid {
-      margin-top: 0;
+    .row-top {
+      grid-template-columns: 1.55fr 1fr;
+      align-items: stretch;
+      min-height: 0;
+    }
+    .row-middle {
+      grid-template-columns: 1.1fr 1fr;
+      align-items: stretch;
+      min-height: 0;
+    }
+    .row-bottom {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      min-height: 0;
+      align-items: stretch;
+      overflow: hidden;
+    }
+    .returns-wrap {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 12px;
+      min-height: 0;
+    }
+    .returns-grid {
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
     .metric-card {
@@ -535,15 +598,9 @@ private fun dashboardStyles(): String = """
       font-size: 18px;
       font-weight: 800;
     }
-    .dashboard-grid {
-      margin-top: 0;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      align-items: stretch;
-      min-height: 0;
-    }
     .card { padding: 14px; min-height: 0; }
     .live-pair-card { min-height: 0; }
-    .activity-card { min-height: 0; }
+    .activity-card { min-height: 0; display: grid; grid-template-rows: auto 1fr; overflow: hidden; }
     .card-header-row {
       display: flex;
       align-items: center;
@@ -632,15 +689,15 @@ private fun dashboardStyles(): String = """
       line-height: 1.45;
     }
     .log-list {
-      max-height: 170px;
+      max-height: 100%;
       overflow-y: auto;
       font-family: "SF Pro Text", "Segoe UI", sans-serif;
       color: var(--muted);
       font-size: 12px;
     }
     @media (max-width: 920px) {
-      .hero-metrics-grid,
-      .dashboard-grid,
+      .row,
+      .returns-grid,
       .pair-meta-grid {
         grid-template-columns: 1fr;
       }

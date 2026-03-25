@@ -187,7 +187,7 @@ private fun PortfolioSectionCard(
             )
             PortfolioMetricTile(
                 modifier = Modifier.weight(1f),
-                label = "Cash Ready",
+                label = "Return 30D",
                 value = portfolio.cashReadyLabel,
                 caption = portfolio.cashReadyPctLabel,
                 tint = Color(0xFF60A5FA),
