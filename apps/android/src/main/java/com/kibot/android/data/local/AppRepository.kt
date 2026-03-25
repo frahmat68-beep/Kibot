@@ -1335,7 +1335,7 @@ class AppRepository(
             .map { it.lowercase() }
             .filter { it.isNotBlank() && it !in HIDDEN_STABLE_PAIRS }
             .distinct()
-            .take(10)
+            .take(20)
     }
 
     companion object {

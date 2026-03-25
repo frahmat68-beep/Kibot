@@ -41,8 +41,9 @@ class KiBotWidgetProvider : AppWidgetProvider() {
                     val dailyReturnPct = derivePnlPct(snapshot)
                     val live = snapshot.updatedAtEpochMs > 0L &&
                         (System.currentTimeMillis() - snapshot.updatedAtEpochMs) <= 90_000L
+                    val pingLabel = snapshot.internetPingMs?.let { "${it} ms" } ?: "--"
                     setTextViewText(R.id.widget_title, "KiBot")
-                    setTextViewText(R.id.widget_status_chip, if (live) "LIVE" else "OFF")
+                    setTextViewText(R.id.widget_status_chip, "PING")
                     setTextColor(
                         R.id.widget_status_chip,
                         if (live) 0xFF2DD881.toInt() else 0xFFA8B7D7.toInt(),
@@ -52,7 +53,7 @@ class KiBotWidgetProvider : AppWidgetProvider() {
                         "setBackgroundResource",
                         if (live) R.drawable.widget_pnl_positive else R.drawable.widget_pnl_neutral,
                     )
-                    setTextViewText(R.id.widget_meta, "Update ${formatUpdated(snapshot.updatedAtEpochMs)}")
+                    setTextViewText(R.id.widget_meta, "Ping $pingLabel")
                     setTextViewText(R.id.widget_equity, snapshot.totalEquityIdr)
                     setTextViewText(R.id.widget_daily_return_value, dailyReturnPct)
                     setTextViewText(R.id.widget_pnl_value, snapshot.pnlTodayIdr)
@@ -131,6 +132,7 @@ private class WidgetSnapshotStore(context: Context) {
             .putString(KEY_ACTIVE_PAIR, snapshot.activePair)
             .putString(KEY_TOTAL_EQUITY, snapshot.totalEquityIdr)
             .putString(KEY_PNL_TODAY, snapshot.pnlTodayIdr)
+            .putLong(KEY_INTERNET_PING_MS, snapshot.internetPingMs ?: -1L)
             .putString(KEY_RADAR_PAIRS, snapshot.radarPairs.joinToString("\u001F"))
             .putString(KEY_HOLDINGS, snapshot.holdings.joinToString("\u001F") {
                 listOf(it.asset, it.amount, it.valueIdr, it.pnlIdr, it.pnlPctLabel).joinToString("\u001E")
@@ -159,6 +161,7 @@ private class WidgetSnapshotStore(context: Context) {
             activePair = prefs.getString(KEY_ACTIVE_PAIR, null).orEmpty().ifBlank { "-" },
             totalEquityIdr = prefs.getString(KEY_TOTAL_EQUITY, null).orEmpty().ifBlank { "Rp0" },
             pnlTodayIdr = prefs.getString(KEY_PNL_TODAY, null).orEmpty().ifBlank { "+Rp0" },
+            internetPingMs = prefs.getLong(KEY_INTERNET_PING_MS, -1L).takeIf { it >= 0L },
             radarPairs = prefs.getString(KEY_RADAR_PAIRS, null)
                 ?.split("\u001F")
                 ?.filter { it.isNotBlank() }
@@ -173,6 +176,7 @@ private class WidgetSnapshotStore(context: Context) {
         private const val KEY_ACTIVE_PAIR = "active_pair"
         private const val KEY_TOTAL_EQUITY = "total_equity"
         private const val KEY_PNL_TODAY = "pnl_today"
+        private const val KEY_INTERNET_PING_MS = "internet_ping_ms"
         private const val KEY_RADAR_PAIRS = "radar_pairs"
         private const val KEY_HOLDINGS = "holdings"
     }

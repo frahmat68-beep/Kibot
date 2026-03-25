@@ -440,7 +440,7 @@ private fun HeroCard(
                     shape = RoundedCornerShape(16.dp),
                 ) {
                     Text(
-                        text = serverState.label,
+                        text = "Ping Server ${state.internetPingLabel}",
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                         color = serverState.tint,
                         fontWeight = FontWeight.Bold,
@@ -483,7 +483,7 @@ private fun HeroCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 StatusChip(
-                    label = serverState.summary,
+                    label = "${serverState.summary} • scan ${state.scanUniverseCount}",
                     tint = serverState.tint,
                 )
                 StatusChip(
@@ -558,7 +558,7 @@ private fun PairRadarCard(
                         verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
                         Text(
-                            livePair,
+                            "${livePair} • Top 10",
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -649,8 +649,9 @@ private fun HoldingsPreviewCard(
             ) {
                 state.positions.forEach { position ->
                     val perCoinPnl = position.pnl.takeIf { it.isNotBlank() }
+                    val accent = assetAccent(position.pair)
                     Surface(
-                        color = Color.White.copy(alpha = 0.04f),
+                        color = accent.copy(alpha = 0.09f),
                         shape = RoundedCornerShape(18.dp),
                     ) {
                         Row(
@@ -689,7 +690,7 @@ private fun HoldingsPreviewCard(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontWeight = FontWeight.Medium,
                                 )
-                                Text(position.value, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                                Text(position.value, color = accent, fontWeight = FontWeight.SemiBold)
                                 if (perCoinPnl != null) {
                                     Text(
                                         perCoinPnl,
@@ -1026,14 +1027,23 @@ private fun SurfaceCard(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val colors = listOf(
+        Color(0x1C38BDF8),
+        Color(0x168B5CF6),
+        Color(0x1222C55E),
+    )
     Card(
         modifier = modifier,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         shape = RoundedCornerShape(22.dp),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .background(
+                    brush = Brush.linearGradient(colors),
+                    shape = RoundedCornerShape(22.dp),
+                )
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
             content = content,
@@ -1133,6 +1143,38 @@ private fun formatLogTime(epochMs: Long): String {
 }
 
 private fun dashboardTimelineEntries(state: KiBotUiState): List<com.kibot.android.runtime.LiveLogEntry> {
+    val nowEpoch = System.currentTimeMillis()
+    val activePair = visiblePairLabel(state)
+    val topCandidate = state.radarPairs
+        .map { it.lowercase() }
+        .firstOrNull { it != activePair }
+        ?: activePair
+    val lastSell = state.liveLogEntries.firstOrNull { it.category.equals("SELL", ignoreCase = true) }
+    val syntheticStatus = listOf(
+        com.kibot.android.runtime.LiveLogEntry(
+            timestampEpochMs = nowEpoch,
+            category = "STATUS",
+            message = "Fokus sekarang $activePair. Ping ${state.internetPingLabel}, scan ${state.scanUniverseCount} pair.",
+        ),
+        com.kibot.android.runtime.LiveLogEntry(
+            timestampEpochMs = nowEpoch - 1_000L,
+            category = "ROTASI",
+            message = "Jika $activePair stagnan/rugi, bot siap rotasi cepat ke $topCandidate.",
+        ),
+        com.kibot.android.runtime.LiveLogEntry(
+            timestampEpochMs = nowEpoch - 2_000L,
+            category = "TARGET",
+            message = "Target berikutnya $topCandidate. Profit harian sementara ${state.pnlTodayIdr}.",
+        ),
+    ) + listOfNotNull(
+        lastSell?.let {
+            com.kibot.android.runtime.LiveLogEntry(
+                timestampEpochMs = nowEpoch - 3_000L,
+                category = "SELL",
+                message = "Terakhir jual: ${it.message}. Lanjut incar $topCandidate.",
+            )
+        },
+    )
     val priorityCategories = setOf("BUY", "SELL", "LOSS", "PROFIT", "RISK", "ROTASI")
     val displayEntries = state.liveLogEntries.map { entry ->
         displayLiveLogCategory(entry.category, entry.message) to entry
@@ -1143,7 +1185,9 @@ private fun dashboardTimelineEntries(state: KiBotUiState): List<com.kibot.androi
     val chatter = displayEntries
         .filterNot { (category, _) -> category in priorityCategories }
         .map { it.second }
-    return (priority + chatter).take(8)
+    return (syntheticStatus + priority + chatter)
+        .distinctBy { "${it.category}|${it.message}" }
+        .take(10)
 }
 
 private fun radarPairs(state: KiBotUiState): List<String> {
