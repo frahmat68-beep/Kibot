@@ -3,6 +3,7 @@ name: Deploy KiBot
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 concurrency:
   group: kibot-oracle-deploy
@@ -11,6 +12,10 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      DEPLOY_HOST: ${{ secrets.HOST || secrets.SERVER_HOST || secrets.ORACLE_HOST }}
+      DEPLOY_USER: ${{ secrets.USERNAME || secrets.SSH_USERNAME || secrets.ORACLE_USER }}
+      DEPLOY_KEY: ${{ secrets.SSH_KEY || secrets.SERVER_SSH_KEY || secrets.ORACLE_SSH_KEY }}
     steps:
     - name: Checkout Repo
       uses: actions/checkout@v4
@@ -34,12 +39,39 @@ jobs:
         cp kibot-recovery.sh .deploy/kibot-recovery.sh
         cp setup-autorecover.sh .deploy/setup-autorecover.sh
 
+    - name: Validate Deploy Secrets
+      run: |
+        set -euo pipefail
+        if [ -z "${DEPLOY_HOST:-}" ]; then
+          echo "Missing deploy host secret. Expected one of: HOST / SERVER_HOST / ORACLE_HOST"
+          exit 1
+        fi
+        if [ -z "${DEPLOY_USER:-}" ]; then
+          echo "Missing deploy username secret. Expected one of: USERNAME / SSH_USERNAME / ORACLE_USER"
+          exit 1
+        fi
+        if [ -z "${DEPLOY_KEY:-}" ]; then
+          echo "Missing deploy SSH key secret. Expected one of: SSH_KEY / SERVER_SSH_KEY / ORACLE_SSH_KEY"
+          exit 1
+        fi
+
+    - name: Ensure Remote Runtime Directory
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ env.DEPLOY_HOST }}
+        username: ${{ env.DEPLOY_USER }}
+        key: ${{ env.DEPLOY_KEY }}
+        script: |
+          set -euo pipefail
+          mkdir -p /home/ubuntu/KiBot
+          mkdir -p /home/ubuntu/KiBot/server
+
     - name: Copy Runtime Bundle to Server
       uses: appleboy/scp-action@v0.1.7
       with:
-        host: ${{ secrets.HOST }}
-        username: ${{ secrets.USERNAME }}
-        key: ${{ secrets.SSH_KEY }}
+        host: ${{ env.DEPLOY_HOST }}
+        username: ${{ env.DEPLOY_USER }}
+        key: ${{ env.DEPLOY_KEY }}
         source: ".deploy/*"
         target: "/home/ubuntu/KiBot/"
         strip_components: 1
@@ -47,9 +79,9 @@ jobs:
     - name: Install and Restart Oracle Bot
       uses: appleboy/ssh-action@v1.0.3
       with:
-        host: ${{ secrets.HOST }}
-        username: ${{ secrets.USERNAME }}
-        key: ${{ secrets.SSH_KEY }}
+        host: ${{ env.DEPLOY_HOST }}
+        username: ${{ env.DEPLOY_USER }}
+        key: ${{ env.DEPLOY_KEY }}
         script: |
           set -euo pipefail
           mkdir -p /home/ubuntu/KiBot/server
