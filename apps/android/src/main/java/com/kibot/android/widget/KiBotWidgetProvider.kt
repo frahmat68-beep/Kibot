@@ -41,19 +41,19 @@ class KiBotWidgetProvider : AppWidgetProvider() {
                     val dailyReturnPct = derivePnlPct(snapshot)
                     val live = snapshot.updatedAtEpochMs > 0L &&
                         (System.currentTimeMillis() - snapshot.updatedAtEpochMs) <= 90_000L
-                    val pingLabel = snapshot.internetPingMs?.let { "${it} ms" } ?: "--"
+                    val pingLabel = snapshot.internetPingMs?.let { "${it}ms" } ?: "--"
+                    val pingColor = pingTextColor(snapshot.internetPingMs)
+                    val pingBg = pingBadgeBackground(snapshot.internetPingMs)
                     setTextViewText(R.id.widget_title, "KiBot")
-                    setTextViewText(R.id.widget_status_chip, "PING")
-                    setTextColor(
-                        R.id.widget_status_chip,
-                        if (live) 0xFF2DD881.toInt() else 0xFFA8B7D7.toInt(),
-                    )
+                    setTextViewText(R.id.widget_status_text, pingLabel)
+                    setTextColor(R.id.widget_status_text, pingColor)
+                    setInt(R.id.widget_status_icon, "setColorFilter", pingColor)
                     setInt(
                         R.id.widget_status_chip,
                         "setBackgroundResource",
-                        if (live) R.drawable.widget_pnl_positive else R.drawable.widget_pnl_neutral,
+                        if (!live) R.drawable.widget_pnl_neutral else pingBg,
                     )
-                    setTextViewText(R.id.widget_meta, "Ping $pingLabel")
+                    setTextViewText(R.id.widget_meta, "Update ${formatUpdated(snapshot.updatedAtEpochMs)}")
                     setTextViewText(R.id.widget_equity, snapshot.totalEquityIdr)
                     setTextViewText(R.id.widget_daily_return_value, dailyReturnPct)
                     setTextViewText(R.id.widget_pnl_value, snapshot.pnlTodayIdr)
@@ -89,6 +89,24 @@ class KiBotWidgetProvider : AppWidgetProvider() {
                 label.trim().startsWith("-") -> R.drawable.widget_pnl_negative
                 label.trim() == "+Rp0" || label.trim() == "Rp0" -> R.drawable.widget_pnl_neutral
                 else -> R.drawable.widget_pnl_positive
+            }
+        }
+
+        private fun pingTextColor(pingMs: Long?): Int {
+            return when {
+                pingMs == null -> 0xFFA8B7D7.toInt()
+                pingMs <= 90L -> 0xFF2DD881.toInt()
+                pingMs <= 220L -> 0xFFF59E0B.toInt()
+                else -> 0xFFEF4444.toInt()
+            }
+        }
+
+        private fun pingBadgeBackground(pingMs: Long?): Int {
+            return when {
+                pingMs == null -> R.drawable.widget_pnl_neutral
+                pingMs <= 90L -> R.drawable.widget_pnl_positive
+                pingMs <= 220L -> R.drawable.widget_pnl_neutral
+                else -> R.drawable.widget_pnl_negative
             }
         }
 

@@ -99,6 +99,12 @@ class CapitalDeploymentEngine(
             firstCandidate.rankingScore >= 0.78 &&
             firstCandidate.marketOpportunityScore >= 0.68 &&
             topCandidateGap >= 0.05
+        val dominantAllInReady = mode.mode == BotMode.ATTACK &&
+            risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) &&
+            firstCandidate != null &&
+            firstCandidate.rankingScore >= config.dominantAllInRankingScoreMin &&
+            firstCandidate.marketOpportunityScore >= config.dominantAllInOpportunityScoreMin &&
+            topCandidateGap >= config.dominantAllInGapMin
         val speculativePocketReady = openPositions == 0 &&
             risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) &&
             firstCandidate?.speculativePocket == true &&
@@ -126,6 +132,7 @@ class CapitalDeploymentEngine(
         val capitalUtilizationTargetPct = (1.0 - effectiveReservePct).coerceIn(0.0, 1.0)
         val maxActivePositions = when {
             !risk.allowNewEntries || !mode.tradingAllowed -> openPositions
+            dominantAllInReady -> maxOf(openPositions, 1).coerceAtMost(1)
             speculativePocketReady -> maxOf(openPositions, 1)
             multiSlotReadyCount >= 2 -> maxOf(openPositions, multiSlotReadyCount.coerceAtMost(baseTotalCap))
             secondSlotReady -> baseTotalCap
@@ -136,6 +143,7 @@ class CapitalDeploymentEngine(
         val hasNewSlotCapacity = maxActivePositions > openPositions
         val dominanceBoost = topCandidateGap.coerceIn(0.0, 0.10) * 0.35
         val budgetMultiplier = when {
+            dominantAllInReady -> config.singlePositionBudgetBoostMultiplier + 0.30 + dominanceBoost
             maxActivePositions <= 1 &&
                 firstCandidate?.rankingScore?.let { it >= 0.80 } == true &&
                 risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) ->
@@ -146,7 +154,11 @@ class CapitalDeploymentEngine(
         }
         val perPositionBudget = minOf(
             risk.suggestedPerPositionBudgetIdr * budgetMultiplier,
-            currentEquity * (1.0 - effectiveReservePct).coerceIn(0.0, 1.0) * config.maxPerPositionBudgetPct,
+            currentEquity * (1.0 - effectiveReservePct).coerceIn(0.0, 1.0) * if (dominantAllInReady) {
+                config.dominantAllInMaxAllocationPct
+            } else {
+                config.maxPerPositionBudgetPct
+            },
             if (speculativePocketReady) currentEquity * config.speculativePocketMaxEquityPct else Double.MAX_VALUE,
         ).coerceAtLeast(0.0)
         val rankedByPair = rankedPairs.associateBy { it.pairId }
@@ -196,6 +208,7 @@ class CapitalDeploymentEngine(
             if (top2DeployableConcentration >= config.top2DeployableConcentrationMaxPct) add("Dua aset teratas sudah mendominasi modal aktif, jadi penyebaran modal harus lebih disiplin.")
             if (loserHeatPct >= config.loserHeatCautionPct) add("Loser heat portofolio sedang naik, jadi entry baru harus benar-benar mengalahkan posisi yang lemah.")
             if (dominantTierAReady) add("Cash reserve diringankan sedikit karena kandidat tier A terlihat dominan dan market masih sehat.")
+            if (dominantAllInReady) add("Kandidat utama sangat dominan, bot mengunci fokus modal hampir penuh ke pair teratas untuk mengejar akselerasi profit.")
             if (allowRotation) add("Rotasi dipercepat dari posisi lemah/loser saat ada kandidat baru yang jauh lebih eksplosif.")
         }
 

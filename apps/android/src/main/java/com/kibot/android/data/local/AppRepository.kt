@@ -285,20 +285,7 @@ class AppRepository(
                 )
             },
             trades = orders
-                .filter {
-                    it.executedQuantity.toDoubleOrZero() > 0.0 ||
-                        it.status == com.kibot.shared.models.OrderStatus.FILLED ||
-                        it.status == com.kibot.shared.models.OrderStatus.PARTIALLY_FILLED
-                }
-                .map {
-                TradeUi(
-                    pair = it.pairId.value,
-                    side = "${it.side.name} • ${it.orderType.name}",
-                    status = it.status.name,
-                    detail = "${formatQuantity(max(it.executedQuantity.toDoubleOrZero(), it.originalQuantity.toDoubleOrZero()))} @ ${formatIdr(max(it.price.toDoubleOrZero(), 0.0))}",
-                    timeLabel = formatMomentLabel(it.updatedAt),
-                )
-            },
+                .let(::buildTradeUiFromOrders),
             devices = devices.map {
                 val isActive = it.deviceId == activeDeviceId
                 DeviceStatusUi(
@@ -408,17 +395,7 @@ class AppRepository(
                 serverLogs = serverBundle.serverLogs,
                 recentOrders = state.recentOrders,
             ),
-            trades = state.recentOrders
-                .filter { it.status == "FILLED" || it.status == "PARTIALLY_FILLED" }
-                .map {
-                    TradeUi(
-                        pair = it.pair,
-                        side = it.side,
-                        status = it.status,
-                        detail = it.detail,
-                        timeLabel = formatMomentLabel(Instant.fromEpochMilliseconds(it.timestampEpochMs)),
-                    )
-                },
+            trades = buildTradeUiFromServerOrders(state.recentOrders),
             devices = listOf(
                 DeviceStatusUi(
                     name = state.serverLocation.ifBlank { "Oracle Cloud Server" },
@@ -1333,9 +1310,140 @@ class AppRepository(
     ): List<String> {
         return pairs
             .map { it.lowercase() }
-            .filter { it.isNotBlank() && it !in HIDDEN_STABLE_PAIRS }
+            .filter { it.isNotBlank() && it.trim('-').isNotBlank() && it !in HIDDEN_STABLE_PAIRS }
             .distinct()
             .take(20)
+    }
+
+    private fun buildTradeUiFromOrders(
+        orders: List<OrderSnapshot>,
+    ): List<TradeUi> {
+        val avgBuyByPair = mutableMapOf<String, Pair<Double, Double>>() // pair -> qty, avgBuy
+        val trades = mutableListOf<TradeUi>()
+        orders
+            .sortedBy { it.updatedAt }
+            .forEach { order ->
+                if (order.status !in setOf(OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED)) return@forEach
+                val pair = order.pairId.value.lowercase()
+                val qty = max(order.executedQuantity.toDoubleOrZero(), order.originalQuantity.toDoubleOrZero())
+                val price = max(order.price.toDoubleOrZero(), 0.0)
+                if (qty <= 0.0 || price <= 0.0) return@forEach
+                if (order.side.name.equals("BUY", ignoreCase = true)) {
+                    val (prevQty, prevAvg) = avgBuyByPair[pair] ?: (0.0 to price)
+                    val nextQty = prevQty + qty
+                    val nextAvg = if (nextQty > 0.0) ((prevQty * prevAvg) + (qty * price)) / nextQty else price
+                    avgBuyByPair[pair] = nextQty to nextAvg
+                    trades += TradeUi(
+                        pair = pair,
+                        side = "${order.side.name} • ${order.orderType.name}",
+                        status = order.status.name,
+                        detail = "Buy ${formatQuantity(qty)} @ ${formatTradePrice(price)}",
+                        entryPriceLabel = formatTradePrice(price),
+                        timeLabel = formatMomentLabel(order.updatedAt),
+                    )
+                } else {
+                    val (heldQty, avgBuy) = avgBuyByPair[pair] ?: (0.0 to 0.0)
+                    val pnl = if (avgBuy > 0.0) (price - avgBuy) * qty else 0.0
+                    val outcome = when {
+                        avgBuy <= 0.0 -> "Outcome: data buy tidak cukup"
+                        pnl >= 0.0 -> "Untung ${formatSignedIdr(pnl)}"
+                        else -> "Rugi ${formatSignedIdr(pnl)}"
+                    }
+                    val nextHeldQty = (heldQty - qty).coerceAtLeast(0.0)
+                    avgBuyByPair[pair] = nextHeldQty to avgBuy
+                    trades += TradeUi(
+                        pair = pair,
+                        side = "${order.side.name} • ${order.orderType.name}",
+                        status = order.status.name,
+                        detail = "Sell ${formatQuantity(qty)} @ ${formatTradePrice(price)}",
+                        entryPriceLabel = if (avgBuy > 0.0) formatTradePrice(avgBuy) else "-",
+                        exitPriceLabel = formatTradePrice(price),
+                        outcomeLabel = outcome,
+                        timeLabel = formatMomentLabel(order.updatedAt),
+                    )
+                }
+            }
+        return trades.asReversed().take(20)
+    }
+
+    private fun buildTradeUiFromServerOrders(
+        orders: List<ServerRecentOrder>,
+    ): List<TradeUi> {
+        val avgBuyByPair = mutableMapOf<String, Pair<Double, Double>>() // pair -> qty, avgBuy
+        val trades = mutableListOf<TradeUi>()
+        orders
+            .filter { it.status == "FILLED" || it.status == "PARTIALLY_FILLED" }
+            .sortedBy { it.timestampEpochMs }
+            .forEach { order ->
+                val pair = order.pair.lowercase()
+                val qty = extractQuantityValue(order.detail).coerceAtLeast(0.0)
+                val price = extractPriceValue(order.detail).coerceAtLeast(0.0)
+                if (qty <= 0.0 || price <= 0.0) {
+                    trades += TradeUi(
+                        pair = pair,
+                        side = order.side,
+                        status = order.status,
+                        detail = order.detail,
+                        timeLabel = formatMomentLabel(Instant.fromEpochMilliseconds(order.timestampEpochMs)),
+                    )
+                    return@forEach
+                }
+                if (order.side == "BUY") {
+                    val (prevQty, prevAvg) = avgBuyByPair[pair] ?: (0.0 to price)
+                    val nextQty = prevQty + qty
+                    val nextAvg = if (nextQty > 0.0) ((prevQty * prevAvg) + (qty * price)) / nextQty else price
+                    avgBuyByPair[pair] = nextQty to nextAvg
+                    trades += TradeUi(
+                        pair = pair,
+                        side = order.side,
+                        status = order.status,
+                        detail = "Buy ${formatQuantity(qty)} @ ${formatTradePrice(price)}",
+                        entryPriceLabel = formatTradePrice(price),
+                        timeLabel = formatMomentLabel(Instant.fromEpochMilliseconds(order.timestampEpochMs)),
+                    )
+                } else {
+                    val (heldQty, avgBuy) = avgBuyByPair[pair] ?: (0.0 to 0.0)
+                    val pnl = if (avgBuy > 0.0) (price - avgBuy) * qty else 0.0
+                    val outcome = when {
+                        avgBuy <= 0.0 -> "Outcome: data buy tidak cukup"
+                        pnl >= 0.0 -> "Untung ${formatSignedIdr(pnl)}"
+                        else -> "Rugi ${formatSignedIdr(pnl)}"
+                    }
+                    val nextHeldQty = (heldQty - qty).coerceAtLeast(0.0)
+                    avgBuyByPair[pair] = nextHeldQty to avgBuy
+                    trades += TradeUi(
+                        pair = pair,
+                        side = order.side,
+                        status = order.status,
+                        detail = "Sell ${formatQuantity(qty)} @ ${formatTradePrice(price)}",
+                        entryPriceLabel = if (avgBuy > 0.0) formatTradePrice(avgBuy) else "-",
+                        exitPriceLabel = formatTradePrice(price),
+                        outcomeLabel = outcome,
+                        timeLabel = formatMomentLabel(Instant.fromEpochMilliseconds(order.timestampEpochMs)),
+                    )
+                }
+            }
+        return trades.asReversed().take(20)
+    }
+
+    private fun extractPriceValue(detail: String): Double {
+        val raw = detail.substringAfter('@', "").trim()
+        if (raw.isBlank()) return 0.0
+        return raw
+            .replace("Rp", "")
+            .replace(".", "")
+            .replace(",", ".")
+            .trim()
+            .toDoubleOrNull()
+            ?: 0.0
+    }
+
+    private fun formatTradePrice(value: Double): String {
+        return if (value < 1.0) {
+            "Rp" + String.format(Locale.US, "%.6f", value).replace(".", ",")
+        } else {
+            formatIdr(value)
+        }
     }
 
     companion object {

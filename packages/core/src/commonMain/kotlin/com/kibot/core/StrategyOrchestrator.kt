@@ -56,6 +56,9 @@ class StrategyOrchestrator(
     private val deploymentEngine: CapitalDeploymentEngine = CapitalDeploymentEngine(),
     private val executionConfig: StrategyExecutionConfig = StrategyExecutionConfig(),
 ) {
+    private val recentPairExitTimestampsMs = mutableMapOf<PairId, Long>()
+    private var lastObservedHeldPairs: Set<PairId> = emptySet()
+
     fun analyze(
         botId: BotId,
         balances: List<BalanceSnapshot>,
@@ -69,6 +72,11 @@ class StrategyOrchestrator(
         val quoteByPair = marketQuotes.associateBy { it.pairId }
         val equity = estimatePortfolioValueIdr(balances, marketQuotes)
         val syntheticPositions = deriveSyntheticPositions(balances, marketQuotes)
+        val nowMs = Clock.System.now().toEpochMilliseconds()
+        trackRecentPairExits(
+            currentHeldPairs = syntheticPositions.map { it.pairId }.toSet(),
+            observedAtEpochMs = nowMs,
+        )
         val portfolio = PortfolioSnapshot(
             botId = botId,
             balances = balances,
@@ -121,6 +129,7 @@ class StrategyOrchestrator(
             deploymentPlan = deploymentPlan,
             openOrders = openOrders,
             weeklySummary = weeklySummary,
+            observedAtEpochMs = nowMs,
         )
         val executionPlan = selectedSignal?.toExecutionPlan(
             balances = balances,
@@ -197,6 +206,7 @@ class StrategyOrchestrator(
         deploymentPlan: com.kibot.shared.models.CapitalDeploymentPlan,
         openOrders: List<com.kibot.shared.models.OrderSnapshot>,
         weeklySummary: WeeklyLearningSummary?,
+        observedAtEpochMs: Long,
     ): StrategySignal? {
         val hasPendingBuyOrder = openOrders.any { it.side == OrderSide.BUY }
         if (!modeSnapshot.tradingAllowed || hasPendingBuyOrder || !deploymentPlan.allowNewEntries) return null
@@ -237,6 +247,7 @@ class StrategyOrchestrator(
                     targetBudgetIdr = deploymentPlan.suggestedPerPositionBudgetIdr,
                 )
                 if (candidate.pairId in heldPairs || !hasFunding) return@mapNotNull null
+                if (isPairInReentryCooldown(candidate.pairId, observedAtEpochMs)) return@mapNotNull null
 
                 val setupReadiness = deriveSetupReadiness(
                     pairScore = pairScore,
@@ -605,6 +616,21 @@ class StrategyOrchestrator(
             shortTermReturnPct(quote) >= executionConfig.breakoutAggressiveEntryMinShortTermReturnPct &&
             quote.mediumTermReturnPct >= executionConfig.breakoutAggressiveEntryMinMediumTermReturnPct &&
             expectedNetProfitabilityPct >= executionConfig.breakoutAggressiveEntryMinExpectedNetProfitPct
+        val microstructureScore = averageOf(
+            quote.recentTradeActivityScore.coerceIn(0.0, 1.0),
+            quote.orderBookStabilityScore.coerceIn(0.0, 1.0),
+            quote.fillQualityScore.coerceIn(0.0, 1.0),
+        )
+        val effectiveMaxSpreadPct = if (microstructureScore >= 0.72) {
+            executionConfig.marketEntryMaxSpreadPct
+        } else {
+            minOf(executionConfig.marketEntryMaxSpreadPct, executionConfig.marketEntryTightSpreadPct)
+        }
+        val effectiveMaxSlippagePct = if (microstructureScore >= 0.72) {
+            executionConfig.marketEntryMaxSlippagePct
+        } else {
+            minOf(executionConfig.marketEntryMaxSlippagePct, executionConfig.marketEntryTightSlippagePct)
+        }
         val useMarketBuy =
             executionConfig.marketEntryEnabled &&
                 pairParts.quoteAsset == "idr" &&
@@ -619,8 +645,8 @@ class StrategyOrchestrator(
                 } else {
                     executionConfig.marketEntryMinExpectedNetProfitPct
                 } &&
-                quote.spreadPct <= executionConfig.marketEntryMaxSpreadPct &&
-                quote.estimatedSlippagePct <= executionConfig.marketEntryMaxSlippagePct &&
+                quote.spreadPct <= effectiveMaxSpreadPct &&
+                quote.estimatedSlippagePct <= effectiveMaxSlippagePct &&
                 quote.recentTradeActivityScore >= executionConfig.marketEntryMinTradeActivityScore &&
                 quote.trendQualityScore >= executionConfig.marketEntryMinTrendScore &&
                 (
@@ -856,6 +882,29 @@ class StrategyOrchestrator(
         rebasePending = false,
         highWatermarkEquityIdr = DecimalValue.fromDouble(equityIdr),
     )
+
+    private fun trackRecentPairExits(
+        currentHeldPairs: Set<PairId>,
+        observedAtEpochMs: Long,
+    ) {
+        val exitedPairs = lastObservedHeldPairs - currentHeldPairs
+        exitedPairs.forEach { pairId ->
+            recentPairExitTimestampsMs[pairId] = observedAtEpochMs
+        }
+        lastObservedHeldPairs = currentHeldPairs
+
+        val ttlMs = (executionConfig.pairReentryCooldownSeconds.coerceAtLeast(10) * 1_000L)
+        recentPairExitTimestampsMs.entries.removeIf { (_, ts) -> (observedAtEpochMs - ts) > ttlMs * 3 }
+    }
+
+    private fun isPairInReentryCooldown(
+        pairId: PairId,
+        observedAtEpochMs: Long,
+    ): Boolean {
+        val exitedAt = recentPairExitTimestampsMs[pairId] ?: return false
+        val elapsedMs = (observedAtEpochMs - exitedAt).coerceAtLeast(0L)
+        return elapsedMs < (executionConfig.pairReentryCooldownSeconds.coerceAtLeast(10) * 1_000L)
+    }
 
     private fun derivePerformanceMomentumScore(
         dailyRisk: DailyRiskSnapshot,

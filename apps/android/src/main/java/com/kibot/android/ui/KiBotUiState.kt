@@ -71,6 +71,9 @@ data class TradeUi(
     val side: String,
     val status: String,
     val detail: String,
+    val entryPriceLabel: String = "",
+    val exitPriceLabel: String = "",
+    val outcomeLabel: String = "",
     val timeLabel: String = "",
 )
 

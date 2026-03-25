@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Notes
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material3.Card
@@ -436,16 +437,26 @@ private fun HeroCard(
             ) {
                 Text("KiBot", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                 Surface(
-                    color = serverState.tint.copy(alpha = 0.18f),
+                    color = pingTint(state.internetPingLabel).copy(alpha = 0.18f),
                     shape = RoundedCornerShape(16.dp),
                 ) {
-                    Text(
-                        text = "Ping Server ${state.internetPingLabel}",
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                        color = serverState.tint,
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.labelLarge,
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Wifi,
+                            contentDescription = "Ping server",
+                            tint = pingTint(state.internetPingLabel),
+                        )
+                        Text(
+                            text = state.internetPingLabel,
+                            color = pingTint(state.internetPingLabel),
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
                 }
             }
             Text(
@@ -558,7 +569,7 @@ private fun PairRadarCard(
                         verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
                         Text(
-                            "${livePair} • Top 10",
+                            livePair,
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -567,8 +578,9 @@ private fun PairRadarCard(
                     }
                 }
                 if (radarPairs.isNotEmpty()) {
+                    val visible = radarPairs.take(9)
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        radarPairs.chunked(3).take(4).forEach { rowPairs ->
+                        visible.chunked(3).take(3).forEach { rowPairs ->
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -577,10 +589,10 @@ private fun PairRadarCard(
                                     RadarPairPill(
                                         modifier = Modifier.weight(1f),
                                         label = pair,
-                                        highlighted = pair == radarPairs.firstOrNull(),
+                                        highlighted = pair == visible.firstOrNull(),
                                     )
                                 }
-                                repeat(3 - rowPairs.size) {
+                                repeat((3 - rowPairs.size).coerceAtLeast(0)) {
                                     Spacer(modifier = Modifier.weight(1f))
                                 }
                             }
@@ -950,6 +962,23 @@ private fun LogsScreen(state: KiBotUiState) {
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
                                     )
+                                    if (trade.entryPriceLabel.isNotBlank() || trade.exitPriceLabel.isNotBlank()) {
+                                        Text(
+                                            "Buy ${trade.entryPriceLabel.ifBlank { "-"}} • Sell ${trade.exitPriceLabel.ifBlank { "-"}}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    if (trade.outcomeLabel.isNotBlank()) {
+                                        Text(
+                                            trade.outcomeLabel,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = pnlColor(trade.outcomeLabel),
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                    }
                                     Text(
                                         trade.timeLabel,
                                         style = MaterialTheme.typography.labelSmall,
@@ -1175,6 +1204,21 @@ private fun dashboardTimelineEntries(state: KiBotUiState): List<com.kibot.androi
             )
         },
     )
+    val tradeTimeline = state.trades
+        .take(4)
+        .mapIndexed { index, trade ->
+            val isSell = trade.side.uppercase().startsWith("SELL")
+            val detail = if (isSell) {
+                "Jual ${trade.pair} | Buy ${trade.entryPriceLabel.ifBlank { "-" }} -> Sell ${trade.exitPriceLabel.ifBlank { "-" }} | ${trade.outcomeLabel.ifBlank { "hasil belum tersedia" }}."
+            } else {
+                "Beli ${trade.pair} di ${trade.entryPriceLabel.ifBlank { "-" }} | ${trade.status}."
+            }
+            com.kibot.android.runtime.LiveLogEntry(
+                timestampEpochMs = nowEpoch - ((index + 4) * 1_000L),
+                category = if (isSell) "SELL" else "BUY",
+                message = detail,
+            )
+        }
     val priorityCategories = setOf("BUY", "SELL", "LOSS", "PROFIT", "RISK", "ROTASI")
     val displayEntries = state.liveLogEntries.map { entry ->
         displayLiveLogCategory(entry.category, entry.message) to entry
@@ -1185,18 +1229,40 @@ private fun dashboardTimelineEntries(state: KiBotUiState): List<com.kibot.androi
     val chatter = displayEntries
         .filterNot { (category, _) -> category in priorityCategories }
         .map { it.second }
-    return (syntheticStatus + priority + chatter)
+    return (syntheticStatus + tradeTimeline + priority + chatter)
         .distinctBy { "${it.category}|${it.message}" }
         .take(10)
 }
 
 private fun radarPairs(state: KiBotUiState): List<String> {
     val active = state.pairAktif.takeUnless { it.isBlank() || it == "-" }?.lowercase()
-    return state.radarPairs
-        .filter { it.isNotBlank() && it != "-" }
+    val scanned = state.radarPairs
+        .filter { it.isNotBlank() && it.trim('-').isNotBlank() }
         .map { it.lowercase() }
         .filterNot { it == active }
-        .take(10)
+    val fallback = listOf(
+        "pepe_idr",
+        "shib_idr",
+        "doge_idr",
+        "xrp_idr",
+        "trx_idr",
+        "fartcoin_idr",
+        "jellyjelly_idr",
+        "sol_idr",
+        "arb_idr",
+        "ada_idr",
+        "link_idr",
+        "matic_idr",
+        "btc_idr",
+        "eth_idr",
+    )
+    val filled = (scanned + fallback)
+        .distinct()
+        .filterNot { it == active }
+        .take(9)
+    return if (filled.size >= 9) filled else {
+        (filled + fallback.filterNot { it in filled }.take(9 - filled.size)).take(9)
+    }
 }
 
 private fun visiblePairLabel(state: KiBotUiState): String {
@@ -1307,5 +1373,15 @@ private fun assetAccent(symbol: String): Color {
         "xrp" -> Color(0xFF60A5FA)
         "usdt" -> Color(0xFF22C55E)
         else -> Color(0xFFA78BFA)
+    }
+}
+
+private fun pingTint(pingLabel: String): Color {
+    val ping = pingLabel.filter { it.isDigit() }.toIntOrNull()
+    return when {
+        ping == null -> Color(0xFF9EC5FF)
+        ping <= 90 -> Color(0xFF22C55E)
+        ping <= 220 -> Color(0xFFF59E0B)
+        else -> Color(0xFFEF4444)
     }
 }

@@ -31,7 +31,11 @@ data class TradeAutomationConfig(
     val orderFillTolerancePct: Double = 0.0025,
     val emergencyMarketExitLossPct: Double = -2.2,
     val ambiguousOrderGraceMinutes: Double = 4.0,
-    val estimatedRoundTripCostPct: Double = 0.66,
+    val estimatedRoundTripCostPct: Double = 0.52,
+    val adaptiveFeeFloorPct: Double = 0.32,
+    val adaptiveSpreadWeight: Double = 0.65,
+    val adaptiveSlippageWeight: Double = 1.10,
+    val maxAdaptiveRoundTripCostPct: Double = 1.20,
     val breakEvenExitBufferPct: Double = 0.18,
     val speculativeWinnerRunMinPnlPct: Double = 1.2,
     val speculativeWinnerRunMinTrendScore: Double = 0.62,
@@ -41,12 +45,20 @@ data class TradeAutomationConfig(
     val breakoutWinnerRunMinTrendScore: Double = 0.60,
     val breakoutWinnerRunMinHealthScore: Double = 0.58,
     val breakoutWinnerRunMinOpportunityScore: Double = 0.58,
-    val minMeaningfulNonEmergencyExitProfitPct: Double = 1.20,
-    val minMeaningfulNonEmergencyExitProfitIdr: Double = 180.0,
-    val loserRotationMinAgeHours: Double = 0.75,
-    val loserRotationMinLossPct: Double = -0.20,
-    val loserRotationMinTopCandidateRanking: Double = 0.58,
-    val loserRotationMinScoreGap: Double = 0.06,
+    val minMeaningfulNonEmergencyExitProfitPct: Double = 0.55,
+    val minMeaningfulNonEmergencyExitProfitIdr: Double = 90.0,
+    val loserRotationMinAgeHours: Double = 0.40,
+    val loserRotationMinLossPct: Double = -0.12,
+    val loserRotationMinTopCandidateRanking: Double = 0.56,
+    val loserRotationMinScoreGap: Double = 0.045,
+    val staleRotationMinAgeHours: Double = 0.50,
+    val staleRotationMaxAbsPnlPct: Double = 0.22,
+    val staleRotationMinTopCandidateRanking: Double = 0.60,
+    val staleRotationMinScoreGap: Double = 0.10,
+    val partialTakeProfitEnabled: Boolean = true,
+    val partialTakeProfitMinPnlPct: Double = 1.8,
+    val partialTakeProfitSellRatio: Double = 0.45,
+    val partialTakeProfitMinRemainingNotionalIdr: Double = 16_000.0,
 )
 
 data class ManagedPosition(
@@ -205,8 +217,9 @@ class TradeAutomationCoordinator(
                     ?.price
                     ?.toDoubleOrZero()
                 ?: quote.midPrice.toDoubleOrZero()
+            val adaptiveRoundTripCostPct = estimateAdaptiveRoundTripCostPct(quote)
             val breakEvenPrice = DecimalValue.fromDouble(
-                weightedEntryPrice * (1.0 + ((config.estimatedRoundTripCostPct + config.breakEvenExitBufferPct) / 100.0)),
+                weightedEntryPrice * (1.0 + ((adaptiveRoundTripCostPct + config.breakEvenExitBufferPct) / 100.0)),
             )
             val openedAt = buyOrders.maxByOrNull { it.updatedAt }?.updatedAt
                 ?: pairOrders.firstOrNull { it.side == OrderSide.BUY }?.createdAt
@@ -214,22 +227,21 @@ class TradeAutomationCoordinator(
             val horizon = rankedPair?.preferredHorizon
                 ?: if (quote.mediumTermReturnPct >= 1.0) TradingHorizon.SWING else TradingHorizon.TACTICAL
             val speculativePocket = rankedPair?.speculativePocket == true
-            val takeProfitPrice = DecimalValue.fromDouble(
-                weightedEntryPrice *
-                    when {
-                        speculativePocket -> 1.14
-                        horizon == TradingHorizon.SWING -> 1.075
-                        else -> 1.04
-                    },
-            )
-            val stopPrice = DecimalValue.fromDouble(
-                weightedEntryPrice *
-                    when {
-                        speculativePocket -> 0.976
-                        horizon == TradingHorizon.SWING -> 0.96
-                        else -> 0.985
-                    },
-            )
+            val volatilityFactor = (quote.realizedVolatilityPct / 3.0).coerceIn(0.75, 1.65)
+            val baseTakeProfitPct = when {
+                speculativePocket -> 11.0
+                horizon == TradingHorizon.SWING -> 6.8
+                else -> 3.4
+            }
+            val baseStopLossPct = when {
+                speculativePocket -> 2.1
+                horizon == TradingHorizon.SWING -> 3.7
+                else -> 1.4
+            }
+            val takeProfitPct = (baseTakeProfitPct * volatilityFactor).coerceIn(2.0, 16.0)
+            val stopLossPct = (baseStopLossPct * (0.92 + (volatilityFactor * 0.28))).coerceIn(0.9, 4.8)
+            val takeProfitPrice = DecimalValue.fromDouble(weightedEntryPrice * (1.0 + (takeProfitPct / 100.0)))
+            val stopPrice = DecimalValue.fromDouble(weightedEntryPrice * (1.0 - (stopLossPct / 100.0)))
             val currentBid = quote.bestBid.toDoubleOrZero()
             val unrealizedPnlPct = if (weightedEntryPrice > 0.0) {
                 ((currentBid - weightedEntryPrice) / weightedEntryPrice) * 100.0
@@ -340,6 +352,13 @@ class TradeAutomationCoordinator(
                 ageHours = ageHours,
                 allowRotation = allowRotation,
             ) -> ExitReason.ROTATION_EXIT
+            shouldRotateStale(
+                position = position,
+                positionPairScore = pairScore,
+                topCandidate = topCandidate,
+                ageHours = ageHours,
+                allowRotation = allowRotation,
+            ) -> ExitReason.ROTATION_EXIT
             pairScore != null &&
                 (!pairScore.allowed || pairScore.rankingScore < config.thesisInvalidRankingFloor) &&
                 ageHours >= config.thesisInvalidAgeHours &&
@@ -386,11 +405,31 @@ class TradeAutomationCoordinator(
             return null
         }
 
+        val currentNotionalIdr = position.currentValueIdr.toDoubleOrZero()
+        val plannedQuantity = resolveExitQuantity(
+            position = position,
+            exitReason = exitReason,
+            currentNotionalIdr = currentNotionalIdr,
+        )
+        val telemetryMessage = buildExitTelemetryMessage(
+            reason = exitReason,
+            position = position,
+            pairScore = pairScore,
+            topCandidate = topCandidate,
+            ageHours = ageHours,
+            keepWinnerRunning = keepWinnerRunning,
+            currentBid = currentBid,
+            breakEvenPrice = breakEvenPrice,
+            takeProfitPrice = takeProfitPrice,
+            stopPrice = stopPrice,
+            plannedQuantity = plannedQuantity,
+        )
+
         val signal = StrategySignal(
             pairId = position.pairId,
             signalType = StrategySignalType.EXIT,
             confidence = (pairScore?.rankingScore ?: 0.62).coerceIn(0.45, 0.98),
-            rationale = listOf(exitReasonMessage(exitReason, position)),
+            rationale = listOf(exitReasonMessage(exitReason, position), telemetryMessage),
             entryPrice = position.currentBidPrice,
             takeProfitPrice = position.takeProfitPrice,
             stopPrice = position.stopPrice,
@@ -407,12 +446,12 @@ class TradeAutomationCoordinator(
         return ExitDecision(
             position = position,
             reason = exitReason,
-            message = exitReasonMessage(exitReason, position),
+            message = telemetryMessage,
             executionPlan = ExecutionPlan(
                 signal = signal,
                 side = OrderSide.SELL,
                 orderType = if (useEmergencyMarketExit) OrderType.MARKET else OrderType.LIMIT,
-                quantity = position.quantity,
+                quantity = plannedQuantity,
                 limitPrice = if (useEmergencyMarketExit) null else position.currentBidPrice,
                 quoteBudget = null,
                 postOnlyPreferred = false,
@@ -528,6 +567,73 @@ class TradeAutomationCoordinator(
         val positionScore = positionPairScore?.rankingScore ?: 0.50
         val scoreGap = candidate.rankingScore - positionScore
         return scoreGap >= config.loserRotationMinScoreGap
+    }
+
+    private fun shouldRotateStale(
+        position: ManagedPosition,
+        positionPairScore: PairScore?,
+        topCandidate: com.kibot.shared.models.CandidateOpportunity?,
+        ageHours: Double,
+        allowRotation: Boolean,
+    ): Boolean {
+        if (!allowRotation) return false
+        if (ageHours < config.staleRotationMinAgeHours) return false
+        if (abs(position.unrealizedPnlPct) > config.staleRotationMaxAbsPnlPct) return false
+        val candidate = topCandidate ?: return false
+        if (candidate.pairId == position.pairId) return false
+        if (candidate.rankingScore < config.staleRotationMinTopCandidateRanking) return false
+        val positionScore = positionPairScore?.rankingScore ?: 0.50
+        return (candidate.rankingScore - positionScore) >= config.staleRotationMinScoreGap
+    }
+
+    private fun resolveExitQuantity(
+        position: ManagedPosition,
+        exitReason: ExitReason,
+        currentNotionalIdr: Double,
+    ): DecimalValue {
+        if (!config.partialTakeProfitEnabled) return position.quantity
+        if (exitReason != ExitReason.PROFIT_EXIT) return position.quantity
+        if (position.unrealizedPnlPct < config.partialTakeProfitMinPnlPct) return position.quantity
+
+        val fullQty = position.quantity.toDoubleOrZero().coerceAtLeast(0.0)
+        if (fullQty <= 0.0) return position.quantity
+
+        val partialQty = (fullQty * config.partialTakeProfitSellRatio).coerceAtMost(fullQty)
+        if (partialQty <= 0.0) return position.quantity
+
+        val remainingRatio = 1.0 - config.partialTakeProfitSellRatio
+        val remainingNotionalIdr = currentNotionalIdr * remainingRatio
+        if (remainingNotionalIdr < max(config.partialTakeProfitMinRemainingNotionalIdr, executionConfig.minOrderNotionalIdr)) {
+            return position.quantity
+        }
+        return DecimalValue.fromDouble(partialQty)
+    }
+
+    private fun buildExitTelemetryMessage(
+        reason: ExitReason,
+        position: ManagedPosition,
+        pairScore: PairScore?,
+        topCandidate: com.kibot.shared.models.CandidateOpportunity?,
+        ageHours: Double,
+        keepWinnerRunning: Boolean,
+        currentBid: Double,
+        breakEvenPrice: Double,
+        takeProfitPrice: Double,
+        stopPrice: Double,
+        plannedQuantity: DecimalValue,
+    ): String {
+        val score = pairScore?.rankingScore?.let { "%.3f".format(it) } ?: "-"
+        val topPair = topCandidate?.pairId?.value ?: "-"
+        val topScore = topCandidate?.rankingScore?.let { "%.3f".format(it) } ?: "-"
+        val qty = "%.8f".format(plannedQuantity.toDoubleOrZero())
+        return "EXIT ${reason.name} ${position.pairId.value} qty=$qty pnl=${"%.2f".format(position.unrealizedPnlPct)}% age=${"%.2f".format(ageHours)}h bid=${"%.6f".format(currentBid)} be=${"%.6f".format(breakEvenPrice)} tp=${"%.6f".format(takeProfitPrice)} sl=${"%.6f".format(stopPrice)} score=$score top=$topPair/$topScore keep=$keepWinnerRunning"
+    }
+
+    private fun estimateAdaptiveRoundTripCostPct(quote: MarketQuote): Double {
+        val spreadComponent = (quote.spreadPct.coerceAtLeast(0.0) * config.adaptiveSpreadWeight)
+        val slippageComponent = (quote.estimatedSlippagePct.coerceAtLeast(0.0) * config.adaptiveSlippageWeight)
+        val blended = config.adaptiveFeeFloorPct + spreadComponent + slippageComponent
+        return max(config.estimatedRoundTripCostPct, blended).coerceIn(config.adaptiveFeeFloorPct, config.maxAdaptiveRoundTripCostPct)
     }
 
     private fun quoteAssetPriceIdr(asset: String, quotes: List<MarketQuote>): Double? {

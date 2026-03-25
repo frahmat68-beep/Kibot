@@ -28,6 +28,18 @@ export ANDROID_RELEASE_KEY_PASSWORD="$(env_value ANDROID_RELEASE_KEY_PASSWORD)"
 
 mkdir -p "${DIST_DIR}"
 
+if [[ -d "${ANDROID_BUILD_DIR}" ]]; then
+  rm -rf "${ANDROID_BUILD_DIR}"
+fi
+
+PREV_CODE=0
+if [[ -f "${DIST_DIR}/latest.json" ]]; then
+  PREV_CODE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("versionCode",0))' "${DIST_DIR}/latest.json" 2>/dev/null || echo 0)"
+fi
+NEXT_CODE=$((PREV_CODE + 1))
+export KIBOT_ANDROID_VERSION_CODE="${NEXT_CODE}"
+export KIBOT_ANDROID_VERSION_NAME="1.0.${NEXT_CODE}"
+
 "${ROOT_DIR}/gradlew" :apps:android:assembleRelease
 
 APK_PATH="${ANDROID_BUILD_DIR}/outputs/apk/release/android-release.apk"
@@ -48,6 +60,7 @@ SHA256="$(shasum -a 256 "${APK_PATH}" | awk '{print $1}')"
 MANIFEST_PATH="${DIST_DIR}/latest.json"
 TARGET_APK="${DIST_DIR}/kibot-android-latest.apk"
 
+find "${DIST_DIR}" -maxdepth 1 -type f -name "*.apk" -delete
 cp "${APK_PATH}" "${TARGET_APK}"
 
 cat > "${MANIFEST_PATH}" <<EOF
