@@ -16,6 +16,7 @@ jobs:
       DEPLOY_HOST: ${{ secrets.HOST || secrets.SERVER_HOST || secrets.ORACLE_HOST }}
       DEPLOY_USER: ${{ secrets.USERNAME || secrets.SSH_USERNAME || secrets.ORACLE_USER }}
       DEPLOY_KEY: ${{ secrets.SSH_KEY || secrets.SERVER_SSH_KEY || secrets.ORACLE_SSH_KEY }}
+      DEPLOY_PORT: ${{ secrets.SSH_PORT || secrets.SERVER_SSH_PORT || secrets.ORACLE_PORT || '22' }}
     steps:
     - name: Checkout Repo
       uses: actions/checkout@v4
@@ -59,6 +60,7 @@ jobs:
       uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ env.DEPLOY_HOST }}
+        port: ${{ env.DEPLOY_PORT }}
         username: ${{ env.DEPLOY_USER }}
         key: ${{ env.DEPLOY_KEY }}
         script: |
@@ -70,6 +72,7 @@ jobs:
       uses: appleboy/scp-action@v0.1.7
       with:
         host: ${{ env.DEPLOY_HOST }}
+        port: ${{ env.DEPLOY_PORT }}
         username: ${{ env.DEPLOY_USER }}
         key: ${{ env.DEPLOY_KEY }}
         source: ".deploy/*"
@@ -80,6 +83,7 @@ jobs:
       uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ env.DEPLOY_HOST }}
+        port: ${{ env.DEPLOY_PORT }}
         username: ${{ env.DEPLOY_USER }}
         key: ${{ env.DEPLOY_KEY }}
         script: |
