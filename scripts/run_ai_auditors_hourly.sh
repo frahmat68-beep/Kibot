@@ -10,6 +10,7 @@ INPUT_JSON="$1"
 OUTPUT_BASE="${2:-.tmp/ai-audits}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROVIDER_STATE_FILE="${OUTPUT_BASE}/provider_state.json"
 
 mkdir -p "${OUTPUT_BASE}"
 
@@ -26,6 +27,7 @@ while true; do
   python3 "${PROJECT_ROOT}/scripts/audit_trading_6h_ai.py" \
     --input "${INPUT_JSON}" \
     --all-providers \
+    --provider-state-file "${PROVIDER_STATE_FILE}" \
     --output-dir "${OUT_DIR}" | tee "${OUT_DIR}/runner_result.json"
 
   ln -sfn "${OUT_DIR}" "${OUTPUT_BASE}/latest"

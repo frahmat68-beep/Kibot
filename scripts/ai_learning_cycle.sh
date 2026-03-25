@@ -8,6 +8,7 @@ OUT_BASE="${KIBOT_AI_AUDIT_DIR:-${ROOT_DIR}/.tmp/ai-audits}"
 TS="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="${OUT_BASE}/${TS}"
 INPUT_JSON="${RUN_DIR}/rolling_6h_input.json"
+PROVIDER_STATE_FILE="${OUT_BASE}/provider_state.json"
 
 mkdir -p "${RUN_DIR}"
 
@@ -26,6 +27,7 @@ JSON
 python3 "${ROOT_DIR}/scripts/audit_trading_6h_ai.py" \
   --input "${INPUT_JSON}" \
   --all-providers \
+  --provider-state-file "${PROVIDER_STATE_FILE}" \
   --output-dir "${RUN_DIR}" > "${RUN_DIR}/result.json" || true
 
 ln -sfn "${RUN_DIR}" "${OUT_BASE}/latest"

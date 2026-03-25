@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import textwrap
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -73,6 +74,22 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         default="",
         help="Directory to write markdown outputs and summary JSON.",
+    )
+    parser.add_argument(
+        "--providers",
+        default="",
+        help="Optional comma-separated provider list override.",
+    )
+    parser.add_argument(
+        "--provider-state-file",
+        default="",
+        help="JSON file storing provider cooldown state between runs.",
+    )
+    parser.add_argument(
+        "--cooldown-hours",
+        type=float,
+        default=6.0,
+        help="Default cooldown hours after quota or transient provider failures.",
     )
     return parser.parse_args()
 
@@ -240,7 +257,70 @@ def call_cohere(trade_json: str, env: Dict[str, str], model_override: str = "") 
 def provider_chain(selected: str) -> List[str]:
     if selected != "auto":
         return [selected]
-    return ["gemini", "openrouter", "groq", "cohere"]
+    return ["openrouter", "cohere", "gemini", "groq"]
+
+
+def parse_provider_override(raw: str) -> List[str]:
+    if not raw.strip():
+        return []
+    allowed = {"gemini", "openrouter", "groq", "cohere"}
+    parsed = []
+    for provider in [item.strip().lower() for item in raw.split(",")]:
+        if provider and provider in allowed and provider not in parsed:
+            parsed.append(provider)
+    return parsed
+
+
+def provider_has_credentials(provider: str, env: Dict[str, str]) -> bool:
+    if provider == "gemini":
+        return bool(env_first(env, "GEMINI_SUPPORT_API_KEY", "GEMINI_API_KEY"))
+    if provider == "openrouter":
+        return bool(env_first(env, "OPENROUTER_API_KEY", "OPENROUTER_KEY"))
+    if provider == "groq":
+        return bool(env_first(env, "GROQ_API_KEY", "GROQ_KEY"))
+    if provider == "cohere":
+        return bool(env_first(env, "COHERE_API_KEY", "COHERE_KEY"))
+    return False
+
+
+def load_provider_state(path: Path) -> Dict[str, Dict]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_provider_state(path: Path, state: Dict[str, Dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def classify_provider_failure(message: str, default_cooldown_hours: float) -> Tuple[float, str]:
+    lowered = message.lower()
+    if "api key missing" in lowered or "unauthorized" in lowered or "invalid api key" in lowered:
+        return 12.0, "missing_or_invalid_credentials"
+    if "http 429" in lowered or "quota" in lowered or "resource_exhausted" in lowered:
+        return max(default_cooldown_hours, 6.0), "rate_limited"
+    if "http 403" in lowered or "error code: 1010" in lowered or "forbidden" in lowered:
+        return 24.0, "provider_forbidden"
+    if "timed out" in lowered or "temporary" in lowered or "connection reset" in lowered:
+        return min(default_cooldown_hours, 2.0), "transient_network"
+    return default_cooldown_hours, "generic_failure"
+
+
+def provider_is_available(
+    provider: str,
+    provider_state: Dict[str, Dict],
+    now_ts: float,
+) -> Tuple[bool, str]:
+    state = provider_state.get(provider, {})
+    cooldown_until = float(state.get("cooldown_until_epoch", 0.0) or 0.0)
+    if cooldown_until > now_ts:
+        return False, state.get("reason", "cooldown_active")
+    return True, ""
 
 
 def try_provider(provider: str, trade_json: str, env: Dict[str, str], model_override: str) -> str:
@@ -268,6 +348,7 @@ def write_outputs(
     output_dir: Path,
     results: Dict[str, str],
     errors: Dict[str, str],
+    skipped: Dict[str, str],
     policy: Dict | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -281,6 +362,7 @@ def write_outputs(
     summary = {
         "successful_providers": sorted(results.keys()),
         "failed_providers": sorted(errors.keys()),
+        "skipped_providers": skipped,
         "errors": errors,
         "adaptive_policy_path": str((output_dir / "adaptive_policy.json").resolve()) if policy is not None else None,
         "adaptive_input": [
@@ -428,12 +510,23 @@ def main() -> int:
     compact_json = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
 
     env = load_env_files()
-    providers = provider_chain(args.provider)
+    providers = parse_provider_override(args.providers) or provider_chain(args.provider)
+    provider_state_path = Path(args.provider_state_file) if args.provider_state_file else None
+    provider_state = load_provider_state(provider_state_path) if provider_state_path else {}
+    now_ts = time.time()
     results: Dict[str, str] = {}
     errors: Dict[str, str] = {}
     ordered_errors: List[Tuple[str, str]] = []
+    skipped: Dict[str, str] = {}
 
     for provider in providers:
+        if not provider_has_credentials(provider, env):
+            skipped[provider] = "missing_credentials"
+            continue
+        available, reason = provider_is_available(provider, provider_state, now_ts)
+        if not available:
+            skipped[provider] = reason
+            continue
         try:
             output = try_provider(provider, compact_json, env, args.model.strip())
             if not output:
@@ -441,7 +534,15 @@ def main() -> int:
             if not validate_markdown_sections(output):
                 raise RuntimeError("Response missing required markdown sections.")
             results[provider] = output
+            if provider_state_path:
+                provider_state[provider] = {
+                    "cooldown_until_epoch": 0,
+                    "reason": "",
+                    "last_success_epoch": int(now_ts),
+                }
             if not args.all_providers:
+                if provider_state_path:
+                    save_provider_state(provider_state_path, provider_state)
                 print(output)
                 return 0
         except urllib.error.HTTPError as exc:
@@ -449,15 +550,32 @@ def main() -> int:
             msg = f"HTTP {exc.code}: {details}"
             errors[provider] = msg
             ordered_errors.append((provider, msg))
+            if provider_state_path:
+                cooldown_hours, reason = classify_provider_failure(msg, args.cooldown_hours)
+                provider_state[provider] = {
+                    "cooldown_until_epoch": int(now_ts + cooldown_hours * 3600),
+                    "reason": reason,
+                    "last_error_epoch": int(now_ts),
+                }
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
             errors[provider] = msg
             ordered_errors.append((provider, msg))
+            if provider_state_path:
+                cooldown_hours, reason = classify_provider_failure(msg, args.cooldown_hours)
+                provider_state[provider] = {
+                    "cooldown_until_epoch": int(now_ts + cooldown_hours * 3600),
+                    "reason": reason,
+                    "last_error_epoch": int(now_ts),
+                }
 
     policy = build_adaptive_policy(parsed, results, errors) if results else None
 
+    if provider_state_path:
+        save_provider_state(provider_state_path, provider_state)
+
     if args.output_dir:
-        write_outputs(Path(args.output_dir), results, errors, policy=policy)
+        write_outputs(Path(args.output_dir), results, errors, skipped, policy=policy)
 
     if args.all_providers:
         print(
@@ -465,6 +583,7 @@ def main() -> int:
                 {
                     "successful_providers": sorted(results.keys()),
                     "failed_providers": sorted(errors.keys()),
+                    "skipped_providers": skipped,
                     "output_dir": str(Path(args.output_dir).resolve()) if args.output_dir else None,
                     "adaptive_policy": policy,
                 },
