@@ -78,9 +78,12 @@ class LiveStatusStore(context: Context) {
         val effectiveTimestamp = snapshot.updatedAtEpochMs.takeIf { it > 0L } ?: System.currentTimeMillis()
         val dateKey = dateKey(effectiveTimestamp)
         val currentDateKey = prefs.getString(KEY_LOG_DATE, null)
+        val currentLogsAreFresh = current.liveLogEntries.firstOrNull()?.timestampEpochMs?.let { newestEpoch ->
+            effectiveTimestamp - newestEpoch <= LOG_STALE_RESET_WINDOW_MS
+        } ?: false
         val baseLogs = when {
             snapshot.liveLogEntries.isNotEmpty() -> snapshot.liveLogEntries.take(MAX_LIVE_LOG_ITEMS)
-            currentDateKey == dateKey -> current.liveLogEntries
+            currentDateKey == dateKey && currentLogsAreFresh -> current.liveLogEntries
             else -> emptyList()
         }
         val mergedLogs = appendLog(baseLogs, event, effectiveTimestamp)
@@ -253,5 +256,6 @@ class LiveStatusStore(context: Context) {
         private const val KEY_LOG_DATE = "live_log_date"
         private const val MAX_LIVE_LOG_ITEMS = 18
         private const val LOG_DEDUP_WINDOW_MS = 90_000L
+        private const val LOG_STALE_RESET_WINDOW_MS = 2 * 60 * 60 * 1000L
     }
 }

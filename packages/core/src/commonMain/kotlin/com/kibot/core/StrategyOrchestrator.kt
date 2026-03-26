@@ -45,6 +45,8 @@ data class StrategyCycleResult(
     val topCandidate: PairId?,
     val distrustLabels: List<DistrustLabel>,
     val summary: List<String>,
+    val entrySignals: List<StrategySignal> = emptyList(),
+    val entryExecutionPlans: List<ExecutionPlan> = emptyList(),
 )
 
 class StrategyOrchestrator(
@@ -118,7 +120,7 @@ class StrategyOrchestrator(
             mode = modeSnapshot,
         )
 
-        val selectedSignal = buildSignal(
+        val entrySignals = buildSignals(
             rankedPairs = rankedPairs,
             quoteByPair = quoteByPair,
             marketQuotes = marketQuotes,
@@ -131,13 +133,18 @@ class StrategyOrchestrator(
             weeklySummary = weeklySummary,
             observedAtEpochMs = nowMs,
         )
-        val executionPlan = selectedSignal?.toExecutionPlan(
-            balances = balances,
-            quoteByPair = quoteByPair,
-            marketQuotes = marketQuotes,
-            deploymentPlan = deploymentPlan,
-            modeSnapshot = modeSnapshot,
-        )
+        val entryExecutionPlans = entrySignals
+            .mapNotNull { signal ->
+                signal.toExecutionPlan(
+                    balances = balances,
+                    quoteByPair = quoteByPair,
+                    marketQuotes = marketQuotes,
+                    deploymentPlan = deploymentPlan,
+                    modeSnapshot = modeSnapshot,
+                )
+            }
+        val selectedSignal = entryExecutionPlans.firstOrNull()?.signal ?: entrySignals.firstOrNull()
+        val executionPlan = entryExecutionPlans.firstOrNull()
 
         val distrustLabels = buildDistrustLabels(
             health = health,
@@ -168,6 +175,8 @@ class StrategyOrchestrator(
             topCandidate = deploymentPlan.candidates.firstOrNull()?.pairId,
             distrustLabels = distrustLabels,
             summary = summary,
+            entrySignals = entrySignals,
+            entryExecutionPlans = entryExecutionPlans,
         )
     }
 
@@ -195,7 +204,7 @@ class StrategyOrchestrator(
             }
     }
 
-    private fun buildSignal(
+    private fun buildSignals(
         rankedPairs: List<PairScore>,
         quoteByPair: Map<PairId, MarketQuote>,
         marketQuotes: List<MarketQuote>,
@@ -207,8 +216,8 @@ class StrategyOrchestrator(
         openOrders: List<com.kibot.shared.models.OrderSnapshot>,
         weeklySummary: WeeklyLearningSummary?,
         observedAtEpochMs: Long,
-    ): StrategySignal? {
-        if (!modeSnapshot.tradingAllowed || !deploymentPlan.allowNewEntries) return null
+    ): List<StrategySignal> {
+        if (!modeSnapshot.tradingAllowed || !deploymentPlan.allowNewEntries) return emptyList()
         val pendingBuyPairs = openOrders
             .asSequence()
             .filter { it.side == OrderSide.BUY && it.status in activeBuyOrderStatuses }
@@ -237,7 +246,7 @@ class StrategyOrchestrator(
                 }
             }
 
-        val chosenCandidate = deploymentPlan.candidates
+        val chosenCandidates = deploymentPlan.candidates
             .take(executionConfig.candidateCount)
             .mapNotNull { candidate ->
                 val pairScore = rankedPairs.firstOrNull { it.pairId == candidate.pairId } ?: return@mapNotNull null
@@ -280,67 +289,75 @@ class StrategyOrchestrator(
                     selectionScore = selectionScore,
                 )
             }
-            .maxByOrNull { it.selectionScore }
-            ?: return null
+            .sortedByDescending { it.selectionScore }
+            .take(executionConfig.maxExecutableEntriesPerCycle)
 
-        val pairScore = chosenCandidate.pairScore
-        val quote = chosenCandidate.quote
+        return chosenCandidates.map { candidate ->
+            candidate.toStrategySignal(
+                marketSnapshot = marketSnapshot,
+                modeSnapshot = modeSnapshot,
+                dominantPairId = dominantPairId,
+                productiveIdleBiasActive = thresholds.productiveIdleBiasActive,
+            )
+        }
+    }
 
+    private fun CandidateSelection.toStrategySignal(
+        marketSnapshot: MarketOpportunitySnapshot,
+        modeSnapshot: BotModeSnapshot,
+        dominantPairId: PairId?,
+        productiveIdleBiasActive: Boolean,
+    ): StrategySignal {
+        val selectedPairScore = pairScore
+        val selectedQuote = quote
+        val referencePrice = resolveEntryReferencePrice(
+            quote = selectedQuote,
+            pairScore = selectedPairScore,
+            setupReadiness = setupReadiness,
+        )
         return StrategySignal(
-            pairId = chosenCandidate.pairScore.pairId,
-            signalType = chosenCandidate.setupReadiness.signalType,
-            confidence = chosenCandidate.selectionScore.coerceIn(0.0, 1.0),
+            pairId = selectedPairScore.pairId,
+            signalType = setupReadiness.signalType,
+            confidence = selectionScore.coerceIn(0.0, 1.0),
             rationale = buildList {
-                add("Pair ${chosenCandidate.pairScore.pairId.value} jadi kandidat entry terkuat dari shortlist yang siap dieksekusi.")
-                add(chosenCandidate.setupReadiness.rationale)
-                if (dominantPairId == chosenCandidate.pairScore.pairId) {
+                add("Pair ${selectedPairScore.pairId.value} masuk shortlist entry yang siap dieksekusi.")
+                add(setupReadiness.rationale)
+                if (dominantPairId == selectedPairScore.pairId) {
                     add("Kandidat ini unggul cukup jauh dari alternatif terdekat, jadi modal tidak dipaksa menyebar.")
                 }
-                if (pairScore.speculativePocket) {
+                if (selectedPairScore.speculativePocket) {
                     add("Trade ini masuk sleeve spekulatif, jadi eksposurnya dibatasi keras dan tidak boleh jadi posisi utama.")
                 }
-                if (heldPairs.isEmpty() && thresholds.productiveIdleBiasActive) {
+                if (productiveIdleBiasActive) {
                     add("Modal sedang idle, jadi threshold entry sedikit dilonggarkan pada kandidat yang benar-benar kuat.")
                 }
             },
-            entryPrice = resolveEntryReferencePrice(
-                quote = quote,
-                pairScore = pairScore,
-                setupReadiness = chosenCandidate.setupReadiness,
-            ),
+            entryPrice = referencePrice,
             takeProfitPrice = DecimalValue.fromDouble(
-                resolveEntryReferencePrice(
-                    quote = quote,
-                    pairScore = pairScore,
-                    setupReadiness = chosenCandidate.setupReadiness,
-                ).toDoubleOrZero() *
+                referencePrice.toDoubleOrZero() *
                     when {
-                        pairScore.speculativePocket -> 1.06
-                        pairScore.preferredHorizon == TradingHorizon.SWING -> 1.075
-                        chosenCandidate.setupReadiness.signalType == StrategySignalType.BREAKOUT_ENTRY -> 1.04
+                        selectedPairScore.speculativePocket -> 1.06
+                        selectedPairScore.preferredHorizon == TradingHorizon.SWING -> 1.075
+                        setupReadiness.signalType == StrategySignalType.BREAKOUT_ENTRY -> 1.04
                         else -> 1.028
                     },
             ),
             stopPrice = DecimalValue.fromDouble(
-                resolveEntryReferencePrice(
-                    quote = quote,
-                    pairScore = pairScore,
-                    setupReadiness = chosenCandidate.setupReadiness,
-                ).toDoubleOrZero() *
+                referencePrice.toDoubleOrZero() *
                     when {
-                        pairScore.speculativePocket -> 0.978
-                        pairScore.preferredHorizon == TradingHorizon.SWING -> 0.96
+                        selectedPairScore.speculativePocket -> 0.978
+                        selectedPairScore.preferredHorizon == TradingHorizon.SWING -> 0.96
                         else -> 0.985
                     },
             ),
-            setupType = chosenCandidate.setupReadiness.setupType,
-            horizon = pairScore.preferredHorizon,
-            pairTier = pairScore.pairTier,
-            speculativePocket = pairScore.speculativePocket,
+            setupType = setupReadiness.setupType,
+            horizon = selectedPairScore.preferredHorizon,
+            pairTier = selectedPairScore.pairTier,
+            speculativePocket = selectedPairScore.speculativePocket,
             marketRegime = marketSnapshot.regime,
             edgeConfidence = modeSnapshot.edgeConfidence,
-            expectedHoldingHours = chosenCandidate.setupReadiness.expectedHoldingHours,
-            expectedNetProfitabilityPct = pairScore.feeAdjustedEdgeScore,
+            expectedHoldingHours = setupReadiness.expectedHoldingHours,
+            expectedNetProfitabilityPct = selectedPairScore.feeAdjustedEdgeScore,
         )
     }
 
@@ -564,6 +581,12 @@ class StrategyOrchestrator(
             setupReadiness.signalType == StrategySignalType.BREAKOUT_ENTRY &&
                 quote.shortTermReturnPct >= executionConfig.breakoutAggressiveEntryMinShortTermReturnPct &&
                 quote.mediumTermReturnPct >= executionConfig.breakoutAggressiveEntryMinMediumTermReturnPct &&
+                pairScore.feeAdjustedEdgeScore >= executionConfig.breakoutAggressiveEntryMinExpectedNetProfitPct &&
+                modeSnapshot.mode == BotMode.ATTACK ->
+                0.18
+            setupReadiness.signalType == StrategySignalType.BREAKOUT_ENTRY &&
+                quote.shortTermReturnPct >= executionConfig.breakoutAggressiveEntryMinShortTermReturnPct &&
+                quote.mediumTermReturnPct >= executionConfig.breakoutAggressiveEntryMinMediumTermReturnPct &&
                 pairScore.feeAdjustedEdgeScore >= executionConfig.breakoutAggressiveEntryMinExpectedNetProfitPct ->
                 0.14
             setupReadiness.signalType == StrategySignalType.BREAKOUT_ENTRY &&
@@ -574,10 +597,22 @@ class StrategyOrchestrator(
         val breakoutAccelerationScore = breakoutAccelerationScore(pairScore, quote, setupReadiness)
         val breakoutAccelerationBonus = when {
             setupReadiness.signalType != StrategySignalType.BREAKOUT_ENTRY -> 0.0
-            breakoutAccelerationScore >= 0.86 && modeSnapshot.mode == BotMode.ATTACK -> 0.16
-            breakoutAccelerationScore >= 0.78 && modeSnapshot.mode == BotMode.ATTACK -> 0.11
+            breakoutAccelerationScore >= 0.90 && modeSnapshot.mode == BotMode.ATTACK -> 0.20
+            breakoutAccelerationScore >= 0.82 && modeSnapshot.mode == BotMode.ATTACK -> 0.15
             breakoutAccelerationScore >= 0.84 -> 0.09
             breakoutAccelerationScore >= 0.74 -> 0.05
+            else -> 0.0
+        }
+        val attackVelocityBias = when {
+            modeSnapshot.mode != BotMode.ATTACK -> 0.0
+            setupReadiness.signalType != StrategySignalType.BREAKOUT_ENTRY -> 0.0
+            pairScore.marketOpportunityScore >= 0.70 &&
+                pairScore.feeAdjustedEdgeScore >= executionConfig.breakoutAggressiveEntryMinExpectedNetProfitPct &&
+                quote.recentTradeActivityScore >= 0.72 ->
+                0.05
+            pairScore.marketOpportunityScore >= 0.64 &&
+                quote.recentTradeActivityScore >= 0.66 ->
+                0.02
             else -> 0.0
         }
 
@@ -598,6 +633,7 @@ class StrategyOrchestrator(
                     affordableNominalBias +
                     momentumBonus +
                     breakoutAccelerationBonus +
+                    attackVelocityBias +
                     setupLearningBias
                 ).coerceIn(0.0, 1.0)
         }

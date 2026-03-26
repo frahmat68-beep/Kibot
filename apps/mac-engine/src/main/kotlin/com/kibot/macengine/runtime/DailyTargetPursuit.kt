@@ -14,7 +14,9 @@ data class DailyTargetPursuitConfig(
     val threeHourCheckpointPct: Double = 10.0,
     val checkpointCadenceHours: Double = 3.0,
     val warmupHours: Double = 1.5,
-    val checkpointUnrealizedCreditWeight: Double = 0.12,
+    val hourlyUnrealizedCreditWeight: Double = 0.08,
+    val checkpointUnrealizedCreditWeight: Double = 0.06,
+    val targetSatisfiedUnrealizedCreditWeight: Double = 0.04,
     val minUnrealizedCreditWeight: Double = 0.18,
     val maxUnrealizedCreditWeight: Double = 0.45,
     val maxBudgetBoostMultiplier: Double = 1.95,
@@ -88,12 +90,14 @@ class DailyTargetPursuitBrain(
                 (((elapsedHours / 24.0).coerceIn(0.0, 1.0)) * (config.maxUnrealizedCreditWeight - config.minUnrealizedCreditWeight))
             ).coerceIn(config.minUnrealizedCreditWeight, config.maxUnrealizedCreditWeight)
         val effectiveProfitPct = realizedProfitPct + (unrealizedProfitPct * unrealizedCreditWeight)
+        val controllerProfitPct = realizedProfitPct + (unrealizedProfitPct * config.hourlyUnrealizedCreditWeight)
         val checkpointProfitPct = realizedProfitPct + (unrealizedProfitPct * config.checkpointUnrealizedCreditWeight)
-        val progressPct = (effectiveProfitPct / config.targetProfitPct).coerceIn(-1.0, 2.5)
-        val targetGapPct = (config.targetProfitPct - effectiveProfitPct).coerceAtLeast(0.0)
+        val targetSatisfiedProfitPct = realizedProfitPct + (unrealizedProfitPct * config.targetSatisfiedUnrealizedCreditWeight)
+        val progressPct = (controllerProfitPct / config.targetProfitPct).coerceIn(-1.0, 2.5)
+        val targetGapPct = (config.targetProfitPct - controllerProfitPct).coerceAtLeast(0.0)
         val normalizedDayProgress = ((elapsedHours - config.warmupHours) / max(1.0, 24.0 - config.warmupHours))
             .coerceIn(0.0, 1.0)
-        val normalizedTargetProgress = (effectiveProfitPct / config.targetProfitPct).coerceIn(0.0, 1.0)
+        val normalizedTargetProgress = (controllerProfitPct / config.targetProfitPct).coerceIn(0.0, 1.0)
         val behindSchedule = (normalizedDayProgress - normalizedTargetProgress).coerceAtLeast(0.0)
         val gapPressure = (targetGapPct / config.targetProfitPct).coerceIn(0.0, 1.35)
         val drawdownPenalty = cycle.dailyRisk.drawdownPct.coerceIn(0.0, 0.18)
@@ -117,7 +121,7 @@ class DailyTargetPursuitBrain(
         }
         val checkpointShortfallPct = (checkpointExpectedProfitPct - checkpointProfitPct).coerceAtLeast(0.0)
         val checkpointMissed = completedCheckpointWindow > 0 && checkpointShortfallPct > 0.0
-        val hourlyShortfallPct = (hourlyExpectedProfitPct - effectiveProfitPct).coerceAtLeast(0.0)
+        val hourlyShortfallPct = (hourlyExpectedProfitPct - controllerProfitPct).coerceAtLeast(0.0)
         val hourlyMissed = hourlyEvaluationWindow > 0 && hourlyShortfallPct > 0.0
         val targetPctPerHour = (config.targetProfitPct / 24.0).coerceAtLeast(0.10)
         val hourlyMissCount = if (hourlyMissed) {
@@ -140,7 +144,6 @@ class DailyTargetPursuitBrain(
         val forcedReplan = checkpointMissed ||
             hourlyMissCount >= 2 ||
             (hourlyMissed && elapsedHours >= 2.0 && hourlyShortfallPct >= 1.20)
-        val hourlyPressure = ((expectedProfitByNowPct - effectiveProfitPct) / config.targetProfitPct).coerceIn(0.0, 1.0)
         val topCandidateQuality = cycle.deploymentPlan.candidates.firstOrNull()?.let {
             (it.rankingScore * 0.58) + (it.marketOpportunityScore * 0.42)
         } ?: 0.0
@@ -161,16 +164,20 @@ class DailyTargetPursuitBrain(
                 aiConsensus >= 0.68 ||
                 cycle.selectedSignal?.expectedNetProfitabilityPct?.let { it >= 2.8 } == true
         val targetSatisfied = (
-            checkpointProfitPct >= config.targetProfitPct ||
-                (effectiveProfitPct >= config.targetProfitPct && realizedProfitPct >= (config.targetProfitPct * 0.55))
+            realizedProfitPct >= (config.targetProfitPct * 0.82) ||
+                (
+                    targetSatisfiedProfitPct >= config.targetProfitPct &&
+                        realizedProfitPct >= (config.targetProfitPct * 0.60)
+                    )
             ) &&
-            (realizedProfitPct >= (config.targetProfitPct * 0.35) || cycle.dailyRisk.givebackPct <= 0.12)
+            cycle.dailyRisk.givebackPct <= 0.10
         val overdriveAllowed = targetSatisfied &&
             (
                 topCandidateQuality >= 0.84 ||
                     aiConsensus >= 0.72 ||
                     cycle.selectedSignal?.expectedNetProfitabilityPct?.let { it >= 3.8 } == true
                 )
+        val hourlyPressure = ((expectedProfitByNowPct - controllerProfitPct) / config.targetProfitPct).coerceIn(0.0, 1.0)
         val baseUrgency = when {
             targetSatisfied && !overdriveAllowed -> 0.0
             targetSatisfied && overdriveAllowed -> (
@@ -247,7 +254,7 @@ class DailyTargetPursuitBrain(
         ).coerceIn(0.0, config.maxConcentrationBoostPct)
 
         val rationale = buildList {
-            add("Target harian ${formatPct(config.targetProfitPct)} dengan progress efektif ${formatPct(progressPct * 100.0)}.")
+            add("Target harian ${formatPct(config.targetProfitPct)} dengan progress kontrol ${formatPct(progressPct * 100.0)}.")
             if (hourlyEvaluationWindow > 0) {
                 add("Evaluasi 1 jam ke-$hourlyEvaluationWindow aktif: pace target meminta minimal ${formatPct(hourlyExpectedProfitPct)}.")
             }
@@ -257,7 +264,7 @@ class DailyTargetPursuitBrain(
             if (targetSatisfied && !overdriveAllowed) add("Target harian sudah tercapai dan tidak ada setup ekstrem, jadi bot mulai jaga hasil.")
             if (targetGapPct > 0.0) add("Gap target tersisa ${formatPct(targetGapPct)} dan urgency ${formatPct(urgency * 100.0)}.")
             if (behindSchedule > 0.12) add("Bot tertinggal dari ritme target harian, jadi pursuit pressure dinaikkan.")
-            if (hourlyPressure > 0.12) add("Evaluasi jam ini menunjukkan bot tertinggal dari pace harian, jadi sizing, rotasi, dan filter entry dipaksa lebih agresif.")
+            if (hourlyPressure > 0.12) add("Evaluasi jam ini menunjukkan profit keras tertinggal dari pace harian, jadi sizing, rotasi, dan filter entry dipaksa lebih agresif.")
             if (checkpointMissed) add("Checkpoint 3 jam ke-$completedCheckpointWindow miss: target ${formatPct(checkpointExpectedProfitPct)} vs realisasi keras ${formatPct(checkpointProfitPct)}, jadi bot wajib replan agresif.")
             if (forcedReplan && !checkpointMissed) add("Gap hourly terlalu besar, jadi bot masuk forced replan sebelum checkpoint berikutnya.")
             if (aiConsensus >= 0.55) add("Consensus AI kuat, sizing dan fokus modal boleh dinaikkan.")

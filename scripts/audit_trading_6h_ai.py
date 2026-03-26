@@ -395,6 +395,7 @@ def build_adaptive_policy(
     errors: Dict[str, str],
 ) -> Dict:
     state = payload.get("state", {}) if isinstance(payload, dict) else {}
+    holdings = state.get("holdingsDetailed", []) if isinstance(state, dict) else []
     candidate_pairs = []
     top_candidate = str(state.get("topCandidate", "")).strip().lower()
     if top_candidate and top_candidate != "-":
@@ -405,6 +406,15 @@ def build_adaptive_policy(
         if isinstance(pair, str) and pair.strip()
     )
     candidate_pairs = list(dict.fromkeys(candidate_pairs))[:8]
+    held_pairs = []
+    for item in holdings:
+        if not isinstance(item, dict):
+            continue
+        asset_code = str(item.get("assetCode", "")).strip().lower()
+        if not asset_code or asset_code == "idr":
+            continue
+        held_pairs.append(f"{asset_code}_idr")
+    held_pairs = list(dict.fromkeys(held_pairs))[:6]
 
     successful = sorted(results.keys())
     consensus_strength = min(1.0, len(successful) / 3.0) if successful else 0.0
@@ -494,6 +504,22 @@ def build_adaptive_policy(
             for pair in candidate_pairs
             if pair.split("_", 1)[0] not in safe_focus_families
         ][:2]
+    replacement_hints = []
+    if focus_pairs:
+        replacement_targets = [pair for pair in focus_pairs if pair not in held_pairs] or focus_pairs[:1]
+        stale_holdings = [pair for pair in held_pairs if pair not in focus_pairs[:2]]
+        if slow_rotation_detected and stale_holdings and replacement_targets:
+            for index, cut_pair in enumerate(stale_holdings[:2]):
+                replace_pair = replacement_targets[min(index, len(replacement_targets) - 1)]
+                if cut_pair == replace_pair:
+                    continue
+                replacement_hints.append(
+                    {
+                        "cut_pair": cut_pair,
+                        "replace_pair": replace_pair,
+                        "rationale": "AI audit melihat modal lebih produktif jika holding stagnan digeser ke pair fokus.",
+                    }
+                )
 
     policy = {
         "generated_at_utc": payload.get("generated_at_utc"),
@@ -525,6 +551,7 @@ def build_adaptive_policy(
             "hold_longer_pairs": hold_longer_pairs,
             "concentration_pair": concentration_pair,
             "avoid_pair_families": avoid_pair_families,
+            "replacement_hints": replacement_hints,
         },
     }
     return policy

@@ -452,8 +452,9 @@ private fun AllocationDonutChart(items: List<PortfolioAllocationUi>) {
 private fun HeroCard(
     state: KiBotUiState,
 ) {
-    val pnlColor = pnlColor(state.pnlTodayIdr)
+    val pnlColor = pnlColor(state.pnlTodayIdr, state.pnlTodayPctLabel)
     val serverState = serverStatusVisual(state)
+    val aiStatusLabel = compactAiStatusLabel(state.aiProviderSummary)
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         shape = RoundedCornerShape(28.dp),
@@ -533,36 +534,55 @@ private fun HeroCard(
                     )
                 }
             }
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                StatusChip(
-                    label = "Oracle Active ${state.releaseLabel}",
-                    tint = serverState.tint,
-                )
-                StatusChip(
-                    label = state.targetPursuitLabel,
-                    tint = when (state.targetPursuitLabel.uppercase()) {
-                        "OVERDRIVE" -> Color(0xFFF97316)
-                        "FULL_CHASE" -> Color(0xFFEF4444)
-                        "CHASE" -> Color(0xFF22C55E)
-                        "LOCK_PROFIT" -> Color(0xFF38BDF8)
-                        else -> Color(0xFF60A5FA)
-                    },
-                )
-                StatusChip(
-                    label = state.lastUpdatedLabel,
-                    tint = Color(0xFF60A5FA),
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    StatusChip(
+                        modifier = Modifier.weight(1f),
+                        label = "Oracle ${state.releaseLabel}",
+                        tint = serverState.tint,
+                        compact = true,
+                        stretch = true,
+                    )
+                    StatusChip(
+                        modifier = Modifier.weight(1f),
+                        label = state.targetPursuitLabel,
+                        tint = when (state.targetPursuitLabel.uppercase()) {
+                            "OVERDRIVE" -> Color(0xFFF97316)
+                            "FULL_CHASE" -> Color(0xFFEF4444)
+                            "CHASE" -> Color(0xFF22C55E)
+                            "LOCK_PROFIT" -> Color(0xFF38BDF8)
+                            else -> Color(0xFF60A5FA)
+                        },
+                        compact = true,
+                        stretch = true,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    StatusChip(
+                        modifier = Modifier.weight(1f),
+                        label = aiStatusLabel,
+                        tint = compactAiStatusTint(aiStatusLabel),
+                        compact = true,
+                        stretch = true,
+                    )
+                    StatusChip(
+                        modifier = Modifier.weight(1f),
+                        label = state.lastUpdatedLabel,
+                        tint = Color(0xFF60A5FA),
+                        compact = true,
+                        stretch = true,
+                    )
+                }
             }
-            Text(
-                text = state.aiProviderSummary,
-                color = Color(0xFFA8B7D7),
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
     }
 }
@@ -596,17 +616,21 @@ private fun PairRadarCard(
 ) {
     val livePair = visiblePairLabel(state)
     val radarPairs = radarPairs(state)
-    val serverState = serverStatusVisual(state)
     SurfaceCard(modifier = modifier) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Live Pair", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Live Pair",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
             StatusChip(
-                label = serverState.label,
-                tint = serverState.tint,
+                label = "LIVE",
+                tint = Color(0xFF2DD881),
+                compact = true,
             )
         }
         Surface(
@@ -839,7 +863,7 @@ private fun LiveActivityCard(
                                 .fillMaxWidth()
                                 .padding(horizontal = 14.dp, vertical = 10.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                            verticalAlignment = Alignment.Top,
                         ) {
                             Surface(
                                 color = liveLogTint(displayCategory).copy(alpha = 0.14f),
@@ -853,10 +877,17 @@ private fun LiveActivityCard(
                                     fontWeight = FontWeight.Bold,
                                 )
                             }
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text(
                                     entry.message,
                                     style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    dashboardLogContextLine(entry = entry, state = state),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                 )
@@ -895,12 +926,12 @@ private fun EngineControlScreen(
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text("Server Oracle", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatusChip("View Only", Color(0xFF1D4ED8))
-                    StatusChip(state.syncPathLabel, Color(0xFF0EA5E9))
+                    StatusChip(label = "View Only", tint = Color(0xFF1D4ED8))
+                    StatusChip(label = state.syncPathLabel, tint = Color(0xFF0EA5E9))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatusChip(visiblePairLabel(state), Color(0xFF8B5CF6))
-                    StatusChip(state.syncHealth, Color(0xFF22C55E))
+                    StatusChip(label = visiblePairLabel(state), tint = Color(0xFF8B5CF6))
+                    StatusChip(label = state.syncHealth, tint = Color(0xFF22C55E))
                 }
                 Text(
                     engineSummaryLine(state),
@@ -1000,7 +1031,7 @@ private fun LogsScreen(state: KiBotUiState) {
                                     .fillMaxWidth()
                                     .padding(horizontal = 14.dp, vertical = 12.dp),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
+                                verticalAlignment = Alignment.Top,
                             ) {
                                 Surface(
                                     color = tradeSideTint(trade.side).copy(alpha = 0.14f),
@@ -1046,7 +1077,7 @@ private fun LogsScreen(state: KiBotUiState) {
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
-                                StatusChip(trade.status, tradeStatusTint(trade.status))
+                                StatusChip(label = trade.status, tint = tradeStatusTint(trade.status))
                             }
                         }
                     }
@@ -1090,11 +1121,18 @@ private fun LogsScreen(state: KiBotUiState) {
                                         fontWeight = FontWeight.Bold,
                                     )
                                 }
-                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Text(
                                         log.message,
                                         style = MaterialTheme.typography.bodyMedium,
-                                        maxLines = 3,
+                                        maxLines = 4,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        logContextLine(log = log, state = state),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                     Text(
@@ -1143,20 +1181,53 @@ private fun SurfaceCard(
 
 @Composable
 private fun StatusChip(
+    modifier: Modifier = Modifier,
     label: String,
     tint: Color,
+    compact: Boolean = false,
+    stretch: Boolean = false,
 ) {
     Surface(
+        modifier = modifier,
         color = tint.copy(alpha = 0.12f),
         shape = RoundedCornerShape(14.dp),
     ) {
         Text(
             text = label,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier
+                .then(if (stretch) Modifier.fillMaxWidth() else Modifier)
+                .padding(
+                    horizontal = if (compact) 8.dp else 10.dp,
+                    vertical = if (compact) 5.dp else 6.dp,
+                ),
             color = tint,
             fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
+}
+
+private fun compactAiStatusLabel(summary: String): String {
+    val normalized = summary.lowercase()
+    val healthy = "sehat:" in normalized || "healthy:" in normalized
+    val limited = "limited" in normalized || "rate limited" in normalized
+    val skipped = "skip:" in normalized || "forbidden" in normalized || "failure" in normalized
+    return when {
+        healthy && !limited && !skipped -> "AI ONLINE"
+        healthy -> "AI LIMITED"
+        skipped -> "AI SKIP"
+        else -> "AI OFFLINE"
+    }
+}
+
+private fun compactAiStatusTint(label: String): Color = when (label) {
+    "AI ONLINE" -> Color(0xFF22C55E)
+    "AI LIMITED" -> Color(0xFFF59E0B)
+    "AI SKIP" -> Color(0xFFEF4444)
+    else -> Color(0xFF64748B)
 }
 
 @Composable
@@ -1176,9 +1247,9 @@ private fun RadarChip(label: String) {
     }
 }
 
-private fun pnlColor(label: String): Color {
+private fun pnlColor(label: String, pctLabel: String = ""): Color {
     return when {
-        label.trim().startsWith("-") -> Color(0xFFB43F3F)
+        label.trim().startsWith("-") || pctLabel.trim().startsWith("-") -> Color(0xFFB43F3F)
         label.trim() == "+Rp0" || label.trim() == "Rp0" -> Color(0xFFE5E7EB)
         else -> Color(0xFF2DD881)
     }
@@ -1208,6 +1279,82 @@ private fun displayLiveLogCategory(category: String, message: String): String {
             ) -> "LOSS"
         else -> normalizedCategory
     }
+}
+
+private fun dashboardLogContextLine(
+    entry: com.kibot.android.runtime.LiveLogEntry,
+    state: KiBotUiState,
+): String {
+    val activePair = visiblePairLabel(state)
+    val pairMentions = extractPairMentions(entry.message)
+    val leadPair = pairMentions.firstOrNull() ?: activePair
+    val backupPair = radarPairs(state).firstOrNull { it != leadPair } ?: activePair
+    return when (displayLiveLogCategory(entry.category, entry.message)) {
+        "STATUS" -> listOf(
+            leadPair,
+            state.internetPingLabel,
+            "scan ${state.scanUniverseCount}",
+            state.operatingMode,
+        ).joinToString(" • ")
+        "ROTASI" -> listOf(
+            "$leadPair -> $backupPair",
+            compactAiStatusLabel(state.aiProviderSummary),
+            state.syncHealth,
+        ).joinToString(" • ")
+        "TARGET" -> listOf(
+            "1D ${state.pnlTodayPctLabel}",
+            "7D ${state.portfolio.sevenDayReturnPctLabel}",
+            "30D ${state.portfolio.thirtyDayReturnPctLabel}",
+        ).joinToString(" • ")
+        "BUY", "SELL" -> listOf(
+            leadPair,
+            state.targetPursuitLabel,
+            state.syncPathLabel,
+        ).joinToString(" • ")
+        "LOSS", "PROFIT" -> listOf(
+            leadPair,
+            state.modalSaatIniIdr,
+            state.targetPursuitLabel,
+        ).joinToString(" • ")
+        else -> listOf(
+            leadPair,
+            compactAiStatusLabel(state.aiProviderSummary),
+            state.lastUpdatedLabel,
+        ).joinToString(" • ")
+    }
+}
+
+private fun logContextLine(
+    log: LogUi,
+    state: KiBotUiState,
+): String {
+    val pairMentions = extractPairMentions(log.message)
+    val primaryPair = pairMentions.firstOrNull() ?: visiblePairLabel(state)
+    val extraPairs = pairMentions.drop(1).take(2)
+    val pairContext = buildString {
+        append(primaryPair)
+        if (extraPairs.isNotEmpty()) {
+            append(" • ")
+            append(extraPairs.joinToString(" • "))
+        }
+    }
+    val category = displayLiveLogCategory(log.category, log.message)
+    val guidance = when (category) {
+        "STATUS" -> "${state.internetPingLabel} • scan ${state.scanUniverseCount} • ${state.operatingMode}"
+        "ROTASI" -> "${state.targetPursuitLabel} • ${compactAiStatusLabel(state.aiProviderSummary)} • ${state.syncHealth}"
+        "TARGET" -> "1D ${state.pnlTodayPctLabel} • 7D ${state.portfolio.sevenDayReturnPctLabel} • 30D ${state.portfolio.thirtyDayReturnPctLabel}"
+        "BUY", "SELL" -> "${state.syncPathLabel} • ${state.targetPursuitLabel} • ${state.releaseLabel}"
+        else -> "${compactAiStatusLabel(state.aiProviderSummary)} • ${state.lastUpdatedLabel}"
+    }
+    return "$pairContext • $guidance"
+}
+
+private fun extractPairMentions(message: String): List<String> {
+    return Regex("""[a-z0-9]+_idr""")
+        .findAll(message.lowercase())
+        .map { it.value }
+        .distinct()
+        .toList()
 }
 
 private fun tradeSideTint(label: String): Color = when {
@@ -1244,56 +1391,58 @@ private fun dashboardTimelineEntries(state: KiBotUiState): List<com.kibot.androi
         com.kibot.android.runtime.LiveLogEntry(
             timestampEpochMs = nowEpoch,
             category = "STATUS",
-            message = "Fokus sekarang $activePair. Ping ${state.internetPingLabel}, scan ${state.scanUniverseCount} pair, mode ${state.operatingMode}.",
+            message = "Fokus sekarang $activePair. Ping ${state.internetPingLabel}, scan ${state.scanUniverseCount} pair, mode ${state.operatingMode}, sync ${state.syncHealth}, target ${state.targetPursuitLabel}.",
         ),
         com.kibot.android.runtime.LiveLogEntry(
             timestampEpochMs = nowEpoch - 1_000L,
             category = "ROTASI",
-            message = "Jika $activePair stagnan atau edge turun, bot siap rotasi cepat ke $topCandidate untuk jaga velocity modal.",
+            message = "Jika $activePair stagnan, edge turun, atau tekanan biaya makin berat, bot siap rotasi cepat ke $topCandidate untuk jaga velocity modal dan buka peluang breakout berikutnya.",
         ),
         com.kibot.android.runtime.LiveLogEntry(
             timestampEpochMs = nowEpoch - 2_000L,
             category = "TARGET",
-            message = "Target berikutnya $topCandidate. Profit 1D ${state.pnlTodayIdr}, return 7D ${state.portfolio.sevenDayReturnLabel}, return 30D ${state.portfolio.thirtyDayReturnLabel}.",
+            message = "Target berikutnya $topCandidate. Profit 1D ${state.pnlTodayIdr}, return 7D ${state.portfolio.sevenDayReturnLabel}, return 30D ${state.portfolio.thirtyDayReturnLabel}, equity ${state.modalSaatIniIdr}.",
         ),
     ) + listOfNotNull(
         lastSell?.let {
             com.kibot.android.runtime.LiveLogEntry(
                 timestampEpochMs = nowEpoch - 3_000L,
                 category = "SELL",
-                message = "Terakhir jual: ${it.message}. Lanjut incar $topCandidate.",
+                message = "Terakhir jual: ${it.message}. Hasil ini dipakai evaluasi rotasi sebelum lanjut incar $topCandidate.",
             )
         },
     )
-    val tradeTimeline = state.trades
-        .take(4)
-        .mapIndexed { index, trade ->
-            val isSell = trade.side.uppercase().startsWith("SELL")
-            val detail = if (isSell) {
-                "Jual ${trade.pair} | Buy ${trade.entryPriceLabel.ifBlank { "-" }} -> Sell ${trade.exitPriceLabel.ifBlank { "-" }} | ${trade.outcomeLabel.ifBlank { "hasil belum tersedia" }}."
-            } else {
-                "Beli ${trade.pair} di ${trade.entryPriceLabel.ifBlank { "-" }} | ${trade.status}."
-            }
-            com.kibot.android.runtime.LiveLogEntry(
-                timestampEpochMs = nowEpoch - ((index + 4) * 1_000L),
-                category = if (isSell) "SELL" else "BUY",
-                message = detail,
-            )
-        }
     val priorityCategories = setOf("BUY", "SELL", "LOSS", "PROFIT", "RISK", "ROTASI")
-    val displayEntries = state.liveLogEntries.map { entry ->
+    val freshestLiveEntries = state.liveLogEntries
+        .filter { entry ->
+            entry.timestampEpochMs > 0L &&
+                nowEpoch - entry.timestampEpochMs <= DASHBOARD_LOG_FRESHNESS_WINDOW_MS
+        }
+    val displayEntries = freshestLiveEntries.map { entry ->
         displayLiveLogCategory(entry.category, entry.message) to entry
     }
-    val priority = displayEntries
+    val livePriority = displayEntries
         .filter { (category, _) -> category in priorityCategories }
         .map { it.second }
-    val chatter = displayEntries
+    val liveChatter = displayEntries
         .filterNot { (category, _) -> category in priorityCategories }
         .map { it.second }
-    return (syntheticStatus + tradeTimeline + priority + chatter)
+    val liveEntries = (livePriority + liveChatter)
+        .sortedByDescending { it.timestampEpochMs }
+    val fallbackEntries = syntheticStatus
+        .filterNot { synthetic ->
+            liveEntries.any { live ->
+                displayLiveLogCategory(live.category, live.message) ==
+                    displayLiveLogCategory(synthetic.category, synthetic.message)
+            }
+        }
+        .sortedByDescending { it.timestampEpochMs }
+    return (liveEntries + fallbackEntries)
         .distinctBy { "${it.category}|${it.message}" }
         .take(10)
 }
+
+private const val DASHBOARD_LOG_FRESHNESS_WINDOW_MS = 90 * 60 * 1000L
 
 private fun radarPairs(state: KiBotUiState): List<String> {
     val active = state.pairAktif.takeUnless { it.isBlank() || it == "-" }?.lowercase()

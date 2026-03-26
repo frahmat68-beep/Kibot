@@ -103,14 +103,19 @@ class LocalDashboardServer(
                                 function renderTimeline(entries) {
                                   const container = document.getElementById('log-lines');
                                   container.innerHTML = '';
-                                  if (!entries || entries.length === 0) {
+                                  const freshEntries = (entries || [])
+                                    .filter(entry => !entry.timestampEpochMs || (Date.now() - entry.timestampEpochMs) <= ${WEB_LOG_FRESHNESS_WINDOW_MS})
+                                    .sort((a, b) => (b.timestampEpochMs || 0) - (a.timestampEpochMs || 0));
+                                  if (!freshEntries || freshEntries.length === 0) {
                                     const empty = document.createElement('div');
                                     empty.className = 'empty-state';
                                     empty.innerHTML = '<div class="empty-title">Log server belum ada</div><div class="empty-copy">Status rotasi, target, dan fokus pair akan tampil otomatis di sini.</div>';
                                     container.appendChild(empty);
                                     return;
                                   }
-                                  entries.slice(0, 12).forEach(entry => {
+                                  freshEntries
+                                    .slice(0, 12)
+                                    .forEach(entry => {
                                     const row = document.createElement('div');
                                     row.className = 'timeline-row';
                                     const timestamp = entry.timestampEpochMs ? new Date(entry.timestampEpochMs).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Jakarta' }) : '--:--';
@@ -138,13 +143,13 @@ class LocalDashboardServer(
                                   const container = document.getElementById('radar-grid');
                                   if (!container) return;
                                   container.innerHTML = '';
-                                  const items = (pairs || []).filter(Boolean).slice(0, 9);
-                                  const normalized = items.concat(Array(Math.max(0, 9 - items.length)).fill('--'));
+                                  const fallback = ['xrp_idr', 'doge_idr', 'trx_idr', 'pepe_idr', 'shib_idr', 'fartcoin_idr', 'jellyjelly_idr', 'sol_idr', 'btc_idr', 'arb_idr', 'plpa_idr'];
+                                  const items = (pairs || []).filter(Boolean).map(pair => String(pair).toLowerCase()).slice(0, 9);
+                                  const normalized = items.concat(fallback.filter(pair => !items.includes(pair))).slice(0, 9);
                                   normalized.forEach(pair => {
-                                    const isEmpty = String(pair) === '--';
                                     const pill = document.createElement('div');
-                                    pill.className = 'radar-pill ' + (isEmpty ? 'radar-pill-empty' : radarPillClass(pair));
-                                    pill.textContent = isEmpty ? '' : String(pair).toLowerCase();
+                                    pill.className = 'radar-pill ' + radarPillClass(pair);
+                                    pill.textContent = String(pair).toLowerCase();
                                     container.appendChild(pill);
                                   });
                                 }
@@ -159,7 +164,11 @@ class LocalDashboardServer(
                                     container.appendChild(empty);
                                     return;
                                   }
-                                  entries.slice(0, 10).forEach(entry => {
+                                  entries
+                                    .slice()
+                                    .sort((a, b) => (b.timestampEpochMs || 0) - (a.timestampEpochMs || 0))
+                                    .slice(0, 10)
+                                    .forEach(entry => {
                                     const row = document.createElement('div');
                                     row.className = 'timeline-row';
                                     const pair = (entry.pair || '-').toLowerCase();
@@ -284,7 +293,7 @@ class LocalDashboardServer(
                                 }
 
                                 refreshState();
-                                setInterval(refreshState, ${statePollIntervalMillis});
+                                setInterval(refreshState, ${minOf(statePollIntervalMillis, 5000L)});
 
                                 function pingPillClass(pingText) {
                                   const pingValue = parseInt(String(pingText || '--').replace(/[^0-9]/g, ''), 10);
@@ -364,7 +373,13 @@ class LocalDashboardServer(
 
             get("/api/logs") {
                 applyDashboardSecurityHeaders(call)
-                call.respond(repository.state.value.liveTimeline.map { "${it.category} • ${it.message}" })
+                val freshCutoff = System.currentTimeMillis() - WEB_LOG_FRESHNESS_WINDOW_MS
+                call.respond(
+                    repository.state.value.liveTimeline
+                        .filter { it.timestampEpochMs <= 0L || it.timestampEpochMs >= freshCutoff }
+                        .sortedByDescending { it.timestampEpochMs }
+                        .map { "${it.category} • ${it.message}" },
+                )
             }
 
             get("/api/lan/ping") {
@@ -466,7 +481,7 @@ private fun BODY.renderDashboard(state: MacDashboardState) {
                     }
                 }
                 div("hero-chip-strip") {
-                    span("pill pill-amber") {
+                    span("pill pill-live") {
                         attributes["id"] = "release-label"
                         +"Oracle Active ${state.releaseLabel}"
                     }
@@ -535,9 +550,7 @@ private fun BODY.renderDashboard(state: MacDashboardState) {
                 }
                 div("radar-grid") {
                     attributes["id"] = "radar-grid"
-                    state.radarPairs
-                        .take(9)
-                        .let { pairs -> pairs + List((9 - pairs.size).coerceAtLeast(0)) { "--" } }
+                    filledRadarPairs(state.radarPairs)
                         .forEach { pair ->
                             div("radar-pill ${radarPillClass(pair)}") { +pair.lowercase() }
                         }
@@ -617,6 +630,26 @@ private fun dashboardStatusClass(state: MacDashboardState): String = when (dashb
 private fun metricCardClass(value: String, caption: String): String =
     if (isNegativeTone(value, caption)) "metric-card-loss" else "metric-card-gain"
 
+private fun filledRadarPairs(pairs: List<String>): List<String> {
+    val fallback = listOf(
+        "xrp_idr",
+        "doge_idr",
+        "trx_idr",
+        "pepe_idr",
+        "shib_idr",
+        "fartcoin_idr",
+        "jellyjelly_idr",
+        "sol_idr",
+        "btc_idr",
+        "arb_idr",
+        "plpa_idr",
+    )
+    return (pairs.map { it.lowercase() } + fallback)
+        .filter { it.isNotBlank() && it != "--" }
+        .distinct()
+        .take(9)
+}
+
 private fun radarPillClass(pair: String): String {
     val token = pair.lowercase()
     return when {
@@ -678,6 +711,8 @@ private fun targetPillClass(label: String): String = when (label.uppercase()) {
     "LOCK_PROFIT" -> "pill-blue"
     else -> "pill-neutral"
 }
+
+private const val WEB_LOG_FRESHNESS_WINDOW_MS = 2 * 60 * 60 * 1000L
 
 private fun dashboardStyles(): String = """
     :root {

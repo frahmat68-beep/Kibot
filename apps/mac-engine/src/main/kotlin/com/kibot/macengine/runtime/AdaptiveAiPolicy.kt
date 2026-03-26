@@ -50,6 +50,14 @@ data class AdaptiveAiExecutionFile(
     @SerialName("hold_longer_pairs") val holdLongerPairs: List<String> = emptyList(),
     @SerialName("concentration_pair") val concentrationPair: String? = null,
     @SerialName("avoid_pair_families") val avoidPairFamilies: List<String> = emptyList(),
+    @SerialName("replacement_hints") val replacementHints: List<AdaptiveAiReplacementFile> = emptyList(),
+)
+
+@Serializable
+data class AdaptiveAiReplacementFile(
+    @SerialName("cut_pair") val cutPair: String,
+    @SerialName("replace_pair") val replacePair: String,
+    val rationale: String = "",
 )
 
 data class AdaptiveAiExecutionHints(
@@ -57,6 +65,13 @@ data class AdaptiveAiExecutionHints(
     val holdLongerPairs: List<PairId> = emptyList(),
     val concentrationPair: PairId? = null,
     val avoidPairFamilies: List<String> = emptyList(),
+    val replacementHints: List<AdaptiveAiReplacementHint> = emptyList(),
+)
+
+data class AdaptiveAiReplacementHint(
+    val cutPair: PairId,
+    val replacePair: PairId,
+    val rationale: String = "",
 )
 
 data class AdaptiveAiPolicy(
@@ -116,6 +131,16 @@ class AdaptiveAiPolicyLoader(
                 holdLongerPairs = parsed.execution.holdLongerPairs.mapNotNull { it.trim().lowercase().takeIf(String::isNotBlank)?.let(::PairId) },
                 concentrationPair = parsed.execution.concentrationPair?.trim()?.lowercase()?.takeIf { it.isNotBlank() }?.let(::PairId),
                 avoidPairFamilies = parsed.execution.avoidPairFamilies.mapNotNull { it.trim().lowercase().takeIf(String::isNotBlank) }.distinct(),
+                replacementHints = parsed.execution.replacementHints.mapNotNull { hint ->
+                    val cutPair = hint.cutPair.trim().lowercase().takeIf(String::isNotBlank)?.let(::PairId) ?: return@mapNotNull null
+                    val replacePair = hint.replacePair.trim().lowercase().takeIf(String::isNotBlank)?.let(::PairId) ?: return@mapNotNull null
+                    if (cutPair == replacePair) return@mapNotNull null
+                    AdaptiveAiReplacementHint(
+                        cutPair = cutPair,
+                        replacePair = replacePair,
+                        rationale = hint.rationale.trim(),
+                    )
+                },
             ),
         )
     }

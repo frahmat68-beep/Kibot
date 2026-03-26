@@ -152,16 +152,6 @@ class GeminiSupportCoordinator(
         if (!config.isUsable || candidates.isEmpty()) return GeminiSupportEvaluation()
         requestHistory.removeAll { requestAt -> (now - requestAt).inWholeHours >= 24 }
 
-        cooldownUntil?.let { blockedUntil ->
-            if (now < blockedUntil) {
-                return GeminiSupportEvaluation(
-                    hints = lastHints,
-                    reusedCachedHints = lastHints.isNotEmpty(),
-                    blockedReason = "failure_cooldown",
-                )
-            }
-        }
-
         val trimmed = candidates.take(config.maxCandidates)
         val signature = trimmed.joinToString("|") {
             buildString {
@@ -191,6 +181,17 @@ class GeminiSupportCoordinator(
         val materialChange = isMaterialShortlistChange(previous = lastSnapshot, current = snapshot)
         val breakoutTrigger = snapshot.topCandidateStrength >= 0.84 || snapshot.breadthStrength >= 0.80
         val expeditedRequeryAllowed = materialChange && breakoutTrigger && ageMinutes >= 35
+        val reusableCachedHints = cacheFresh && !materialChange && lastHints.isNotEmpty()
+
+        cooldownUntil?.let { blockedUntil ->
+            if (now < blockedUntil) {
+                return GeminiSupportEvaluation(
+                    hints = if (reusableCachedHints) lastHints else emptyList(),
+                    reusedCachedHints = reusableCachedHints,
+                    blockedReason = "failure_cooldown",
+                )
+            }
+        }
 
         if (signature == lastSignature && ageMinutes in 0 until config.minIntervalMinutes.toLong()) {
             return GeminiSupportEvaluation(
@@ -212,8 +213,8 @@ class GeminiSupportCoordinator(
         }
         if (hourlyRequests >= config.hourlyRequestBudget) {
             return GeminiSupportEvaluation(
-                hints = lastHints,
-                reusedCachedHints = lastHints.isNotEmpty(),
+                hints = if (reusableCachedHints) lastHints else emptyList(),
+                reusedCachedHints = reusableCachedHints,
                 blockedReason = "hourly_budget",
             )
         }
@@ -224,8 +225,8 @@ class GeminiSupportCoordinator(
         }
         if (dailyRequests >= config.dailyRequestBudget) {
             return GeminiSupportEvaluation(
-                hints = lastHints,
-                reusedCachedHints = lastHints.isNotEmpty(),
+                hints = if (reusableCachedHints) lastHints else emptyList(),
+                reusedCachedHints = reusableCachedHints,
                 blockedReason = "daily_budget",
             )
         }

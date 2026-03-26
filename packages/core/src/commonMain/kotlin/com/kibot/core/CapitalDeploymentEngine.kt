@@ -166,18 +166,30 @@ class CapitalDeploymentEngine(
                     candidate.preferredHorizon == com.kibot.shared.models.TradingHorizon.TACTICAL &&
                         candidate.marketOpportunityScore >= 0.66 &&
                         candidate.expectedNetProfitabilityPct >= (config.rotationMinNetUpgradePct + 0.25)
-                    )
+                )
+        } == true
+        val topCandidateLooksCapitalEfficient = firstCandidate?.let { candidate ->
+            candidate.rankingScore >= 0.68 &&
+                candidate.marketOpportunityScore >= 0.58 &&
+                candidate.expectedNetProfitabilityPct >= (config.rotationMinNetUpgradePct + 0.02)
         } == true
         val allowRotation = mode.mode != BotMode.SAFE &&
             !speculativePocketReady &&
             openPositions > 0 &&
-            topCandidateLooksLikeBreakout &&
+            (topCandidateLooksLikeBreakout || topCandidateLooksCapitalEfficient) &&
             candidates.firstOrNull()?.rankingScore?.let { it >= 0.70 } == true &&
-            candidates.firstOrNull()?.marketOpportunityScore?.let { it >= 0.60 } == true &&
-            candidates.firstOrNull()?.expectedNetProfitabilityPct?.let { it >= (config.rotationMinNetUpgradePct + 0.10) } == true &&
+            candidates.firstOrNull()?.marketOpportunityScore?.let { it >= 0.58 } == true &&
+            candidates.firstOrNull()?.expectedNetProfitabilityPct?.let {
+                it >= if (topCandidateLooksLikeBreakout) {
+                    config.rotationMinNetUpgradePct + 0.10
+                } else {
+                    config.rotationMinNetUpgradePct + 0.02
+                }
+            } == true &&
             (rotatableWinners.isNotEmpty() || rotatableLosers.isNotEmpty()) &&
             (
                 topCandidateGap >= config.rotationRankingGapMin ||
+                    topCandidateLooksCapitalEfficient ||
                     top1DeployableConcentration >= config.top1DeployableConcentrationMaxPct ||
                     loserHeatPct >= config.loserHeatCautionPct
                 )

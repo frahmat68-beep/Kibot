@@ -84,6 +84,7 @@ class MacEngineDaemon(
     private val aiSupportCoordinator: GeminiSupportCoordinator? = null,
 ) {
     private data class TargetEnforcementMemory(
+        val memoryDate: LocalDate? = null,
         val lastHourlyWindowIndex: Int = 0,
         val consecutiveHourlyMisses: Int = 0,
         val lastHourlyShortfallPct: Double = 0.0,
@@ -927,96 +928,135 @@ class MacEngineDaemon(
             return
         }
 
-        val executionPlan = cycle.executionPlan ?: return
+        val candidateExecutionPlans = cycle.entryExecutionPlans.ifEmpty {
+            listOfNotNull(cycle.executionPlan)
+        }
+        if (candidateExecutionPlans.isEmpty()) return
         if (!cycle.modeSnapshot.tradingAllowed) return
         if (cycle.riskDecision.allowNewEntries.not()) return
-        entryBlockedByPortfolioState(
+        val activeBuyOrders = activePersistedOrders.filter { it.side == com.kibot.shared.models.OrderSide.BUY }
+        val availableEntrySlots = (
+            cycle.deploymentPlan.maxActivePositions -
+                managedPositions.size -
+                activeBuyOrders.size
+            ).coerceAtLeast(0)
+        val batchLimit = determineEntryBatchLimit(
             cycle = cycle,
-            executionPlan = executionPlan,
-            managedPositions = managedPositions,
-        )?.let { blockedReason ->
+            availableEntrySlots = availableEntrySlots,
+            candidateExecutionPlans = candidateExecutionPlans,
+        )
+        if (batchLimit <= 0 && !cycle.deploymentPlan.allowRotation) {
             appendThrottledAuditLog(
                 now = now,
                 level = LogLevel.INFO,
                 category = "ENTRY_POLICY",
-                message = blockedReason,
+                message = "Entry baru ditahan karena slot aktif dan pending buy sudah penuh.",
             )
             return
         }
-        val rolloutDecision = liveRolloutGuard.evaluate(cycle, weeklyReview)
-        if (!rolloutDecision.allowed) {
-            appendAuditLog(LogLevel.INFO, "ROLLOUT_GUARD", rolloutDecision.reason)
-            return
+
+        var workingOrders = activePersistedOrders
+        var submittedCount = 0
+        var lastBlockedReason: String? = null
+        candidateExecutionPlans.forEach { candidatePlan ->
+            if (submittedCount >= batchLimit) return@forEach
+            if (workingOrders.any { it.pairId == candidatePlan.signal.pairId }) {
+                lastBlockedReason = "Entry ${candidatePlan.signal.pairId.value} ditunda karena pair yang sama masih punya order aktif."
+                return@forEach
+            }
+
+            entryBlockedByPortfolioState(
+                cycle = cycle,
+                executionPlan = candidatePlan,
+                managedPositions = managedPositions,
+            )?.let { blockedReason ->
+                lastBlockedReason = blockedReason
+                return@forEach
+            }
+
+            val rolloutDecision = liveRolloutGuard.evaluate(
+                cycle.copy(
+                    selectedSignal = candidatePlan.signal,
+                    executionPlan = candidatePlan,
+                ),
+                weeklyReview,
+            )
+            if (!rolloutDecision.allowed) {
+                lastBlockedReason = rolloutDecision.reason
+                return@forEach
+            }
+
+            val routedEntry = routeEntryPlanByLatency(
+                executionPlan = candidatePlan,
+                health = health,
+                marketQuotes = marketQuotes,
+            )
+            routedEntry.blockedReason?.let { blockedReason ->
+                lastBlockedReason = blockedReason
+                return@forEach
+            }
+            routedEntry.message?.let { note ->
+                appendThrottledAuditLog(
+                    now = now,
+                    level = LogLevel.INFO,
+                    category = "ENTRY_POLICY",
+                    message = note,
+                )
+            }
+            val effectiveExecutionPlan = routedEntry.executionPlan ?: return@forEach
+
+            val result = liveExecutionCoordinator.submitEntry(
+                botId = config.controlPlane.botId,
+                deviceId = config.device.deviceId,
+                term = lease.term,
+                executionPlan = effectiveExecutionPlan,
+                existingPersistedOrders = workingOrders,
+                exchange = exchange,
+                controlPlane = controlPlane,
+            )
+            result.order?.let {
+                workingOrders = mergeRecentOrders(workingOrders, listOf(it)).filter { snapshot ->
+                    snapshot.status in activeOrderStatuses
+                }
+                cachedRecentOrders = mergeRecentOrders(cachedRecentOrders, listOf(it))
+                recentOrdersFetchedAt = now
+            }
+
+            appendAuditLog(
+                level = when {
+                    result.failSafeTriggered -> LogLevel.ERROR
+                    result.submitted -> LogLevel.INFO
+                    else -> LogLevel.WARN
+                },
+                category = "EXECUTION",
+                message = result.message,
+            )
+
+            if (result.submitted) {
+                submittedCount += 1
+                logger.info(
+                    "Live order submitted on {} pair={} clientOrderId={} term={}",
+                    config.device.displayName,
+                    effectiveExecutionPlan.signal.pairId.value,
+                    result.clientOrderId?.value,
+                    lease.term.value,
+                )
+                lastAnalysisPublishedAt = now
+            } else if (result.failSafeTriggered) {
+                logger.error("Live order submit became ambiguous, safe mode triggered.")
+                return
+            } else {
+                lastBlockedReason = result.message
+            }
         }
-        if (activePersistedOrders.isNotEmpty()) {
+
+        if (submittedCount == 0 && !lastBlockedReason.isNullOrBlank()) {
             appendThrottledAuditLog(
                 now = now,
                 level = LogLevel.INFO,
                 category = "ENTRY_POLICY",
-                message = "Entry ${executionPlan.signal.pairId.value} ditunda karena masih ada order aktif yang belum selesai.",
+                message = lastBlockedReason.orEmpty(),
             )
-            return
-        }
-
-        val routedEntry = routeEntryPlanByLatency(
-            executionPlan = executionPlan,
-            health = health,
-            marketQuotes = marketQuotes,
-        )
-        routedEntry.blockedReason?.let { blockedReason ->
-            appendThrottledAuditLog(
-                now = now,
-                level = LogLevel.WARN,
-                category = "ENTRY_POLICY",
-                message = blockedReason,
-            )
-            return
-        }
-        routedEntry.message?.let { note ->
-            appendThrottledAuditLog(
-                now = now,
-                level = LogLevel.INFO,
-                category = "ENTRY_POLICY",
-                message = note,
-            )
-        }
-        val effectiveExecutionPlan = routedEntry.executionPlan ?: return
-
-        val result = liveExecutionCoordinator.submitEntry(
-            botId = config.controlPlane.botId,
-            deviceId = config.device.deviceId,
-            term = lease.term,
-            executionPlan = effectiveExecutionPlan,
-            existingPersistedOrders = activePersistedOrders,
-            exchange = exchange,
-            controlPlane = controlPlane,
-        )
-        result.order?.let {
-            cachedRecentOrders = mergeRecentOrders(activePersistedOrders, listOf(it))
-            recentOrdersFetchedAt = now
-        }
-
-        appendAuditLog(
-            level = when {
-                result.failSafeTriggered -> LogLevel.ERROR
-                result.submitted -> LogLevel.INFO
-                else -> LogLevel.WARN
-            },
-            category = "EXECUTION",
-            message = result.message,
-        )
-
-        if (result.submitted) {
-            logger.info(
-                "Live order submitted on {} pair={} clientOrderId={} term={}",
-                config.device.displayName,
-                effectiveExecutionPlan.signal.pairId.value,
-                result.clientOrderId?.value,
-                lease.term.value,
-            )
-            lastAnalysisPublishedAt = now
-        } else if (result.failSafeTriggered) {
-            logger.error("Live order submit became ambiguous, safe mode triggered.")
         }
     }
 
@@ -1116,6 +1156,10 @@ class MacEngineDaemon(
         recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
     ): List<com.kibot.shared.models.OrderSnapshot> {
         val quoteByPair = marketQuotes.associateBy { it.pairId }
+        val currentEntryPairs = (
+            cycle.entryExecutionPlans.map { it.signal.pairId } +
+                listOfNotNull(cycle.selectedSignal?.pairId)
+            ).toSet()
         val canceledSnapshots = mutableListOf<com.kibot.shared.models.OrderSnapshot>()
         recentOrders
             .filter { it.status in activeOrderStatuses && it.side == com.kibot.shared.models.OrderSide.BUY }
@@ -1128,7 +1172,7 @@ class MacEngineDaemon(
                 } else {
                     0.0
                 }
-                val pairFlipped = cycle.selectedSignal?.pairId != order.pairId
+                val pairFlipped = currentEntryPairs.isNotEmpty() && order.pairId !in currentEntryPairs
                 val shouldCancel = ageMinutes >= staleEntryOrderMaxAgeMinutes ||
                     (pairFlipped && ageMinutes >= staleEntryOrderPairFlipGraceMinutes) ||
                     driftPct >= staleEntryOrderMaxDriftPct
@@ -2012,13 +2056,19 @@ class MacEngineDaemon(
         return (liveHints + adaptiveHints)
             .groupBy { it.pairId }
             .map { (pairId, hints) ->
+                val replacementHint = executionHints.replacementHints.firstOrNull { it.replacePair == pairId }
                 val supportBonus = when {
+                    replacementHint != null -> 0.025
                     executionHints.concentrationPair == pairId -> 0.03
                     pairId in executionHints.rotateNowPairs -> 0.02
                     pairId in executionHints.holdLongerPairs -> 0.015
                     else -> 0.0
                 }
-                val cautionBonus = if (pairId.belongsToAvoidFamily(executionHints.avoidPairFamilies)) 0.03 else 0.0
+                val cautionBonus = when {
+                    executionHints.replacementHints.any { it.cutPair == pairId } -> 0.04
+                    pairId.belongsToAvoidFamily(executionHints.avoidPairFamilies) -> 0.03
+                    else -> 0.0
+                }
                 val supportBias = (hints.sumOf { it.supportBias } + supportBonus).coerceIn(0.0, 0.08) * rankingScale
                 val cautionBias = (hints.sumOf { it.cautionBias } + cautionBonus).coerceIn(0.0, 0.06)
                 val latest = hints.maxByOrNull { it.generatedAt.toEpochMilliseconds() } ?: hints.first()
@@ -2038,12 +2088,16 @@ class MacEngineDaemon(
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
         now: Instant,
     ): com.kibot.core.StrategyCycleResult {
+        val jakartaDate = jakartaNowDate(now)
         val pursuit = dailyTargetPursuitBrain.evaluate(
             cycle = cycle,
             adaptiveAiPolicy = adaptiveAiPolicy,
             now = now,
         )
-        val enforcementMemory = updateTargetEnforcementMemory(pursuit)
+        val enforcementMemory = updateTargetEnforcementMemory(
+            pursuit = pursuit,
+            jakartaDate = jakartaDate,
+        )
         if (!pursuit.active && adaptiveAiPolicy == null) return cycle
 
         val aiAdjustments = adaptiveAiPolicy?.adjustments ?: AdaptiveAiAdjustments()
@@ -2064,13 +2118,6 @@ class MacEngineDaemon(
             ).coerceIn(1.0, 2.0)
         val boostedBudget = (cycle.deploymentPlan.suggestedPerPositionBudgetIdr * budgetBoostMultiplier)
             .coerceAtLeast(cycle.deploymentPlan.suggestedPerPositionBudgetIdr)
-        val boostedReservePct = (
-            cycle.deploymentPlan.targetCashReservePct -
-                pursuit.reserveReliefPct -
-                aiAdjustments.reserveReliefPctDelta.coerceIn(0.0, 0.08) -
-                (repeatedCheckpointPenalty * 0.01) -
-                (if (executionHints.concentrationPair != null) 0.005 else 0.0)
-            ).coerceIn(0.02, cycle.deploymentPlan.targetCashReservePct.coerceAtLeast(0.02))
         val openPositions = cycle.portfolio.positions.count { it.state != com.kibot.shared.models.PositionState.CLOSED }
         val candidates = cycle.deploymentPlan.candidates
         val actionProfile = when {
@@ -2085,6 +2132,24 @@ class MacEngineDaemon(
             pursuit.profitWindowOpen -> "PROFIT_HUNT"
             else -> "BASE"
         }
+        val topCandidate = candidates.firstOrNull()
+        val dominantConcentrationSignal = topCandidate != null &&
+            topCandidate.rankingScore >= 0.82 &&
+            topCandidate.marketOpportunityScore >= 0.70 &&
+            topCandidate.expectedNetProfitabilityPct >= 2.0
+        val highConvictionReserveFloor = when {
+            executionHints.concentrationPair != null && dominantConcentrationSignal -> 0.005
+            dominantConcentrationSignal && pursuit.profitWindowOpen -> 0.005
+            actionProfile in setOf("CHECKPOINT_REPLAN", "EMERGENCY_PURSUIT") && dominantConcentrationSignal -> 0.008
+            else -> 0.02
+        }
+        val boostedReservePct = (
+            cycle.deploymentPlan.targetCashReservePct -
+                pursuit.reserveReliefPct -
+                aiAdjustments.reserveReliefPctDelta.coerceIn(0.0, 0.08) -
+                (repeatedCheckpointPenalty * 0.01) -
+                (if (executionHints.concentrationPair != null) 0.005 else 0.0)
+            ).coerceIn(highConvictionReserveFloor, cycle.deploymentPlan.targetCashReservePct.coerceAtLeast(highConvictionReserveFloor))
         val concentrationPressureStep = when (actionProfile) {
             "EMERGENCY_PURSUIT" -> 0.22
             "CHECKPOINT_REPLAN" -> 0.18
@@ -2103,10 +2168,15 @@ class MacEngineDaemon(
         }
         val boostedReservePctWithPressure = (
             boostedReservePct - reserveReliefStep
-        ).coerceIn(0.02, cycle.deploymentPlan.targetCashReservePct.coerceAtLeast(0.02))
+        ).coerceIn(highConvictionReserveFloor, cycle.deploymentPlan.targetCashReservePct.coerceAtLeast(highConvictionReserveFloor))
         val hourlyEnforcementHeadroom = when {
-            actionProfile == "EMERGENCY_PURSUIT" && pursuit.profitWindowOpen -> 1
-            actionProfile == "CHECKPOINT_REPLAN" && pursuit.profitWindowOpen -> 1
+            actionProfile == "EMERGENCY_PURSUIT" -> 1
+            actionProfile == "CHECKPOINT_REPLAN" -> 1
+            actionProfile == "HARD_HOURLY_PUSH" && candidates.count {
+                it.rankingScore >= 0.72 &&
+                    it.marketOpportunityScore >= 0.64 &&
+                    it.expectedNetProfitabilityPct >= 1.10
+            } >= 2 -> 1
             actionProfile == "PROFIT_HUNT" -> 1
             else -> 0
         }
@@ -2149,14 +2219,19 @@ class MacEngineDaemon(
                 aiAdjustments.allocationFocusPctDelta.coerceIn(0.0, 0.16),
             profitWindowOpen = pursuit.profitWindowOpen,
             concentrationPair = executionHints.concentrationPair,
+            actionProfile = actionProfile,
         )
+        val finalConcentrationBoostPct = pursuit.concentrationBoostPct +
+            concentrationPressureStep +
+            aiAdjustments.allocationFocusPctDelta.coerceIn(0.0, 0.16)
 
         val updatedDeploymentPlan = cycle.deploymentPlan.copy(
             allowRotation = cycle.deploymentPlan.allowRotation ||
                 pursuit.urgency >= 0.42 ||
                 pursuit.hourlyMissed ||
                 pursuit.checkpointMissed ||
-                executionHints.rotateNowPairs.isNotEmpty(),
+                executionHints.rotateNowPairs.isNotEmpty() ||
+                executionHints.replacementHints.isNotEmpty(),
             maxActivePositions = boostedActivePositions,
             suggestedPerPositionBudgetIdr = normalizedBudget,
             targetCashReservePct = boostedReservePctWithPressure,
@@ -2170,8 +2245,7 @@ class MacEngineDaemon(
                 balances = balances,
                 marketQuotes = marketQuotes,
                 targetBudgetIdr = normalizedBudget,
-                concentrationBoostPct = pursuit.concentrationBoostPct +
-                    aiAdjustments.allocationFocusPctDelta.coerceIn(0.0, 0.16),
+                concentrationBoostPct = finalConcentrationBoostPct,
                 executionBoostMultiplier = pursuit.executionBoostMultiplier,
             )
         }
@@ -2189,6 +2263,7 @@ class MacEngineDaemon(
                 if (pursuit.forcedReplan) add("Bot masuk forced replan untuk mengejar target harian yang tertinggal.")
                 if (effectiveHeadroom < requestedSlotHeadroom) add("Slot tambahan dibatasi kualitas shortlist agar agresif tetap profit-first.")
                 if (executionHints.rotateNowPairs.isNotEmpty()) add("AI execution hint mendorong rotasi ke ${executionHints.rotateNowPairs.take(2).joinToString(",") { it.value }}.")
+                if (executionHints.replacementHints.isNotEmpty()) add("AI melihat holding ${executionHints.replacementHints.take(2).joinToString(", ") { "${it.cutPair.value}→${it.replacePair.value}" }} lebih efisien untuk digeser.")
                 executionHints.concentrationPair?.let { add("AI execution hint mendorong konsentrasi modal ke ${it.value}.") }
                 if (pursuit.urgency >= 0.40) add("Sizing entry dinaikkan dan reserve dikendurkan untuk kejar target harian.")
                 if (pursuit.overdriveAllowed) add("Target tercapai tapi breakout masih ganas, jadi bot tetap tekan entry winner dan biarkan profit lanjut.")
@@ -2235,6 +2310,28 @@ class MacEngineDaemon(
         )
     }
 
+    private fun determineEntryBatchLimit(
+        cycle: com.kibot.core.StrategyCycleResult,
+        availableEntrySlots: Int,
+        candidateExecutionPlans: List<com.kibot.shared.models.ExecutionPlan>,
+    ): Int {
+        if (availableEntrySlots <= 0 || candidateExecutionPlans.isEmpty()) return 0
+        val secondPlan = candidateExecutionPlans.getOrNull(1)
+        val thirdPlan = candidateExecutionPlans.getOrNull(2)
+        val secondStrong = secondPlan?.let {
+            it.pairRankingScore >= 0.70 && it.expectedNetEdgePct >= 1.12
+        } == true
+        val thirdStrong = thirdPlan?.let {
+            it.pairRankingScore >= 0.76 && it.expectedNetEdgePct >= 1.35
+        } == true
+        val aggressiveBatchTarget = when {
+            thirdStrong && cycle.deploymentPlan.allowRotation -> 3
+            secondStrong -> 2
+            else -> 1
+        }
+        return minOf(availableEntrySlots, aggressiveBatchTarget, candidateExecutionPlans.size)
+    }
+
     private fun qualifiedAdditionalHeadroom(
         candidates: List<com.kibot.shared.models.CandidateOpportunity>,
         openPositions: Int,
@@ -2276,6 +2373,10 @@ class MacEngineDaemon(
                 it.expectedNetProfitabilityPct >= 2.10
         }
         val desiredAdditional = when {
+            explosiveCandidates >= 3 -> 3
+            explosiveCandidates >= 2 && strongCandidates >= 4 -> 3
+            checkpointMissed && strongCandidates >= 4 -> 3
+            profitWindowOpen && strongCandidates >= 4 -> 3
             explosiveCandidates >= 2 -> 2
             checkpointMissed && strongCandidates >= 2 -> 2
             profitWindowOpen && strongCandidates >= 2 -> 2
@@ -2295,12 +2396,19 @@ class MacEngineDaemon(
         concentrationBoostPct: Double,
         profitWindowOpen: Boolean,
         concentrationPair: com.kibot.shared.models.PairId?,
+        actionProfile: String,
     ): Double {
         val deployableCapitalIdr = (currentEquityIdr * boostedCapitalTargetPct).coerceAtLeast(baseBudgetIdr)
-        val normalizedSlotCount = maxOf(finalActivePositions, openPositions + 1, 1)
-        val slotNormalizedBudgetIdr = deployableCapitalIdr / normalizedSlotCount
         val topCandidate = candidates.firstOrNull()
         val aiConcentrationBoost = if (concentrationPair != null && concentrationPair == topCandidate?.pairId) 0.06 else 0.0
+        val concentrationLedProfile = actionProfile in setOf("PROFIT_HUNT", "CHECKPOINT_REPLAN", "EMERGENCY_PURSUIT")
+        val preserveExtraSlot = !concentrationLedProfile || (topCandidate == null && !profitWindowOpen)
+        val normalizedSlotCount = when {
+            preserveExtraSlot -> maxOf(finalActivePositions, openPositions + 1, 1)
+            finalActivePositions > openPositions -> maxOf(finalActivePositions - 1, openPositions.coerceAtLeast(1))
+            else -> maxOf(finalActivePositions, 1)
+        }
+        val slotNormalizedBudgetIdr = deployableCapitalIdr / normalizedSlotCount
         val concentrationMultiplier = when {
             topCandidate != null &&
                 topCandidate.rankingScore >= 0.84 &&
@@ -2321,8 +2429,13 @@ class MacEngineDaemon(
 
     private fun updateTargetEnforcementMemory(
         pursuit: DailyTargetPursuit,
+        jakartaDate: LocalDate,
     ): TargetEnforcementMemory {
-        val current = targetEnforcementMemory
+        val current = if (targetEnforcementMemory.memoryDate != jakartaDate) {
+            TargetEnforcementMemory(memoryDate = jakartaDate)
+        } else {
+            targetEnforcementMemory
+        }
         val nextHourlyMisses = if (pursuit.hourlyWindowIndex > current.lastHourlyWindowIndex) {
             if (pursuit.hourlyMissed) current.consecutiveHourlyMisses + 1 else 0
         } else {
@@ -2334,6 +2447,7 @@ class MacEngineDaemon(
             current.consecutiveCheckpointMisses
         }
         val updated = current.copy(
+            memoryDate = jakartaDate,
             lastHourlyWindowIndex = maxOf(current.lastHourlyWindowIndex, pursuit.hourlyWindowIndex),
             consecutiveHourlyMisses = nextHourlyMisses.coerceIn(0, 6),
             lastHourlyShortfallPct = if (pursuit.hourlyWindowIndex > current.lastHourlyWindowIndex) {
@@ -2368,6 +2482,7 @@ class MacEngineDaemon(
             }
             .toMap()
         return TargetEnforcementMemory(
+            memoryDate = values["memoryDate"]?.let { runCatching { LocalDate.parse(it) }.getOrNull() },
             lastHourlyWindowIndex = values["lastHourlyWindowIndex"]?.toIntOrNull() ?: 0,
             consecutiveHourlyMisses = values["consecutiveHourlyMisses"]?.toIntOrNull() ?: 0,
             lastHourlyShortfallPct = values["lastHourlyShortfallPct"]?.toDoubleOrNull() ?: 0.0,
@@ -2384,6 +2499,7 @@ class MacEngineDaemon(
             Files.writeString(
                 path,
                 buildString {
+                    appendLine("memoryDate=${memory.memoryDate}")
                     appendLine("lastHourlyWindowIndex=${memory.lastHourlyWindowIndex}")
                     appendLine("consecutiveHourlyMisses=${memory.consecutiveHourlyMisses}")
                     appendLine("lastHourlyShortfallPct=${memory.lastHourlyShortfallPct}")
@@ -2417,17 +2533,19 @@ class MacEngineDaemon(
         )
         val enforcementMemory = targetEnforcementMemory
         val adjustments = cachedAdaptiveAiPolicy?.adjustments
-        if (adjustments == null && !pursuit.active) return tradeAutomationCoordinator
+        val executionHints = cachedAdaptiveAiPolicy?.executionHints ?: AdaptiveAiExecutionHints()
+        if (adjustments == null && !pursuit.active && executionHints.replacementHints.isEmpty()) return tradeAutomationCoordinator
         val aiAdjustments = adjustments ?: AdaptiveAiAdjustments()
         val repeatedHourlyPenalty = enforcementMemory.consecutiveHourlyMisses.coerceIn(0, 4)
         val repeatedCheckpointPenalty = enforcementMemory.consecutiveCheckpointMisses.coerceIn(0, 3)
+        val aiReplacementPressure = if (executionHints.replacementHints.isNotEmpty()) 0.08 else 0.0
         val defaults = TradeAutomationConfig()
         val adjusted = TradeAutomationConfig(
-            staleRotationMinAgeHours = (defaults.staleRotationMinAgeHours + aiAdjustments.rotationAgeHoursDelta + pursuit.rotationAgeHoursDelta - (repeatedHourlyPenalty * 0.03) - (repeatedCheckpointPenalty * 0.04))
+            staleRotationMinAgeHours = (defaults.staleRotationMinAgeHours + aiAdjustments.rotationAgeHoursDelta + pursuit.rotationAgeHoursDelta - (repeatedHourlyPenalty * 0.03) - (repeatedCheckpointPenalty * 0.04) - aiReplacementPressure)
                 .coerceAtLeast(0.12),
             staleRotationMinScoreGap = (defaults.staleRotationMinScoreGap + aiAdjustments.rotationScoreGapDelta + pursuit.rotationScoreGapDelta)
                 .coerceIn(0.02, 0.14),
-            loserRotationMinAgeHours = (defaults.loserRotationMinAgeHours + ((aiAdjustments.rotationAgeHoursDelta + pursuit.rotationAgeHoursDelta) * 0.75) - (repeatedHourlyPenalty * 0.02) - (repeatedCheckpointPenalty * 0.03))
+            loserRotationMinAgeHours = (defaults.loserRotationMinAgeHours + ((aiAdjustments.rotationAgeHoursDelta + pursuit.rotationAgeHoursDelta) * 0.75) - (repeatedHourlyPenalty * 0.02) - (repeatedCheckpointPenalty * 0.03) - (aiReplacementPressure * 0.75))
                 .coerceAtLeast(0.12),
             loserRotationMinScoreGap = (defaults.loserRotationMinScoreGap + aiAdjustments.rotationScoreGapDelta + pursuit.rotationScoreGapDelta)
                 .coerceIn(0.02, 0.10),
@@ -2441,6 +2559,14 @@ class MacEngineDaemon(
                 .coerceIn(0.35, 1.2),
             speculativeWinnerRunMinPnlPct = (defaults.speculativeWinnerRunMinPnlPct + aiAdjustments.winnerRunPnlDelta + pursuit.winnerRunPnlDelta)
                 .coerceIn(0.80, 1.8),
+            staleUnderwaterKillMinAgeHours = (defaults.staleUnderwaterKillMinAgeHours - (repeatedHourlyPenalty * 0.03) - (repeatedCheckpointPenalty * 0.04) - aiReplacementPressure)
+                .coerceAtLeast(0.25),
+            staleUnderwaterKillMinScoreGap = (defaults.staleUnderwaterKillMinScoreGap - (repeatedHourlyPenalty * 0.01) - (repeatedCheckpointPenalty * 0.015) - (aiReplacementPressure * 0.10))
+                .coerceIn(0.03, 0.10),
+            staleUnderwaterKillMinNetUpgradePct = (defaults.staleUnderwaterKillMinNetUpgradePct - (repeatedHourlyPenalty * 0.06) - (repeatedCheckpointPenalty * 0.08) - (aiReplacementPressure * 0.9))
+                .coerceIn(0.88, 1.30),
+            tacticalStaleMaxAgeHours = (defaults.tacticalStaleMaxAgeHours - (repeatedHourlyPenalty * 0.25) - (repeatedCheckpointPenalty * 0.40) - (aiReplacementPressure * 4.0))
+                .coerceIn(1.6, defaults.tacticalStaleMaxAgeHours),
         )
         return TradeAutomationCoordinator(config = adjusted)
     }

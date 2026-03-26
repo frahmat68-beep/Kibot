@@ -218,9 +218,10 @@ class MacEngineDaemonTest {
 
         daemon.syncOnce()
 
-        assertEquals(1, exchange.currentOrders().size)
-        assertEquals(1, controlPlane.fetchRecentOrders(botId).size)
-        assertEquals(PairId("btc_idr"), controlPlane.fetchRecentOrders(botId).first().pairId)
+        assertEquals(2, exchange.currentOrders().size)
+        assertEquals(2, controlPlane.fetchRecentOrders(botId).size)
+        assertTrue(controlPlane.fetchRecentOrders(botId).any { it.pairId == PairId("btc_idr") })
+        assertTrue(controlPlane.fetchRecentOrders(botId).any { it.pairId == PairId("eth_idr") })
     }
 
     @Test

@@ -1155,6 +1155,7 @@ class AppRepository(
         orders: List<ServerRecentOrder>,
         fallbackTimestamp: Long,
     ): List<com.kibot.android.runtime.LiveLogEntry> {
+        val freshCutoffEpochMs = fallbackTimestamp - LIVE_EVENT_FRESHNESS_WINDOW_MS
         val timelineEntries = liveTimeline.mapNotNull(::toServerLiveEntry)
         val serverEntries = serverLogs.mapIndexedNotNull { index, line ->
             toServerLiveEntry(
@@ -1163,11 +1164,8 @@ class AppRepository(
             )
         }
         val tradeEntries = orders.mapNotNull(::toServerLiveEntry)
-        val merged = if (timelineEntries.isNotEmpty()) {
-            timelineEntries + tradeEntries
-        } else {
-            tradeEntries + serverEntries
-        }
+        val merged = (timelineEntries + tradeEntries + serverEntries)
+            .filter { it.timestampEpochMs <= 0L || it.timestampEpochMs >= freshCutoffEpochMs }
             .sortedByDescending { it.timestampEpochMs }
             .distinctBy { "${it.category}|${it.message}" }
         return if (merged.isNotEmpty()) {
@@ -1186,7 +1184,11 @@ class AppRepository(
     private fun filterOperatorLogs(
         logs: List<com.kibot.shared.models.AuditLogRecord>,
     ): List<com.kibot.shared.models.AuditLogRecord> {
+        val cutoff = Instant.fromEpochMilliseconds(
+            Clock.System.now().toEpochMilliseconds() - LOG_SCREEN_FRESHNESS_WINDOW_MS,
+        )
         return logs
+            .filter { it.recordedAt >= cutoff }
             .filterNot { log ->
                 val category = log.category.uppercase()
                 val message = log.message.lowercase()
@@ -1305,22 +1307,25 @@ class AppRepository(
         serverLogs: List<String>,
         recentOrders: List<ServerRecentOrder>,
     ): List<LogUi> {
-        val timelineCards = liveTimeline.mapNotNull(::toServerLogCard)
-        val tradeCards = recentOrders.mapNotNull { order ->
-            toServerLiveEntry(order)?.let { entry ->
-                LogUi(
-                    level = "INFO",
-                    category = entry.category,
-                    message = entry.message,
-                    timeLabel = formatMomentLabel(Instant.fromEpochMilliseconds(entry.timestampEpochMs)),
-                )
-            }
-        }
-        val serverCards = serverLogs.mapIndexedNotNull { index, line ->
+        val freshCutoffEpochMs = Clock.System.now().toEpochMilliseconds() - LIVE_EVENT_FRESHNESS_WINDOW_MS
+        val timelineEntries = liveTimeline
+            .filter { it.timestampEpochMs >= freshCutoffEpochMs }
+            .mapNotNull(::toServerLiveEntry)
+        val tradeEntries = recentOrders
+            .filter { it.timestampEpochMs >= freshCutoffEpochMs }
+            .mapNotNull(::toServerLiveEntry)
+        val serverEntries = serverLogs.mapIndexedNotNull { index, line ->
+            val fallbackTimestamp = Clock.System.now().toEpochMilliseconds() - (index * 1_000L)
             toServerLiveEntry(
                 line = line,
-                fallbackTimestamp = Clock.System.now().toEpochMilliseconds() - (index * 1_000L),
-            )?.let { entry ->
+                fallbackTimestamp = fallbackTimestamp,
+            )
+        }
+        return (timelineEntries + tradeEntries + serverEntries)
+            .filter { it.message.isNotBlank() }
+            .sortedByDescending { it.timestampEpochMs }
+            .distinctBy { "${it.category}|${it.message}" }
+            .map { entry ->
                 LogUi(
                     level = "INFO",
                     category = entry.category,
@@ -1328,10 +1333,6 @@ class AppRepository(
                     timeLabel = formatMomentLabel(Instant.fromEpochMilliseconds(entry.timestampEpochMs)),
                 )
             }
-        }
-        return (timelineCards + tradeCards + serverCards)
-            .filter { it.message.isNotBlank() }
-            .distinctBy { "${it.category}|${it.message}" }
             .take(20)
     }
 
@@ -1507,7 +1508,7 @@ class AppRepository(
     companion object {
         private val HIDDEN_STABLE_PAIRS = setOf("usdt_idr", "usdc_idr", "indr_idr")
         private const val MIN_VISIBLE_HOLDING_IDR = 1.0
-        private const val AUXILIARY_CACHE_TTL_MS = 20_000L
+        private const val AUXILIARY_CACHE_TTL_MS = 6_000L
         private const val LIVE_SNAPSHOT_FRESHNESS_MS = 15_000L
         private const val LIVE_SNAPSHOT_UI_TTL_MS = 60_000L
         private const val LAN_DISCOVERY_RETRY_MS = 60_000L
@@ -1686,3 +1687,6 @@ private fun inferServerLogCategory(message: String): String {
         else -> "SYNC"
     }
 }
+
+private const val LIVE_EVENT_FRESHNESS_WINDOW_MS = 6 * 60 * 60 * 1000L
+private const val LOG_SCREEN_FRESHNESS_WINDOW_MS = 6 * 60 * 60 * 1000L

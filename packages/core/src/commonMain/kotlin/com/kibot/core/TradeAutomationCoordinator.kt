@@ -52,19 +52,31 @@ data class TradeAutomationConfig(
     val loserRotationMinTopCandidateRanking: Double = 0.56,
     val loserRotationMinScoreGap: Double = 0.045,
     val rotationMinNetUpgradePct: Double = 1.10,
+    val loserRotationIncrementalUpgradeFloorPct: Double = 0.18,
     val staleRotationMinAgeHours: Double = 0.50,
     val staleRotationMaxAbsPnlPct: Double = 0.22,
     val staleRotationMinTopCandidateRanking: Double = 0.60,
     val staleRotationMinScoreGap: Double = 0.10,
+    val staleRotationIncrementalUpgradeFloorPct: Double = 0.14,
     val staleUnderwaterKillMinAgeHours: Double = 0.75,
     val staleUnderwaterKillLossPct: Double = -0.38,
     val staleUnderwaterKillTopCandidateRanking: Double = 0.68,
     val staleUnderwaterKillMinScoreGap: Double = 0.08,
     val staleUnderwaterKillMinNetUpgradePct: Double = 1.30,
+    val staleUnderwaterKillIncrementalUpgradeFloorPct: Double = 0.10,
+    val tacticalStaleMaxAgeHours: Double = 3.6,
+    val tacticalStaleLossPct: Double = -0.22,
+    val tacticalStaleHealthyPnlCeilingPct: Double = 0.32,
+    val tacticalStaleRankingFloor: Double = 0.60,
+    val tacticalStaleOpportunityFloor: Double = 0.56,
+    val tacticalStaleReplacementRankingFloor: Double = 0.70,
+    val tacticalStaleReplacementNetPct: Double = 1.20,
     val partialTakeProfitEnabled: Boolean = true,
     val partialTakeProfitMinPnlPct: Double = 1.8,
     val partialTakeProfitSellRatio: Double = 0.45,
     val partialTakeProfitMinRemainingNotionalIdr: Double = 16_000.0,
+    val partialTakeProfitMinPositionNotionalIdr: Double = 26_000.0,
+    val partialTakeProfitMinNetSurplusIdr: Double = 220.0,
 )
 
 data class ManagedPosition(
@@ -372,6 +384,12 @@ class TradeAutomationCoordinator(
                 ageHours = ageHours,
                 allowRotation = allowRotation,
             ) -> ExitReason.ROTATION_EXIT
+            shouldTimeOutTactical(
+                position = position,
+                positionPairScore = pairScore,
+                topCandidate = topCandidate,
+                ageHours = ageHours,
+            ) -> ExitReason.TIME_EXIT
             pairScore != null &&
                 (!pairScore.allowed || pairScore.rankingScore < config.thesisInvalidRankingFloor) &&
                 ageHours >= config.thesisInvalidAgeHours &&
@@ -573,7 +591,7 @@ class TradeAutomationCoordinator(
         val candidate = topCandidate ?: return false
         if (candidate.pairId == position.pairId) return false
         if (candidate.rankingScore < config.loserRotationMinTopCandidateRanking) return false
-        if (!candidate.hasNetRotationUpgrade(config)) return false
+        if (!candidate.hasNetRotationUpgradeOver(position, positionPairScore, config, config.loserRotationIncrementalUpgradeFloorPct)) return false
         val positionScore = positionPairScore?.rankingScore ?: 0.50
         val scoreGap = candidate.rankingScore - positionScore
         return scoreGap >= config.loserRotationMinScoreGap
@@ -592,7 +610,7 @@ class TradeAutomationCoordinator(
         val candidate = topCandidate ?: return false
         if (candidate.pairId == position.pairId) return false
         if (candidate.rankingScore < config.staleRotationMinTopCandidateRanking) return false
-        if (!candidate.hasNetRotationUpgrade(config)) return false
+        if (!candidate.hasNetRotationUpgradeOver(position, positionPairScore, config, config.staleRotationIncrementalUpgradeFloorPct)) return false
         val positionScore = positionPairScore?.rankingScore ?: 0.50
         return (candidate.rankingScore - positionScore) >= config.staleRotationMinScoreGap
     }
@@ -611,14 +629,63 @@ class TradeAutomationCoordinator(
         if (candidate.pairId == position.pairId) return false
         if (candidate.rankingScore < config.staleUnderwaterKillTopCandidateRanking) return false
         if (candidate.expectedNetProfitabilityPct < config.staleUnderwaterKillMinNetUpgradePct) return false
-        if (!candidate.hasNetRotationUpgrade(config)) return false
+        if (!candidate.hasNetRotationUpgradeOver(position, positionPairScore, config, config.staleUnderwaterKillIncrementalUpgradeFloorPct)) return false
         val positionScore = positionPairScore?.rankingScore ?: 0.50
         return (candidate.rankingScore - positionScore) >= config.staleUnderwaterKillMinScoreGap
     }
 
-    private fun com.kibot.shared.models.CandidateOpportunity.hasNetRotationUpgrade(config: TradeAutomationConfig): Boolean {
+    private fun shouldTimeOutTactical(
+        position: ManagedPosition,
+        positionPairScore: PairScore?,
+        topCandidate: com.kibot.shared.models.CandidateOpportunity?,
+        ageHours: Double,
+    ): Boolean {
+        if (position.horizon != TradingHorizon.TACTICAL) return false
+        if (position.speculativePocket) return false
+        if (ageHours < config.tacticalStaleMaxAgeHours) return false
+        if (position.unrealizedPnlPct > config.tacticalStaleHealthyPnlCeilingPct) return false
+        if (position.unrealizedPnlPct <= config.tacticalStaleLossPct) return true
+        val weakContinuation = positionPairScore == null ||
+            !positionPairScore.allowed ||
+            positionPairScore.rankingScore < config.tacticalStaleRankingFloor ||
+            positionPairScore.marketOpportunityScore < config.tacticalStaleOpportunityFloor
+        val strongReplacement = topCandidate != null &&
+            topCandidate.pairId != position.pairId &&
+            topCandidate.rankingScore >= config.tacticalStaleReplacementRankingFloor &&
+            topCandidate.expectedNetProfitabilityPct >= config.tacticalStaleReplacementNetPct
+        return weakContinuation || strongReplacement
+    }
+
+    private fun com.kibot.shared.models.CandidateOpportunity.hasNetRotationUpgradeOver(
+        position: ManagedPosition,
+        positionPairScore: PairScore?,
+        config: TradeAutomationConfig,
+        minimumIncrementalUpgradePct: Double,
+    ): Boolean {
         val minimumExpectedNet = max(config.rotationMinNetUpgradePct, config.estimatedRoundTripCostPct + 0.35)
-        return expectedNetProfitabilityPct >= minimumExpectedNet
+        val continuationQuality = (
+            ((positionPairScore?.marketOpportunityScore ?: 0.42) * 0.45) +
+                ((positionPairScore?.trendQualityScore ?: 0.42) * 0.35) +
+                ((positionPairScore?.historicalExpectancyScore ?: 0.42) * 0.20)
+            ).coerceIn(0.18, 0.92)
+        val continuationEdgePct = (
+            0.18 +
+                (continuationQuality * 0.72) +
+                when {
+                    position.unrealizedPnlPct >= 1.20 -> 0.18
+                    position.unrealizedPnlPct >= 0.35 -> 0.10
+                    position.unrealizedPnlPct <= -0.55 -> -0.08
+                    else -> 0.0
+                }
+            ).coerceIn(0.0, 1.10)
+        val churnPenaltyPct = when {
+            position.unrealizedPnlPct >= 0.60 -> 0.22
+            position.unrealizedPnlPct >= 0.0 -> 0.16
+            position.unrealizedPnlPct >= -0.40 -> 0.10
+            else -> 0.04
+        }
+        val requiredNet = minimumExpectedNet + continuationEdgePct + churnPenaltyPct + minimumIncrementalUpgradePct
+        return expectedNetProfitabilityPct >= requiredNet
     }
 
     private fun resolveExitQuantity(
@@ -629,6 +696,12 @@ class TradeAutomationCoordinator(
         if (!config.partialTakeProfitEnabled) return position.quantity
         if (exitReason != ExitReason.PROFIT_EXIT) return position.quantity
         if (position.unrealizedPnlPct < config.partialTakeProfitMinPnlPct) return position.quantity
+        if (currentNotionalIdr < max(config.partialTakeProfitMinPositionNotionalIdr, executionConfig.minOrderNotionalIdr)) {
+            return position.quantity
+        }
+        if (position.unrealizedPnlIdr.toDoubleOrZero() < config.partialTakeProfitMinNetSurplusIdr) {
+            return position.quantity
+        }
 
         val fullQty = position.quantity.toDoubleOrZero().coerceAtLeast(0.0)
         if (fullQty <= 0.0) return position.quantity
