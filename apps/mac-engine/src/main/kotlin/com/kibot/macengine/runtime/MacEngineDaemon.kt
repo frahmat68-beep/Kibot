@@ -591,8 +591,33 @@ class MacEngineDaemon(
             desiredState = botState.desiredState,
         )
 
+        if (
+            lease?.currentHolder == config.device.deviceId &&
+            lease.conflictDetected &&
+            reconciliation.state == ReconciliationState.CLEAN &&
+            localHealth.status != HealthStatus.CRITICAL
+        ) {
+            val recoveredLease = controlPlane.acquireLease(
+                botId = config.controlPlane.botId,
+                deviceId = config.device.deviceId,
+                ttlSeconds = config.leaseTtlSeconds,
+            )
+            lastObservedLeaseTerm = recoveredLease.term
+            appendAuditLog(
+                level = LogLevel.WARN,
+                category = "FAILOVER",
+                message = "Lease conflict cleared by reacquiring term ${recoveredLease.term.value} after clean reconciliation.",
+            )
+            return true
+        }
+
         if (!evaluation.allowed) {
-            if (evaluation.failSafe || reconciliation.state != ReconciliationState.CLEAN) {
+            val shouldEscalateConflict = when {
+                reconciliation.state == ReconciliationState.BLOCKED -> true
+                lease?.conflictDetected == true && lease.currentHolder != config.device.deviceId -> true
+                else -> false
+            }
+            if (shouldEscalateConflict) {
                 controlPlane.markConflictSafeMode(
                     botId = config.controlPlane.botId,
                     reason = evaluation.reasons.joinToString(" "),
@@ -1437,12 +1462,8 @@ class MacEngineDaemon(
             return next.toLong().coerceAtLeast(1L)
         }
 
-        val lastSuccess = lastSuccessfulExchangePingAt
-        if (lastSuccess != null && (now - lastSuccess).inWholeSeconds <= 45) {
-            return smoothedExchangePingMs?.toLong()?.coerceAtLeast(1L)
-        }
-
         smoothedExchangePingMs = null
+        lastSuccessfulExchangePingAt = null
         return null
     }
 
