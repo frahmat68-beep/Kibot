@@ -82,6 +82,13 @@ class MacEngineDaemon(
     private val tradeAutomationCoordinator: TradeAutomationCoordinator = TradeAutomationCoordinator(),
     private val aiSupportCoordinator: GeminiSupportCoordinator? = null,
 ) {
+    private data class TargetEnforcementMemory(
+        val lastHourlyWindowIndex: Int = 0,
+        val consecutiveHourlyMisses: Int = 0,
+        val lastCheckpointWindowIndex: Int = 0,
+        val consecutiveCheckpointMisses: Int = 0,
+    )
+
     private val logger = LoggerFactory.getLogger(javaClass)
     private val adaptiveAiPolicyLoader = AdaptiveAiPolicyLoader(config.adaptiveAiPolicyPath)
     private val aiProviderStatusLoader = AiProviderStatusLoader()
@@ -122,6 +129,7 @@ class MacEngineDaemon(
     private var cachedRecentFillsKey: String? = null
     private var cachedAdaptiveAiPolicy: AdaptiveAiPolicy? = null
     private var adaptiveAiPolicyFetchedAt: Instant? = null
+    private var targetEnforcementMemory = TargetEnforcementMemory()
 
     suspend fun run() {
         logger.info("Mac engine daemon loop started.")
@@ -1485,7 +1493,7 @@ class MacEngineDaemon(
             localHealth.status == HealthStatus.CRITICAL ->
                 "Server Oracle lagi bermasalah: ${localHealth.warnings.firstOrNull().orEmpty()}".trim()
             targetPursuit != null && targetPursuit.active && topCandidate != "-" ->
-                "Target 25% dikejar. Progress ${formatDecimal(targetPursuit.currentProfitPct, 2)}%, urgency ${formatDecimal(targetPursuit.urgency * 100.0, 0)}%, fokus entry cepat $topCandidate."
+                "${targetPursuit.phase} • PnL 1D $pnlTodayPctLabel • urgency ${formatDecimal(targetPursuit.urgency * 100.0, 0)}% • fokus entry cepat $topCandidate."
             holdingsDetailed.isNotEmpty() && topCandidate != "-" ->
                 "Server pegang ${holdingsDetailed.size} aset dan fokus cari entry baru di $topCandidate."
             topCandidate != "-" && scanUniverseCount > 0 ->
@@ -1997,16 +2005,24 @@ class MacEngineDaemon(
         val adaptiveHints = adaptivePolicy?.pairHints.orEmpty()
         if (liveHints.isEmpty() && adaptiveHints.isEmpty()) return emptyList()
         val rankingScale = adaptivePolicy?.adjustments?.rankingBiasScale ?: 1.0
+        val executionHints = adaptivePolicy?.executionHints ?: AdaptiveAiExecutionHints()
         return (liveHints + adaptiveHints)
             .groupBy { it.pairId }
             .map { (pairId, hints) ->
-                val supportBias = hints.sumOf { it.supportBias }.coerceIn(0.0, 0.05) * rankingScale
-                val cautionBias = hints.sumOf { it.cautionBias }.coerceIn(0.0, 0.05)
+                val supportBonus = when {
+                    executionHints.concentrationPair == pairId -> 0.03
+                    pairId in executionHints.rotateNowPairs -> 0.02
+                    pairId in executionHints.holdLongerPairs -> 0.015
+                    else -> 0.0
+                }
+                val cautionBonus = if (pairId.belongsToAvoidFamily(executionHints.avoidPairFamilies)) 0.03 else 0.0
+                val supportBias = (hints.sumOf { it.supportBias } + supportBonus).coerceIn(0.0, 0.08) * rankingScale
+                val cautionBias = (hints.sumOf { it.cautionBias } + cautionBonus).coerceIn(0.0, 0.06)
                 val latest = hints.maxByOrNull { it.generatedAt.toEpochMilliseconds() } ?: hints.first()
                 latest.copy(
                     pairId = pairId,
-                    supportBias = supportBias.coerceIn(0.0, 0.05),
-                    cautionBias = cautionBias.coerceIn(0.0, 0.05),
+                    supportBias = supportBias.coerceIn(0.0, 0.08),
+                    cautionBias = cautionBias.coerceIn(0.0, 0.06),
                     rationale = hints.joinToString(" | ") { it.rationale }.take(240),
                 )
             }
@@ -2024,34 +2040,92 @@ class MacEngineDaemon(
             adaptiveAiPolicy = adaptiveAiPolicy,
             now = now,
         )
+        val enforcementMemory = updateTargetEnforcementMemory(pursuit)
         if (!pursuit.active && adaptiveAiPolicy == null) return cycle
 
         val aiAdjustments = adaptiveAiPolicy?.adjustments ?: AdaptiveAiAdjustments()
+        val executionHints = adaptiveAiPolicy?.executionHints ?: AdaptiveAiExecutionHints()
+        val repeatedHourlyPenalty = enforcementMemory.consecutiveHourlyMisses.coerceIn(0, 4)
+        val repeatedCheckpointPenalty = enforcementMemory.consecutiveCheckpointMisses.coerceIn(0, 3)
         val budgetBoostMultiplier = (
             pursuit.budgetBoostMultiplier *
-                (1.0 + aiAdjustments.budgetBoostMultiplierDelta.coerceIn(0.0, 0.35))
+                (1.0 + aiAdjustments.budgetBoostMultiplierDelta.coerceIn(0.0, 0.35)) +
+                (repeatedHourlyPenalty * 0.04) +
+                (repeatedCheckpointPenalty * 0.06)
             ).coerceIn(1.0, 2.0)
         val boostedBudget = (cycle.deploymentPlan.suggestedPerPositionBudgetIdr * budgetBoostMultiplier)
             .coerceAtLeast(cycle.deploymentPlan.suggestedPerPositionBudgetIdr)
         val boostedReservePct = (
             cycle.deploymentPlan.targetCashReservePct -
                 pursuit.reserveReliefPct -
-                aiAdjustments.reserveReliefPctDelta.coerceIn(0.0, 0.08)
+                aiAdjustments.reserveReliefPctDelta.coerceIn(0.0, 0.08) -
+                (repeatedCheckpointPenalty * 0.01) -
+                (if (executionHints.concentrationPair != null) 0.005 else 0.0)
             ).coerceIn(0.02, cycle.deploymentPlan.targetCashReservePct.coerceAtLeast(0.02))
-        val boostedActivePositions = (
-            cycle.deploymentPlan.maxActivePositions +
+        val openPositions = cycle.portfolio.positions.count { it.state != com.kibot.shared.models.PositionState.CLOSED }
+        val candidates = cycle.deploymentPlan.candidates
+        val actionProfile = when {
+            repeatedCheckpointPenalty >= 2 -> "EMERGENCY_PURSUIT"
+            pursuit.checkpointEscalationLevel >= 3 -> "EMERGENCY_PURSUIT"
+            repeatedHourlyPenalty >= 3 -> "HARD_HOURLY_PUSH"
+            pursuit.checkpointMissed -> "CHECKPOINT_REPLAN"
+            pursuit.hourlyEscalationLevel >= 2 -> "HARD_HOURLY_PUSH"
+            pursuit.hourlyMissed -> "HOURLY_PUSH"
+            pursuit.profitWindowOpen -> "PROFIT_HUNT"
+            else -> "BASE"
+        }
+        val hourlyEnforcementHeadroom = when {
+            repeatedCheckpointPenalty >= 2 -> 2
+            pursuit.checkpointEscalationLevel >= 2 -> 2
+            repeatedHourlyPenalty >= 3 -> 2
+            pursuit.forcedReplan || pursuit.hourlyMissed -> 1
+            pursuit.profitWindowOpen -> 1
+            else -> 0
+        }
+        val requestedSlotHeadroom = (
+            cycle.riskDecision.maxAllowedAdditionalPositions +
                 pursuit.extraSlots +
-                aiAdjustments.extraSlotsDelta.coerceIn(0, 2)
-            ).coerceAtLeast(cycle.deploymentPlan.maxActivePositions)
-            .coerceAtMost(6)
+                hourlyEnforcementHeadroom +
+                aiAdjustments.extraSlotsDelta.coerceIn(0, 3)
+            ).coerceAtLeast(0)
+        val opportunityQualifiedHeadroom = qualifiedAdditionalHeadroom(
+            candidates = candidates,
+            openPositions = openPositions,
+            profitWindowOpen = pursuit.profitWindowOpen,
+            checkpointMissed = pursuit.checkpointMissed,
+        )
+        val effectiveHeadroom = minOf(
+            requestedSlotHeadroom,
+            maxOf(opportunityQualifiedHeadroom, cycle.deploymentPlan.maxActivePositions - openPositions),
+        ).coerceAtLeast(0)
+        val boostedActivePositions = maxOf(
+            cycle.deploymentPlan.maxActivePositions,
+            openPositions + effectiveHeadroom,
+        ).coerceAtMost(6)
         val existingCapitalTarget = cycle.deploymentPlan.capitalUtilizationTargetPct
             .coerceIn(0.02, 0.98)
         val boostedCapitalTarget = (1.0 - boostedReservePct).coerceIn(0.02, 0.98)
+        val normalizedBudget = finalizePerPositionBudgetIdr(
+            currentEquityIdr = cycle.portfolio.totalEquityIdr.toDoubleOrZero(),
+            boostedCapitalTargetPct = boostedCapitalTarget,
+            baseBudgetIdr = boostedBudget,
+            finalActivePositions = boostedActivePositions,
+            openPositions = openPositions,
+            candidates = candidates,
+            concentrationBoostPct = pursuit.concentrationBoostPct +
+                aiAdjustments.allocationFocusPctDelta.coerceIn(0.0, 0.16),
+            profitWindowOpen = pursuit.profitWindowOpen,
+            concentrationPair = executionHints.concentrationPair,
+        )
 
         val updatedDeploymentPlan = cycle.deploymentPlan.copy(
-            allowRotation = cycle.deploymentPlan.allowRotation || pursuit.urgency >= 0.42,
+            allowRotation = cycle.deploymentPlan.allowRotation ||
+                pursuit.urgency >= 0.42 ||
+                pursuit.hourlyMissed ||
+                pursuit.checkpointMissed ||
+                executionHints.rotateNowPairs.isNotEmpty(),
             maxActivePositions = boostedActivePositions,
-            suggestedPerPositionBudgetIdr = boostedBudget,
+            suggestedPerPositionBudgetIdr = normalizedBudget,
             targetCashReservePct = boostedReservePct,
             capitalUtilizationTargetPct = maxOf(existingCapitalTarget, boostedCapitalTarget),
             rationale = cycle.deploymentPlan.rationale + pursuit.rationale,
@@ -2062,7 +2136,7 @@ class MacEngineDaemon(
                 executionPlan = plan,
                 balances = balances,
                 marketQuotes = marketQuotes,
-                targetBudgetIdr = boostedBudget,
+                targetBudgetIdr = normalizedBudget,
                 concentrationBoostPct = pursuit.concentrationBoostPct +
                     aiAdjustments.allocationFocusPctDelta.coerceIn(0.0, 0.16),
                 executionBoostMultiplier = pursuit.executionBoostMultiplier,
@@ -2074,6 +2148,15 @@ class MacEngineDaemon(
             executionPlan = updatedExecutionPlan,
             summary = cycle.summary + buildList {
                 add("Daily target ${pursuit.phase}: ${formatDecimal(pursuit.currentProfitPct, 2)}% / 25.00% dengan urgency ${formatDecimal(pursuit.urgency * 100.0, 0)}%.")
+                if (pursuit.hourlyMissed) add("Evaluasi 1 jam miss ${pursuit.hourlyMissCount} langkah (${formatDecimal(pursuit.hourlyShortfallPct, 2)}%), action $actionProfile aktif.")
+                if (pursuit.checkpointMissed) add("Checkpoint 3 jam ke-${pursuit.checkpointWindowIndex} miss ${formatDecimal(pursuit.checkpointShortfallPct, 2)}%, jadi replan wajib aktif.")
+                if (enforcementMemory.consecutiveHourlyMisses > 1) add("Miss hourly berturut-turut ${enforcementMemory.consecutiveHourlyMisses}x, jadi tekanan pursuit ditahan tetap tinggi.")
+                if (enforcementMemory.consecutiveCheckpointMisses > 0) add("Miss checkpoint berturut-turut ${enforcementMemory.consecutiveCheckpointMisses}x, jadi rotasi dan sizing dipaksa lebih keras.")
+                if (pursuit.profitWindowOpen && !pursuit.checkpointMissed) add("Profit window terbuka, jadi bot tetap agresif cari entry cepat walau checkpoint hanya jadi patokan.")
+                if (pursuit.forcedReplan) add("Bot masuk forced replan untuk mengejar target harian yang tertinggal.")
+                if (effectiveHeadroom < requestedSlotHeadroom) add("Slot tambahan dibatasi kualitas shortlist agar agresif tetap profit-first.")
+                if (executionHints.rotateNowPairs.isNotEmpty()) add("AI execution hint mendorong rotasi ke ${executionHints.rotateNowPairs.take(2).joinToString(",") { it.value }}.")
+                executionHints.concentrationPair?.let { add("AI execution hint mendorong konsentrasi modal ke ${it.value}.") }
                 if (pursuit.urgency >= 0.40) add("Sizing entry dinaikkan dan reserve dikendurkan untuk kejar target harian.")
                 if (pursuit.overdriveAllowed) add("Target tercapai tapi breakout masih ganas, jadi bot tetap tekan entry winner dan biarkan profit lanjut.")
                 if (updatedDeploymentPlan.allowRotation) add("Rotasi loser/stagnan dipercepat saat pair baru terlihat lebih eksplosif.")
@@ -2119,6 +2202,101 @@ class MacEngineDaemon(
         )
     }
 
+    private fun qualifiedAdditionalHeadroom(
+        candidates: List<com.kibot.shared.models.CandidateOpportunity>,
+        openPositions: Int,
+        profitWindowOpen: Boolean,
+        checkpointMissed: Boolean,
+    ): Int {
+        if (candidates.isEmpty()) return 0
+        val strongCandidates = candidates.count {
+            it.rankingScore >= 0.72 &&
+                it.marketOpportunityScore >= 0.66 &&
+                it.expectedNetProfitabilityPct >= 1.20
+        }
+        val explosiveCandidates = candidates.count {
+            it.rankingScore >= 0.82 &&
+                it.marketOpportunityScore >= 0.76 &&
+                it.expectedNetProfitabilityPct >= 2.10
+        }
+        val desiredAdditional = when {
+            explosiveCandidates >= 2 -> 2
+            checkpointMissed && strongCandidates >= 2 -> 2
+            profitWindowOpen && strongCandidates >= 2 -> 2
+            strongCandidates >= 1 -> 1
+            else -> 0
+        }
+        return desiredAdditional.coerceAtLeast((0 - openPositions).coerceAtLeast(0))
+    }
+
+    private fun finalizePerPositionBudgetIdr(
+        currentEquityIdr: Double,
+        boostedCapitalTargetPct: Double,
+        baseBudgetIdr: Double,
+        finalActivePositions: Int,
+        openPositions: Int,
+        candidates: List<com.kibot.shared.models.CandidateOpportunity>,
+        concentrationBoostPct: Double,
+        profitWindowOpen: Boolean,
+        concentrationPair: com.kibot.shared.models.PairId?,
+    ): Double {
+        val deployableCapitalIdr = (currentEquityIdr * boostedCapitalTargetPct).coerceAtLeast(baseBudgetIdr)
+        val normalizedSlotCount = maxOf(finalActivePositions, openPositions + 1, 1)
+        val slotNormalizedBudgetIdr = deployableCapitalIdr / normalizedSlotCount
+        val topCandidate = candidates.firstOrNull()
+        val aiConcentrationBoost = if (concentrationPair != null && concentrationPair == topCandidate?.pairId) 0.06 else 0.0
+        val concentrationMultiplier = when {
+            topCandidate != null &&
+                topCandidate.rankingScore >= 0.84 &&
+                topCandidate.expectedNetProfitabilityPct >= 2.30 ->
+                1.18 + concentrationBoostPct.coerceIn(0.0, 0.18) + aiConcentrationBoost
+            profitWindowOpen -> 1.10 + concentrationBoostPct.coerceIn(0.0, 0.14) + aiConcentrationBoost
+            else -> 1.0 + (concentrationBoostPct.coerceIn(0.0, 0.10) * 0.6) + aiConcentrationBoost
+        }
+        val floorBudgetIdr = maxOf(
+            baseBudgetIdr * 0.92,
+            slotNormalizedBudgetIdr * concentrationMultiplier,
+        )
+        val ceilingBudgetIdr = deployableCapitalIdr * if (profitWindowOpen) 0.78 else 0.58
+        return floorBudgetIdr
+            .coerceAtMost(ceilingBudgetIdr.coerceAtLeast(baseBudgetIdr * 0.94))
+            .coerceAtLeast(baseBudgetIdr * 0.88)
+    }
+
+    private fun updateTargetEnforcementMemory(
+        pursuit: DailyTargetPursuit,
+    ): TargetEnforcementMemory {
+        val current = targetEnforcementMemory
+        val nextHourlyMisses = if (pursuit.hourlyWindowIndex > current.lastHourlyWindowIndex) {
+            if (pursuit.hourlyMissed) current.consecutiveHourlyMisses + 1 else 0
+        } else {
+            current.consecutiveHourlyMisses
+        }
+        val nextCheckpointMisses = if (pursuit.checkpointWindowIndex > current.lastCheckpointWindowIndex) {
+            if (pursuit.checkpointMissed) current.consecutiveCheckpointMisses + 1 else 0
+        } else {
+            current.consecutiveCheckpointMisses
+        }
+        val updated = current.copy(
+            lastHourlyWindowIndex = maxOf(current.lastHourlyWindowIndex, pursuit.hourlyWindowIndex),
+            consecutiveHourlyMisses = nextHourlyMisses.coerceIn(0, 6),
+            lastCheckpointWindowIndex = maxOf(current.lastCheckpointWindowIndex, pursuit.checkpointWindowIndex),
+            consecutiveCheckpointMisses = nextCheckpointMisses.coerceIn(0, 4),
+        )
+        targetEnforcementMemory = updated
+        return updated
+    }
+
+    private fun com.kibot.shared.models.PairId.belongsToAvoidFamily(
+        families: List<String>,
+    ): Boolean {
+        if (families.isEmpty()) return false
+        val base = value.substringBefore('_').lowercase()
+        return families.any { family ->
+            family == base || value.contains(family, ignoreCase = true)
+        }
+    }
+
     private fun buildAdaptiveTradeAutomationCoordinator(
         cycle: com.kibot.core.StrategyCycleResult,
     ): TradeAutomationCoordinator {
@@ -2127,23 +2305,26 @@ class MacEngineDaemon(
             adaptiveAiPolicy = cachedAdaptiveAiPolicy,
             now = Clock.System.now(),
         )
+        val enforcementMemory = targetEnforcementMemory
         val adjustments = cachedAdaptiveAiPolicy?.adjustments
         if (adjustments == null && !pursuit.active) return tradeAutomationCoordinator
         val aiAdjustments = adjustments ?: AdaptiveAiAdjustments()
+        val repeatedHourlyPenalty = enforcementMemory.consecutiveHourlyMisses.coerceIn(0, 4)
+        val repeatedCheckpointPenalty = enforcementMemory.consecutiveCheckpointMisses.coerceIn(0, 3)
         val defaults = TradeAutomationConfig()
         val adjusted = TradeAutomationConfig(
-            staleRotationMinAgeHours = (defaults.staleRotationMinAgeHours + aiAdjustments.rotationAgeHoursDelta + pursuit.rotationAgeHoursDelta)
-                .coerceAtLeast(0.18),
+            staleRotationMinAgeHours = (defaults.staleRotationMinAgeHours + aiAdjustments.rotationAgeHoursDelta + pursuit.rotationAgeHoursDelta - (repeatedHourlyPenalty * 0.03) - (repeatedCheckpointPenalty * 0.04))
+                .coerceAtLeast(0.12),
             staleRotationMinScoreGap = (defaults.staleRotationMinScoreGap + aiAdjustments.rotationScoreGapDelta + pursuit.rotationScoreGapDelta)
                 .coerceIn(0.02, 0.14),
-            loserRotationMinAgeHours = (defaults.loserRotationMinAgeHours + ((aiAdjustments.rotationAgeHoursDelta + pursuit.rotationAgeHoursDelta) * 0.75))
+            loserRotationMinAgeHours = (defaults.loserRotationMinAgeHours + ((aiAdjustments.rotationAgeHoursDelta + pursuit.rotationAgeHoursDelta) * 0.75) - (repeatedHourlyPenalty * 0.02) - (repeatedCheckpointPenalty * 0.03))
                 .coerceAtLeast(0.12),
             loserRotationMinScoreGap = (defaults.loserRotationMinScoreGap + aiAdjustments.rotationScoreGapDelta + pursuit.rotationScoreGapDelta)
                 .coerceIn(0.02, 0.10),
             partialTakeProfitMinPnlPct = (defaults.partialTakeProfitMinPnlPct + aiAdjustments.partialTakeProfitPnlDelta + pursuit.partialTakeProfitPnlDelta)
                 .coerceIn(0.95, 2.8),
-            minMeaningfulNonEmergencyExitProfitPct = (defaults.minMeaningfulNonEmergencyExitProfitPct + aiAdjustments.meaningfulExitProfitDelta + pursuit.meaningfulExitProfitDelta)
-                .coerceIn(0.22, 0.95),
+            minMeaningfulNonEmergencyExitProfitPct = (defaults.minMeaningfulNonEmergencyExitProfitPct + aiAdjustments.meaningfulExitProfitDelta + pursuit.meaningfulExitProfitDelta - (repeatedHourlyPenalty * 0.03) - (repeatedCheckpointPenalty * 0.05))
+                .coerceIn(0.16, 0.95),
             breakoutWinnerRunMinPnlPct = (defaults.breakoutWinnerRunMinPnlPct + aiAdjustments.winnerRunPnlDelta + pursuit.winnerRunPnlDelta)
                 .coerceIn(0.35, 1.2),
             speculativeWinnerRunMinPnlPct = (defaults.speculativeWinnerRunMinPnlPct + aiAdjustments.winnerRunPnlDelta + pursuit.winnerRunPnlDelta)

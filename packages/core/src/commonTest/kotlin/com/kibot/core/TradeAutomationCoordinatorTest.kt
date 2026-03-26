@@ -310,7 +310,7 @@ class TradeAutomationCoordinatorTest {
     }
 
     @Test
-    fun `time exit is blocked when sell price is still below break even`() {
+    fun `time exit can close stale position even below break even`() {
         val now = Clock.System.now()
         val openedAt = Instant.fromEpochMilliseconds(now.toEpochMilliseconds() - (14 * 60 * 60 * 1000))
         val quotes = listOf(
@@ -337,29 +337,26 @@ class TradeAutomationCoordinatorTest {
             ),
             marketQuotes = quotes,
         )
-        val recentOrders = listOf(
-            com.kibot.shared.models.OrderSnapshot(
-                orderId = OrderId("buy-time-1"),
-                clientOrderId = ClientOrderId("buy-time-1"),
+        val positions = listOf(
+            ManagedPosition(
                 pairId = PairId("btc_idr"),
-                side = OrderSide.BUY,
-                orderType = OrderType.LIMIT,
-                status = OrderStatus.FILLED,
-                price = DecimalValue("100000"),
-                originalQuantity = DecimalValue("0.2"),
-                executedQuantity = DecimalValue("0.2"),
-                remainingQuantity = DecimalValue.Zero,
-                createdAt = openedAt,
-                updatedAt = openedAt,
+                quantity = DecimalValue("0.2"),
+                averageEntryPrice = DecimalValue("100000"),
+                currentBidPrice = DecimalValue("99000"),
+                currentValueIdr = DecimalValue("19800"),
+                unrealizedPnlIdr = DecimalValue("-200"),
+                unrealizedPnlPct = -1.0,
+                breakEvenPrice = DecimalValue("100660"),
+                takeProfitPrice = DecimalValue("104000"),
+                stopPrice = DecimalValue("97000"),
+                openedAt = openedAt,
+                updatedAt = now,
+                horizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
+                setupType = com.kibot.shared.models.SetupType.HEALTHY_SHORT_TERM_PULLBACK,
+                pairTier = com.kibot.shared.models.PairTier.TIER_A,
+                speculativePocket = false,
+                expectedHoldingHours = 8.0,
             ),
-        )
-
-        val positions = coordinator.deriveManagedPositions(
-            balances = listOf(BalanceSnapshot(asset = "btc", free = DecimalValue("0.2"))),
-            marketQuotes = quotes,
-            reconciledOrders = recentOrders,
-            rankedPairs = cycle.rankedPairs,
-            now = now,
         )
 
         val decision = coordinator.planExit(
@@ -369,7 +366,8 @@ class TradeAutomationCoordinatorTest {
             activeOrders = emptyList(),
         )
 
-        assertNull(decision)
+        assertNotNull(decision)
+        assertEquals(ExitReason.TIME_EXIT, decision.reason)
     }
 
     @Test

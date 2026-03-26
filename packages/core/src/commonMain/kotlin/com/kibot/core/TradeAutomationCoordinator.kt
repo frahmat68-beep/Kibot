@@ -51,6 +51,7 @@ data class TradeAutomationConfig(
     val loserRotationMinLossPct: Double = -0.12,
     val loserRotationMinTopCandidateRanking: Double = 0.56,
     val loserRotationMinScoreGap: Double = 0.045,
+    val rotationMinNetUpgradePct: Double = 1.10,
     val staleRotationMinAgeHours: Double = 0.50,
     val staleRotationMaxAbsPnlPct: Double = 0.22,
     val staleRotationMinTopCandidateRanking: Double = 0.60,
@@ -384,8 +385,6 @@ class TradeAutomationCoordinator(
         val nonEmergencyExitBelowBreakEven = !useEmergencyMarketExit &&
             exitReason in setOf(
                 ExitReason.PROFIT_EXIT,
-                ExitReason.TIME_EXIT,
-                ExitReason.THESIS_INVALID_EXIT,
                 ExitReason.PROFIT_PROTECTION_EXIT,
             ) &&
             currentBid < breakEvenPrice
@@ -395,8 +394,6 @@ class TradeAutomationCoordinator(
         val nonEmergencyExitTooSmall = !useEmergencyMarketExit &&
             exitReason in setOf(
                 ExitReason.PROFIT_EXIT,
-                ExitReason.TIME_EXIT,
-                ExitReason.THESIS_INVALID_EXIT,
                 ExitReason.PROFIT_PROTECTION_EXIT,
             ) &&
             position.unrealizedPnlPct < config.minMeaningfulNonEmergencyExitProfitPct &&
@@ -564,6 +561,7 @@ class TradeAutomationCoordinator(
         val candidate = topCandidate ?: return false
         if (candidate.pairId == position.pairId) return false
         if (candidate.rankingScore < config.loserRotationMinTopCandidateRanking) return false
+        if (!candidate.hasNetRotationUpgrade(config)) return false
         val positionScore = positionPairScore?.rankingScore ?: 0.50
         val scoreGap = candidate.rankingScore - positionScore
         return scoreGap >= config.loserRotationMinScoreGap
@@ -582,8 +580,14 @@ class TradeAutomationCoordinator(
         val candidate = topCandidate ?: return false
         if (candidate.pairId == position.pairId) return false
         if (candidate.rankingScore < config.staleRotationMinTopCandidateRanking) return false
+        if (!candidate.hasNetRotationUpgrade(config)) return false
         val positionScore = positionPairScore?.rankingScore ?: 0.50
         return (candidate.rankingScore - positionScore) >= config.staleRotationMinScoreGap
+    }
+
+    private fun com.kibot.shared.models.CandidateOpportunity.hasNetRotationUpgrade(config: TradeAutomationConfig): Boolean {
+        val minimumExpectedNet = max(config.rotationMinNetUpgradePct, config.estimatedRoundTripCostPct + 0.35)
+        return expectedNetProfitabilityPct >= minimumExpectedNet
     }
 
     private fun resolveExitQuantity(

@@ -457,10 +457,10 @@ def build_adaptive_policy(
     pair_biases = []
     for index, pair in enumerate(focus_pairs):
         mention_score = focus_counter.get(pair, 1)
-        support_bias = min(0.05, 0.014 + (consensus_strength * 0.012) + (mention_score - 1) * 0.006 - (index * 0.002))
+        support_bias = min(0.08, 0.018 + (consensus_strength * 0.018) + (mention_score - 1) * 0.008 - (index * 0.002))
         caution_bias = 0.0
         if "micro-cap" in merged_text or "liquidity trap" in merged_text:
-            caution_bias = min(0.03, 0.006 + (index * 0.003))
+            caution_bias = min(0.05, 0.008 + (index * 0.004))
         pair_biases.append(
             {
                 "pair_id": pair,
@@ -469,30 +469,62 @@ def build_adaptive_policy(
                 "rationale": "Consensus AI audit boost.",
             }
         )
+    pair_bias_map = {item["pair_id"]: item for item in pair_biases}
+
+    rotate_now_pairs = focus_pairs[1:3] if slow_rotation_detected and len(focus_pairs) > 1 else focus_pairs[:1]
+    hold_longer_pairs = []
+    if missed_momentum_detected and focus_pairs:
+        hold_longer_pairs.append(focus_pairs[0])
+    concentration_pair = None
+    if focus_pairs:
+        best_focus_pair = max(
+            focus_pairs,
+            key=lambda pair: (
+                pair_bias_map.get(pair, {}).get("support_bias", 0.0) -
+                pair_bias_map.get(pair, {}).get("caution_bias", 0.0)
+            ),
+        )
+        if consensus_strength >= 0.45:
+            concentration_pair = best_focus_pair
+    avoid_pair_families = []
+    if "liquidity trap" in merged_text or "micro-cap" in merged_text or "sideways" in merged_text:
+        safe_focus_families = {pair.split("_", 1)[0] for pair in focus_pairs}
+        avoid_pair_families = [
+            pair.split("_", 1)[0]
+            for pair in candidate_pairs
+            if pair.split("_", 1)[0] not in safe_focus_families
+        ][:2]
 
     policy = {
         "generated_at_utc": payload.get("generated_at_utc"),
+        "policy_ttl_minutes": 150 if consensus_strength >= 0.66 else 110,
         "successful_providers": successful,
         "failed_providers": sorted(errors.keys()),
         "consensus_strength": round(consensus_strength, 4),
         "focus_pairs": focus_pairs,
         "pair_biases": pair_biases,
         "adjustments": {
-            "ranking_bias_scale": round(1.0 + (consensus_strength * 0.28), 4),
+            "ranking_bias_scale": round(1.0 + (consensus_strength * 0.40), 4),
             "rotation_age_hours_delta": round(-0.18 if slow_rotation_detected else -0.08 * consensus_strength, 4),
             "rotation_score_gap_delta": round(-0.03 if slow_rotation_detected else 0.0, 4),
             "partial_take_profit_pnl_delta": round(-0.32 if late_exit_detected else -0.10 * consensus_strength, 4),
             "winner_run_pnl_delta": round(0.18 if missed_momentum_detected else 0.0, 4),
-            "meaningful_exit_profit_delta": round(-0.10 if late_exit_detected else 0.0, 4),
-            "budget_boost_multiplier_delta": round(0.06 + (consensus_strength * 0.10), 4),
-            "reserve_relief_pct_delta": round(0.008 + (consensus_strength * 0.014), 4),
-            "allocation_focus_pct_delta": round(0.015 + (consensus_strength * 0.035), 4),
-            "extra_slots_delta": 1 if consensus_strength >= 0.67 else 0,
+            "meaningful_exit_profit_delta": round(-0.14 if late_exit_detected else -0.04 * consensus_strength, 4),
+            "budget_boost_multiplier_delta": round(0.08 + (consensus_strength * 0.14), 4),
+            "reserve_relief_pct_delta": round(0.010 + (consensus_strength * 0.018), 4),
+            "allocation_focus_pct_delta": round(0.020 + (consensus_strength * 0.045), 4),
+            "extra_slots_delta": 2 if consensus_strength >= 0.82 else (1 if consensus_strength >= 0.64 else 0),
         },
         "signals": {
             "slow_rotation_detected": slow_rotation_detected,
             "late_exit_detected": late_exit_detected,
             "missed_momentum_detected": missed_momentum_detected,
+        },
+        "execution": {
+            "rotate_now_pairs": rotate_now_pairs,
+            "hold_longer_pairs": hold_longer_pairs,
+            "concentration_pair": concentration_pair,
+            "avoid_pair_families": avoid_pair_families,
         },
     }
     return policy

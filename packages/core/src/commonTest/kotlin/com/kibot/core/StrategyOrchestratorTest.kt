@@ -7,6 +7,10 @@ import com.kibot.shared.models.DecimalValue
 import com.kibot.shared.models.EngineHealthSnapshot
 import com.kibot.shared.models.HealthStatus
 import com.kibot.shared.models.MarketQuote
+import com.kibot.shared.models.OrderId
+import com.kibot.shared.models.OrderSide
+import com.kibot.shared.models.OrderSnapshot
+import com.kibot.shared.models.OrderStatus
 import com.kibot.shared.models.OrderType
 import com.kibot.shared.models.PairId
 import com.kibot.shared.models.SetupType
@@ -418,6 +422,66 @@ class StrategyOrchestratorTest {
 
         val plan = assertNotNull(analysis.executionPlan)
         assertEquals(OrderType.MARKET, plan.orderType)
+    }
+
+    @Test
+    fun pendingBuyOnDifferentPairDoesNotBlockNewEntry() {
+        val now = Clock.System.now()
+        val quotes = listOf(
+            quote(
+                pair = "alpha_idr",
+                price = 101.0,
+                spreadPct = 0.12,
+                slippagePct = 0.10,
+                trendScore = 0.61,
+                expectancyScore = 0.62,
+                volume = 25_000_000.0,
+                holdabilityScore = 0.60,
+                shortTermReturnPct = 0.42,
+                mediumTermReturnPct = 1.10,
+                now = now,
+            ),
+            quote(
+                pair = "beta_idr",
+                price = 99.0,
+                spreadPct = 0.11,
+                slippagePct = 0.09,
+                trendScore = 0.60,
+                expectancyScore = 0.63,
+                volume = 24_000_000.0,
+                holdabilityScore = 0.61,
+                shortTermReturnPct = 0.40,
+                mediumTermReturnPct = 1.08,
+                now = now,
+            ),
+        )
+
+        val analysis = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = listOf(BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(100_000.0))),
+            openOrders = listOf(
+                OrderSnapshot(
+                    orderId = OrderId("buy-open-1"),
+                    clientOrderId = com.kibot.shared.models.ClientOrderId("buy-open-1"),
+                    pairId = PairId("alpha_idr"),
+                    side = OrderSide.BUY,
+                    orderType = OrderType.LIMIT,
+                    status = OrderStatus.OPEN,
+                    price = DecimalValue.fromDouble(101.0),
+                    originalQuantity = DecimalValue.fromDouble(100.0),
+                    executedQuantity = DecimalValue.Zero,
+                    remainingQuantity = DecimalValue.fromDouble(100.0),
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            ),
+            dailyRisk = null,
+            health = healthyEngine(),
+            marketQuotes = quotes,
+        )
+
+        assertNotNull(analysis.selectedSignal)
+        assertEquals("beta_idr", analysis.selectedSignal?.pairId?.value)
     }
 
     private fun healthyEngine() = EngineHealthSnapshot(

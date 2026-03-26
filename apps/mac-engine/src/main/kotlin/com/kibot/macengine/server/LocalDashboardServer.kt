@@ -73,7 +73,7 @@ class LocalDashboardServer(
                             name = "viewport"
                             content = "width=device-width, initial-scale=1"
                         }
-                        unsafe { +"""<link rel="icon" type="image/png" href="/favicon.png">""" }
+                        unsafe { +"""<link rel="icon" type="image/png" href="/favicon.png?v=4">""" }
                         style {
                             unsafe {
                                 +dashboardStyles()
@@ -97,16 +97,16 @@ class LocalDashboardServer(
                                     else css = 'pill-lag';
                                   }
                                   badge.className = 'pill ' + css;
-                                  label.textContent = 'Ping ' + pingText;
+                                  label.textContent =  pingText;
                                 }
 
                                 function renderTimeline(entries) {
                                   const container = document.getElementById('log-lines');
                                   container.innerHTML = '';
                                   if (!entries || entries.length === 0) {
-                                    const empty = document.createElement('p');
-                                    empty.textContent = 'Belum ada aktivitas server terbaru.';
-                                    empty.className = 'muted-copy';
+                                    const empty = document.createElement('div');
+                                    empty.className = 'empty-state';
+                                    empty.innerHTML = '<div class="empty-title">Log server belum ada</div><div class="empty-copy">Status rotasi, target, dan fokus pair akan tampil otomatis di sini.</div>';
                                     container.appendChild(empty);
                                     return;
                                   }
@@ -139,17 +139,12 @@ class LocalDashboardServer(
                                   if (!container) return;
                                   container.innerHTML = '';
                                   const items = (pairs || []).filter(Boolean).slice(0, 9);
-                                  if (items.length === 0) {
-                                    const empty = document.createElement('div');
-                                    empty.className = 'radar-pill radar-pill-empty';
-                                    empty.textContent = 'scan pending';
-                                    container.appendChild(empty);
-                                    return;
-                                  }
-                                  items.forEach(pair => {
+                                  const normalized = items.concat(Array(Math.max(0, 9 - items.length)).fill('--'));
+                                  normalized.forEach(pair => {
+                                    const isEmpty = String(pair) === '--';
                                     const pill = document.createElement('div');
-                                    pill.className = 'radar-pill ' + radarPillClass(pair);
-                                    pill.textContent = String(pair).toLowerCase();
+                                    pill.className = 'radar-pill ' + (isEmpty ? 'radar-pill-empty' : radarPillClass(pair));
+                                    pill.textContent = isEmpty ? '' : String(pair).toLowerCase();
                                     container.appendChild(pill);
                                   });
                                 }
@@ -158,9 +153,9 @@ class LocalDashboardServer(
                                   const container = document.getElementById('trade-lines');
                                   container.innerHTML = '';
                                   if (!entries || entries.length === 0) {
-                                    const empty = document.createElement('p');
-                                    empty.textContent = 'Belum ada trade history.';
-                                    empty.className = 'muted-copy';
+                                    const empty = document.createElement('div');
+                                    empty.className = 'empty-state';
+                                    empty.innerHTML = '<div class="empty-title">Trade history belum ada</div><div class="empty-copy">Eksekusi terbaru akan muncul di sini saat bot sudah isi order.</div>';
                                     container.appendChild(empty);
                                     return;
                                   }
@@ -255,15 +250,22 @@ class LocalDashboardServer(
                                       updateStatusBadge(state);
                                       document.getElementById('portfolio-value').textContent = state.portfolioValueIdr;
                                       document.getElementById('hero-pnl').textContent = state.pnlTodayIdr;
+                                      document.getElementById('hero-pnl').className = 'hero-pnl ' + (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel) ? 'hero-pnl-loss' : 'hero-pnl-gain');
+                                      document.getElementById('hero-pnl-pct').textContent = state.pnlTodayPctLabel;
+                                      document.getElementById('hero-pnl-pct').className = 'hero-pnl-chip ' + (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel) ? 'hero-pnl-chip-loss' : 'hero-pnl-chip-gain');
+                                      document.getElementById('hero-update-time').textContent = state.lastUpdatedLabel;
                                       document.getElementById('last-updated').textContent = state.lastUpdatedLabel;
-                                      document.getElementById('hero-summary').textContent = state.statusMessage;
+                                      const heroSummary = document.getElementById('hero-summary');
+                                      if (heroSummary) heroSummary.textContent = state.statusMessage;
                                       document.getElementById('release-label').textContent = 'Oracle Active ' + (state.releaseLabel || '#0');
-                                      document.getElementById('ai-provider-summary').textContent = state.aiProviderSummary || 'AI summary belum siap.';
+                                      document.getElementById('ai-chip').textContent = compactAiStatusLabel(state.aiProviderSummary || '');
+                                      document.getElementById('ai-chip').className = 'pill ' + aiPillClass(state.aiProviderSummary || '');
+                                      document.getElementById('target-chip').textContent = state.targetPursuitLabel || 'TRACKING';
+                                      document.getElementById('target-chip').className = 'pill ' + targetPillClass(state.targetPursuitLabel || 'TRACKING');
                                       document.getElementById('top-candidate').textContent = state.topCandidate;
-                                      document.getElementById('health-summary').textContent = state.healthSummary;
-                                      renderRadarPairs(state.radarPairs || []);
-                                      document.getElementById('pair-temperature').textContent = 'Ping ' + (state.exchangePingMs || '--');
+                                      document.getElementById('pair-temperature-label').textContent = pairHeatLabel(state.exchangePingMs || '--');
                                       document.getElementById('pair-temperature').className = 'pill ' + pingPillClass(state.exchangePingMs || '--');
+                                      renderRadarPairs(state.radarPairs || []);
                                       document.getElementById('exchange-ping').textContent = state.exchangePingMs;
                                       document.getElementById('ret-1d').textContent = state.pnlTodayIdr;
                                       document.getElementById('ret-7d').textContent = state.return7dIdr;
@@ -271,6 +273,9 @@ class LocalDashboardServer(
                                       document.getElementById('ret-30d').textContent = state.return30dIdr;
                                       document.getElementById('ret-30d-pct').textContent = state.return30dPctLabel;
                                       document.getElementById('ret-1d-pct').textContent = state.pnlTodayPctLabel;
+                                      applyMetricTone('ret-1d-card', state.pnlTodayIdr, state.pnlTodayPctLabel);
+                                      applyMetricTone('ret-7d-card', state.return7dIdr, state.return7dPctLabel);
+                                      applyMetricTone('ret-30d-card', state.return30dIdr, state.return30dPctLabel);
                                       renderAssetAllocation(state.holdingsDetailed || [], state.portfolioValueIdr || 'Rp0');
                                       renderTradeHistory(state.recentOrders || []);
                                       renderTimeline(state.liveTimeline || []);
@@ -287,6 +292,53 @@ class LocalDashboardServer(
                                   if (pingValue <= 90) return 'pill-live';
                                   if (pingValue <= 220) return 'pill-warm';
                                   return 'pill-lag';
+                                }
+
+                                function pairHeatLabel(pingText) {
+                                  const pingValue = parseInt(String(pingText || '--').replace(/[^0-9]/g, ''), 10);
+                                  if (Number.isNaN(pingValue)) return 'LIVE';
+                                  if (pingValue <= 90) return 'LIVE';
+                                  if (pingValue <= 220) return 'WARM';
+                                  return 'LAG';
+                                }
+
+                                function compactAiStatusLabel(summary) {
+                                  const normalized = String(summary || '').toLowerCase();
+                                  const healthy = normalized.includes('sehat:') || normalized.includes('healthy:');
+                                  const limited = normalized.includes('limited');
+                                  const skipped = normalized.includes('skip:') || normalized.includes('forbidden') || normalized.includes('failure');
+                                  if (healthy && !limited && !skipped) return 'AI ONLINE';
+                                  if (healthy) return 'AI LIMITED';
+                                  if (skipped) return 'AI SKIP';
+                                  return 'AI OFFLINE';
+                                }
+
+                                function aiPillClass(summary) {
+                                  const label = compactAiStatusLabel(summary);
+                                  if (label === 'AI ONLINE') return 'pill-live';
+                                  if (label === 'AI LIMITED') return 'pill-warm';
+                                  if (label === 'AI SKIP') return 'pill-lag';
+                                  return 'pill-neutral';
+                                }
+
+                                function targetPillClass(label) {
+                                  const value = String(label || '').toUpperCase();
+                                  if (value === 'OVERDRIVE') return 'pill-safe';
+                                  if (value === 'FULL_CHASE') return 'pill-lag';
+                                  if (value === 'CHASE') return 'pill-live';
+                                  if (value === 'LOCK_PROFIT') return 'pill-blue';
+                                  return 'pill-neutral';
+                                }
+
+                                function isNegativeTone(value, caption) {
+                                  return String(value || '').trim().startsWith('-') || String(caption || '').trim().startsWith('-');
+                                }
+
+                                function applyMetricTone(id, value, caption) {
+                                  const element = document.getElementById(id);
+                                  if (!element) return;
+                                  const negative = isNegativeTone(value, caption);
+                                  element.className = 'metric-card ' + (negative ? 'metric-card-loss' : 'metric-card-gain');
                                 }
                                 """.trimIndent()
                             }
@@ -375,22 +427,23 @@ private fun applyDashboardSecurityHeaders(
 
 private fun BODY.renderDashboard(state: MacDashboardState) {
     div("page-shell") {
-        div("row row-top") {
+        div("column column-left") {
             div("hero-card") {
                 div("hero-topbar") {
                     h1 { +"KiBot" }
                     div("hero-topbar-right") {
                         div("pill pill-neutral") {
                             attributes["id"] = "status-badge"
+                            span("wifi-icon") { }
                             span {
                                 attributes["id"] = "status-badge-label"
-                                +"Ping ${state.exchangePingMs}"
+                                +state.exchangePingMs
                             }
                         }
                         p("hero-update") {
                             +"Update "
                             span {
-                                attributes["id"] = "last-updated"
+                                attributes["id"] = "hero-update-time"
                                 +state.lastUpdatedLabel
                             }
                         }
@@ -403,38 +456,72 @@ private fun BODY.renderDashboard(state: MacDashboardState) {
                     }
                 }
                 div("hero-pnl-row") {
-                    span("hero-pnl") {
+                    span(if (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel)) "hero-pnl hero-pnl-loss" else "hero-pnl hero-pnl-gain") {
                         attributes["id"] = "hero-pnl"
                         +state.pnlTodayIdr
                     }
-                    span("hero-pnl-chip") { +state.pnlTodayPctLabel }
+                    span(if (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel)) "hero-pnl-chip hero-pnl-chip-loss" else "hero-pnl-chip hero-pnl-chip-gain") {
+                        attributes["id"] = "hero-pnl-pct"
+                        +state.pnlTodayPctLabel
+                    }
                 }
-                div("hero-chip-row") {
+                div("hero-chip-strip") {
                     span("pill pill-amber") {
                         attributes["id"] = "release-label"
                         +"Oracle Active ${state.releaseLabel}"
+                    }
+                    span("pill ${aiPillClass(state.aiProviderSummary)}") {
+                        attributes["id"] = "ai-chip"
+                        +compactAiStatusLabel(state.aiProviderSummary)
+                    }
+                    span("pill ${targetPillClass(state.targetPursuitLabel)}") {
+                        attributes["id"] = "target-chip"
+                        +state.targetPursuitLabel
                     }
                     span("pill pill-blue hero-clock") {
                         attributes["id"] = "last-updated"
                         +state.lastUpdatedLabel
                     }
                 }
-                p("hero-status") {
-                    attributes["id"] = "hero-summary"
-                    +state.statusMessage
+            }
+
+            div("card portfolio-card") {
+                div("card-header-row") {
+                    h2 { +"Portfolio" }
+                    p("portfolio-update") { +state.lastUpdatedLabel }
                 }
-                p("pair-support-copy") {
-                    attributes["id"] = "ai-provider-summary"
-                    +state.aiProviderSummary
+                div("returns-grid") {
+                    metricCard("Return 1D", state.pnlTodayIdr, state.pnlTodayPctLabel, "ret-1d", "ret-1d-pct")
+                    metricCard("Return 7D", state.return7dIdr, state.return7dPctLabel, "ret-7d", "ret-7d-pct")
+                    metricCard("Return 30D", state.return30dIdr, state.return30dPctLabel, "ret-30d", "ret-30d-pct")
                 }
             }
 
+            div("card activity-card logs-card") {
+                div("card-header-row") {
+                    h2 { +"Logs" }
+                    div("pill pill-purple") {
+                        attributes["id"] = "feed-chip"
+                        +state.syncPathLabel
+                    }
+                }
+                div("log-list") {
+                    attributes["id"] = "log-lines"
+                    p("muted-copy") { +"Loading timeline..." }
+                }
+            }
+        }
+
+        div("column column-right") {
             div("card live-pair-card") {
                 div("card-header-row") {
                     h2 { +"Live Pair" }
                     div("pill ${pingPillClass(state.exchangePingMs)}") {
                         attributes["id"] = "pair-temperature"
-                        +"Ping ${state.exchangePingMs}"
+                        span {
+                            attributes["id"] = "pair-temperature-label"
+                            +pairHeatLabel(state.exchangePingMs)
+                        }
                     }
                 }
                 div("pair-focus-shell") {
@@ -444,35 +531,20 @@ private fun BODY.renderDashboard(state: MacDashboardState) {
                             attributes["id"] = "top-candidate"
                             +state.topCandidate
                         }
-                        p("pair-support-copy") {
-                            attributes["id"] = "health-summary"
-                            +state.healthSummary
-                        }
                     }
                 }
                 div("radar-grid") {
                     attributes["id"] = "radar-grid"
-                    state.radarPairs.take(9).forEach { pair ->
-                        div("radar-pill ${radarPillClass(pair)}") { +pair.lowercase() }
-                    }
-                }
-            }
-        }
-
-        div("row row-middle") {
-            div("card portfolio-card") {
-                div("card-header-row") {
-                    h2 { +"Portfolio" }
-                    p("portfolio-update") { +"${state.lastUpdatedLabel} WIB" }
-                }
-                div("returns-grid") {
-                    metricCard("Return 1D", state.pnlTodayIdr, state.pnlTodayPctLabel, "ret-1d", "ret-1d-pct")
-                    metricCard("Return 7D", state.return7dIdr, state.return7dPctLabel, "ret-7d", "ret-7d-pct")
-                    metricCard("Return 30D", state.return30dIdr, state.return30dPctLabel, "ret-30d", "ret-30d-pct")
+                    state.radarPairs
+                        .take(9)
+                        .let { pairs -> pairs + List((9 - pairs.size).coerceAtLeast(0)) { "--" } }
+                        .forEach { pair ->
+                            div("radar-pill ${radarPillClass(pair)}") { +pair.lowercase() }
+                        }
                 }
             }
 
-            div("card") {
+            div("card allocation-card") {
                 div("card-header-row") {
                     h2 { +"Asset Allocation" }
                     div("pill pill-neutral") {
@@ -496,10 +568,8 @@ private fun BODY.renderDashboard(state: MacDashboardState) {
                     }
                 }
             }
-        }
 
-        div("row row-bottom") {
-            div("card activity-card") {
+            div("card activity-card trade-card") {
                 div("card-header-row") {
                     h2 { +"Trade History" }
                     div("pill pill-neutral") { +"Live" }
@@ -509,26 +579,13 @@ private fun BODY.renderDashboard(state: MacDashboardState) {
                     p("muted-copy") { +"Loading trade history..." }
                 }
             }
-
-            div("card activity-card") {
-                div("card-header-row") {
-                    h2 { +"Logs" }
-                    div("pill pill-purple") {
-                        attributes["id"] = "feed-chip"
-                        +state.syncPathLabel
-                    }
-                }
-                div("log-list") {
-                    attributes["id"] = "log-lines"
-                    p("muted-copy") { +"Loading timeline..." }
-                }
-            }
         }
     }
 }
 
 private fun FlowContent.metricCard(label: String, value: String, caption: String, valueId: String, captionId: String) {
-    div("metric-card ${metricCardClass(value)}") {
+    div("metric-card ${metricCardClass(value, caption)}") {
+        attributes["id"] = "${valueId}-card"
         span("metric-label") { +label }
         span("metric-value") {
             attributes["id"] = valueId
@@ -557,7 +614,8 @@ private fun dashboardStatusClass(state: MacDashboardState): String = when (dashb
     else -> "pill-live"
 }
 
-private fun metricCardClass(value: String): String = if (value.trim().startsWith("-")) "metric-card-loss" else "metric-card-gain"
+private fun metricCardClass(value: String, caption: String): String =
+    if (isNegativeTone(value, caption)) "metric-card-loss" else "metric-card-gain"
 
 private fun radarPillClass(pair: String): String {
     val token = pair.lowercase()
@@ -578,6 +636,47 @@ private fun pingPillClass(pingText: String): String {
         ping <= 220 -> "pill-warm"
         else -> "pill-lag"
     }
+}
+
+private fun pairHeatLabel(pingText: String): String {
+    val digits = pingText.filter { it.isDigit() }
+    val ping = digits.toIntOrNull() ?: return "LIVE"
+    return when {
+        ping <= 90 -> "LIVE"
+        ping <= 220 -> "WARM"
+        else -> "LAG"
+    }
+}
+
+private fun isNegativeTone(value: String, caption: String): Boolean =
+    value.trim().startsWith("-") || caption.trim().startsWith("-")
+
+private fun compactAiStatusLabel(summary: String): String {
+    val normalized = summary.lowercase()
+    val healthy = "sehat:" in normalized || "healthy:" in normalized
+    val limited = "limited" in normalized
+    val skipped = "skip:" in normalized || "forbidden" in normalized || "failure" in normalized
+    return when {
+        healthy && !limited && !skipped -> "AI ONLINE"
+        healthy -> "AI LIMITED"
+        skipped -> "AI SKIP"
+        else -> "AI OFFLINE"
+    }
+}
+
+private fun aiPillClass(summary: String): String = when (compactAiStatusLabel(summary)) {
+    "AI ONLINE" -> "pill-live"
+    "AI LIMITED" -> "pill-warm"
+    "AI SKIP" -> "pill-lag"
+    else -> "pill-neutral"
+}
+
+private fun targetPillClass(label: String): String = when (label.uppercase()) {
+    "OVERDRIVE" -> "pill-safe"
+    "FULL_CHASE" -> "pill-lag"
+    "CHASE" -> "pill-live"
+    "LOCK_PROFIT" -> "pill-blue"
+    else -> "pill-neutral"
 }
 
 private fun dashboardStyles(): String = """
@@ -607,10 +706,25 @@ private fun dashboardStyles(): String = """
       max-width: 1340px;
       margin: 0 auto;
       height: 100vh;
-      padding: 16px 18px 18px;
+      padding: 12px 14px 14px;
       display: grid;
-      grid-template-rows: auto auto 1fr;
-      gap: 12px;
+      grid-template-columns: minmax(0, 1.18fr) minmax(360px, 0.92fr);
+      gap: 10px;
+      align-items: stretch;
+    }
+    .column {
+      min-height: 0;
+      height: 100%;
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      align-self: stretch;
+    }
+    .column-left {
+      grid-template-rows: auto auto minmax(320px, 1fr);
+    }
+    .column-right {
+      grid-template-rows: auto auto minmax(0, 1fr);
     }
     .hero-card,
     .metric-card,
@@ -664,6 +778,17 @@ private fun dashboardStyles(): String = """
     .pill-blue { color: #60a5fa; background: rgba(96,165,250,0.12); }
     .pill-purple { color: #b799ff; background: rgba(183,153,255,0.14); }
     .pill-neutral { color: #dbe7ff; background: rgba(255,255,255,0.08); }
+    .wifi-icon {
+      width: 16px;
+      height: 16px;
+      margin-right: 6px;
+      display: inline-block;
+      flex: 0 0 16px;
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: contain;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.55a11 11 0 0 1 14.08 0'/%3E%3Cpath d='M8.53 16.11a6 6 0 0 1 6.95 0'/%3E%3Cpath d='M12 20h.01'/%3E%3Cpath d='M2 8.82a16 16 0 0 1 20 0'/%3E%3C/svg%3E");
+    }
     .hero-balance {
       margin-top: 14px;
       font-size: clamp(42px, 5.4vw, 70px);
@@ -684,76 +809,69 @@ private fun dashboardStyles(): String = """
       justify-content: center;
       padding: 10px 16px;
       border-radius: 999px;
-      background: rgba(45,216,129,0.12);
-      color: #2dd881;
-      border: 1px solid rgba(45,216,129,0.24);
       font-size: 16px;
       font-weight: 900;
     }
-    .hero-chip-row {
+    .hero-pnl-chip-gain {
+      background: rgba(45,216,129,0.12);
+      color: #2dd881;
+      border: 1px solid rgba(45,216,129,0.24);
+    }
+    .hero-pnl-chip-loss {
+      background: rgba(248,113,113,0.12);
+      color: #ff6b7a;
+      border: 1px solid rgba(248,113,113,0.24);
+    }
+    .hero-chip-strip {
       margin-top: 12px;
       display: flex;
       gap: 10px;
-      flex-wrap: wrap;
+      justify-content: space-between;
       align-items: center;
+      flex-wrap: nowrap;
+    }
+    .hero-chip-strip .pill {
+      flex: 1 1 0;
+      min-width: 0;
+      padding: 8px 10px;
+      font-size: 12px;
     }
     .hero-pnl {
       font-size: clamp(24px, 3.2vw, 34px);
       font-weight: 900;
       line-height: 1;
-      color: #2dd881;
     }
-    .hero-clock { min-width: 132px; }
-    .hero-status {
-      margin: 12px 0 0;
-      color: #dbe7ff;
-      font-size: 18px;
-      line-height: 1.45;
-    }
+    .hero-pnl-gain { color: #2dd881; }
+    .hero-pnl-loss { color: #ff6b7a; }
+    .hero-clock { min-width: 0; }
     .hero-card .pair-support-copy {
       margin-top: 10px;
       max-width: 95%;
       color: #9fbaea;
       font-size: 14px;
     }
-    .row,
     .returns-grid {
       display: grid;
-      gap: 14px;
+      gap: 12px;
     }
-    .row-top {
-      grid-template-columns: 1.22fr 1fr;
-      align-items: stretch;
-      min-height: 0;
-    }
-    .row-middle {
-      grid-template-columns: 1.02fr 0.98fr;
-      align-items: stretch;
-      min-height: 0;
-    }
-    .row-bottom {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      min-height: 0;
-      align-items: stretch;
-      overflow: hidden;
-    }
-    .portfolio-card { display: grid; gap: 12px; align-content: start; }
+    .portfolio-card { display: grid; gap: 4px; align-content: start; padding: 10px 12px; }
     .portfolio-update {
       margin: 0;
       color: #dbe7ff;
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 700;
     }
     .returns-grid {
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
     .metric-card {
-      padding: 14px 14px;
+      padding: 8px 10px;
       display: grid;
-      gap: 8px;
+      gap: 2px;
       background: rgba(255,255,255,0.035);
       border: 1px solid rgba(255,255,255,0.06);
-      min-height: 118px;
+      min-height: 74px;
+      border-radius: 22px;
     }
     .metric-card-gain .metric-value,
     .metric-card-gain .metric-caption { color: #2dd881; }
@@ -761,62 +879,64 @@ private fun dashboardStyles(): String = """
     .metric-card-loss .metric-caption { color: #ff6b7a; }
     .metric-label {
       color: #dbe7ff;
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 700;
     }
     .metric-value {
-      font-size: 28px;
+      font-size: 20px;
       font-weight: 800;
     }
     .metric-caption {
-      font-size: 18px;
+      font-size: 15px;
       font-weight: 700;
     }
-    .card { padding: 18px; min-height: 0; background: linear-gradient(135deg, rgba(24,34,66,0.96), rgba(17,27,49,0.92)); }
+    .card { padding: 16px; min-height: 0; background: linear-gradient(135deg, rgba(24,34,66,0.96), rgba(17,27,49,0.92)); }
     .live-pair-card { min-height: 0; }
-    .activity-card { min-height: 0; display: grid; grid-template-rows: auto 1fr; overflow: hidden; }
+    .activity-card { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; padding: 18px; }
+    .logs-card { height: 100%; align-self: stretch; }
+    .trade-card { height: 100%; }
     .card-header-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
+      gap: 10px;
       margin-bottom: 8px;
     }
     .card h2 {
       margin: 0;
-      font-size: 22px;
+      font-size: 20px;
       line-height: 1.2;
     }
     .pair-focus-shell {
       display: grid;
       grid-template-columns: auto 1fr;
-      gap: 14px;
-      align-items: start;
-      margin-bottom: 10px;
+      gap: 12px;
+      align-items: center;
+      margin: 4px 0 10px;
+      padding: 4px 2px 0;
     }
     .pair-avatar {
-      width: 56px;
-      height: 56px;
+      width: 50px;
+      height: 50px;
       border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
       background: linear-gradient(180deg, rgba(88,146,255,0.32), rgba(88,146,255,0.16));
       color: #84b8ff;
-      font-size: 22px;
+      font-size: 19px;
       font-weight: 900;
       border: 1px solid rgba(132,184,255,0.18);
       flex-shrink: 0;
     }
     .pair-focus-copy { min-width: 0; }
     .pair-hero {
-      font-size: clamp(28px, 3vw, 42px);
+      font-size: clamp(20px, 2vw, 32px);
       font-weight: 900;
       line-height: 1;
       letter-spacing: -0.04em;
-      margin-bottom: 6px;
+      margin-bottom: 0;
     }
-    .pair-support-copy,
     .muted-copy {
       margin: 0;
       color: var(--muted);
@@ -827,16 +947,16 @@ private fun dashboardStyles(): String = """
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 10px;
-      margin-top: 14px;
+      margin-top: 2px;
     }
     .radar-pill {
-      min-height: 44px;
+      min-height: 50px;
       display: flex;
       align-items: center;
       justify-content: center;
       text-align: center;
-      padding: 10px 12px;
-      border-radius: 18px;
+      padding: 8px 10px;
+      border-radius: 16px;
       background: rgba(124, 92, 255, 0.16);
       border: 1px solid rgba(167, 139, 250, 0.18);
       color: #b799ff;
@@ -850,14 +970,15 @@ private fun dashboardStyles(): String = """
     .radar-pill-purple { background: rgba(183,153,255,0.16); color: #c3a8ff; border-color: rgba(183,153,255,0.18); }
     .radar-pill-slate { background: rgba(255,255,255,0.06); color: #dbe7ff; border-color: rgba(255,255,255,0.1); }
     .radar-pill-empty {
-      color: var(--muted);
-      background: rgba(255,255,255,0.04);
-      border-color: rgba(255,255,255,0.05);
+      color: transparent;
+      background: rgba(255,255,255,0.035);
+      border-color: rgba(255,255,255,0.04);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02);
     }
     .allocation-shell {
       display: grid;
-      grid-template-columns: 300px 1fr;
-      gap: 20px;
+      grid-template-columns: 220px 1fr;
+      gap: 16px;
       align-items: center;
       min-height: 0;
     }
@@ -867,8 +988,8 @@ private fun dashboardStyles(): String = """
       justify-content: center;
     }
     .allocation-chart {
-      width: 240px;
-      height: 240px;
+      width: 180px;
+      height: 180px;
       border-radius: 50%;
       display: grid;
       place-items: center;
@@ -877,8 +998,8 @@ private fun dashboardStyles(): String = """
     }
     .allocation-chart::after {
       content: "";
-      width: 132px;
-      height: 132px;
+      width: 96px;
+      height: 96px;
       border-radius: 50%;
       background: linear-gradient(180deg, #151f40, #10182b);
       border: 1px solid rgba(255,255,255,0.08);
@@ -941,16 +1062,23 @@ private fun dashboardStyles(): String = """
     }
     .log-list {
       display: grid;
-      gap: 10px;
+      min-height: 0;
+      height: 100%;
+      gap: 8px;
+      align-content: start;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      padding-right: 4px;
     }
     .timeline-row {
-      padding: 16px;
-      border-radius: 24px;
+      padding: 14px;
+      border-radius: 20px;
       background: rgba(255,255,255,0.045);
       border: 1px solid rgba(255,255,255,0.06);
       line-height: 1.45;
       display: grid;
-      gap: 10px;
+      gap: 6px;
     }
     .timeline-head,
     .trade-row-shell {
@@ -1011,19 +1139,42 @@ private fun dashboardStyles(): String = """
       color: #63e8aa;
       background: rgba(45,216,129,0.12);
     }
+    .empty-state {
+      min-height: 100%;
+      display: grid;
+      align-content: center;
+      gap: 8px;
+      padding: 18px;
+      border-radius: 20px;
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(255,255,255,0.05);
+      text-align: left;
+    }
+    .empty-title {
+      color: #dbe7ff;
+      font-size: 18px;
+      font-weight: 800;
+    }
+    .empty-copy {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
     .log-list {
-      max-height: 100%;
-      overflow-y: auto;
       font-family: "SF Pro Text", "Segoe UI", sans-serif;
       color: var(--muted);
       font-size: 12px;
-      padding-right: 4px;
     }
     @media (max-width: 920px) {
-      .row,
+      .page-shell,
+      .column,
       .returns-grid,
       .allocation-shell {
         grid-template-columns: 1fr;
+      }
+      .column-left,
+      .column-right {
+        grid-template-rows: auto;
       }
       .hero-topbar {
         flex-direction: column;
@@ -1044,6 +1195,13 @@ private fun dashboardStyles(): String = """
         min-height: 100vh;
         padding: 18px 14px 28px;
         overflow-y: auto;
+      }
+      .hero-chip-strip {
+        flex-wrap: wrap;
+      }
+      .radar-pill {
+        min-height: 58px;
+        font-size: 16px;
       }
       body { overflow: auto; }
     }

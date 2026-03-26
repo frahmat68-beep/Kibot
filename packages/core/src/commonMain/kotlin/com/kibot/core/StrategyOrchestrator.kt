@@ -208,8 +208,12 @@ class StrategyOrchestrator(
         weeklySummary: WeeklyLearningSummary?,
         observedAtEpochMs: Long,
     ): StrategySignal? {
-        val hasPendingBuyOrder = openOrders.any { it.side == OrderSide.BUY }
-        if (!modeSnapshot.tradingAllowed || hasPendingBuyOrder || !deploymentPlan.allowNewEntries) return null
+        if (!modeSnapshot.tradingAllowed || !deploymentPlan.allowNewEntries) return null
+        val pendingBuyPairs = openOrders
+            .asSequence()
+            .filter { it.side == OrderSide.BUY && it.status in activeBuyOrderStatuses }
+            .map { it.pairId }
+            .toSet()
         val heldPairs = positions
             .filter { it.state != PositionState.CLOSED }
             .map { it.pairId }
@@ -246,7 +250,7 @@ class StrategyOrchestrator(
                     marketQuotes = marketQuotes,
                     targetBudgetIdr = deploymentPlan.suggestedPerPositionBudgetIdr,
                 )
-                if (candidate.pairId in heldPairs || !hasFunding) return@mapNotNull null
+                if (candidate.pairId in heldPairs || candidate.pairId in pendingBuyPairs || !hasFunding) return@mapNotNull null
                 if (isPairInReentryCooldown(candidate.pairId, observedAtEpochMs)) return@mapNotNull null
 
                 val setupReadiness = deriveSetupReadiness(
@@ -996,4 +1000,13 @@ private fun PairId.assets(): PairParts {
     }
 }
 
-private const val MAX_EXTERNAL_SUPPORT_BIAS = 0.04
+private val activeBuyOrderStatuses = setOf(
+    com.kibot.shared.models.OrderStatus.CREATED,
+    com.kibot.shared.models.OrderStatus.SUBMITTING,
+    com.kibot.shared.models.OrderStatus.OPEN,
+    com.kibot.shared.models.OrderStatus.PARTIALLY_FILLED,
+    com.kibot.shared.models.OrderStatus.CANCEL_REQUESTED,
+    com.kibot.shared.models.OrderStatus.UNKNOWN,
+)
+
+private const val MAX_EXTERNAL_SUPPORT_BIAS = 0.08

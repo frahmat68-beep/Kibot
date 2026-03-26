@@ -80,8 +80,8 @@ class CapitalDeploymentEngine(
             ).toInt().coerceAtLeast(1)
         }.let { rawCap ->
             when {
-                currentEquity < 120_000.0 -> rawCap.coerceAtMost(2)
-                currentEquity < 200_000.0 -> rawCap.coerceAtMost(3)
+                currentEquity < 120_000.0 -> rawCap.coerceAtMost(3)
+                currentEquity < 200_000.0 -> rawCap.coerceAtMost(4)
                 else -> rawCap
             }
         }.coerceAtMost(config.maxConcurrentPositions)
