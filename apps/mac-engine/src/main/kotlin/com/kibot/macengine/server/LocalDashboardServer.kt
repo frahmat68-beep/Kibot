@@ -295,6 +295,24 @@ class LocalDashboardServer(
                                 refreshState();
                                 setInterval(refreshState, ${minOf(statePollIntervalMillis, 5000L)});
 
+                                function toggleFullscreen() {
+                                  const root = document.documentElement;
+                                  if (!document.fullscreenElement) {
+                                    root.requestFullscreen?.().catch(() => {});
+                                  } else {
+                                    document.exitFullscreen?.().catch(() => {});
+                                  }
+                                }
+
+                                document.addEventListener('keydown', (event) => {
+                                  const tag = (event.target?.tagName || '').toLowerCase();
+                                  if (tag === 'input' || tag === 'textarea' || event.metaKey || event.ctrlKey || event.altKey) return;
+                                  if (event.key === 'f' || event.key === 'F') {
+                                    event.preventDefault();
+                                    toggleFullscreen();
+                                  }
+                                });
+
                                 function pingPillClass(pingText) {
                                   const pingValue = parseInt(String(pingText || '--').replace(/[^0-9]/g, ''), 10);
                                   if (Number.isNaN(pingValue)) return 'pill-neutral';
@@ -726,22 +744,30 @@ private fun dashboardStyles(): String = """
       --panel: rgba(18, 28, 56, 0.92);
     }
     * { box-sizing: border-box; }
+    html {
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top left, rgba(96,165,250,0.18), transparent 28%),
+        radial-gradient(circle at top right, rgba(45,216,129,0.10), transparent 24%),
+        linear-gradient(180deg, var(--bg-0), var(--bg-1));
+    }
     body {
       margin: 0;
-      height: 100vh;
+      min-height: 100vh;
       font-family: "SF Pro Display", "Segoe UI", sans-serif;
       color: var(--text);
       background:
         radial-gradient(circle at top left, rgba(96,165,250,0.18), transparent 28%),
         radial-gradient(circle at top right, rgba(45,216,129,0.10), transparent 24%),
         linear-gradient(180deg, var(--bg-0), var(--bg-1));
-      overflow: hidden;
+      overflow-x: hidden;
+      overflow-y: auto;
     }
     .page-shell {
-      max-width: 1340px;
+      width: min(100%, 1500px);
       margin: 0 auto;
-      height: 100vh;
-      padding: 12px 14px 14px;
+      min-height: 100vh;
+      padding: 12px 14px 18px;
       display: grid;
       grid-template-columns: minmax(0, 1.18fr) minmax(360px, 0.92fr);
       gap: 10px;
@@ -1239,6 +1265,53 @@ private fun dashboardStyles(): String = """
         font-size: 16px;
       }
       body { overflow: auto; }
+    }
+    @media (max-width: 1360px) {
+      .page-shell {
+        width: min(100%, 1380px);
+        grid-template-columns: minmax(0, 1.08fr) minmax(340px, 0.92fr);
+      }
+      .hero-card {
+        min-height: 248px;
+      }
+      .hero-balance {
+        font-size: clamp(38px, 4.8vw, 62px);
+      }
+      .allocation-shell {
+        grid-template-columns: 190px 1fr;
+      }
+      .allocation-chart {
+        width: 160px;
+        height: 160px;
+      }
+      .allocation-chart::after {
+        width: 88px;
+        height: 88px;
+      }
+      .allocation-code {
+        font-size: 20px;
+      }
+      .allocation-pct {
+        font-size: 24px;
+      }
+    }
+    @media (max-width: 1180px) {
+      .page-shell {
+        grid-template-columns: 1fr;
+        min-height: auto;
+      }
+      .column-left,
+      .column-right {
+        grid-template-rows: auto;
+      }
+      .hero-chip-strip {
+        flex-wrap: wrap;
+      }
+      .activity-card,
+      .trade-card,
+      .logs-card {
+        min-height: 340px;
+      }
     }
 """.trimIndent()
 

@@ -10,9 +10,12 @@ import com.kibot.shared.models.PairId
 import com.kibot.shared.models.PairScore
 import com.kibot.shared.models.PairTier
 import com.kibot.shared.models.PortfolioSnapshot
+import com.kibot.shared.models.PositionSnapshot
+import com.kibot.shared.models.PositionState
 import com.kibot.shared.models.ProfitProtectionStatus
 import com.kibot.shared.models.RiskLadderLevel
 import com.kibot.shared.models.TradingHorizon
+import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -137,6 +140,63 @@ class CapitalDeploymentEngineTest {
 
         assertTrue(plan.maxActivePositions <= 4)
         assertTrue(plan.suggestedPerPositionBudgetIdr >= 22_500.0)
+    }
+
+    @Test
+    fun `stagnant full portfolio can still open rotation path for stronger candidate`() {
+        val now = Clock.System.now()
+        val portfolio = PortfolioSnapshot(
+            botId = BotId("main"),
+            balances = listOf(BalanceSnapshot("idr", DecimalValue("3"))),
+            openOrders = emptyList(),
+            positions = listOf(
+                PositionSnapshot(
+                    positionId = com.kibot.shared.models.PositionId("ont-1"),
+                    pairId = PairId("ont_idr"),
+                    baseAsset = "ont",
+                    quoteAsset = "idr",
+                    state = PositionState.OPEN,
+                    quantity = DecimalValue("16.30"),
+                    averageEntryPrice = DecimalValue("970"),
+                    realizedPnlIdr = DecimalValue.Zero,
+                    unrealizedPnlIdr = DecimalValue("-480"),
+                    horizon = TradingHorizon.TACTICAL,
+                    openedAt = Instant.fromEpochMilliseconds(now.toEpochMilliseconds() - (55 * 60 * 1000)),
+                    updatedAt = now,
+                ),
+                PositionSnapshot(
+                    positionId = com.kibot.shared.models.PositionId("xrp-1"),
+                    pairId = PairId("xrp_idr"),
+                    baseAsset = "xrp",
+                    quoteAsset = "idr",
+                    state = PositionState.OPEN,
+                    quantity = DecimalValue("0.50"),
+                    averageEntryPrice = DecimalValue("24000"),
+                    realizedPnlIdr = DecimalValue.Zero,
+                    unrealizedPnlIdr = DecimalValue("-320"),
+                    horizon = TradingHorizon.TACTICAL,
+                    openedAt = Instant.fromEpochMilliseconds(now.toEpochMilliseconds() - (48 * 60 * 1000)),
+                    updatedAt = now,
+                ),
+            ),
+            totalEquityIdr = DecimalValue("63466"),
+            lastSyncedAt = now,
+        )
+
+        val plan = engine.plan(
+            portfolio = portfolio,
+            rankedPairs = listOf(
+                pairScore("croak_idr", ranking = 0.86, opportunity = 2.40, speculativePocket = true),
+                pairScore("trx_idr", ranking = 0.78, opportunity = 1.35),
+                pairScore("ont_idr", ranking = 0.50, opportunity = 0.32),
+                pairScore("xrp_idr", ranking = 0.48, opportunity = 0.28),
+            ),
+            risk = risk.copy(maxAllowedAdditionalPositions = 0),
+            mode = mode.copy(mode = BotMode.ATTACK),
+        )
+
+        assertTrue(plan.allowRotation)
+        assertTrue(plan.candidates.first().pairId == PairId("croak_idr"))
     }
 
     private fun portfolio() = PortfolioSnapshot(

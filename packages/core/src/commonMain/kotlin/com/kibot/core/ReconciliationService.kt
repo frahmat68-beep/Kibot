@@ -42,8 +42,8 @@ class ReconciliationService {
         }
 
         val state = when {
-            staleOpenOrders.isNotEmpty() || unmatchedFills.isNotEmpty() -> ReconciliationState.BLOCKED
-            warnings.isNotEmpty() -> ReconciliationState.NEEDS_REVIEW
+            unmatchedFills.isNotEmpty() -> ReconciliationState.BLOCKED
+            staleOpenOrders.isNotEmpty() || warnings.isNotEmpty() -> ReconciliationState.NEEDS_REVIEW
             else -> ReconciliationState.CLEAN
         }
 
@@ -55,6 +55,12 @@ class ReconciliationService {
             notes = buildList {
                 if (portfolio.openOrders.any { it.status == OrderStatus.PARTIALLY_FILLED }) {
                     add("Partial fills detected, new entries should wait for order-state convergence.")
+                }
+                if (staleOpenOrders.isNotEmpty()) {
+                    add("Stale open-order snapshots need review: ${staleOpenOrders.joinToString(",") { it.value }}")
+                }
+                if (unmatchedFills.isNotEmpty()) {
+                    add("Unmatched fills require hard review: ${unmatchedFills.joinToString(",") { it.value }}")
                 }
             },
         )

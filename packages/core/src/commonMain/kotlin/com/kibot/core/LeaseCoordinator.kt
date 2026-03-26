@@ -38,8 +38,8 @@ class LeaseCoordinator(
             reasons += "Requester health is not sufficient for takeover."
         }
 
-        if (reconciliationReport.state != ReconciliationState.CLEAN) {
-            reasons += "Reconciliation is not clean."
+        if (reconciliationReport.state == ReconciliationState.BLOCKED) {
+            reasons += "Reconciliation is blocked."
         }
 
         val leaseExpired = currentLease == null || now >= currentLease.expiresAt

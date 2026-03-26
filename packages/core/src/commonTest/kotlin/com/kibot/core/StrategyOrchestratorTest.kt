@@ -13,9 +13,13 @@ import com.kibot.shared.models.OrderSnapshot
 import com.kibot.shared.models.OrderStatus
 import com.kibot.shared.models.OrderType
 import com.kibot.shared.models.PairId
+import com.kibot.shared.models.PositionId
+import com.kibot.shared.models.PositionSnapshot
+import com.kibot.shared.models.PositionState
 import com.kibot.shared.models.SetupType
 import com.kibot.shared.models.StrategySignalType
 import com.kibot.shared.models.SyncHealth
+import com.kibot.shared.models.TradingHorizon
 import com.kibot.shared.models.WeeklyAdaptationPlan
 import com.kibot.shared.models.WeeklyLearningSummary
 import kotlinx.datetime.Clock
@@ -245,6 +249,92 @@ class StrategyOrchestratorTest {
         )
 
         assertEquals("break_idr", learningBiased.selectedSignal?.pairId?.value)
+    }
+
+    @Test
+    fun rotationCanStillPrepareReplacementSignalWhenCashIsGone() {
+        val now = Clock.System.now()
+        val health = healthyEngine()
+        val quotes = listOf(
+            quote(
+                pair = "ont_idr",
+                price = 940.0,
+                spreadPct = 0.24,
+                slippagePct = 0.18,
+                trendScore = 0.42,
+                expectancyScore = 0.38,
+                volume = 12_000_000.0,
+                holdabilityScore = 0.44,
+                shortTermReturnPct = -0.50,
+                mediumTermReturnPct = -0.20,
+                now = now,
+            ),
+            quote(
+                pair = "croak_idr",
+                price = 1.71,
+                spreadPct = 0.34,
+                slippagePct = 0.28,
+                trendScore = 0.90,
+                expectancyScore = 0.44,
+                volume = 7_800_000.0,
+                holdabilityScore = 0.40,
+                shortTermReturnPct = 11.6,
+                mediumTermReturnPct = 4.2,
+                recentTradeActivityScore = 0.90,
+                fillQualityScore = 0.70,
+                orderBookStabilityScore = 0.68,
+                now = now,
+            ),
+            quote(
+                pair = "xrp_idr",
+                price = 11846.0,
+                spreadPct = 0.26,
+                slippagePct = 0.20,
+                trendScore = 0.41,
+                expectancyScore = 0.36,
+                volume = 18_000_000.0,
+                holdabilityScore = 0.42,
+                shortTermReturnPct = -0.42,
+                mediumTermReturnPct = -0.12,
+                recentTradeActivityScore = 0.48,
+                fillQualityScore = 0.52,
+                orderBookStabilityScore = 0.58,
+                now = now,
+            ),
+        )
+        val openOrders = listOf(
+            OrderSnapshot(
+                orderId = OrderId("buy-ont"),
+                clientOrderId = com.kibot.shared.models.ClientOrderId("buy-ont"),
+                pairId = PairId("ont_idr"),
+                side = OrderSide.BUY,
+                orderType = OrderType.LIMIT,
+                status = OrderStatus.FILLED,
+                price = DecimalValue("970"),
+                originalQuantity = DecimalValue("16.30"),
+                executedQuantity = DecimalValue("16.30"),
+                remainingQuantity = DecimalValue.Zero,
+                createdAt = now,
+                updatedAt = now,
+            ),
+        )
+
+        val analysis = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = listOf(
+                BalanceSnapshot(asset = "idr", free = DecimalValue("3")),
+                BalanceSnapshot(asset = "ont", free = DecimalValue("16.30")),
+                BalanceSnapshot(asset = "xrp", free = DecimalValue("1.80")),
+            ),
+            openOrders = openOrders,
+            dailyRisk = null,
+            health = health,
+            marketQuotes = quotes,
+        )
+
+        assertTrue(analysis.deploymentPlan.allowRotation)
+        assertEquals("croak_idr", analysis.selectedSignal?.pairId?.value)
+        assertNotNull(analysis.entryExecutionPlans.firstOrNull())
     }
 
     @Test
@@ -526,6 +616,9 @@ class StrategyOrchestratorTest {
         holdabilityScore: Double = 0.65,
         shortTermReturnPct: Double = 0.8,
         mediumTermReturnPct: Double = 1.2,
+        recentTradeActivityScore: Double = 0.8,
+        fillQualityScore: Double = 0.8,
+        orderBookStabilityScore: Double = 0.85,
         now: kotlinx.datetime.Instant,
     ): MarketQuote = MarketQuote(
         pairId = PairId(pair),
@@ -536,18 +629,18 @@ class StrategyOrchestratorTest {
         quoteVolume24h = DecimalValue.fromDouble(volume),
         baseVolume24h = DecimalValue.fromDouble(volume / price),
         estimatedSlippagePct = slippagePct,
-        orderBookStabilityScore = 0.85,
+        orderBookStabilityScore = orderBookStabilityScore,
         tradeCount24h = 250,
         bidDepthTop5Idr = DecimalValue.fromDouble(500_000.0),
         askDepthTop5Idr = DecimalValue.fromDouble(500_000.0),
         shortTermReturnPct = shortTermReturnPct,
         mediumTermReturnPct = mediumTermReturnPct,
         realizedVolatilityPct = 1.4,
-        recentTradeActivityScore = 0.8,
+        recentTradeActivityScore = recentTradeActivityScore,
         volatilityQualityScore = 0.72,
         trendQualityScore = trendScore,
         historicalExpectancyScore = expectancyScore,
-        fillQualityScore = 0.8,
+        fillQualityScore = fillQualityScore,
         holdabilityScore = holdabilityScore,
         capturedAt = now,
     )

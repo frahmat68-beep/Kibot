@@ -9,6 +9,7 @@ import com.kibot.shared.models.PortfolioSnapshot
 import com.kibot.shared.models.PositionSnapshot
 import com.kibot.shared.models.PositionState
 import com.kibot.shared.models.RiskLadderLevel
+import kotlinx.datetime.Clock
 import kotlin.math.absoluteValue
 
 class CapitalDeploymentEngine(
@@ -20,6 +21,7 @@ class CapitalDeploymentEngine(
         risk: RiskDecision,
         mode: BotModeSnapshot,
     ): CapitalDeploymentPlan {
+        val now = Clock.System.now()
         val candidates = rankedPairs
             .filter { it.allowed }
             .sortedByDescending { it.rankingScore }
@@ -160,6 +162,13 @@ class CapitalDeploymentEngine(
                 position.unrealizedPnlIdr.toDoubleOrZero() < 0.0 &&
                 position.isWeakRotationCandidate(rankedByPair[position.pairId])
         }
+        val rotatableStale = portfolio.positions.filter { position ->
+            position.state != PositionState.CLOSED &&
+                position.isStaleRotationCandidate(
+                    now = now,
+                    pairScore = rankedByPair[position.pairId],
+                )
+        }
         val topCandidateLooksLikeBreakout = firstCandidate?.let { candidate ->
             candidate.speculativePocket ||
                 (
@@ -170,26 +179,29 @@ class CapitalDeploymentEngine(
         } == true
         val topCandidateLooksCapitalEfficient = firstCandidate?.let { candidate ->
             candidate.rankingScore >= 0.68 &&
-                candidate.marketOpportunityScore >= 0.58 &&
-                candidate.expectedNetProfitabilityPct >= (config.rotationMinNetUpgradePct + 0.02)
+                candidate.marketOpportunityScore >= 0.54 &&
+                candidate.expectedNetProfitabilityPct >= (config.rotationMinNetUpgradePct - 0.08)
         } == true
+        val rotationCandidateStrongEnough = candidates.firstOrNull()?.let {
+            it.rankingScore >= 0.64 &&
+                it.marketOpportunityScore >= 0.50 &&
+                it.expectedNetProfitabilityPct >= (config.rotationMinNetUpgradePct - 0.12)
+        } == true
+        val forcedRotationPressure = openPositions > 0 &&
+            !hasNewSlotCapacity &&
+            (
+                topCandidateLooksLikeBreakout ||
+                    (topCandidateLooksCapitalEfficient && (top1DeployableConcentration >= 0.22 || loserHeatPct > 0.0))
+                )
         val allowRotation = mode.mode != BotMode.SAFE &&
             !speculativePocketReady &&
             openPositions > 0 &&
-            (topCandidateLooksLikeBreakout || topCandidateLooksCapitalEfficient) &&
-            candidates.firstOrNull()?.rankingScore?.let { it >= 0.70 } == true &&
-            candidates.firstOrNull()?.marketOpportunityScore?.let { it >= 0.58 } == true &&
-            candidates.firstOrNull()?.expectedNetProfitabilityPct?.let {
-                it >= if (topCandidateLooksLikeBreakout) {
-                    config.rotationMinNetUpgradePct + 0.10
-                } else {
-                    config.rotationMinNetUpgradePct + 0.02
-                }
-            } == true &&
-            (rotatableWinners.isNotEmpty() || rotatableLosers.isNotEmpty()) &&
+            (topCandidateLooksLikeBreakout || topCandidateLooksCapitalEfficient || rotationCandidateStrongEnough) &&
+            (rotatableWinners.isNotEmpty() || rotatableLosers.isNotEmpty() || rotatableStale.isNotEmpty() || forcedRotationPressure) &&
             (
                 topCandidateGap >= config.rotationRankingGapMin ||
                     topCandidateLooksCapitalEfficient ||
+                    forcedRotationPressure ||
                     top1DeployableConcentration >= config.top1DeployableConcentrationMaxPct ||
                     loserHeatPct >= config.loserHeatCautionPct
                 )
@@ -209,7 +221,8 @@ class CapitalDeploymentEngine(
             if (loserHeatPct >= config.loserHeatCautionPct) add("Loser heat portofolio sedang naik, jadi entry baru harus benar-benar mengalahkan posisi yang lemah.")
             if (dominantTierAReady) add("Cash reserve diringankan sedikit karena kandidat tier A terlihat dominan dan market masih sehat.")
             if (dominantAllInReady) add("Kandidat utama sangat dominan, bot mengunci fokus modal hampir penuh ke pair teratas untuk mengejar akselerasi profit.")
-            if (allowRotation) add("Rotasi dipercepat dari posisi lemah/loser saat ada kandidat baru yang jauh lebih eksplosif.")
+            if (rotatableStale.isNotEmpty()) add("Posisi stagnan juga boleh dipaksa rotasi agar modal tidak nganggur saat winner baru muncul.")
+            if (allowRotation) add("Rotasi dipercepat dari posisi lemah, stagnan, atau loser saat ada kandidat baru yang jauh lebih eksplosif.")
         }
 
         return CapitalDeploymentPlan(
@@ -241,5 +254,26 @@ class CapitalDeploymentEngine(
             pairScore.marketOpportunityScore < 0.56 ||
             pairScore.trendQualityScore < 0.54 ||
             pairScore.recentHealthScore < 0.58
+    }
+
+    private fun PositionSnapshot.isStaleRotationCandidate(
+        now: kotlinx.datetime.Instant,
+        pairScore: PairScore?,
+    ): Boolean {
+        val ageHours = ((now.toEpochMilliseconds() - openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 3_600_000.0)
+        val costBasisIdr = quantity.toDoubleOrZero() * averageEntryPrice.toDoubleOrZero()
+        val pnlPct = if (costBasisIdr > 0.0) {
+            (unrealizedPnlIdr.toDoubleOrZero() / costBasisIdr) * 100.0
+        } else {
+            0.0
+        }
+        if (ageHours < 0.28) return false
+        if (pnlPct > 0.24) return false
+        if (pairScore == null) return true
+        return !pairScore.allowed ||
+            pairScore.marketOpportunityScore < 0.62 ||
+            pairScore.trendQualityScore < 0.58 ||
+            pairScore.recentHealthScore < 0.60 ||
+            pairScore.rankingScore < 0.60
     }
 }

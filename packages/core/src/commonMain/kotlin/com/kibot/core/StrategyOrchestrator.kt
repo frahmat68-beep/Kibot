@@ -137,6 +137,7 @@ class StrategyOrchestrator(
             .mapNotNull { signal ->
                 signal.toExecutionPlan(
                     balances = balances,
+                    positions = syntheticPositions,
                     quoteByPair = quoteByPair,
                     marketQuotes = marketQuotes,
                     deploymentPlan = deploymentPlan,
@@ -217,7 +218,7 @@ class StrategyOrchestrator(
         weeklySummary: WeeklyLearningSummary?,
         observedAtEpochMs: Long,
     ): List<StrategySignal> {
-        if (!modeSnapshot.tradingAllowed || !deploymentPlan.allowNewEntries) return emptyList()
+        if (!modeSnapshot.tradingAllowed || (!deploymentPlan.allowNewEntries && !deploymentPlan.allowRotation)) return emptyList()
         val pendingBuyPairs = openOrders
             .asSequence()
             .filter { it.side == OrderSide.BUY && it.status in activeBuyOrderStatuses }
@@ -228,6 +229,7 @@ class StrategyOrchestrator(
             .map { it.pairId }
             .toSet()
 
+        val rotationFundingAllowed = deploymentPlan.allowRotation && heldPairs.isNotEmpty()
         val thresholds = resolveEntryThresholds(
             modeSnapshot = modeSnapshot,
             marketSnapshot = marketSnapshot,
@@ -259,7 +261,8 @@ class StrategyOrchestrator(
                     marketQuotes = marketQuotes,
                     targetBudgetIdr = deploymentPlan.suggestedPerPositionBudgetIdr,
                 )
-                if (candidate.pairId in heldPairs || candidate.pairId in pendingBuyPairs || !hasFunding) return@mapNotNull null
+                if (candidate.pairId in heldPairs || candidate.pairId in pendingBuyPairs) return@mapNotNull null
+                if (!hasFunding && !rotationFundingAllowed) return@mapNotNull null
                 if (isPairInReentryCooldown(candidate.pairId, observedAtEpochMs)) return@mapNotNull null
 
                 val setupReadiness = deriveSetupReadiness(
@@ -667,6 +670,7 @@ class StrategyOrchestrator(
 
     private fun StrategySignal.toExecutionPlan(
         balances: List<BalanceSnapshot>,
+        positions: List<PositionSnapshot>,
         quoteByPair: Map<PairId, MarketQuote>,
         marketQuotes: List<MarketQuote>,
         deploymentPlan: com.kibot.shared.models.CapitalDeploymentPlan,
@@ -685,7 +689,31 @@ class StrategyOrchestrator(
             maxOf(deploymentPlan.suggestedPerPositionBudgetIdr, executionConfig.minOrderNotionalIdr),
             quoteBalanceUnits * quoteAssetPriceIdr,
         )
-        val budgetIdr = (rawBudgetIdr * (1.0 - executionConfig.entrySpendBufferPct))
+        val rotationReserveBudgetIdr = if (
+            deploymentPlan.allowRotation &&
+            positions.any { it.state != PositionState.CLOSED }
+        ) {
+            maxOf(
+                deploymentPlan.suggestedPerPositionBudgetIdr,
+                positions
+                    .filter { it.state != PositionState.CLOSED }
+                    .minOfOrNull {
+                        (
+                            (it.quantity.toDoubleOrZero() * it.averageEntryPrice.toDoubleOrZero()) +
+                                it.unrealizedPnlIdr.toDoubleOrZero()
+                            ).coerceAtLeast(0.0)
+                    }
+                    ?: 0.0,
+            )
+        } else {
+            0.0
+        }
+        val rotationFundingActive =
+            deploymentPlan.allowRotation &&
+                positions.any { it.state != PositionState.CLOSED } &&
+                (quoteBalanceUnits * quoteAssetPriceIdr) < executionConfig.minOrderNotionalIdr
+        val effectiveRawBudgetIdr = maxOf(rawBudgetIdr, rotationReserveBudgetIdr)
+        val budgetIdr = (effectiveRawBudgetIdr * (1.0 - executionConfig.entrySpendBufferPct))
             .coerceAtLeast(0.0)
         if (budgetIdr < executionConfig.minOrderNotionalIdr) return null
 
@@ -749,17 +777,50 @@ class StrategyOrchestrator(
             speculativePocket = speculativePocket,
         )
         val netEdgeAfterCostsPct = expectedNetProfitabilityPct - estimatedRoundTripCostPct
-        if (netEdgeAfterCostsPct < executionConfig.minNetEdgeAfterCostsBufferPct) return null
+        val minimumNetEdgeAfterCostsPct = if (rotationFundingActive) {
+            executionConfig.minNetEdgeAfterCostsBufferPct - 0.10
+        } else {
+            executionConfig.minNetEdgeAfterCostsBufferPct
+        }
+        if (netEdgeAfterCostsPct < minimumNetEdgeAfterCostsPct) return null
         val estimatedRoundTripCostIdr = budgetIdr * (estimatedRoundTripCostPct / 100.0)
+        val minimumProfitToCostMultiplier = if (rotationFundingActive) {
+            executionConfig.minProfitToCostMultiplier * 0.72
+        } else {
+            executionConfig.minProfitToCostMultiplier
+        }
+        val profitAfterFeesBufferIdr = if (rotationFundingActive) {
+            executionConfig.minProfitAfterFeesBufferIdr * 0.55
+        } else {
+            executionConfig.minProfitAfterFeesBufferIdr
+        }
         val dynamicNetProfitFloorIdr = maxOf(
-            executionConfig.minProfitAfterFeesBufferIdr,
-            budgetIdr * if (speculativePocket) 0.0085 else 0.0060,
-            estimatedRoundTripCostIdr * executionConfig.minProfitToCostMultiplier,
+            profitAfterFeesBufferIdr,
+            budgetIdr * if (rotationFundingActive) {
+                if (speculativePocket) 0.0062 else 0.0042
+            } else {
+                if (speculativePocket) 0.0085 else 0.0060
+            },
+            estimatedRoundTripCostIdr * minimumProfitToCostMultiplier,
         )
         val minimumRequiredNetProfitIdr = if (speculativePocket) {
-            maxOf(executionConfig.minExpectedNetProfitIdrSpeculative, dynamicNetProfitFloorIdr)
+            maxOf(
+                if (rotationFundingActive) {
+                    executionConfig.minExpectedNetProfitIdrSpeculative * 0.72
+                } else {
+                    executionConfig.minExpectedNetProfitIdrSpeculative
+                },
+                dynamicNetProfitFloorIdr,
+            )
         } else {
-            maxOf(executionConfig.minExpectedNetProfitIdr, dynamicNetProfitFloorIdr)
+            maxOf(
+                if (rotationFundingActive) {
+                    executionConfig.minExpectedNetProfitIdr * 0.72
+                } else {
+                    executionConfig.minExpectedNetProfitIdr
+                },
+                dynamicNetProfitFloorIdr,
+            )
         }
         if (projectedNetProfitIdr < minimumRequiredNetProfitIdr) return null
         val quantity = budgetQuoteUnits / effectivePriceInQuoteAsset

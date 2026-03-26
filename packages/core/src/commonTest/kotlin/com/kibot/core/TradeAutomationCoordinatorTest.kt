@@ -14,6 +14,14 @@ import com.kibot.shared.models.OrderSide
 import com.kibot.shared.models.OrderStatus
 import com.kibot.shared.models.OrderType
 import com.kibot.shared.models.MarketRegime
+import com.kibot.shared.models.PortfolioSnapshot
+import com.kibot.shared.models.PairScore
+import com.kibot.shared.models.PairTier
+import com.kibot.shared.models.ProfitProtectionStatus
+import com.kibot.shared.models.RiskLadderLevel
+import com.kibot.shared.models.BotMode
+import com.kibot.shared.models.BotModeSnapshot
+import com.kibot.shared.models.EdgeConfidence
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlin.test.Test
@@ -225,6 +233,139 @@ class TradeAutomationCoordinatorTest {
         assertNotNull(decision)
         assertEquals(ExitReason.STOP_LOSS_EXIT, decision.reason)
         assertEquals(OrderType.MARKET, decision.executionPlan.orderType)
+    }
+
+    @Test
+    fun `rotation exit can choose next best replacement candidate and use market sell for urgent rotation`() {
+        val now = Clock.System.now()
+        val coordinator = TradeAutomationCoordinator()
+        val cycle = StrategyCycleResult(
+            portfolio = PortfolioSnapshot(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("3"))),
+                openOrders = emptyList(),
+                positions = emptyList(),
+                totalEquityIdr = DecimalValue("63466"),
+                lastSyncedAt = now,
+            ),
+            dailyRisk = orchestrator.analyze(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("3"))),
+                openOrders = emptyList(),
+                dailyRisk = null,
+                health = healthyEngine(),
+                marketQuotes = listOf(marketQuote("ont_idr", 968.0, 971.0, 24_000_000.0, -0.6, -0.2)),
+            ).dailyRisk,
+            rankedPairs = listOf(
+                pairScore("ont_idr", ranking = 0.48, opportunity = 0.30),
+            ),
+            marketSnapshot = orchestrator.analyze(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("3"))),
+                openOrders = emptyList(),
+                dailyRisk = null,
+                health = healthyEngine(),
+                marketQuotes = listOf(marketQuote("ont_idr", 968.0, 971.0, 24_000_000.0, -0.6, -0.2)),
+            ).marketSnapshot,
+            healthDecision = orchestrator.analyze(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("3"))),
+                openOrders = emptyList(),
+                dailyRisk = null,
+                health = healthyEngine(),
+                marketQuotes = listOf(marketQuote("ont_idr", 968.0, 971.0, 24_000_000.0, -0.6, -0.2)),
+            ).healthDecision,
+            riskDecision = orchestrator.analyze(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("3"))),
+                openOrders = emptyList(),
+                dailyRisk = null,
+                health = healthyEngine(),
+                marketQuotes = listOf(marketQuote("ont_idr", 968.0, 971.0, 24_000_000.0, -0.6, -0.2)),
+            ).riskDecision,
+            modeSnapshot = orchestrator.analyze(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("3"))),
+                openOrders = emptyList(),
+                dailyRisk = null,
+                health = healthyEngine(),
+                marketQuotes = listOf(marketQuote("ont_idr", 968.0, 971.0, 24_000_000.0, -0.6, -0.2)),
+            ).modeSnapshot,
+            deploymentPlan = com.kibot.shared.models.CapitalDeploymentPlan(
+                allowNewEntries = false,
+                allowRotation = true,
+                maxActivePositions = 2,
+                suggestedPerPositionBudgetIdr = 30_000.0,
+                targetCashReservePct = 0.01,
+                capitalUtilizationTargetPct = 0.99,
+                preferredHorizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
+                candidates = listOf(
+                    com.kibot.shared.models.CandidateOpportunity(
+                        pairId = PairId("ont_idr"),
+                        tier = com.kibot.shared.models.PairTier.TIER_B,
+                        preferredHorizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
+                        rankingScore = 0.90,
+                        marketOpportunityScore = 0.86,
+                        expectedNetProfitabilityPct = 2.2,
+                        holdabilityScore = 0.55,
+                        speculativePocket = false,
+                        rationale = emptyList(),
+                    ),
+                    com.kibot.shared.models.CandidateOpportunity(
+                        pairId = PairId("croak_idr"),
+                        tier = com.kibot.shared.models.PairTier.TIER_B,
+                        preferredHorizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
+                        rankingScore = 0.86,
+                        marketOpportunityScore = 0.82,
+                        expectedNetProfitabilityPct = 2.4,
+                        holdabilityScore = 0.51,
+                        speculativePocket = true,
+                        rationale = emptyList(),
+                    ),
+                ),
+                rationale = emptyList(),
+            ),
+            selectedSignal = null,
+            executionPlan = null,
+            topCandidate = PairId("ont_idr"),
+            distrustLabels = emptyList(),
+            summary = emptyList(),
+            entrySignals = emptyList(),
+            entryExecutionPlans = emptyList(),
+        )
+        val positions = listOf(
+            ManagedPosition(
+                pairId = PairId("ont_idr"),
+                quantity = DecimalValue("16.30"),
+                averageEntryPrice = DecimalValue("970"),
+                currentBidPrice = DecimalValue("940"),
+                currentValueIdr = DecimalValue("15322"),
+                unrealizedPnlIdr = DecimalValue("-489"),
+                unrealizedPnlPct = -3.1,
+                breakEvenPrice = DecimalValue("976"),
+                takeProfitPrice = DecimalValue("1012"),
+                stopPrice = DecimalValue("928"),
+                openedAt = Instant.fromEpochMilliseconds(now.toEpochMilliseconds() - (70 * 60 * 1000)),
+                updatedAt = now,
+                horizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
+                setupType = com.kibot.shared.models.SetupType.HEALTHY_SHORT_TERM_PULLBACK,
+                pairTier = com.kibot.shared.models.PairTier.TIER_B,
+                speculativePocket = false,
+                expectedHoldingHours = 8.0,
+            ),
+        )
+
+        val decision = coordinator.planExit(
+            now = now,
+            cycle = cycle,
+            managedPositions = positions,
+            activeOrders = emptyList(),
+        )
+
+        assertNotNull(decision)
+        assertEquals(ExitReason.ROTATION_EXIT, decision.reason)
+        assertEquals(OrderType.MARKET, decision.executionPlan.orderType)
+        assertTrue(decision.message.contains("croak_idr", ignoreCase = true))
     }
 
     @Test
@@ -473,5 +614,36 @@ class TradeAutomationCoordinatorTest {
         fillQualityScore = 0.88,
         holdabilityScore = 0.72,
         capturedAt = Clock.System.now(),
+    )
+
+    private fun healthyEngine() = EngineHealthSnapshot(
+        status = HealthStatus.HEALTHY,
+        syncHealth = SyncHealth.HEALTHY,
+        websocketHealthy = true,
+        exchangeReachable = true,
+        supabaseReachable = true,
+    )
+
+    private fun pairScore(pair: String, ranking: Double, opportunity: Double) = PairScore(
+        pairId = PairId(pair),
+        liquidityScore = 0.72,
+        spreadScore = 0.70,
+        slippageScore = 0.68,
+        stabilityScore = 0.64,
+        volumeConsistencyScore = 0.66,
+        volatilityQualityScore = 0.74,
+        trendQualityScore = 0.58,
+        historicalExpectancyScore = 0.46,
+        recentHealthScore = 0.60,
+        fillQualityScore = 0.56,
+        holdabilityScore = 0.46,
+        feeAdjustedEdgeScore = opportunity,
+        marketOpportunityScore = opportunity.coerceIn(0.0, 1.0),
+        rankingScore = ranking,
+        pairTier = PairTier.TIER_B,
+        preferredHorizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
+        speculativePocket = false,
+        allowed = true,
+        rejectionReasons = emptyList(),
     )
 }

@@ -94,4 +94,38 @@ class ReconciliationServiceTest {
 
         assertEquals(ReconciliationState.CLEAN, report.state)
     }
+
+    @Test
+    fun `downgrades stale open order mismatch to needs review`() {
+        val now = Instant.parse("2026-03-15T01:00:00Z")
+        val report = ReconciliationService().reconcile(
+            portfolio = PortfolioSnapshot(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("100000"))),
+                openOrders = listOf(
+                    OrderSnapshot(
+                        orderId = OrderId("order-1"),
+                        clientOrderId = com.kibot.shared.models.ClientOrderId("client-1"),
+                        pairId = PairId("btc_idr"),
+                        side = OrderSide.BUY,
+                        orderType = OrderType.LIMIT,
+                        status = OrderStatus.OPEN,
+                        price = DecimalValue("1000000"),
+                        originalQuantity = DecimalValue("0.001"),
+                        executedQuantity = DecimalValue.Zero,
+                        remainingQuantity = DecimalValue("0.001"),
+                        createdAt = now,
+                        updatedAt = now,
+                    ),
+                ),
+                positions = emptyList(),
+                totalEquityIdr = DecimalValue("100000"),
+                lastSyncedAt = now,
+            ),
+            recentFills = emptyList(),
+            persistedOrders = emptyList(),
+        )
+
+        assertEquals(ReconciliationState.NEEDS_REVIEW, report.state)
+    }
 }

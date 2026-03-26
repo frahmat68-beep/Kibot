@@ -114,22 +114,34 @@ class PairSelector(
             abs(quote.shortTermReturnPct) <= policy.stagnantShortTermReturnPctMax &&
             abs(quote.mediumTermReturnPct) <= policy.stagnantMediumTermReturnPctMax &&
             quote.recentTradeActivityScore < 0.72
+        val earlyBreakoutEligible =
+            quote.shortTermReturnPct >= policy.speculativeMinShortTermReturnPct &&
+                quote.mediumTermReturnPct >= policy.speculativeMinMediumTermReturnPct &&
+                momentumAccelerationScore >= 0.74 &&
+                volumeConsistencyScore >= policy.speculativeMinTradeActivityScore &&
+                fillQualityScore >= 0.22 &&
+                quote.spreadPct <= (policy.smallCapitalMaxSpreadPct * 1.12) &&
+                quote.estimatedSlippagePct <= (policy.smallCapitalMaxSlippagePct * 1.10)
         val rankingScoreBase = weightedAverage(
-            liquidityScore to 0.10,
-            depthScore to 0.10,
-            spreadScore to 0.12,
-            slippageScore to 0.12,
-            stabilityScore to 0.10,
+            liquidityScore to 0.08,
+            depthScore to 0.08,
+            spreadScore to 0.10,
+            slippageScore to 0.10,
+            stabilityScore to 0.08,
             volumeConsistencyScore to 0.07,
             volatilityQualityScore to 0.08,
-            trendQualityScore to 0.08,
-            momentumAccelerationScore to 0.08,
+            trendQualityScore to 0.10,
+            momentumAccelerationScore to 0.15,
             historicalExpectancyScore to 0.11,
             recentHealthScore to 0.08,
             fillQualityScore to 0.08,
-            holdabilityScore to 0.06,
+            holdabilityScore to 0.07,
         )
-        val rankingScore = (rankingScoreBase - if (stagnantPair) 0.12 else 0.0).coerceIn(0.0, 1.0)
+        val rankingScore = (
+            rankingScoreBase -
+                if (stagnantPair) 0.12 else 0.0 +
+                if (earlyBreakoutEligible) 0.08 else 0.0
+            ).coerceIn(0.0, 1.0)
         val marketOpportunityScore = averageOf(
             rankingScore,
             recentHealthScore,
@@ -163,24 +175,41 @@ class PairSelector(
         val rejectionReasons = buildList {
             val minimumHistoricalExpectancyScore = if (speculativePocket) {
                 policy.speculativeMinHistoricalExpectancyScore
+            } else if (earlyBreakoutEligible) {
+                minOf(policy.minHistoricalExpectancyScore, 0.18)
             } else {
                 policy.minHistoricalExpectancyScore
             }
             if (dormantStablePair) add("Pair datar/stable tidak dipakai untuk growth trading.")
             if (stagnantPair) add("Pergerakan pair terlalu datar untuk mode agresif.")
-            if (quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr && !smallCapitalEligible) {
+            if (
+                quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr &&
+                !smallCapitalEligible &&
+                !earlyBreakoutEligible
+            ) {
                 add("Likuiditas harian terlalu rendah.")
             }
-            if (quote.spreadPct > policy.maxSpreadPct) add("Spread terlalu lebar.")
-            if (quote.estimatedSlippagePct > policy.maxEstimatedSlippagePct) add("Estimasi slippage terlalu tinggi.")
-            if (stabilityScore < policy.minOrderBookStabilityScore) add("Kualitas order book belum aman.")
-            if (volumeConsistencyScore < policy.minRecentTradeActivityScore) add("Aktivitas trade terlalu tipis.")
-            if (quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr && depthScore < 0.55) {
+            val maxSpread = if (earlyBreakoutEligible) policy.smallCapitalMaxSpreadPct else policy.maxSpreadPct
+            val maxSlippage = if (earlyBreakoutEligible) policy.smallCapitalMaxSlippagePct else policy.maxEstimatedSlippagePct
+            val minStability = if (earlyBreakoutEligible) policy.minOrderBookStabilityScore * 0.70 else policy.minOrderBookStabilityScore
+            val minTradeActivity = if (earlyBreakoutEligible) policy.minRecentTradeActivityScore * 0.75 else policy.minRecentTradeActivityScore
+            if (quote.spreadPct > maxSpread) add("Spread terlalu lebar.")
+            if (quote.estimatedSlippagePct > maxSlippage) add("Estimasi slippage terlalu tinggi.")
+            if (stabilityScore < minStability) add("Kualitas order book belum aman.")
+            if (volumeConsistencyScore < minTradeActivity) add("Aktivitas trade terlalu tipis.")
+            if (
+                quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr &&
+                depthScore < if (earlyBreakoutEligible) 0.28 else 0.55
+            ) {
                 add("Depth order book belum cukup aman untuk modal kecil.")
             }
-            if (fillQualityScore < policy.minFillQualityScore) add("Kualitas fill memburuk.")
+            if (fillQualityScore < if (earlyBreakoutEligible) policy.minFillQualityScore * 0.72 else policy.minFillQualityScore) {
+                add("Kualitas fill memburuk.")
+            }
             if (historicalExpectancyScore < minimumHistoricalExpectancyScore) add("Expectancy historis belum cukup sehat.")
-            if (feeAdjustedEdgePct < policy.minFeeAdjustedEdgeScore) add("Net edge setelah biaya belum layak.")
+            if (feeAdjustedEdgePct < if (earlyBreakoutEligible) policy.minFeeAdjustedEdgeScore * 0.65 else policy.minFeeAdjustedEdgeScore) {
+                add("Net edge setelah biaya belum layak.")
+            }
         }
 
         val pairTier = when {

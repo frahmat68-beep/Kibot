@@ -111,9 +111,12 @@ class MacEngineDaemon(
     private var lastExchangeProbeAt: Instant? = null
     private var lastExchangeReachable: Boolean = false
     private var lastExchangePingMs: Long? = null
+    private var consecutiveExchangeProbeFailures: Int = 0
     private var lastExecutionPolicyLogSignature: String? = null
     private var lastExecutionPolicyLoggedAt: Instant? = null
     private var lastObservedLeaseTerm: com.kibot.shared.models.LeaseTerm? = null
+    private var conflictRecoveryHoldUntil: Instant? = null
+    private var conflictRecoveryTerm: com.kibot.shared.models.LeaseTerm? = null
     private var cachedDevices: List<DeviceDescriptor> = emptyList()
     private var devicesFetchedAt: Instant? = null
     private var cachedDailyRisk: DailyRiskSnapshot? = null
@@ -410,7 +413,7 @@ class MacEngineDaemon(
                 term = runtimeLease?.term,
                 isMaster = runtimeLease.isHeldBy(config.device.deviceId, now),
                 desiredState = runtimeBotState.desiredState,
-                effectiveState = deriveEffectiveState(runtimeBotState, runtimeLease, healthDecision),
+                effectiveState = deriveEffectiveState(now, runtimeBotState, runtimeLease, healthDecision),
                 health = finalHealth,
             ),
         )
@@ -551,6 +554,13 @@ class MacEngineDaemon(
         localHealth: EngineHealthSnapshot,
     ): Boolean {
         if (
+            lease?.currentHolder == config.device.deviceId &&
+            lease.conflictDetected &&
+            isConflictRecoveryHoldActive(now, lease)
+        ) {
+            return false
+        }
+        if (
             lease != null &&
             lease.currentHolder != config.device.deviceId &&
             now < lease.expiresAt &&
@@ -603,6 +613,7 @@ class MacEngineDaemon(
                 ttlSeconds = config.leaseTtlSeconds,
             )
             lastObservedLeaseTerm = recoveredLease.term
+            activateConflictRecoveryHold(now, recoveredLease.term)
             appendAuditLog(
                 level = LogLevel.WARN,
                 category = "FAILOVER",
@@ -618,15 +629,17 @@ class MacEngineDaemon(
                 else -> false
             }
             if (shouldEscalateConflict) {
-                controlPlane.markConflictSafeMode(
-                    botId = config.controlPlane.botId,
-                    reason = evaluation.reasons.joinToString(" "),
-                )
-                appendAuditLog(
-                    level = LogLevel.ERROR,
-                    category = "FAILOVER",
-                    message = "Fail-safe takeover block triggered: ${evaluation.reasons.joinToString(" ")}",
-                )
+                if (!isConflictRecoveryHoldActive(now, lease)) {
+                    controlPlane.markConflictSafeMode(
+                        botId = config.controlPlane.botId,
+                        reason = evaluation.reasons.joinToString(" "),
+                    )
+                    appendAuditLog(
+                        level = LogLevel.ERROR,
+                        category = "FAILOVER",
+                        message = "Fail-safe takeover block triggered: ${evaluation.reasons.joinToString(" ")}",
+                    )
+                }
             }
             return false
         }
@@ -675,8 +688,9 @@ class MacEngineDaemon(
         supabaseReachable: Boolean = isControlPlaneReachable(Clock.System.now()),
         marketFeedHealthy: Boolean = exchangeReachable,
     ): EngineHealthSnapshot {
+        val exchangeHardDown = !exchangeReachable && consecutiveExchangeProbeFailures >= 2
         val status = when {
-            !exchangeReachable || !supabaseReachable -> HealthStatus.CRITICAL
+            exchangeHardDown || !supabaseReachable -> HealthStatus.CRITICAL
             !marketFeedHealthy || warnings.isNotEmpty() -> HealthStatus.WARNING
             else -> HealthStatus.HEALTHY
         }
@@ -728,7 +742,26 @@ class MacEngineDaemon(
         lastExchangeProbeAt = now
         lastExchangeReachable = exchangeReachable
         lastExchangePingMs = exchangePingMs
+        consecutiveExchangeProbeFailures = if (exchangeReachable) 0 else (consecutiveExchangeProbeFailures + 1).coerceAtMost(10)
         return exchangeReachable to exchangePingMs
+    }
+
+    private fun activateConflictRecoveryHold(
+        now: Instant,
+        term: com.kibot.shared.models.LeaseTerm,
+    ) {
+        conflictRecoveryTerm = term
+        conflictRecoveryHoldUntil = now.plus(35.seconds)
+    }
+
+    private fun isConflictRecoveryHoldActive(
+        now: Instant,
+        lease: EngineLeaseSnapshot?,
+    ): Boolean {
+        val until = conflictRecoveryHoldUntil ?: return false
+        val termMatches = conflictRecoveryTerm == null || lease?.term == conflictRecoveryTerm
+        val sameHolder = lease?.currentHolder == config.device.deviceId
+        return sameHolder && termMatches && now < until
     }
 
     private suspend fun refreshDevices(now: Instant): List<DeviceDescriptor> {
@@ -1137,10 +1170,39 @@ class MacEngineDaemon(
                 )
             }
 
-            else -> EntryRoutingDecision(
-                executionPlan = null,
-                blockedReason = "Ping merah ${latencyMs}ms. Entry baru ${executionPlan.signal.pairId.value} diblokir sampai feed pulih; bot hanya fokus monitor/exit aman.",
-            )
+            else -> {
+                val breakoutExceptionEligible =
+                    executionPlan.signal.signalType == com.kibot.shared.models.StrategySignalType.BREAKOUT_ENTRY &&
+                        executionPlan.signal.confidence >= 0.74 &&
+                        executionPlan.expectedNetEdgePct >= 0.95 &&
+                        quote != null &&
+                        quote.recentTradeActivityScore >= 0.58 &&
+                        quote.estimatedSlippagePct <= 0.95 &&
+                        quote.spreadPct <= 1.45 &&
+                        health.syncHealth != SyncHealth.BROKEN
+                if (breakoutExceptionEligible) {
+                    val fastLimitPrice = quote?.bestAsk
+                        ?: executionPlan.limitPrice
+                        ?: executionPlan.signal.entryPrice
+                        ?: return EntryRoutingDecision(
+                            executionPlan = null,
+                            blockedReason = "Entry breakout ${executionPlan.signal.pairId.value} gagal karena harga fast-limit tidak tersedia saat ping ${latencyMs}ms.",
+                        )
+                    EntryRoutingDecision(
+                        executionPlan = executionPlan.copy(
+                            orderType = com.kibot.shared.models.OrderType.LIMIT,
+                            limitPrice = fastLimitPrice,
+                            postOnlyPreferred = false,
+                        ),
+                        message = "Ping merah ${latencyMs}ms, tapi breakout ${executionPlan.signal.pairId.value} cukup kuat. Bot tetap izinkan fast-limit exception agar tidak telat ke momentum.",
+                    )
+                } else {
+                    EntryRoutingDecision(
+                        executionPlan = null,
+                        blockedReason = "Ping merah ${latencyMs}ms. Entry baru ${executionPlan.signal.pairId.value} diblokir sampai feed pulih; bot hanya fokus monitor/exit aman.",
+                    )
+                }
+            }
         }
     }
 
@@ -1156,19 +1218,12 @@ class MacEngineDaemon(
             return "Masih pegang ${executionPlan.signal.pairId.value} dan posisinya belum cukup hijau, jadi bot tidak averaging dulu."
         }
 
-        val profitablePositions = managedPositions.filter {
-            it.unrealizedPnlPct >= 1.20 && it.unrealizedPnlIdr.toDoubleOrZero() >= 180.0
-        }
-        val redPositions = managedPositions.filter { it.unrealizedPnlPct <= -0.45 }
         val slotsAreFull = managedPositions.size >= cycle.deploymentPlan.maxActivePositions.coerceAtLeast(1)
 
         if (!slotsAreFull) return null
 
-        if (cycle.deploymentPlan.allowRotation && profitablePositions.isEmpty()) {
-            return "Rotasi ditunda karena belum ada posisi yang sudah hijau bersih setelah biaya."
-        }
-        if (redPositions.isNotEmpty() && profitablePositions.isEmpty()) {
-            return "Entry baru ditahan karena portofolio masih merah dan belum ada posisi hijau untuk rotasi."
+        if (!cycle.deploymentPlan.allowRotation) {
+            return "Entry baru ditahan karena semua slot penuh dan kandidat pengganti belum cukup menang setelah biaya."
         }
         return null
     }
@@ -1468,12 +1523,13 @@ class MacEngineDaemon(
     }
 
     private fun deriveEffectiveState(
+        now: Instant,
         botState: BotStateSnapshot,
         lease: EngineLeaseSnapshot?,
         healthDecision: com.kibot.core.EntryHealthDecision,
     ): BotEffectiveState {
         if (botState.desiredState == BotDesiredState.OFF) return BotEffectiveState.STOPPED
-        if (lease?.conflictDetected == true) return BotEffectiveState.SAFE_MODE
+        if (lease?.conflictDetected == true && !isConflictRecoveryHoldActive(now, lease)) return BotEffectiveState.SAFE_MODE
         return if (healthDecision.tradingAllowed) {
             if (lease.isHeldBy(config.device.deviceId, Clock.System.now())) {
                 BotEffectiveState.RUNNING
@@ -2642,9 +2698,9 @@ class MacEngineDaemon(
         private const val staleExitOrderMaxAgeMinutes = 4.5
         private const val staleExitOrderMaxDriftPct = 0.55
         private const val staleExitRepriceLossFloorPct = -0.35
-        private const val makerFirstMaxLatencyMs = 260L
-        private const val aggressiveLimitFallbackLatencyMs = 650L
-        private const val entryBlockLatencyMs = 900L
+        private const val makerFirstMaxLatencyMs = 150L
+        private const val aggressiveLimitFallbackLatencyMs = 850L
+        private const val entryBlockLatencyMs = 1200L
         private const val executionPolicyLogCooldownMinutes = 2L
         private val hiddenStablePairs = setOf("usdt_idr", "usdc_idr", "indr_idr")
         private val activeOrderStatuses = setOf(

@@ -17,6 +17,7 @@ import com.kibot.shared.models.DevicePlatform
 import com.kibot.shared.models.DeviceRole
 import com.kibot.shared.models.EdgeConfidence
 import com.kibot.shared.models.EngineLeaseSnapshot
+import com.kibot.shared.models.FillSnapshot
 import com.kibot.shared.models.LeaseState
 import com.kibot.shared.models.LeaseTerm
 import com.kibot.shared.models.MarketRegime
@@ -35,6 +36,7 @@ import com.kibot.shared.models.WeeklyLearningSummary
 import com.kibot.testkit.FakeControlPlaneGateway
 import com.kibot.testkit.FakeExchangeGateway
 import kotlinx.coroutines.runBlocking
+import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
 import kotlin.test.Test
@@ -130,8 +132,8 @@ class MacEngineDaemonTest {
             balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("100000"))),
             orders = mutableListOf(
                 OrderSnapshot(
-                    orderId = OrderId("ex-1"),
-                    clientOrderId = com.kibot.shared.models.ClientOrderId("client-1"),
+                    orderId = OrderId("ex-open-1"),
+                    clientOrderId = com.kibot.shared.models.ClientOrderId("client-open-1"),
                     pairId = PairId("btc_idr"),
                     side = OrderSide.BUY,
                     orderType = OrderType.LIMIT,
@@ -142,6 +144,19 @@ class MacEngineDaemonTest {
                     remainingQuantity = DecimalValue("0.001"),
                     createdAt = Instant.parse("2026-03-15T00:00:00Z"),
                     updatedAt = Instant.parse("2026-03-15T00:00:00Z"),
+                ),
+            ),
+            fills = mutableListOf(
+                FillSnapshot(
+                    fillId = com.kibot.shared.models.FillId("fill-1"),
+                    orderId = OrderId("ex-1"),
+                    pairId = PairId("btc_idr"),
+                    side = OrderSide.BUY,
+                    quantity = DecimalValue("0.001"),
+                    price = DecimalValue("1000000"),
+                    fee = DecimalValue("1000"),
+                    feeAsset = "idr",
+                    executedAt = Clock.System.now(),
                 ),
             ),
         )

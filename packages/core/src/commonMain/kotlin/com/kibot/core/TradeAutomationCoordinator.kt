@@ -47,25 +47,25 @@ data class TradeAutomationConfig(
     val breakoutWinnerRunMinOpportunityScore: Double = 0.58,
     val minMeaningfulNonEmergencyExitProfitPct: Double = 0.55,
     val minMeaningfulNonEmergencyExitProfitIdr: Double = 90.0,
-    val loserRotationMinAgeHours: Double = 0.40,
-    val loserRotationMinLossPct: Double = -0.12,
+    val loserRotationMinAgeHours: Double = 0.22,
+    val loserRotationMinLossPct: Double = -0.06,
     val loserRotationMinTopCandidateRanking: Double = 0.56,
-    val loserRotationMinScoreGap: Double = 0.045,
-    val rotationMinNetUpgradePct: Double = 1.10,
-    val loserRotationIncrementalUpgradeFloorPct: Double = 0.18,
-    val staleRotationMinAgeHours: Double = 0.50,
-    val staleRotationMaxAbsPnlPct: Double = 0.22,
-    val staleRotationMinTopCandidateRanking: Double = 0.60,
-    val staleRotationMinScoreGap: Double = 0.10,
-    val staleRotationIncrementalUpgradeFloorPct: Double = 0.14,
-    val staleUnderwaterKillMinAgeHours: Double = 0.75,
-    val staleUnderwaterKillLossPct: Double = -0.38,
-    val staleUnderwaterKillTopCandidateRanking: Double = 0.68,
-    val staleUnderwaterKillMinScoreGap: Double = 0.08,
-    val staleUnderwaterKillMinNetUpgradePct: Double = 1.30,
-    val staleUnderwaterKillIncrementalUpgradeFloorPct: Double = 0.10,
-    val tacticalStaleMaxAgeHours: Double = 3.6,
-    val tacticalStaleLossPct: Double = -0.22,
+    val loserRotationMinScoreGap: Double = 0.035,
+    val rotationMinNetUpgradePct: Double = 0.88,
+    val loserRotationIncrementalUpgradeFloorPct: Double = 0.10,
+    val staleRotationMinAgeHours: Double = 0.26,
+    val staleRotationMaxAbsPnlPct: Double = 0.32,
+    val staleRotationMinTopCandidateRanking: Double = 0.56,
+    val staleRotationMinScoreGap: Double = 0.06,
+    val staleRotationIncrementalUpgradeFloorPct: Double = 0.08,
+    val staleUnderwaterKillMinAgeHours: Double = 0.32,
+    val staleUnderwaterKillLossPct: Double = -0.16,
+    val staleUnderwaterKillTopCandidateRanking: Double = 0.62,
+    val staleUnderwaterKillMinScoreGap: Double = 0.05,
+    val staleUnderwaterKillMinNetUpgradePct: Double = 0.95,
+    val staleUnderwaterKillIncrementalUpgradeFloorPct: Double = 0.05,
+    val tacticalStaleMaxAgeHours: Double = 2.0,
+    val tacticalStaleLossPct: Double = -0.10,
     val tacticalStaleHealthyPnlCeilingPct: Double = 0.32,
     val tacticalStaleRankingFloor: Double = 0.60,
     val tacticalStaleOpportunityFloor: Double = 0.56,
@@ -318,7 +318,7 @@ class TradeAutomationCoordinator(
                     now = now,
                     position = position,
                     pairScore = rankedByPair[position.pairId],
-                    topCandidate = cycle.deploymentPlan.candidates.firstOrNull(),
+                    replacementCandidates = cycle.deploymentPlan.candidates,
                     marketRegime = cycle.marketSnapshot.regime,
                     modeSnapshot = cycle.modeSnapshot,
                     riskDecision = cycle.riskDecision,
@@ -341,7 +341,7 @@ class TradeAutomationCoordinator(
         now: Instant,
         position: ManagedPosition,
         pairScore: PairScore?,
-        topCandidate: com.kibot.shared.models.CandidateOpportunity?,
+        replacementCandidates: List<com.kibot.shared.models.CandidateOpportunity>,
         marketRegime: MarketRegime,
         modeSnapshot: BotModeSnapshot,
         riskDecision: RiskDecision,
@@ -359,6 +359,11 @@ class TradeAutomationCoordinator(
             riskDecision = riskDecision,
         )
 
+        val topCandidate = selectReplacementCandidate(
+            position = position,
+            positionPairScore = pairScore,
+            candidates = replacementCandidates,
+        )
         val exitReason = when {
             currentBid <= stopPrice -> ExitReason.STOP_LOSS_EXIT
             currentBid >= takeProfitPrice && !keepWinnerRunning -> ExitReason.PROFIT_EXIT
@@ -411,6 +416,13 @@ class TradeAutomationCoordinator(
         val useEmergencyMarketExit = riskDecision.hardStopTriggered ||
             marketRegime == MarketRegime.BREAKDOWN_PANIC ||
             (exitReason == ExitReason.STOP_LOSS_EXIT && position.unrealizedPnlPct <= config.emergencyMarketExitLossPct)
+        val useRapidRotationMarketExit = !useEmergencyMarketExit &&
+            exitReason == ExitReason.ROTATION_EXIT &&
+            (
+                position.unrealizedPnlPct <= 0.12 ||
+                    ageHours >= max(config.staleRotationMinAgeHours, config.loserRotationMinAgeHours) * 2.0 ||
+                    (topCandidate?.expectedNetProfitabilityPct ?: 0.0) >= 1.35
+                )
 
         val nonEmergencyExitBelowBreakEven = !useEmergencyMarketExit &&
             exitReason in setOf(
@@ -477,9 +489,9 @@ class TradeAutomationCoordinator(
             executionPlan = ExecutionPlan(
                 signal = signal,
                 side = OrderSide.SELL,
-                orderType = if (useEmergencyMarketExit) OrderType.MARKET else OrderType.LIMIT,
+                orderType = if (useEmergencyMarketExit || useRapidRotationMarketExit) OrderType.MARKET else OrderType.LIMIT,
                 quantity = plannedQuantity,
-                limitPrice = if (useEmergencyMarketExit) null else position.currentBidPrice,
+                limitPrice = if (useEmergencyMarketExit || useRapidRotationMarketExit) null else position.currentBidPrice,
                 quoteBudget = null,
                 postOnlyPreferred = false,
                 expectedNetEdgePct = abs(position.unrealizedPnlPct),
@@ -662,7 +674,7 @@ class TradeAutomationCoordinator(
         config: TradeAutomationConfig,
         minimumIncrementalUpgradePct: Double,
     ): Boolean {
-        val minimumExpectedNet = max(config.rotationMinNetUpgradePct, config.estimatedRoundTripCostPct + 0.35)
+        val minimumExpectedNet = max(config.rotationMinNetUpgradePct, config.estimatedRoundTripCostPct + 0.20)
         val continuationQuality = (
             ((positionPairScore?.marketOpportunityScore ?: 0.42) * 0.45) +
                 ((positionPairScore?.trendQualityScore ?: 0.42) * 0.35) +
@@ -679,13 +691,38 @@ class TradeAutomationCoordinator(
                 }
             ).coerceIn(0.0, 1.10)
         val churnPenaltyPct = when {
-            position.unrealizedPnlPct >= 0.60 -> 0.22
-            position.unrealizedPnlPct >= 0.0 -> 0.16
-            position.unrealizedPnlPct >= -0.40 -> 0.10
-            else -> 0.04
+            position.unrealizedPnlPct >= 0.60 -> 0.16
+            position.unrealizedPnlPct >= 0.0 -> 0.12
+            position.unrealizedPnlPct >= -0.40 -> 0.06
+            else -> 0.02
         }
         val requiredNet = minimumExpectedNet + continuationEdgePct + churnPenaltyPct + minimumIncrementalUpgradePct
         return expectedNetProfitabilityPct >= requiredNet
+    }
+
+    private fun selectReplacementCandidate(
+        position: ManagedPosition,
+        positionPairScore: PairScore?,
+        candidates: List<com.kibot.shared.models.CandidateOpportunity>,
+    ): com.kibot.shared.models.CandidateOpportunity? {
+        if (candidates.isEmpty()) return null
+        val currentScore = positionPairScore?.rankingScore ?: 0.50
+        return candidates
+            .asSequence()
+            .filter { it.pairId != position.pairId }
+            .filter {
+                it.rankingScore >= 0.54 &&
+                    it.marketOpportunityScore >= 0.54 &&
+                    it.expectedNetProfitabilityPct >= config.rotationMinNetUpgradePct
+            }
+            .sortedByDescending {
+                (it.expectedNetProfitabilityPct * 0.44) +
+                    (it.rankingScore * 0.30) +
+                    (it.marketOpportunityScore * 0.18) +
+                    ((it.rankingScore - currentScore).coerceAtLeast(0.0) * 0.08)
+            }
+            .firstOrNull()
+            ?: candidates.firstOrNull { it.pairId != position.pairId }
     }
 
     private fun resolveExitQuantity(
