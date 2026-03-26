@@ -1225,6 +1225,8 @@ private fun detectLanProbeUrl(host: String, port: Int): String? {
 private fun locateDashboardIcon(): File? {
     val cwd = File(System.getProperty("user.dir"))
     val candidates = listOf(
+        File("/home/ubuntu/KiBot/kibot-small.png"),
+        File("/home/ubuntu/KiBot/kibot.png"),
         File(cwd, "kibot-small.png"),
         File(cwd, "kibot.png"),
         File(cwd, "../../kibot-small.png"),
