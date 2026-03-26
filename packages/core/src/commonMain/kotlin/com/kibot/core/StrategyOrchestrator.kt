@@ -266,6 +266,7 @@ class StrategyOrchestrator(
                     pairScore = pairScore,
                     quote = quote,
                     marketSnapshot = marketSnapshot,
+                    modeSnapshot = modeSnapshot,
                     setupReadiness = setupReadiness,
                     dominantPairId = dominantPairId,
                     targetBudgetIdr = deploymentPlan.suggestedPerPositionBudgetIdr,
@@ -510,6 +511,7 @@ class StrategyOrchestrator(
         pairScore: PairScore,
         quote: MarketQuote,
         marketSnapshot: MarketOpportunitySnapshot,
+        modeSnapshot: BotModeSnapshot,
         setupReadiness: SetupReadiness,
         dominantPairId: PairId?,
         targetBudgetIdr: Double,
@@ -569,6 +571,15 @@ class StrategyOrchestrator(
                 0.07
             else -> 0.0
         }
+        val breakoutAccelerationScore = breakoutAccelerationScore(pairScore, quote, setupReadiness)
+        val breakoutAccelerationBonus = when {
+            setupReadiness.signalType != StrategySignalType.BREAKOUT_ENTRY -> 0.0
+            breakoutAccelerationScore >= 0.86 && modeSnapshot.mode == BotMode.ATTACK -> 0.16
+            breakoutAccelerationScore >= 0.78 && modeSnapshot.mode == BotMode.ATTACK -> 0.11
+            breakoutAccelerationScore >= 0.84 -> 0.09
+            breakoutAccelerationScore >= 0.74 -> 0.05
+            else -> 0.0
+        }
 
         return weightedAverage(
             pairScore.rankingScore to 0.24,
@@ -580,8 +591,42 @@ class StrategyOrchestrator(
             quote.recentTradeActivityScore.coerceIn(0.0, 1.0) to 0.04,
             affordabilityScore to 0.02,
         ).let { base ->
-            (base + regimeBias + dominanceBonus + affordableNominalBias + momentumBonus + setupLearningBias).coerceIn(0.0, 1.0)
+            (
+                base +
+                    regimeBias +
+                    dominanceBonus +
+                    affordableNominalBias +
+                    momentumBonus +
+                    breakoutAccelerationBonus +
+                    setupLearningBias
+                ).coerceIn(0.0, 1.0)
         }
+    }
+
+    private fun breakoutAccelerationScore(
+        pairScore: PairScore,
+        quote: MarketQuote,
+        setupReadiness: SetupReadiness,
+    ): Double {
+        if (setupReadiness.signalType != StrategySignalType.BREAKOUT_ENTRY) return 0.0
+        val shortTermIgnition = (shortTermReturnPct(quote) / 8.0).coerceIn(0.0, 1.0)
+        val mediumFollowThrough = (quote.mediumTermReturnPct / 3.0).coerceIn(0.0, 1.0)
+        val microstructureReadiness = averageOf(
+            pairScore.fillQualityScore,
+            pairScore.spreadScore,
+            pairScore.slippageScore,
+            quote.orderBookStabilityScore.coerceIn(0.0, 1.0),
+        )
+        val activitySurge = quote.recentTradeActivityScore.coerceIn(0.0, 1.0)
+        val netEdgeReadiness = (pairScore.feeAdjustedEdgeScore / 2.6).coerceIn(0.0, 1.0)
+        return weightedAverage(
+            shortTermIgnition to 0.30,
+            mediumFollowThrough to 0.16,
+            pairScore.trendQualityScore to 0.18,
+            microstructureReadiness to 0.16,
+            activitySurge to 0.10,
+            netEdgeReadiness to 0.10,
+        ).coerceIn(0.0, 1.0)
     }
 
     private fun StrategySignal.toExecutionPlan(

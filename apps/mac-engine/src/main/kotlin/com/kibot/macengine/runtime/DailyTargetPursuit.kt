@@ -144,8 +144,20 @@ class DailyTargetPursuitBrain(
         val topCandidateQuality = cycle.deploymentPlan.candidates.firstOrNull()?.let {
             (it.rankingScore * 0.58) + (it.marketOpportunityScore * 0.42)
         } ?: 0.0
+        val strongBenchCount = cycle.deploymentPlan.candidates.count {
+            it.rankingScore >= 0.72 &&
+                it.marketOpportunityScore >= 0.66 &&
+                it.expectedNetProfitabilityPct >= 1.20
+        }
+        val explosiveBenchCount = cycle.deploymentPlan.candidates.count {
+            it.rankingScore >= 0.82 &&
+                it.marketOpportunityScore >= 0.74 &&
+                it.expectedNetProfitabilityPct >= 2.10
+        }
         val profitWindowOpen =
-            topCandidateQuality >= 0.82 ||
+            topCandidateQuality >= 0.80 ||
+                explosiveBenchCount >= 1 ||
+                strongBenchCount >= 2 ||
                 aiConsensus >= 0.68 ||
                 cycle.selectedSignal?.expectedNetProfitabilityPct?.let { it >= 2.8 } == true
         val targetSatisfied = (
@@ -168,11 +180,12 @@ class DailyTargetPursuitBrain(
                 ).coerceIn(0.20, 0.62)
             else -> (
                 (gapPressure * 0.56) +
-                    (behindSchedule * 0.18) +
+                    (behindSchedule * 0.15) +
                     (hourlyPressure * 0.22) +
                     (aiConsensus * 0.16) +
                     (if (checkpointMissed) 0.24 else 0.0) +
-                    ((topCandidateQuality - 0.55).coerceAtLeast(0.0) * 0.22) -
+                    ((topCandidateQuality - 0.52).coerceAtLeast(0.0) * 0.28) +
+                    (if (profitWindowOpen) 0.10 else 0.0) -
                     (drawdownPenalty * 0.30)
                 ).coerceIn(0.0, 1.0)
         }
@@ -189,9 +202,9 @@ class DailyTargetPursuitBrain(
         val budgetBoostMultiplier = max(
             (1.0 + (urgency * 0.52) + (aiConsensus * 0.18)).coerceIn(1.0, config.maxBudgetBoostMultiplier),
             when {
-                checkpointMissed -> 1.62
-                forcedReplan -> 1.42
-                profitWindowOpen -> 1.18
+                checkpointMissed -> 1.68
+                forcedReplan -> 1.48
+                profitWindowOpen -> 1.24
                 hourlyMissed -> 1.24
                 else -> 1.0
             },
@@ -199,8 +212,8 @@ class DailyTargetPursuitBrain(
         val executionBoostMultiplier = max(
             (1.0 + (urgency * 0.38) + (aiConsensus * 0.14)).coerceIn(1.0, config.maxExecutionBoostMultiplier),
             when {
-                checkpointMissed -> 1.44
-                forcedReplan -> 1.28
+                checkpointMissed -> 1.50
+                forcedReplan -> 1.34
                 profitWindowOpen -> 1.12
                 hourlyMissed -> 1.16
                 else -> 1.0
@@ -209,8 +222,8 @@ class DailyTargetPursuitBrain(
         val reserveReliefPct = max(
             (0.03 + (urgency * 0.05) + (aiConsensus * 0.02)).coerceIn(0.0, config.maxReserveReliefPct),
             when {
-                checkpointMissed -> 0.09
-                forcedReplan -> 0.07
+                checkpointMissed -> 0.10
+                forcedReplan -> 0.08
                 profitWindowOpen -> 0.04
                 hourlyMissed -> 0.05
                 else -> 0.03
@@ -218,21 +231,18 @@ class DailyTargetPursuitBrain(
         ).coerceIn(0.0, config.maxReserveReliefPct)
         val extraSlots = when {
             currentEquity < config.minEquityForExtraSlotIdr -> 0
-            checkpointMissed && currentEquity >= (config.minEquityForExtraSlotIdr * 1.12) -> config.maxExtraSlots
-            forcedReplan && currentEquity >= config.minEquityForExtraSlotIdr -> 1.coerceAtMost(config.maxExtraSlots)
-            profitWindowOpen && currentEquity >= config.minEquityForExtraSlotIdr && urgency >= 0.36 -> 1.coerceAtMost(config.maxExtraSlots)
-            hourlyMissed && currentEquity >= config.minEquityForExtraSlotIdr && urgency >= 0.54 -> 1.coerceAtMost(config.maxExtraSlots)
-            urgency < 0.50 && !checkpointMissed -> 0
-            urgency < 0.76 || currentEquity < (config.minEquityForExtraSlotIdr * 1.35) -> 1
-            else -> config.maxExtraSlots
+            explosiveBenchCount >= 2 && checkpointMissed && currentEquity >= (config.minEquityForExtraSlotIdr * 1.20) -> config.maxExtraSlots
+            strongBenchCount >= 3 && (forcedReplan || profitWindowOpen) && currentEquity >= (config.minEquityForExtraSlotIdr * 1.10) -> 1.coerceAtMost(config.maxExtraSlots)
+            else -> 0
         }
         val concentrationBoostPct = max(
             ((urgency * 0.12) + (aiConsensus * 0.06)).coerceIn(0.0, config.maxConcentrationBoostPct),
             when {
-                checkpointMissed -> 0.16
-                forcedReplan -> 0.12
-                profitWindowOpen -> 0.08
-                else -> 0.0
+                checkpointMissed -> 0.20
+                forcedReplan -> 0.16
+                hourlyMissed -> 0.12
+                profitWindowOpen -> 0.10
+                else -> 0.04
             },
         ).coerceIn(0.0, config.maxConcentrationBoostPct)
 
@@ -251,7 +261,7 @@ class DailyTargetPursuitBrain(
             if (checkpointMissed) add("Checkpoint 3 jam ke-$completedCheckpointWindow miss: target ${formatPct(checkpointExpectedProfitPct)} vs realisasi keras ${formatPct(checkpointProfitPct)}, jadi bot wajib replan agresif.")
             if (forcedReplan && !checkpointMissed) add("Gap hourly terlalu besar, jadi bot masuk forced replan sebelum checkpoint berikutnya.")
             if (aiConsensus >= 0.55) add("Consensus AI kuat, sizing dan fokus modal boleh dinaikkan.")
-            if (extraSlots > 0) add("Modal cukup untuk membuka ${extraSlots} slot tambahan sambil tetap aman untuk kapasitas server.")
+            if (extraSlots > 0) add("Bench pair cukup kuat untuk membuka ${extraSlots} slot tambahan tanpa mengorbankan fokus modal.")
         }
 
         return DailyTargetPursuit(

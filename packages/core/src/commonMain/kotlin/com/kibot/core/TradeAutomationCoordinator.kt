@@ -56,6 +56,11 @@ data class TradeAutomationConfig(
     val staleRotationMaxAbsPnlPct: Double = 0.22,
     val staleRotationMinTopCandidateRanking: Double = 0.60,
     val staleRotationMinScoreGap: Double = 0.10,
+    val staleUnderwaterKillMinAgeHours: Double = 0.75,
+    val staleUnderwaterKillLossPct: Double = -0.38,
+    val staleUnderwaterKillTopCandidateRanking: Double = 0.68,
+    val staleUnderwaterKillMinScoreGap: Double = 0.08,
+    val staleUnderwaterKillMinNetUpgradePct: Double = 1.30,
     val partialTakeProfitEnabled: Boolean = true,
     val partialTakeProfitMinPnlPct: Double = 1.8,
     val partialTakeProfitSellRatio: Double = 0.45,
@@ -360,6 +365,13 @@ class TradeAutomationCoordinator(
                 ageHours = ageHours,
                 allowRotation = allowRotation,
             ) -> ExitReason.ROTATION_EXIT
+            shouldKillStaleUnderwater(
+                position = position,
+                positionPairScore = pairScore,
+                topCandidate = topCandidate,
+                ageHours = ageHours,
+                allowRotation = allowRotation,
+            ) -> ExitReason.ROTATION_EXIT
             pairScore != null &&
                 (!pairScore.allowed || pairScore.rankingScore < config.thesisInvalidRankingFloor) &&
                 ageHours >= config.thesisInvalidAgeHours &&
@@ -583,6 +595,25 @@ class TradeAutomationCoordinator(
         if (!candidate.hasNetRotationUpgrade(config)) return false
         val positionScore = positionPairScore?.rankingScore ?: 0.50
         return (candidate.rankingScore - positionScore) >= config.staleRotationMinScoreGap
+    }
+
+    private fun shouldKillStaleUnderwater(
+        position: ManagedPosition,
+        positionPairScore: PairScore?,
+        topCandidate: com.kibot.shared.models.CandidateOpportunity?,
+        ageHours: Double,
+        allowRotation: Boolean,
+    ): Boolean {
+        if (!allowRotation) return false
+        if (ageHours < config.staleUnderwaterKillMinAgeHours) return false
+        if (position.unrealizedPnlPct > config.staleUnderwaterKillLossPct) return false
+        val candidate = topCandidate ?: return false
+        if (candidate.pairId == position.pairId) return false
+        if (candidate.rankingScore < config.staleUnderwaterKillTopCandidateRanking) return false
+        if (candidate.expectedNetProfitabilityPct < config.staleUnderwaterKillMinNetUpgradePct) return false
+        if (!candidate.hasNetRotationUpgrade(config)) return false
+        val positionScore = positionPairScore?.rankingScore ?: 0.50
+        return (candidate.rankingScore - positionScore) >= config.staleUnderwaterKillMinScoreGap
     }
 
     private fun com.kibot.shared.models.CandidateOpportunity.hasNetRotationUpgrade(config: TradeAutomationConfig): Boolean {

@@ -56,6 +56,7 @@ import kotlinx.datetime.minus
 import kotlinx.datetime.toLocalDateTime
 import org.slf4j.LoggerFactory
 import java.text.NumberFormat
+import java.nio.file.Files
 import java.util.Locale
 import kotlin.math.max
 import kotlin.time.Duration.Companion.hours
@@ -85,8 +86,10 @@ class MacEngineDaemon(
     private data class TargetEnforcementMemory(
         val lastHourlyWindowIndex: Int = 0,
         val consecutiveHourlyMisses: Int = 0,
+        val lastHourlyShortfallPct: Double = 0.0,
         val lastCheckpointWindowIndex: Int = 0,
         val consecutiveCheckpointMisses: Int = 0,
+        val lastCheckpointShortfallPct: Double = 0.0,
     )
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -129,7 +132,7 @@ class MacEngineDaemon(
     private var cachedRecentFillsKey: String? = null
     private var cachedAdaptiveAiPolicy: AdaptiveAiPolicy? = null
     private var adaptiveAiPolicyFetchedAt: Instant? = null
-    private var targetEnforcementMemory = TargetEnforcementMemory()
+    private var targetEnforcementMemory = loadTargetEnforcementMemory()
 
     suspend fun run() {
         logger.info("Mac engine daemon loop started.")
@@ -2047,6 +2050,12 @@ class MacEngineDaemon(
         val executionHints = adaptiveAiPolicy?.executionHints ?: AdaptiveAiExecutionHints()
         val repeatedHourlyPenalty = enforcementMemory.consecutiveHourlyMisses.coerceIn(0, 4)
         val repeatedCheckpointPenalty = enforcementMemory.consecutiveCheckpointMisses.coerceIn(0, 3)
+        val worseningHourlyMiss = pursuit.hourlyMissed &&
+            pursuit.hourlyWindowIndex > enforcementMemory.lastHourlyWindowIndex &&
+            pursuit.hourlyShortfallPct > (enforcementMemory.lastHourlyShortfallPct + 0.35)
+        val worseningCheckpointMiss = pursuit.checkpointMissed &&
+            pursuit.checkpointWindowIndex > enforcementMemory.lastCheckpointWindowIndex &&
+            pursuit.checkpointShortfallPct > (enforcementMemory.lastCheckpointShortfallPct + 0.45)
         val budgetBoostMultiplier = (
             pursuit.budgetBoostMultiplier *
                 (1.0 + aiAdjustments.budgetBoostMultiplierDelta.coerceIn(0.0, 0.35)) +
@@ -2065,6 +2074,8 @@ class MacEngineDaemon(
         val openPositions = cycle.portfolio.positions.count { it.state != com.kibot.shared.models.PositionState.CLOSED }
         val candidates = cycle.deploymentPlan.candidates
         val actionProfile = when {
+            worseningCheckpointMiss -> "EMERGENCY_PURSUIT"
+            worseningHourlyMiss && repeatedHourlyPenalty >= 2 -> "EMERGENCY_PURSUIT"
             repeatedCheckpointPenalty >= 2 -> "EMERGENCY_PURSUIT"
             pursuit.checkpointEscalationLevel >= 3 -> "EMERGENCY_PURSUIT"
             repeatedHourlyPenalty >= 3 -> "HARD_HOURLY_PUSH"
@@ -2074,29 +2085,50 @@ class MacEngineDaemon(
             pursuit.profitWindowOpen -> "PROFIT_HUNT"
             else -> "BASE"
         }
+        val concentrationPressureStep = when (actionProfile) {
+            "EMERGENCY_PURSUIT" -> 0.22
+            "CHECKPOINT_REPLAN" -> 0.18
+            "HARD_HOURLY_PUSH" -> 0.14
+            "HOURLY_PUSH" -> 0.10
+            "PROFIT_HUNT" -> 0.12
+            else -> 0.0
+        }
+        val reserveReliefStep = when (actionProfile) {
+            "EMERGENCY_PURSUIT" -> 0.018
+            "CHECKPOINT_REPLAN" -> 0.014
+            "HARD_HOURLY_PUSH" -> 0.010
+            "HOURLY_PUSH" -> 0.007
+            "PROFIT_HUNT" -> 0.008
+            else -> 0.0
+        }
+        val boostedReservePctWithPressure = (
+            boostedReservePct - reserveReliefStep
+        ).coerceIn(0.02, cycle.deploymentPlan.targetCashReservePct.coerceAtLeast(0.02))
         val hourlyEnforcementHeadroom = when {
-            repeatedCheckpointPenalty >= 2 -> 2
-            pursuit.checkpointEscalationLevel >= 2 -> 2
-            repeatedHourlyPenalty >= 3 -> 2
-            pursuit.forcedReplan || pursuit.hourlyMissed -> 1
-            pursuit.profitWindowOpen -> 1
+            actionProfile == "EMERGENCY_PURSUIT" && pursuit.profitWindowOpen -> 1
+            actionProfile == "CHECKPOINT_REPLAN" && pursuit.profitWindowOpen -> 1
+            actionProfile == "PROFIT_HUNT" -> 1
             else -> 0
         }
+        val riskHeadroomCeiling = cycle.riskDecision.maxAllowedAdditionalPositions.coerceAtLeast(0)
+        val baselineHeadroom = (cycle.deploymentPlan.maxActivePositions - openPositions).coerceAtLeast(0)
         val requestedSlotHeadroom = (
-            cycle.riskDecision.maxAllowedAdditionalPositions +
-                pursuit.extraSlots +
+            baselineHeadroom +
+                minOf(pursuit.extraSlots, hourlyEnforcementHeadroom) +
                 hourlyEnforcementHeadroom +
-                aiAdjustments.extraSlotsDelta.coerceIn(0, 3)
-            ).coerceAtLeast(0)
+                aiAdjustments.extraSlotsDelta.coerceIn(0, 2)
+            ).coerceAtLeast(baselineHeadroom)
         val opportunityQualifiedHeadroom = qualifiedAdditionalHeadroom(
             candidates = candidates,
             openPositions = openPositions,
             profitWindowOpen = pursuit.profitWindowOpen,
             checkpointMissed = pursuit.checkpointMissed,
+            actionProfile = actionProfile,
+            baselineHeadroom = baselineHeadroom,
         )
         val effectiveHeadroom = minOf(
-            requestedSlotHeadroom,
-            maxOf(opportunityQualifiedHeadroom, cycle.deploymentPlan.maxActivePositions - openPositions),
+            riskHeadroomCeiling,
+            minOf(requestedSlotHeadroom, opportunityQualifiedHeadroom),
         ).coerceAtLeast(0)
         val boostedActivePositions = maxOf(
             cycle.deploymentPlan.maxActivePositions,
@@ -2104,7 +2136,7 @@ class MacEngineDaemon(
         ).coerceAtMost(6)
         val existingCapitalTarget = cycle.deploymentPlan.capitalUtilizationTargetPct
             .coerceIn(0.02, 0.98)
-        val boostedCapitalTarget = (1.0 - boostedReservePct).coerceIn(0.02, 0.98)
+        val boostedCapitalTarget = (1.0 - boostedReservePctWithPressure).coerceIn(0.02, 0.98)
         val normalizedBudget = finalizePerPositionBudgetIdr(
             currentEquityIdr = cycle.portfolio.totalEquityIdr.toDoubleOrZero(),
             boostedCapitalTargetPct = boostedCapitalTarget,
@@ -2113,6 +2145,7 @@ class MacEngineDaemon(
             openPositions = openPositions,
             candidates = candidates,
             concentrationBoostPct = pursuit.concentrationBoostPct +
+                concentrationPressureStep +
                 aiAdjustments.allocationFocusPctDelta.coerceIn(0.0, 0.16),
             profitWindowOpen = pursuit.profitWindowOpen,
             concentrationPair = executionHints.concentrationPair,
@@ -2126,7 +2159,7 @@ class MacEngineDaemon(
                 executionHints.rotateNowPairs.isNotEmpty(),
             maxActivePositions = boostedActivePositions,
             suggestedPerPositionBudgetIdr = normalizedBudget,
-            targetCashReservePct = boostedReservePct,
+            targetCashReservePct = boostedReservePctWithPressure,
             capitalUtilizationTargetPct = maxOf(existingCapitalTarget, boostedCapitalTarget),
             rationale = cycle.deploymentPlan.rationale + pursuit.rationale,
         )
@@ -2207,12 +2240,35 @@ class MacEngineDaemon(
         openPositions: Int,
         profitWindowOpen: Boolean,
         checkpointMissed: Boolean,
+        actionProfile: String,
+        baselineHeadroom: Int,
     ): Int {
         if (candidates.isEmpty()) return 0
+        val strongRankingFloor = when (actionProfile) {
+            "EMERGENCY_PURSUIT" -> 0.66
+            "CHECKPOINT_REPLAN" -> 0.68
+            "HARD_HOURLY_PUSH" -> 0.69
+            "HOURLY_PUSH" -> 0.70
+            else -> 0.72
+        }
+        val strongOpportunityFloor = when (actionProfile) {
+            "EMERGENCY_PURSUIT" -> 0.62
+            "CHECKPOINT_REPLAN" -> 0.64
+            "HARD_HOURLY_PUSH" -> 0.65
+            "HOURLY_PUSH" -> 0.65
+            else -> 0.66
+        }
+        val strongNetFloor = when (actionProfile) {
+            "EMERGENCY_PURSUIT" -> 1.02
+            "CHECKPOINT_REPLAN" -> 1.08
+            "HARD_HOURLY_PUSH" -> 1.12
+            "HOURLY_PUSH" -> 1.16
+            else -> 1.20
+        }
         val strongCandidates = candidates.count {
-            it.rankingScore >= 0.72 &&
-                it.marketOpportunityScore >= 0.66 &&
-                it.expectedNetProfitabilityPct >= 1.20
+            it.rankingScore >= strongRankingFloor &&
+                it.marketOpportunityScore >= strongOpportunityFloor &&
+                it.expectedNetProfitabilityPct >= strongNetFloor
         }
         val explosiveCandidates = candidates.count {
             it.rankingScore >= 0.82 &&
@@ -2226,7 +2282,7 @@ class MacEngineDaemon(
             strongCandidates >= 1 -> 1
             else -> 0
         }
-        return desiredAdditional.coerceAtLeast((0 - openPositions).coerceAtLeast(0))
+        return maxOf(baselineHeadroom, desiredAdditional).coerceAtLeast((0 - openPositions).coerceAtLeast(0))
     }
 
     private fun finalizePerPositionBudgetIdr(
@@ -2280,11 +2336,65 @@ class MacEngineDaemon(
         val updated = current.copy(
             lastHourlyWindowIndex = maxOf(current.lastHourlyWindowIndex, pursuit.hourlyWindowIndex),
             consecutiveHourlyMisses = nextHourlyMisses.coerceIn(0, 6),
+            lastHourlyShortfallPct = if (pursuit.hourlyWindowIndex > current.lastHourlyWindowIndex) {
+                pursuit.hourlyShortfallPct
+            } else {
+                current.lastHourlyShortfallPct
+            },
             lastCheckpointWindowIndex = maxOf(current.lastCheckpointWindowIndex, pursuit.checkpointWindowIndex),
             consecutiveCheckpointMisses = nextCheckpointMisses.coerceIn(0, 4),
+            lastCheckpointShortfallPct = if (pursuit.checkpointWindowIndex > current.lastCheckpointWindowIndex) {
+                pursuit.checkpointShortfallPct
+            } else {
+                current.lastCheckpointShortfallPct
+            },
         )
         targetEnforcementMemory = updated
+        persistTargetEnforcementMemory(updated)
         return updated
+    }
+
+    private fun loadTargetEnforcementMemory(): TargetEnforcementMemory {
+        val path = config.targetEnforcementMemoryPath
+        val raw = runCatching {
+            if (!Files.exists(path)) return TargetEnforcementMemory()
+            Files.readString(path)
+        }.getOrNull() ?: return TargetEnforcementMemory()
+        val values = raw
+            .lineSequence()
+            .mapNotNull { line ->
+                val parts = line.split("=", limit = 2)
+                if (parts.size != 2) null else parts[0].trim() to parts[1].trim()
+            }
+            .toMap()
+        return TargetEnforcementMemory(
+            lastHourlyWindowIndex = values["lastHourlyWindowIndex"]?.toIntOrNull() ?: 0,
+            consecutiveHourlyMisses = values["consecutiveHourlyMisses"]?.toIntOrNull() ?: 0,
+            lastHourlyShortfallPct = values["lastHourlyShortfallPct"]?.toDoubleOrNull() ?: 0.0,
+            lastCheckpointWindowIndex = values["lastCheckpointWindowIndex"]?.toIntOrNull() ?: 0,
+            consecutiveCheckpointMisses = values["consecutiveCheckpointMisses"]?.toIntOrNull() ?: 0,
+            lastCheckpointShortfallPct = values["lastCheckpointShortfallPct"]?.toDoubleOrNull() ?: 0.0,
+        )
+    }
+
+    private fun persistTargetEnforcementMemory(memory: TargetEnforcementMemory) {
+        runCatching {
+            val path = config.targetEnforcementMemoryPath
+            path.parent?.let { Files.createDirectories(it) }
+            Files.writeString(
+                path,
+                buildString {
+                    appendLine("lastHourlyWindowIndex=${memory.lastHourlyWindowIndex}")
+                    appendLine("consecutiveHourlyMisses=${memory.consecutiveHourlyMisses}")
+                    appendLine("lastHourlyShortfallPct=${memory.lastHourlyShortfallPct}")
+                    appendLine("lastCheckpointWindowIndex=${memory.lastCheckpointWindowIndex}")
+                    appendLine("consecutiveCheckpointMisses=${memory.consecutiveCheckpointMisses}")
+                    appendLine("lastCheckpointShortfallPct=${memory.lastCheckpointShortfallPct}")
+                },
+            )
+        }.onFailure {
+            logger.warn("Failed to persist target enforcement memory: {}", it.message)
+        }
     }
 
     private fun com.kibot.shared.models.PairId.belongsToAvoidFamily(
@@ -2321,6 +2431,8 @@ class MacEngineDaemon(
                 .coerceAtLeast(0.12),
             loserRotationMinScoreGap = (defaults.loserRotationMinScoreGap + aiAdjustments.rotationScoreGapDelta + pursuit.rotationScoreGapDelta)
                 .coerceIn(0.02, 0.10),
+            maxStaleLossPctForTimeExit = (defaults.maxStaleLossPctForTimeExit + 0.08 + (repeatedHourlyPenalty * 0.04) + (repeatedCheckpointPenalty * 0.06))
+                .coerceIn(0.10, 0.42),
             partialTakeProfitMinPnlPct = (defaults.partialTakeProfitMinPnlPct + aiAdjustments.partialTakeProfitPnlDelta + pursuit.partialTakeProfitPnlDelta)
                 .coerceIn(0.95, 2.8),
             minMeaningfulNonEmergencyExitProfitPct = (defaults.minMeaningfulNonEmergencyExitProfitPct + aiAdjustments.meaningfulExitProfitDelta + pursuit.meaningfulExitProfitDelta - (repeatedHourlyPenalty * 0.03) - (repeatedCheckpointPenalty * 0.05))

@@ -78,12 +78,6 @@ class CapitalDeploymentEngine(
             else -> kotlin.math.floor(
                 ((currentEquity * (1.0 - reservePct)).coerceAtLeast(0.0)) / config.targetMinPositionBudgetIdr,
             ).toInt().coerceAtLeast(1)
-        }.let { rawCap ->
-            when {
-                currentEquity < 120_000.0 -> rawCap.coerceAtMost(3)
-                currentEquity < 200_000.0 -> rawCap.coerceAtMost(4)
-                else -> rawCap
-            }
         }.coerceAtMost(config.maxConcurrentPositions)
         val baseTotalCap = (openPositions + risk.maxAllowedAdditionalPositions)
             .coerceAtMost(config.maxConcurrentPositions)
@@ -130,36 +124,30 @@ class CapitalDeploymentEngine(
             reservePct
         }
         val capitalUtilizationTargetPct = (1.0 - effectiveReservePct).coerceIn(0.0, 1.0)
+        val breadthDrivenCap = when {
+            dominantAllInReady || speculativePocketReady -> 1
+            multiSlotReadyCount >= 3 -> 3
+            multiSlotReadyCount >= 2 || secondSlotReady -> 2
+            else -> 1
+        }.coerceAtMost(baseTotalCap.coerceAtLeast(1))
         val maxActivePositions = when {
             !risk.allowNewEntries || !mode.tradingAllowed -> openPositions
             dominantAllInReady -> maxOf(openPositions, 1).coerceAtMost(1)
             speculativePocketReady -> maxOf(openPositions, 1)
-            multiSlotReadyCount >= 2 -> maxOf(openPositions, multiSlotReadyCount.coerceAtMost(baseTotalCap))
-            secondSlotReady -> baseTotalCap
-            else -> maxOf(openPositions, if (risk.maxAllowedAdditionalPositions > 0) 1 else openPositions)
-                .coerceAtMost(config.maxConcurrentPositions)
+            else -> maxOf(openPositions, breadthDrivenCap)
                 .coerceAtMost(baseTotalCap.coerceAtLeast(1))
         }
         val hasNewSlotCapacity = maxActivePositions > openPositions
         val dominanceBoost = topCandidateGap.coerceIn(0.0, 0.10) * 0.35
-        val budgetMultiplier = when {
-            dominantAllInReady -> config.singlePositionBudgetBoostMultiplier + 0.30 + dominanceBoost
-            maxActivePositions <= 1 &&
-                firstCandidate?.rankingScore?.let { it >= 0.80 } == true &&
-                risk.riskLadderLevel in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING) ->
-                config.singlePositionBudgetBoostMultiplier + dominanceBoost
-            maxActivePositions >= 2 ->
-                config.multiPositionBudgetSplitMultiplier
-            else -> 1.0
-        }
         val perPositionBudget = minOf(
-            risk.suggestedPerPositionBudgetIdr * budgetMultiplier,
+            risk.suggestedPerPositionBudgetIdr.coerceAtLeast(0.0),
             currentEquity * (1.0 - effectiveReservePct).coerceIn(0.0, 1.0) * if (dominantAllInReady) {
                 config.dominantAllInMaxAllocationPct
             } else {
                 config.maxPerPositionBudgetPct
             },
             if (speculativePocketReady) currentEquity * config.speculativePocketMaxEquityPct else Double.MAX_VALUE,
+            deployableEquity.coerceAtLeast(0.0),
         ).coerceAtLeast(0.0)
         val rankedByPair = rankedPairs.associateBy { it.pairId }
         val rotatableWinners = portfolio.positions.filter { position ->
@@ -202,7 +190,7 @@ class CapitalDeploymentEngine(
             if (candidates.isEmpty()) add("Belum ada kandidat yang layak memakai modal.")
             if (speculativePocketReady) add("Sleeve spekulatif aktif: pair agresif boleh dimainkan, tapi maksimal 25% equity harian.")
             if (secondSlotReady) add("Slot kedua boleh dibuka karena dua kandidat teratas sama-sama kuat.")
-            if (multiSlotReadyCount >= 2) add("$multiSlotReadyCount kandidat terlihat sama-sama executable, jadi bot boleh menyebar modal lebih aktif.")
+            if (multiSlotReadyCount >= 2) add("$multiSlotReadyCount kandidat terlihat sama-sama executable, tapi konsentrasi tetap diutamakan sebelum memperlebar slot.")
             if (!secondSlotReady && topCandidateGap > 0.12) add("Kandidat teratas terlalu dominan, jadi modal lebih baik difokuskan dulu.")
             if (top1DeployableConcentration >= config.top1DeployableConcentrationMaxPct) add("Konsentrasi top-1 sudah tinggi, jadi rotasi lebih diprioritaskan daripada menambah ukuran posisi lama.")
             if (top2DeployableConcentration >= config.top2DeployableConcentrationMaxPct) add("Dua aset teratas sudah mendominasi modal aktif, jadi penyebaran modal harus lebih disiplin.")

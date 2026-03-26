@@ -37,6 +37,7 @@ data class MacRuntimeConfig(
     val releaseLabel: String,
     val aiSupportConfig: GeminiSupportConfig?,
     val adaptiveAiPolicyPath: Path,
+    val targetEnforcementMemoryPath: Path,
     val analysisPublishIntervalMillis: Long,
     val strategyMetricsPublishIntervalMillis: Long,
     val indodaxCredentials: IndodaxCredentials?,
@@ -121,6 +122,10 @@ object MacRuntimeConfigLoader {
             adaptiveAiPolicyPath = Paths.get(
                 optional("KIBOT_AI_ADAPTIVE_POLICY_PATH")
                     ?: cwd.resolve(".tmp/ai-audits/latest/adaptive_policy.json").toString(),
+            ),
+            targetEnforcementMemoryPath = Paths.get(
+                optional("KIBOT_TARGET_ENFORCEMENT_MEMORY_PATH")
+                    ?: cwd.resolve(".tmp/runtime/target_enforcement_memory.json").toString(),
             ),
             analysisPublishIntervalMillis = optional("BOT_ANALYSIS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 30_000L,
             strategyMetricsPublishIntervalMillis = optional("BOT_STRATEGY_METRICS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 300_000L,

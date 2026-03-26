@@ -401,6 +401,7 @@ class MacEngineDaemonTest {
         releaseLabel = "#test",
         aiSupportConfig = null,
         adaptiveAiPolicyPath = java.nio.file.Paths.get("build/tmp/test-adaptive-policy.json"),
+        targetEnforcementMemoryPath = java.nio.file.Paths.get("build/tmp/test-target-enforcement-memory.json"),
         analysisPublishIntervalMillis = 1_000,
         strategyMetricsPublishIntervalMillis = 1_000,
         indodaxCredentials = null,
