@@ -1143,6 +1143,7 @@ class AppRepository(
             serverLocation = json.optString("serverLocation", "Oracle Cloud Server"),
             serverUptime = json.optString("serverUptime", "-"),
             exchangePingMs = json.optString("exchangePingMs", "--"),
+            exchangePingValueMs = json.optNullableLong("exchangePingValueMs"),
             holdingsDetailed = json.optJSONArray("holdingsDetailed").toHoldingDetailList(),
             liveTimeline = json.optJSONArray("liveTimeline").toTimelineEntryList(),
             recentOrders = json.optJSONArray("recentOrders").toRecentOrderList(),
@@ -1577,10 +1578,16 @@ private data class ServerMonitorState(
     val serverLocation: String,
     val serverUptime: String,
     val exchangePingMs: String,
+    val exchangePingValueMs: Long?,
     val holdingsDetailed: List<ServerHoldingDetail>,
     val liveTimeline: List<ServerTimelineEntry>,
     val recentOrders: List<ServerRecentOrder>,
 )
+
+private fun org.json.JSONObject.optNullableLong(key: String): Long? {
+    if (!has(key) || isNull(key)) return null
+    return optLong(key)
+}
 
 private data class ServerHoldingDetail(
     val assetCode: String,

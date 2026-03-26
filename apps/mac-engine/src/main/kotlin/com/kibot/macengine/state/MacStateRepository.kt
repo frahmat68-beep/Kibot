@@ -79,6 +79,7 @@ data class MacDashboardState(
     val heldAssets: List<String>,
     val holdingsDetailed: List<MacHoldingDetail>,
     val exchangePingMs: String,
+    val exchangePingValueMs: Long? = null,
     val liveTimeline: List<MacTimelineEntry>,
     val recentOrders: List<MacRecentOrder>,
 ) {
@@ -120,6 +121,7 @@ data class MacDashboardState(
             heldAssets = emptyList(),
             holdingsDetailed = emptyList(),
             exchangePingMs = "--",
+            exchangePingValueMs = null,
             liveTimeline = emptyList(),
             recentOrders = emptyList(),
         )

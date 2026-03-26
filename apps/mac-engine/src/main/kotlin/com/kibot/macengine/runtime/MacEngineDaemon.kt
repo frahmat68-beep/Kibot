@@ -1642,6 +1642,7 @@ class MacEngineDaemon(
             heldAssets = heldAssets,
             holdingsDetailed = holdingsDetailed,
             exchangePingMs = localHealth.feedLatencyMs?.let { "${it}ms" } ?: "--",
+            exchangePingValueMs = localHealth.feedLatencyMs,
             serverLocation = "Oracle Cloud (24/7)",
             serverUptime = repository.state.value.serverUptime,
             liveTimeline = liveTimeline,
