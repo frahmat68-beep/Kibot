@@ -20,6 +20,7 @@ data class AdaptiveAiPolicyFile(
     @SerialName("pair_biases") val pairBiases: List<AdaptiveAiPairBias> = emptyList(),
     val adjustments: AdaptiveAiAdjustments = AdaptiveAiAdjustments(),
     val execution: AdaptiveAiExecutionFile = AdaptiveAiExecutionFile(),
+    val watchdog: AdaptiveAiWatchdogFile = AdaptiveAiWatchdogFile(),
 )
 
 @Serializable
@@ -54,6 +55,21 @@ data class AdaptiveAiExecutionFile(
 )
 
 @Serializable
+data class AdaptiveAiWatchdogFile(
+    val status: String = "IDLE",
+    val severity: String = "LOW",
+    val reprimand: String = "",
+    @SerialName("root_causes") val rootCauses: List<String> = emptyList(),
+    @SerialName("required_actions") val requiredActions: List<String> = emptyList(),
+    @SerialName("force_rotation") val forceRotation: Boolean = false,
+    @SerialName("force_concentration") val forceConcentration: Boolean = false,
+    @SerialName("pressure_floor") val pressureFloor: Double = 0.0,
+    @SerialName("budget_boost_floor") val budgetBoostFloor: Double = 1.0,
+    @SerialName("execution_boost_floor") val executionBoostFloor: Double = 1.0,
+    @SerialName("reserve_relief_floor") val reserveReliefFloor: Double = 0.0,
+)
+
+@Serializable
 data class AdaptiveAiReplacementFile(
     @SerialName("cut_pair") val cutPair: String,
     @SerialName("replace_pair") val replacePair: String,
@@ -82,9 +98,24 @@ data class AdaptiveAiPolicy(
     val pairHints: List<AiPairSupportHint> = emptyList(),
     val adjustments: AdaptiveAiAdjustments = AdaptiveAiAdjustments(),
     val executionHints: AdaptiveAiExecutionHints = AdaptiveAiExecutionHints(),
+    val watchdog: AdaptiveAiWatchdog = AdaptiveAiWatchdog(),
 ) {
     val isActive: Boolean = successfulProviders.isNotEmpty() || pairHints.isNotEmpty()
 }
+
+data class AdaptiveAiWatchdog(
+    val status: String = "IDLE",
+    val severity: String = "LOW",
+    val reprimand: String = "",
+    val rootCauses: List<String> = emptyList(),
+    val requiredActions: List<String> = emptyList(),
+    val forceRotation: Boolean = false,
+    val forceConcentration: Boolean = false,
+    val pressureFloor: Double = 0.0,
+    val budgetBoostFloor: Double = 1.0,
+    val executionBoostFloor: Double = 1.0,
+    val reserveReliefFloor: Double = 0.0,
+)
 
 class AdaptiveAiPolicyLoader(
     private val path: Path,
@@ -141,6 +172,19 @@ class AdaptiveAiPolicyLoader(
                         rationale = hint.rationale.trim(),
                     )
                 },
+            ),
+            watchdog = AdaptiveAiWatchdog(
+                status = parsed.watchdog.status.uppercase().ifBlank { "IDLE" },
+                severity = parsed.watchdog.severity.uppercase().ifBlank { "LOW" },
+                reprimand = parsed.watchdog.reprimand.trim(),
+                rootCauses = parsed.watchdog.rootCauses.map(String::trim).filter(String::isNotBlank),
+                requiredActions = parsed.watchdog.requiredActions.map(String::trim).filter(String::isNotBlank),
+                forceRotation = parsed.watchdog.forceRotation,
+                forceConcentration = parsed.watchdog.forceConcentration,
+                pressureFloor = parsed.watchdog.pressureFloor.coerceIn(0.0, 1.0),
+                budgetBoostFloor = parsed.watchdog.budgetBoostFloor.coerceIn(1.0, 2.1),
+                executionBoostFloor = parsed.watchdog.executionBoostFloor.coerceIn(1.0, 1.95),
+                reserveReliefFloor = parsed.watchdog.reserveReliefFloor.coerceIn(0.0, 0.14),
             ),
         )
     }

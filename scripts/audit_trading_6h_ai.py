@@ -396,6 +396,9 @@ def build_adaptive_policy(
 ) -> Dict:
     state = payload.get("state", {}) if isinstance(payload, dict) else {}
     holdings = state.get("holdingsDetailed", []) if isinstance(state, dict) else []
+    health_summary = str(state.get("healthSummary", "") or "")
+    target_label = str(state.get("targetPursuitLabel", "") or "")
+    pnl_today_pct_label = str(state.get("pnlTodayPctLabel", "") or "")
     candidate_pairs = []
     top_candidate = str(state.get("topCandidate", "")).strip().lower()
     if top_candidate and top_candidate != "-":
@@ -419,6 +422,16 @@ def build_adaptive_policy(
     successful = sorted(results.keys())
     consensus_strength = min(1.0, len(successful) / 3.0) if successful else 0.0
     merged_text = "\n".join(results.values()).lower()
+    health_text = health_summary.lower()
+
+    def parse_pct(label: str) -> float:
+        cleaned = str(label or "").replace("%", "").replace("+", "").replace(",", ".").strip()
+        try:
+            return float(cleaned)
+        except ValueError:
+            return 0.0
+
+    pnl_today_pct = parse_pct(pnl_today_pct_label)
 
     slow_rotation_detected = any(
         keyword in merged_text
@@ -451,6 +464,16 @@ def build_adaptive_policy(
             "breakout",
         ]
     )
+    target_pressure_detected = any(
+        keyword in health_text
+        for keyword in [
+            "forced replan",
+            "miss hourly",
+            "miss checkpoint",
+            "full_chase",
+            "emergency_pursuit",
+        ]
+    ) or target_label.upper() in {"CHASE", "FULL_CHASE", "OVERDRIVE"}
 
     focus_counter: Dict[str, int] = {}
     for provider_text in results.values():
@@ -505,6 +528,7 @@ def build_adaptive_policy(
             if pair.split("_", 1)[0] not in safe_focus_families
         ][:2]
     replacement_hints = []
+    stale_holdings = []
     if focus_pairs:
         replacement_targets = [pair for pair in focus_pairs if pair not in held_pairs] or focus_pairs[:1]
         stale_holdings = [pair for pair in held_pairs if pair not in focus_pairs[:2]]
@@ -520,6 +544,64 @@ def build_adaptive_policy(
                         "rationale": "AI audit melihat modal lebih produktif jika holding stagnan digeser ke pair fokus.",
                     }
                 )
+
+    watchdog_root_causes: List[str] = []
+    watchdog_actions: List[str] = []
+    watchdog_status = "IDLE"
+    watchdog_severity = "LOW"
+    watchdog_reprimand = ""
+    force_rotation = False
+    force_concentration = False
+    pressure_floor = 0.0
+    budget_boost_floor = 1.0
+    execution_boost_floor = 1.0
+    reserve_relief_floor = 0.0
+
+    if target_pressure_detected or pnl_today_pct < 1.0:
+        watchdog_status = "MISS_TARGET"
+        watchdog_root_causes.append("pace_target_tertinggal")
+        watchdog_actions.append("naikkan tekanan target hourly")
+        pressure_floor = max(pressure_floor, 0.72)
+        budget_boost_floor = max(budget_boost_floor, 1.42)
+        execution_boost_floor = max(execution_boost_floor, 1.22)
+        reserve_relief_floor = max(reserve_relief_floor, 0.05)
+    if slow_rotation_detected or stale_holdings:
+        watchdog_status = "MISS_TARGET"
+        watchdog_root_causes.append("holding_stagnan_belum_digeser")
+        watchdog_actions.append("paksa rotasi holding stagnan ke kandidat produktif")
+        force_rotation = True
+        pressure_floor = max(pressure_floor, 0.78)
+        budget_boost_floor = max(budget_boost_floor, 1.48)
+        execution_boost_floor = max(execution_boost_floor, 1.28)
+        reserve_relief_floor = max(reserve_relief_floor, 0.06)
+    if missed_momentum_detected:
+        watchdog_status = "MISS_TARGET"
+        watchdog_root_causes.append("momentum_breakout_terlewat")
+        watchdog_actions.append("tingkatkan konsentrasi ke breakout terkuat")
+        force_concentration = True
+        pressure_floor = max(pressure_floor, 0.82)
+        budget_boost_floor = max(budget_boost_floor, 1.56)
+        execution_boost_floor = max(execution_boost_floor, 1.34)
+        reserve_relief_floor = max(reserve_relief_floor, 0.07)
+    if late_exit_detected:
+        watchdog_status = "MISS_TARGET"
+        watchdog_root_causes.append("exit_terlalu_lambat")
+        watchdog_actions.append("pendekkan toleransi winner yang mulai patah")
+
+    if force_rotation and force_concentration:
+        watchdog_severity = "CRITICAL"
+    elif force_rotation or force_concentration:
+        watchdog_severity = "HIGH"
+    elif watchdog_status != "IDLE":
+        watchdog_severity = "MEDIUM"
+
+    if watchdog_status != "IDLE":
+        root_text = ", ".join(watchdog_root_causes[:3]) or "target belum aman"
+        action_text = ", ".join(watchdog_actions[:2]) or "paksa replan agresif"
+        watchdog_reprimand = (
+            f"Target belum aman. Akar masalah: {root_text}. "
+            f"Aksi wajib: {action_text}."
+        )
 
     policy = {
         "generated_at_utc": payload.get("generated_at_utc"),
@@ -552,6 +634,19 @@ def build_adaptive_policy(
             "concentration_pair": concentration_pair,
             "avoid_pair_families": avoid_pair_families,
             "replacement_hints": replacement_hints,
+        },
+        "watchdog": {
+            "status": watchdog_status,
+            "severity": watchdog_severity,
+            "reprimand": watchdog_reprimand,
+            "root_causes": watchdog_root_causes,
+            "required_actions": watchdog_actions,
+            "force_rotation": force_rotation,
+            "force_concentration": force_concentration,
+            "pressure_floor": round(pressure_floor, 4),
+            "budget_boost_floor": round(budget_boost_floor, 4),
+            "execution_boost_floor": round(execution_boost_floor, 4),
+            "reserve_relief_floor": round(reserve_relief_floor, 4),
         },
     }
     return policy

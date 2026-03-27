@@ -2180,6 +2180,7 @@ class MacEngineDaemon(
 
         val aiAdjustments = adaptiveAiPolicy?.adjustments ?: AdaptiveAiAdjustments()
         val executionHints = adaptiveAiPolicy?.executionHints ?: AdaptiveAiExecutionHints()
+        val watchdog = adaptiveAiPolicy?.watchdog ?: AdaptiveAiWatchdog()
         val repeatedHourlyPenalty = enforcementMemory.consecutiveHourlyMisses.coerceIn(0, 4)
         val repeatedCheckpointPenalty = enforcementMemory.consecutiveCheckpointMisses.coerceIn(0, 3)
         val worseningHourlyMiss = pursuit.hourlyMissed &&
@@ -2188,17 +2189,21 @@ class MacEngineDaemon(
         val worseningCheckpointMiss = pursuit.checkpointMissed &&
             pursuit.checkpointWindowIndex > enforcementMemory.lastCheckpointWindowIndex &&
             pursuit.checkpointShortfallPct > (enforcementMemory.lastCheckpointShortfallPct + 0.45)
-        val budgetBoostMultiplier = (
+        val budgetBoostMultiplier = maxOf(
+            watchdog.budgetBoostFloor,
+            (
             pursuit.budgetBoostMultiplier *
                 (1.0 + aiAdjustments.budgetBoostMultiplierDelta.coerceIn(0.0, 0.35)) +
                 (repeatedHourlyPenalty * 0.04) +
                 (repeatedCheckpointPenalty * 0.06)
             ).coerceIn(1.0, 2.0)
+        )
         val boostedBudget = (cycle.deploymentPlan.suggestedPerPositionBudgetIdr * budgetBoostMultiplier)
             .coerceAtLeast(cycle.deploymentPlan.suggestedPerPositionBudgetIdr)
         val openPositions = cycle.portfolio.positions.count { it.state != com.kibot.shared.models.PositionState.CLOSED }
         val candidates = cycle.deploymentPlan.candidates
         val actionProfile = when {
+            watchdog.severity == "CRITICAL" -> "EMERGENCY_PURSUIT"
             worseningCheckpointMiss -> "EMERGENCY_PURSUIT"
             worseningHourlyMiss && repeatedHourlyPenalty >= 2 -> "EMERGENCY_PURSUIT"
             repeatedCheckpointPenalty >= 2 -> "EMERGENCY_PURSUIT"
@@ -2247,6 +2252,8 @@ class MacEngineDaemon(
         val boostedReservePctWithPressure = (
             boostedReservePct - reserveReliefStep
         ).coerceIn(highConvictionReserveFloor, cycle.deploymentPlan.targetCashReservePct.coerceAtLeast(highConvictionReserveFloor))
+        val finalReservePct = minOf(boostedReservePctWithPressure, cycle.deploymentPlan.targetCashReservePct - watchdog.reserveReliefFloor)
+            .coerceIn(highConvictionReserveFloor, cycle.deploymentPlan.targetCashReservePct.coerceAtLeast(highConvictionReserveFloor))
         val hourlyEnforcementHeadroom = when {
             actionProfile == "EMERGENCY_PURSUIT" -> 1
             actionProfile == "CHECKPOINT_REPLAN" -> 1
@@ -2264,7 +2271,8 @@ class MacEngineDaemon(
             baselineHeadroom +
                 minOf(pursuit.extraSlots, hourlyEnforcementHeadroom) +
                 hourlyEnforcementHeadroom +
-                aiAdjustments.extraSlotsDelta.coerceIn(0, 2)
+                aiAdjustments.extraSlotsDelta.coerceIn(0, 2) +
+                (if (watchdog.forceRotation) 1 else 0)
             ).coerceAtLeast(baselineHeadroom)
         val opportunityQualifiedHeadroom = qualifiedAdditionalHeadroom(
             candidates = candidates,
@@ -2284,7 +2292,7 @@ class MacEngineDaemon(
         ).coerceAtMost(6)
         val existingCapitalTarget = cycle.deploymentPlan.capitalUtilizationTargetPct
             .coerceIn(0.02, 0.98)
-        val boostedCapitalTarget = (1.0 - boostedReservePctWithPressure).coerceIn(0.02, 0.98)
+        val boostedCapitalTarget = (1.0 - finalReservePct).coerceIn(0.02, 0.98)
         val normalizedBudget = finalizePerPositionBudgetIdr(
             currentEquityIdr = cycle.portfolio.totalEquityIdr.toDoubleOrZero(),
             boostedCapitalTargetPct = boostedCapitalTarget,
@@ -2294,25 +2302,28 @@ class MacEngineDaemon(
             candidates = candidates,
             concentrationBoostPct = pursuit.concentrationBoostPct +
                 concentrationPressureStep +
-                aiAdjustments.allocationFocusPctDelta.coerceIn(0.0, 0.16),
+                aiAdjustments.allocationFocusPctDelta.coerceIn(0.0, 0.16) +
+                (if (watchdog.forceConcentration) 0.06 else 0.0),
             profitWindowOpen = pursuit.profitWindowOpen,
             concentrationPair = executionHints.concentrationPair,
             actionProfile = actionProfile,
         )
         val finalConcentrationBoostPct = pursuit.concentrationBoostPct +
             concentrationPressureStep +
-            aiAdjustments.allocationFocusPctDelta.coerceIn(0.0, 0.16)
+            aiAdjustments.allocationFocusPctDelta.coerceIn(0.0, 0.16) +
+            (if (watchdog.forceConcentration) 0.06 else 0.0)
 
         val updatedDeploymentPlan = cycle.deploymentPlan.copy(
             allowRotation = cycle.deploymentPlan.allowRotation ||
                 pursuit.urgency >= 0.42 ||
                 pursuit.hourlyMissed ||
                 pursuit.checkpointMissed ||
+                watchdog.forceRotation ||
                 executionHints.rotateNowPairs.isNotEmpty() ||
                 executionHints.replacementHints.isNotEmpty(),
             maxActivePositions = boostedActivePositions,
             suggestedPerPositionBudgetIdr = normalizedBudget,
-            targetCashReservePct = boostedReservePctWithPressure,
+            targetCashReservePct = finalReservePct,
             capitalUtilizationTargetPct = maxOf(existingCapitalTarget, boostedCapitalTarget),
             rationale = cycle.deploymentPlan.rationale + pursuit.rationale,
         )
@@ -2324,7 +2335,7 @@ class MacEngineDaemon(
                 marketQuotes = marketQuotes,
                 targetBudgetIdr = normalizedBudget,
                 concentrationBoostPct = finalConcentrationBoostPct,
-                executionBoostMultiplier = pursuit.executionBoostMultiplier,
+                executionBoostMultiplier = maxOf(pursuit.executionBoostMultiplier, watchdog.executionBoostFloor),
             )
         }
 
@@ -2339,6 +2350,9 @@ class MacEngineDaemon(
                 if (enforcementMemory.consecutiveCheckpointMisses > 0) add("Miss checkpoint berturut-turut ${enforcementMemory.consecutiveCheckpointMisses}x, jadi rotasi dan sizing dipaksa lebih keras.")
                 if (pursuit.profitWindowOpen && !pursuit.checkpointMissed) add("Profit window terbuka, jadi bot tetap agresif cari entry cepat walau checkpoint hanya jadi patokan.")
                 if (pursuit.forcedReplan) add("Bot masuk forced replan untuk mengejar target harian yang tertinggal.")
+                if (watchdog.status != "IDLE" && watchdog.reprimand.isNotBlank()) add("AI watchdog: ${watchdog.reprimand}")
+                if (watchdog.rootCauses.isNotEmpty()) add("AI watchdog akar masalah: ${watchdog.rootCauses.take(3).joinToString(", ")}.")
+                if (watchdog.requiredActions.isNotEmpty()) add("AI watchdog aksi wajib: ${watchdog.requiredActions.take(2).joinToString(", ")}.")
                 if (effectiveHeadroom < requestedSlotHeadroom) add("Slot tambahan dibatasi kualitas shortlist agar agresif tetap profit-first.")
                 if (executionHints.rotateNowPairs.isNotEmpty()) add("AI execution hint mendorong rotasi ke ${executionHints.rotateNowPairs.take(2).joinToString(",") { it.value }}.")
                 if (executionHints.replacementHints.isNotEmpty()) add("AI melihat holding ${executionHints.replacementHints.take(2).joinToString(", ") { "${it.cutPair.value}→${it.replacePair.value}" }} lebih efisien untuk digeser.")
