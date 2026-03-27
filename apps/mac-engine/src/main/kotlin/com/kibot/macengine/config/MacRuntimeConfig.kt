@@ -1,6 +1,8 @@
 package com.kibot.macengine.config
 
 import com.kibot.aisupport.GeminiSupportConfig
+import com.kibot.binance.BinanceClientConfig
+import com.kibot.binance.BinanceCredentials
 import com.kibot.controlplane.ControlPlaneConfig
 import com.kibot.core.DeviceRegistration
 import com.kibot.indodax.IndodaxClientConfig
@@ -9,13 +11,20 @@ import com.kibot.shared.models.BotId
 import com.kibot.shared.models.DeviceId
 import com.kibot.shared.models.DevicePlatform
 import com.kibot.shared.models.DeviceRole
+import com.kibot.shared.models.LogLevel
 import java.net.InetAddress
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 
+enum class ExchangeKind {
+    INDODAX,
+    BINANCE_SPOT,
+}
+
 data class MacRuntimeConfig(
     val runtimeProfileKey: String,
+    val exchangeKind: ExchangeKind,
     val port: Int,
     val bindHost: String,
     val controlPlane: ControlPlaneConfig,
@@ -32,6 +41,8 @@ data class MacRuntimeConfig(
     val recentFillsRefreshIntervalMillis: Long = 15_000L,
     val leaseTtlSeconds: Int,
     val enableLiveExecution: Boolean,
+    val shadowMode: Boolean = false,
+    val enableExecutionAiAssist: Boolean = false,
     val enableLanAdvertising: Boolean = true,
     val dashboardStatePollIntervalMillis: Long = 5_000L,
     val dashboardLogPollIntervalMillis: Long = 5_000L,
@@ -41,8 +52,41 @@ data class MacRuntimeConfig(
     val targetEnforcementMemoryPath: Path,
     val analysisPublishIntervalMillis: Long,
     val strategyMetricsPublishIntervalMillis: Long,
+    val supabaseLogUploadEnabled: Boolean,
+    val supabaseLogMinLevel: LogLevel,
+    val supabaseNonCriticalWriteEnabled: Boolean,
     val indodaxCredentials: IndodaxCredentials?,
     val indodaxClientConfig: IndodaxClientConfig,
+    val binanceCredentials: BinanceCredentials?,
+    val binanceClientConfig: BinanceClientConfig,
+    val leadLagSignalEnabled: Boolean,
+    val leadLagTargetBotId: BotId?,
+    val leadLagSignalTtlMillis: Long,
+    val leadLagSignalCooldownMillis: Long,
+    val leadLagMinConfidence: Double,
+    val leadLagMinExpectedNetPct: Double,
+    val leadLagMinShortTermReturnPct: Double,
+    val leadLagNagaMinExpectedNetPct: Double,
+    val leadLagNagaMinShortTermReturnPct: Double,
+    val leadLagMidMinExpectedNetPct: Double,
+    val leadLagMidMinShortTermReturnPct: Double,
+    val leadLagMicinMinExpectedNetPct: Double,
+    val leadLagMicinMinShortTermReturnPct: Double,
+    val leadLagNagaSignalTtlMillis: Long,
+    val leadLagMidSignalTtlMillis: Long,
+    val leadLagMicinSignalTtlMillis: Long,
+    val leadLagEnableNaga: Boolean,
+    val leadLagEnableMid: Boolean,
+    val leadLagEnableMicin: Boolean,
+    val leadLagMinTradeActivityScore: Double,
+    val leadLagForceRotationOnReceive: Boolean,
+    val leadLagUdpEnabled: Boolean,
+    val leadLagUdpListenPort: Int,
+    val leadLagUdpTargetHost: String?,
+    val leadLagUdpTargetPort: Int,
+    val indodaxHyperGuardrailEnabled: Boolean,
+    val indodaxHyperGuardrailTakerFeePct: Double,
+    val hyperAggressiveConfig: HyperAggressiveConfig,
 )
 
 object MacRuntimeConfigLoader {
@@ -63,8 +107,24 @@ object MacRuntimeConfigLoader {
 
         val botId = BotId(optional("BOT_ID") ?: "main")
         val runtimeProfileKey = optional("BOT_PROFILE_KEY") ?: defaultRuntimeProfileKey(botId.value)
+        val exchangeKind = optional("KIBOT_EXCHANGE_KIND")
+            ?.uppercase()
+            ?.let { raw ->
+                when (raw) {
+                    "INDODAX" -> ExchangeKind.INDODAX
+                    "BINANCE", "BINANCE_SPOT" -> ExchangeKind.BINANCE_SPOT
+                    else -> null
+                }
+            }
+            ?: if (optional("BINANCE_API_KEY") != null || optional("BINANCE_API_SECRET") != null || runtimeProfileKey.contains("binance")) {
+                ExchangeKind.BINANCE_SPOT
+            } else {
+                ExchangeKind.INDODAX
+            }
         val apiKey = optional("INDODAX_API_KEY")
         val apiSecret = optional("INDODAX_API_SECRET")
+        val binanceApiKey = optional("BINANCE_API_KEY")
+        val binanceApiSecret = optional("BINANCE_API_SECRET")
         val deviceRole = optional("DEVICE_ROLE")
             ?.uppercase()
             ?.let { raw -> runCatching { DeviceRole.valueOf(raw) }.getOrNull() }
@@ -72,6 +132,7 @@ object MacRuntimeConfigLoader {
 
         return MacRuntimeConfig(
             runtimeProfileKey = runtimeProfileKey,
+            exchangeKind = exchangeKind,
             port = optional("MAC_ENGINE_PORT")?.toIntOrNull() ?: 8787,
             bindHost = optional("MAC_ENGINE_BIND_HOST") ?: "0.0.0.0",
             controlPlane = ControlPlaneConfig(
@@ -99,6 +160,8 @@ object MacRuntimeConfigLoader {
             recentFillsRefreshIntervalMillis = optional("BOT_RECENT_FILLS_REFRESH_INTERVAL_MS")?.toLongOrNull() ?: 1_400L,
             leaseTtlSeconds = optional("BOT_DEFAULT_LEASE_TTL_SECONDS")?.toIntOrNull() ?: 30,
             enableLiveExecution = optional("BOT_ENABLE_LIVE_EXECUTION")?.equals("true", ignoreCase = true) == true,
+            shadowMode = optional("SHADOW_MODE")?.equals("true", ignoreCase = true) ?: false,
+            enableExecutionAiAssist = optional("BOT_ENABLE_EXECUTION_AI_ASSIST")?.equals("true", ignoreCase = true) ?: false,
             enableLanAdvertising = optional("MAC_ENGINE_ENABLE_LAN_ADVERTISE")?.equals("true", ignoreCase = true) ?: true,
             dashboardStatePollIntervalMillis = optional("MAC_DASHBOARD_STATE_POLL_INTERVAL_MS")?.toLongOrNull() ?: 5_000L,
             dashboardLogPollIntervalMillis = optional("MAC_DASHBOARD_LOG_POLL_INTERVAL_MS")?.toLongOrNull() ?: 5_000L,
@@ -134,6 +197,16 @@ object MacRuntimeConfigLoader {
             ),
             analysisPublishIntervalMillis = optional("BOT_ANALYSIS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 30_000L,
             strategyMetricsPublishIntervalMillis = optional("BOT_STRATEGY_METRICS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 300_000L,
+            supabaseLogUploadEnabled = optional("BOT_SUPABASE_LOG_UPLOAD_ENABLED")
+                ?.equals("true", ignoreCase = true)
+                ?: true,
+            supabaseLogMinLevel = optional("BOT_SUPABASE_LOG_MIN_LEVEL")
+                ?.uppercase()
+                ?.let { raw -> runCatching { LogLevel.valueOf(raw) }.getOrNull() }
+                ?: LogLevel.INFO,
+            supabaseNonCriticalWriteEnabled = optional("BOT_SUPABASE_NONCRITICAL_WRITE_ENABLED")
+                ?.equals("true", ignoreCase = true)
+                ?: true,
             indodaxCredentials = when {
                 apiKey == null && apiSecret == null -> null
                 apiKey != null && apiSecret != null -> IndodaxCredentials(apiKey = apiKey, apiSecret = apiSecret)
@@ -145,6 +218,83 @@ object MacRuntimeConfigLoader {
                 tradeApiV2BaseUrl = optional("INDODAX_TRADE_API_V2_BASE_URL") ?: "https://tapi.indodax.com",
                 publicWebSocketUrl = optional("INDODAX_WS_PUBLIC_URL") ?: "wss://ws1.indodax.com/ws",
                 privateWebSocketUrl = optional("INDODAX_WS_PRIVATE_URL") ?: "wss://pws.indodax.com/ws/?cf_ws_frame_ping_pong=true",
+                shadowMode = optional("SHADOW_MODE")?.equals("true", ignoreCase = true) ?: false,
+            ),
+            binanceCredentials = when {
+                binanceApiKey == null && binanceApiSecret == null -> null
+                binanceApiKey != null && binanceApiSecret != null -> BinanceCredentials(apiKey = binanceApiKey, apiSecret = binanceApiSecret)
+                else -> error("BINANCE_API_KEY and BINANCE_API_SECRET must be set together.")
+            },
+            binanceClientConfig = BinanceClientConfig(
+                publicBaseUrl = optional("BINANCE_PUBLIC_BASE_URL") ?: "https://api.binance.com",
+                privateBaseUrl = optional("BINANCE_PRIVATE_BASE_URL") ?: "https://api.binance.com",
+                receiveWindowMillis = optional("BINANCE_RECEIVE_WINDOW_MS")?.toLongOrNull() ?: 10_000L,
+                defaultFeePct = optional("BINANCE_DEFAULT_FEE_PCT")?.toDoubleOrNull() ?: 0.001,
+                primaryQuoteAsset = optional("BINANCE_PRIMARY_QUOTE_ASSET")?.lowercase() ?: "usdt",
+                shadowMode = optional("SHADOW_MODE")?.equals("true", ignoreCase = true) ?: false,
+            ),
+            leadLagSignalEnabled = optional("KIBOT_LEAD_LAG_SIGNAL_ENABLED")
+                ?.equals("true", ignoreCase = true)
+                ?: true,
+            leadLagTargetBotId = optional("KIBOT_LEAD_LAG_TARGET_BOT_ID")
+                ?.takeIf { it.isNotBlank() }
+                ?.let(::BotId),
+            leadLagSignalTtlMillis = optional("KIBOT_LEAD_LAG_SIGNAL_TTL_MS")?.toLongOrNull() ?: 120_000L,
+            leadLagSignalCooldownMillis = optional("KIBOT_LEAD_LAG_SIGNAL_COOLDOWN_MS")?.toLongOrNull() ?: 20_000L,
+            leadLagMinConfidence = optional("KIBOT_LEAD_LAG_MIN_CONFIDENCE")?.toDoubleOrNull() ?: 0.72,
+            leadLagMinExpectedNetPct = optional("KIBOT_LEAD_LAG_MIN_EXPECTED_NET_PCT")?.toDoubleOrNull() ?: 1.05,
+            leadLagMinShortTermReturnPct = optional("KIBOT_LEAD_LAG_MIN_SHORT_TERM_RETURN_PCT")?.toDoubleOrNull() ?: 2.2,
+            leadLagNagaMinExpectedNetPct = optional("KIBOT_LEAD_LAG_NAGA_MIN_EXPECTED_NET_PCT")?.toDoubleOrNull() ?: 1.10,
+            leadLagNagaMinShortTermReturnPct = optional("KIBOT_LEAD_LAG_NAGA_MIN_SHORT_TERM_RETURN_PCT")?.toDoubleOrNull() ?: 2.5,
+            leadLagMidMinExpectedNetPct = optional("KIBOT_LEAD_LAG_MID_MIN_EXPECTED_NET_PCT")?.toDoubleOrNull() ?: 0.90,
+            leadLagMidMinShortTermReturnPct = optional("KIBOT_LEAD_LAG_MID_MIN_SHORT_TERM_RETURN_PCT")?.toDoubleOrNull() ?: 1.4,
+            leadLagMicinMinExpectedNetPct = optional("KIBOT_LEAD_LAG_MICIN_MIN_EXPECTED_NET_PCT")?.toDoubleOrNull() ?: 0.60,
+            leadLagMicinMinShortTermReturnPct = optional("KIBOT_LEAD_LAG_MICIN_MIN_SHORT_TERM_RETURN_PCT")?.toDoubleOrNull() ?: 0.9,
+            leadLagNagaSignalTtlMillis = optional("KIBOT_LEAD_LAG_NAGA_SIGNAL_TTL_MS")?.toLongOrNull() ?: 2_000L,
+            leadLagMidSignalTtlMillis = optional("KIBOT_LEAD_LAG_MID_SIGNAL_TTL_MS")?.toLongOrNull() ?: 5_000L,
+            leadLagMicinSignalTtlMillis = optional("KIBOT_LEAD_LAG_MICIN_SIGNAL_TTL_MS")?.toLongOrNull() ?: 12_000L,
+            leadLagEnableNaga = optional("KIBOT_LEAD_LAG_ENABLE_NAGA")?.equals("true", ignoreCase = true) ?: false,
+            leadLagEnableMid = optional("KIBOT_LEAD_LAG_ENABLE_MID")?.equals("true", ignoreCase = true) ?: true,
+            leadLagEnableMicin = optional("KIBOT_LEAD_LAG_ENABLE_MICIN")?.equals("true", ignoreCase = true) ?: true,
+            leadLagMinTradeActivityScore = optional("KIBOT_LEAD_LAG_MIN_TRADE_ACTIVITY_SCORE")?.toDoubleOrNull() ?: 0.58,
+            leadLagForceRotationOnReceive = optional("KIBOT_LEAD_LAG_FORCE_ROTATION_ON_RECEIVE")
+                ?.equals("true", ignoreCase = true)
+                ?: true,
+            leadLagUdpEnabled = optional("KIBOT_LEAD_LAG_UDP_ENABLED")
+                ?.equals("true", ignoreCase = true)
+                ?: true,
+            leadLagUdpListenPort = optional("KIBOT_LEAD_LAG_UDP_LISTEN_PORT")?.toIntOrNull() ?: 9999,
+            leadLagUdpTargetHost = optional("KIBOT_LEAD_LAG_UDP_TARGET_HOST"),
+            leadLagUdpTargetPort = optional("KIBOT_LEAD_LAG_UDP_TARGET_PORT")?.toIntOrNull() ?: 9999,
+            indodaxHyperGuardrailEnabled = optional("KIBOT_INDODAX_HYPER_GUARDRAIL_ENABLED")
+                ?.equals("true", ignoreCase = true)
+                ?: true,
+            indodaxHyperGuardrailTakerFeePct = optional("KIBOT_INDODAX_HYPER_GUARDRAIL_TAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.51,
+            hyperAggressiveConfig = HyperAggressiveConfig(
+                targetDailyPct = optional("KIBOT_HYPER_TARGET_DAILY_PCT")?.toDoubleOrNull() ?: 25.0,
+                sexyWindowMs = optional("KIBOT_HYPER_SEXY_WINDOW_MS")?.toLongOrNull() ?: 60_000L,
+                sexyMinPriceDeltaPct = optional("KIBOT_HYPER_SEXY_MIN_PRICE_DELTA_PCT")?.toDoubleOrNull() ?: 1.5,
+                sexyMinVolumeAnomalyMultiplier = optional("KIBOT_HYPER_SEXY_MIN_VOLUME_MULTIPLIER")?.toDoubleOrNull() ?: 2.5,
+                sexyMinTradeActivityScore = optional("KIBOT_HYPER_SEXY_MIN_TRADE_ACTIVITY_SCORE")?.toDoubleOrNull() ?: 0.72,
+                superSexyWindowMs = optional("KIBOT_HYPER_SUPER_SEXY_WINDOW_MS")?.toLongOrNull() ?: 2_000L,
+                superSexyMinPriceDeltaPct = optional("KIBOT_HYPER_SUPER_SEXY_MIN_PRICE_DELTA_PCT")?.toDoubleOrNull() ?: 4.0,
+                superSexyMinVolumeAnomalyMultiplier = optional("KIBOT_HYPER_SUPER_SEXY_MIN_VOLUME_MULTIPLIER")?.toDoubleOrNull() ?: 10.0,
+                vShapeDumpWindowMs = optional("KIBOT_HYPER_VSHAPE_DUMP_WINDOW_MS")?.toLongOrNull() ?: 5_000L,
+                vShapeMinDumpPct = optional("KIBOT_HYPER_VSHAPE_MIN_DUMP_PCT")?.toDoubleOrNull() ?: 5.0,
+                vShapeBounceConfirmMs = optional("KIBOT_HYPER_VSHAPE_BOUNCE_CONFIRM_MS")?.toLongOrNull() ?: 6_000L,
+                vShapeBounceVolumeAnomalyMultiplier = optional("KIBOT_HYPER_VSHAPE_VOLUME_MULTIPLIER")?.toDoubleOrNull() ?: 4.0,
+                wallSmasherWindowMs = optional("KIBOT_HYPER_WALL_WINDOW_MS")?.toLongOrNull() ?: 6_000L,
+                wallSmasherVolumeAnomalyMultiplier = optional("KIBOT_HYPER_WALL_VOLUME_MULTIPLIER")?.toDoubleOrNull() ?: 4.5,
+                wallSmasherMinSpreadCompressionPct = optional("KIBOT_HYPER_WALL_SPREAD_COMPRESSION_PCT")?.toDoubleOrNull() ?: 25.0,
+                volumeBaselineWindowMs = optional("KIBOT_HYPER_VOLUME_BASELINE_WINDOW_MS")?.toLongOrNull() ?: 60_000L,
+                stagnantWindowMs = optional("KIBOT_HYPER_STAGNANT_WINDOW_MS")?.toLongOrNull() ?: 180_000L,
+                stagnantMaxMovePct = optional("KIBOT_HYPER_STAGNANT_MAX_MOVE_PCT")?.toDoubleOrNull() ?: 0.5,
+                trailingStopPct = optional("KIBOT_HYPER_TRAILING_STOP_PCT")?.toDoubleOrNull() ?: 1.5,
+                trailingArmMinGainPct = optional("KIBOT_HYPER_TRAILING_ARM_MIN_GAIN_PCT")?.toDoubleOrNull() ?: 0.8,
+                microPulseKeepMs = optional("KIBOT_HYPER_MICRO_PULSE_KEEP_MS")?.toLongOrNull() ?: 190_000L,
+                microPulseMaxSamplesPerPair = optional("KIBOT_HYPER_MICRO_PULSE_MAX_SAMPLES_PER_PAIR")?.toIntOrNull() ?: 260,
+                microPulseMaxPairs = optional("KIBOT_HYPER_MICRO_PULSE_MAX_PAIRS")?.toIntOrNull() ?: 1400,
+                allInLiquidationMaxPnlPct = optional("KIBOT_HYPER_ALL_IN_LIQUIDATION_MAX_PNL_PCT")?.toDoubleOrNull() ?: 1.0,
             ),
         )
     }

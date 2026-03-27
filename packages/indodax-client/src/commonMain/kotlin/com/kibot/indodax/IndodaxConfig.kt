@@ -17,6 +17,7 @@ data class IndodaxClientConfig(
     val privateWebSocketUrl: String = "wss://pws.indodax.com/ws/?cf_ws_frame_ping_pong=true",
     val receiveWindowMillis: Long = 15_000,
     val defaultFeePct: Double = 0.003,
+    val shadowMode: Boolean = false,
 )
 
 data class SignedPrivateRequest(

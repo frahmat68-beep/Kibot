@@ -1,6 +1,7 @@
 package com.kibot.indodax
 
 import com.kibot.core.ExchangeGateway
+import com.kibot.core.MarketBuyImpactEstimate
 import com.kibot.core.ExchangeOrderVisibilityException
 import com.kibot.core.ExchangeRejectedException
 import com.kibot.shared.models.BalanceSnapshot
@@ -216,6 +217,9 @@ class IndodaxGateway internal constructor(
     }
 
     override suspend fun placeOrder(plan: ExecutionPlan, clientOrderId: ClientOrderId): OrderSnapshot {
+        if (config.shadowMode) {
+            return buildShadowFilledOrder(plan, clientOrderId)
+        }
         val pairParts = plan.signal.pairId.assets()
         val params = linkedMapOf(
             "pair" to plan.signal.pairId.value,
@@ -264,6 +268,45 @@ class IndodaxGateway internal constructor(
         )
     }
 
+    private fun buildShadowFilledOrder(
+        plan: ExecutionPlan,
+        clientOrderId: ClientOrderId,
+    ): OrderSnapshot {
+        val now = Clock.System.now()
+        val simulatedPrice = plan.limitPrice
+            ?: plan.signal.entryPrice
+            ?: plan.signal.takeProfitPrice
+            ?: plan.signal.stopPrice
+            ?: DecimalValue("1")
+        val simulatedQuantity = when {
+            plan.quantity.toDoubleOrZero() > 0.0 -> plan.quantity
+            plan.quoteBudget != null && simulatedPrice.toDoubleOrZero() > 0.0 -> {
+                val quoteBudget = plan.quoteBudget
+                DecimalValue.fromDouble((quoteBudget?.toDoubleOrZero() ?: 0.0) / simulatedPrice.toDoubleOrZero())
+            }
+            else -> DecimalValue.Zero
+        }
+        println(
+            "[SHADOW MODE] Executed ${plan.side.name} ${plan.signal.pairId.value} " +
+                "at ${simulatedPrice.value} for ${simulatedQuantity.value}",
+        )
+        return OrderSnapshot(
+            orderId = OrderId("shadow-${clientOrderId.value}"),
+            clientOrderId = clientOrderId,
+            pairId = plan.signal.pairId,
+            side = plan.side,
+            orderType = plan.orderType,
+            status = OrderStatus.FILLED,
+            price = simulatedPrice,
+            originalQuantity = simulatedQuantity,
+            executedQuantity = simulatedQuantity,
+            remainingQuantity = DecimalValue.Zero,
+            feePaid = DecimalValue.Zero,
+            createdAt = now,
+            updatedAt = now,
+        )
+    }
+
     override suspend fun cancelOrder(clientOrderId: ClientOrderId): Boolean {
         return runCatching {
             submitPrivate<CancelByClientOrderIdResponse>(
@@ -272,6 +315,59 @@ class IndodaxGateway internal constructor(
             )
             true
         }.getOrDefault(false)
+    }
+
+    override suspend fun estimateMarketBuyImpact(
+        pairId: PairId,
+        quoteBudget: Double,
+    ): MarketBuyImpactEstimate? {
+        if (quoteBudget <= 0.0) return null
+        val book = runCatching {
+            client.get("${config.publicBaseUrl}/depth/${pairId.value}").body<OrderBookResponse>()
+        }.getOrNull() ?: return null
+        val asks = book.sell
+            .mapNotNull { level ->
+                val price = level.getOrNull(0)?.toDoubleOrNull()
+                val amount = level.getOrNull(1)?.toDoubleOrNull()
+                if (price == null || amount == null || price <= 0.0 || amount <= 0.0) null else price to amount
+            }
+            .sortedBy { it.first }
+        if (asks.isEmpty()) return null
+
+        var budgetLeft = quoteBudget
+        var acquiredBase = 0.0
+        var spent = 0.0
+        var consumedLevels = 0
+        asks.forEach { (price, amount) ->
+            if (budgetLeft <= 0.0) return@forEach
+            val levelCost = price * amount
+            if (levelCost <= budgetLeft) {
+                acquiredBase += amount
+                spent += levelCost
+                budgetLeft -= levelCost
+                consumedLevels += 1
+            } else {
+                val partialBase = budgetLeft / price
+                acquiredBase += partialBase
+                spent += budgetLeft
+                budgetLeft = 0.0
+                consumedLevels += 1
+            }
+        }
+        if (acquiredBase <= 0.0 || spent <= 0.0) return null
+
+        val averagePrice = spent / acquiredBase
+        val lastPrice = asks.first().first
+        val slippagePct = (((averagePrice - lastPrice) / lastPrice) * 100.0).coerceAtLeast(0.0)
+        return MarketBuyImpactEstimate(
+            pairId = pairId,
+            quoteBudget = quoteBudget,
+            averagePrice = averagePrice,
+            lastPrice = lastPrice,
+            slippagePct = slippagePct,
+            consumedLevels = consumedLevels,
+            exhaustedBook = budgetLeft > 0.0,
+        )
     }
 
     suspend fun fetchOrderByClientOrderId(clientOrderId: ClientOrderId, pairId: PairId): OrderSnapshot {
@@ -403,6 +499,12 @@ private data class SummariesResponse(
     val tickers: Map<String, SummaryTicker>,
     @SerialName("prices_24h") val prices24h: Map<String, String> = emptyMap(),
     @SerialName("prices_7d") val prices7d: Map<String, String> = emptyMap(),
+)
+
+@Serializable
+private data class OrderBookResponse(
+    @SerialName("buy") val buy: List<List<String>> = emptyList(),
+    @SerialName("sell") val sell: List<List<String>> = emptyList(),
 )
 
 @Serializable
