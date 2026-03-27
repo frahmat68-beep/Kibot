@@ -15,6 +15,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 
 data class MacRuntimeConfig(
+    val runtimeProfileKey: String,
     val port: Int,
     val bindHost: String,
     val controlPlane: ControlPlaneConfig,
@@ -61,6 +62,7 @@ object MacRuntimeConfigLoader {
         fun optional(name: String): String? = merged[name]?.takeIf { it.isNotBlank() }
 
         val botId = BotId(optional("BOT_ID") ?: "main")
+        val runtimeProfileKey = optional("BOT_PROFILE_KEY") ?: defaultRuntimeProfileKey(botId.value)
         val apiKey = optional("INDODAX_API_KEY")
         val apiSecret = optional("INDODAX_API_SECRET")
         val deviceRole = optional("DEVICE_ROLE")
@@ -69,6 +71,7 @@ object MacRuntimeConfigLoader {
             ?: DeviceRole.PRIMARY
 
         return MacRuntimeConfig(
+            runtimeProfileKey = runtimeProfileKey,
             port = optional("MAC_ENGINE_PORT")?.toIntOrNull() ?: 8787,
             bindHost = optional("MAC_ENGINE_BIND_HOST") ?: "0.0.0.0",
             controlPlane = ControlPlaneConfig(
@@ -119,13 +122,15 @@ object MacRuntimeConfigLoader {
                         failureCooldownMinutes = optional("GEMINI_SUPPORT_FAILURE_COOLDOWN_MINUTES")?.toIntOrNull() ?: 120,
                     )
                 },
-            adaptiveAiPolicyPath = Paths.get(
-                optional("KIBOT_AI_ADAPTIVE_POLICY_PATH")
-                    ?: cwd.resolve(".tmp/ai-audits/latest/adaptive_policy.json").toString(),
+            adaptiveAiPolicyPath = resolveScopedRuntimePath(
+                explicit = optional("KIBOT_AI_ADAPTIVE_POLICY_PATH"),
+                scopedDefault = cwd.resolve(".tmp/ai-audits/$runtimeProfileKey/latest/adaptive_policy.json"),
+                legacyDefault = cwd.resolve(".tmp/ai-audits/latest/adaptive_policy.json"),
             ),
-            targetEnforcementMemoryPath = Paths.get(
-                optional("KIBOT_TARGET_ENFORCEMENT_MEMORY_PATH")
-                    ?: cwd.resolve(".tmp/runtime/target_enforcement_memory.json").toString(),
+            targetEnforcementMemoryPath = resolveScopedRuntimePath(
+                explicit = optional("KIBOT_TARGET_ENFORCEMENT_MEMORY_PATH"),
+                scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/target_enforcement_memory.json"),
+                legacyDefault = cwd.resolve(".tmp/runtime/target_enforcement_memory.json"),
             ),
             analysisPublishIntervalMillis = optional("BOT_ANALYSIS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 30_000L,
             strategyMetricsPublishIntervalMillis = optional("BOT_STRATEGY_METRICS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 300_000L,
@@ -160,6 +165,36 @@ object MacRuntimeConfigLoader {
             .getOrNull()
             ?.takeIf { it.isNotBlank() }
             ?: "MacBook Engine"
+    }
+
+    private fun defaultRuntimeProfileKey(botId: String): String {
+        val normalized = botId.trim().lowercase()
+        if (normalized.isBlank() || normalized == "main") return "indodax"
+        return normalized
+            .replace(Regex("[^a-z0-9_-]+"), "-")
+            .trim('-')
+            .ifBlank { "bot" }
+    }
+
+    private fun resolveScopedRuntimePath(
+        explicit: String?,
+        scopedDefault: Path,
+        legacyDefault: Path,
+    ): Path {
+        explicit?.let { return Paths.get(it) }
+        migrateLegacyRuntimeFile(legacyDefault, scopedDefault)
+        return if (Files.exists(scopedDefault)) scopedDefault else if (Files.exists(legacyDefault)) legacyDefault else scopedDefault
+    }
+
+    private fun migrateLegacyRuntimeFile(
+        legacyPath: Path,
+        scopedPath: Path,
+    ) {
+        if (!Files.exists(legacyPath) || Files.exists(scopedPath)) return
+        runCatching {
+            scopedPath.parent?.let { Files.createDirectories(it) }
+            Files.copy(legacyPath, scopedPath)
+        }
     }
 
     private fun candidateEnvFiles(start: Path): List<Path> {
