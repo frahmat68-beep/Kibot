@@ -87,6 +87,12 @@ data class MacRuntimeConfig(
     val indodaxHyperGuardrailEnabled: Boolean,
     val indodaxHyperGuardrailTakerFeePct: Double,
     val hyperAggressiveConfig: HyperAggressiveConfig,
+    val blueChipMinDailyVolumeIdr: Double = 500_000.0,
+    val aListMinVolumeIdr: Double = 80_000_000.0,
+    val chartGuardMinCandles: Int = 18,
+    val chartGuardMinActiveCandles: Int = 6,
+    val chartGuardMinDistinctCloseBuckets: Int = 4,
+    val antiKoinMahalUseBudgetCheck: Boolean = false,
 )
 
 object MacRuntimeConfigLoader {
@@ -296,6 +302,12 @@ object MacRuntimeConfigLoader {
                 microPulseMaxPairs = optional("KIBOT_HYPER_MICRO_PULSE_MAX_PAIRS")?.toIntOrNull() ?: 1400,
                 allInLiquidationMaxPnlPct = optional("KIBOT_HYPER_ALL_IN_LIQUIDATION_MAX_PNL_PCT")?.toDoubleOrNull() ?: 1.0,
             ),
+            blueChipMinDailyVolumeIdr = optional("KIBOT_BLUECHIP_MIN_VOLUME_IDR")?.toDoubleOrNull() ?: 500_000.0,
+            aListMinVolumeIdr = optional("KIBOT_ALIST_MIN_VOLUME_IDR")?.toDoubleOrNull() ?: 80_000_000.0,
+            chartGuardMinCandles = optional("KIBOT_CHART_GUARD_MIN_CANDLES")?.toIntOrNull() ?: 18,
+            chartGuardMinActiveCandles = optional("KIBOT_CHART_GUARD_MIN_ACTIVE_CANDLES")?.toIntOrNull() ?: 6,
+            chartGuardMinDistinctCloseBuckets = optional("KIBOT_CHART_GUARD_MIN_DISTINCT_CLOSE_BUCKETS")?.toIntOrNull() ?: 4,
+            antiKoinMahalUseBudgetCheck = optional("KIBOT_ANTI_KOIN_MAHAL_USE_BUDGET_CHECK")?.equals("true", ignoreCase = true) ?: true,
         )
     }
 

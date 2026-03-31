@@ -53,8 +53,8 @@ data class TradeAutomationConfig(
     val loserRotationMinScoreGap: Double = 0.035,
     val rotationMinNetUpgradePct: Double = 0.88,
     val loserRotationIncrementalUpgradeFloorPct: Double = 0.10,
-    val staleRotationMinAgeHours: Double = 0.26,
-    val staleRotationMaxAbsPnlPct: Double = 0.32,
+    val staleRotationMinAgeHours: Double = 1.0,
+    val staleRotationMaxAbsPnlPct: Double = 0.50,
     val staleRotationMinTopCandidateRanking: Double = 0.56,
     val staleRotationMinScoreGap: Double = 0.06,
     val staleRotationIncrementalUpgradeFloorPct: Double = 0.08,
@@ -212,7 +212,7 @@ class TradeAutomationCoordinator(
 
         return balances.mapNotNull { balance ->
             val balanceQuantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
-            if (balance.asset.equals("idr", ignoreCase = true) || balanceQuantity <= 0.0) {
+            if (balance.asset.equals(executionConfig.referenceQuoteAsset, ignoreCase = true) || balanceQuantity <= 0.0) {
                 return@mapNotNull null
             }
 
@@ -222,7 +222,7 @@ class TradeAutomationCoordinator(
                 quoteByPair = quoteByPair,
             ) ?: return@mapNotNull null
             val quote = quoteByPair[pairId] ?: return@mapNotNull null
-            val quoteAssetPriceIdr = quoteAssetPriceIdr(pairId.assets().quoteAsset, marketQuotes) ?: return@mapNotNull null
+            val quoteAssetPriceIdr = quoteAssetReferencePrice(pairId.assets().quoteAsset, marketQuotes) ?: return@mapNotNull null
             val valueIdr = balanceQuantity * quote.bestBid.toDoubleOrZero() * quoteAssetPriceIdr
             if (valueIdr < max(config.minTrackedPositionValueIdr, executionConfig.minOrderNotionalIdr)) return@mapNotNull null
 
@@ -546,7 +546,10 @@ class TradeAutomationCoordinator(
             }
         if (orderPair != null) return orderPair
 
-        val preferredQuotes = listOf("idr", "usdt", "btc", "eth")
+        val preferredQuotes = buildList {
+            add(executionConfig.referenceQuoteAsset.lowercase())
+            addAll(listOf("idr", "usdt", "btc", "eth").filterNot { it == executionConfig.referenceQuoteAsset.lowercase() })
+        }
         return preferredQuotes
             .asSequence()
             .map { quoteAsset -> PairId("${normalizedAsset}_$quoteAsset") }
@@ -781,11 +784,31 @@ class TradeAutomationCoordinator(
         return max(config.estimatedRoundTripCostPct, blended).coerceIn(config.adaptiveFeeFloorPct, config.maxAdaptiveRoundTripCostPct)
     }
 
-    private fun quoteAssetPriceIdr(asset: String, quotes: List<MarketQuote>): Double? {
-        if (asset.equals("idr", ignoreCase = true)) return 1.0
-        val directPair = PairId("${asset.lowercase()}_idr")
-        val directQuote = quotes.firstOrNull { it.pairId == directPair }
-        return directQuote?.midPrice?.toDoubleOrZero()
+    private fun quoteAssetReferencePrice(asset: String, quotes: List<MarketQuote>): Double? {
+        val normalizedAsset = asset.lowercase()
+        val referenceQuoteAsset = executionConfig.referenceQuoteAsset.lowercase()
+        if (normalizedAsset == referenceQuoteAsset) return 1.0
+
+        val directPair = PairId("${normalizedAsset}_${referenceQuoteAsset}")
+        quotes.firstOrNull { it.pairId == directPair }
+            ?.midPrice
+            ?.toDoubleOrZero()
+            ?.takeIf { it > 0.0 }
+            ?.let { return it }
+
+        if (referenceQuoteAsset != "idr") {
+            val directIdr = quotes.firstOrNull { it.pairId == PairId("${normalizedAsset}_idr") }
+                ?.midPrice
+                ?.toDoubleOrZero()
+                ?.takeIf { it > 0.0 }
+            val referenceIdr = quotes.firstOrNull { it.pairId == PairId("${referenceQuoteAsset}_idr") }
+                ?.midPrice
+                ?.toDoubleOrZero()
+                ?.takeIf { it > 0.0 }
+            if (directIdr != null && referenceIdr != null) return directIdr / referenceIdr
+        }
+
+        return null
     }
 
     private data class PairParts(
@@ -798,8 +821,10 @@ class TradeAutomationCoordinator(
         return if (parts.size == 2) {
             PairParts(parts[0], parts[1])
         } else {
-            val quoteAsset = listOf("idr", "usdt", "btc", "eth").firstOrNull { value.lowercase().endsWith(it) }
-                ?: "idr"
+            val quoteAsset = listOf(executionConfig.referenceQuoteAsset.lowercase(), "idr", "usdt", "btc", "eth")
+                .distinct()
+                .firstOrNull { value.lowercase().endsWith(it) }
+                ?: executionConfig.referenceQuoteAsset.lowercase()
             PairParts(value.lowercase().removeSuffix(quoteAsset), quoteAsset)
         }
     }

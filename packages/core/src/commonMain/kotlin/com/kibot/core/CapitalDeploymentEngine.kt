@@ -267,8 +267,8 @@ class CapitalDeploymentEngine(
         } else {
             0.0
         }
-        if (ageHours < 0.28) return false
-        if (pnlPct > 0.24) return false
+        if (ageHours < 1.0) return false
+        if (kotlin.math.abs(pnlPct) > 0.5) return false
         if (pairScore == null) return true
         return !pairScore.allowed ||
             pairScore.marketOpportunityScore < 0.62 ||

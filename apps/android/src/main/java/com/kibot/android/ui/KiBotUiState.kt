@@ -118,6 +118,17 @@ data class KiBotUiState(
     val logs: List<LogUi>,
     val trades: List<TradeUi>,
     val devices: List<DeviceStatusUi>,
+    val managerLog: String,
+    val targetProgressPct: Double,
+    val udpPingMs: Long,
+    val kidaxPingMs: Long,
+    val kinancePingMs: Long,
+    val kidaxBalanceIdrLabel: String,
+    val kinanceBalanceIdrLabel: String,
+    val kidaxPnlTodayPctLabel: String,
+    val kinancePnlTodayPctLabel: String,
+    val kidaxPairAktif: String,
+    val kinancePairAktif: String,
 ) {
     companion object {
         fun preview(): KiBotUiState = KiBotUiState(
@@ -157,6 +168,17 @@ data class KiBotUiState(
             logs = emptyList(),
             trades = emptyList(),
             devices = emptyList(),
+            managerLog = "Belum ada laporan manajer.",
+            targetProgressPct = 0.0,
+            udpPingMs = 0L,
+            kidaxPingMs = 45L,
+            kinancePingMs = 110L,
+            kidaxBalanceIdrLabel = "Rp0",
+            kinanceBalanceIdrLabel = "Rp0",
+            kidaxPnlTodayPctLabel = "+0.0%",
+            kinancePnlTodayPctLabel = "+0.0%",
+            kidaxPairAktif = "-",
+            kinancePairAktif = "-",
         )
     }
 }

@@ -33,6 +33,8 @@ class MacStateRepositoryTest {
                 releaseLabel = "#99",
                 liveExecutionEnabled = false,
                 portfolioValueIdr = "Rp100.000",
+                freeIdrLabel = "Rp20.000",
+                totalValueIdr = "Rp100.000",
                 pnlTodayIdr = "+Rp2.500",
                 pnlTodayPctLabel = "+2.5%",
                 return7dIdr = "+Rp5.000",
@@ -67,6 +69,7 @@ class MacStateRepositoryTest {
                 exchangePingMs = "84",
                 liveTimeline = emptyList(),
                 recentOrders = emptyList(),
+                trailingFloors = emptyList(),
             ),
         )
 

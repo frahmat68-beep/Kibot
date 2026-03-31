@@ -31,7 +31,7 @@ data class PairSelectionPolicy(
     val strongNetEdgePct: Double = 1.60,
     val shortlistSize: Int = 128,
     val prefilterCandidatePoolSize: Int = 420,
-    val blockedBaseAssets: Set<String> = setOf("usdt", "usdc", "indr"),
+    val blockedBaseAssets: Set<String> = setOf("usdt", "usdc", "indr", "fdusd", "tusd", "busd", "toko"),
     val stagnantShortTermReturnPctMax: Double = 0.60,
     val stagnantMediumTermReturnPctMax: Double = 1.20,
     val speculativeMinShortTermReturnPct: Double = 3.4,
@@ -116,6 +116,7 @@ data class WeeklyLearningConfig(
 )
 
 data class StrategyExecutionConfig(
+    val referenceQuoteAsset: String = "idr",
     val minOrderNotionalIdr: Double = 15_000.0,
     val entrySpendBufferPct: Double = 0.002,
     val growthMinRankingScore: Double = 0.63,

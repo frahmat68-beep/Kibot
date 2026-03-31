@@ -34,6 +34,9 @@ class MainActivity : ComponentActivity() {
             ) {
                 KiBotRoot(
                     state = state,
+                    onHistoryTabSelected = {
+                        lifecycleScope.launch { repository.onLogsTabSelected(limit = 50) }
+                    },
                 )
             }
         }

@@ -310,8 +310,6 @@ class DailyTargetPursuitBrain(
         )
     }
 
-    private fun DecimalValue.toDoubleOrZero(): Double = value.toDoubleOrNull() ?: 0.0
-
     private fun expectedProfitAt(elapsedHours: Double): Double = when {
         elapsedHours <= 0.0 -> 0.0
         else -> {

@@ -6,7 +6,7 @@ ENV_LOCAL="${ROOT_DIR}/.env"
 SSH_KEY="${ROOT_DIR}/ssh-key-2026-03-22.key"
 HOST="${KIBOT_SSH_HOST:-213.35.118.26}"
 USER_NAME="${KIBOT_SSH_USER:-ubuntu}"
-REMOTE_ENV="/home/ubuntu/KiBot/.env.server"
+REMOTE_ENV="/home/ubuntu/KiDax/.env.kidax"
 
 if [[ ! -f "${ENV_LOCAL}" ]]; then
   echo "Missing local .env at ${ENV_LOCAL}" >&2
@@ -64,9 +64,9 @@ while IFS= read -r line; do
   printf '%s\n' \"\$line\" >> '${REMOTE_ENV}'
 done < /tmp/kibot-env-sync.tmp
 rm -f /tmp/kibot-env-sync.tmp
-sudo systemctl restart kibot-engine
+sudo systemctl restart kidax-engine
 sleep 4
-systemctl is-active kibot-engine
+systemctl is-active kidax-engine
 "
 
-echo "Synced env keys and restarted kibot-engine."
+echo "Synced env keys and restarted kidax-engine."

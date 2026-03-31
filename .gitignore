@@ -24,3 +24,6 @@ infra/supabase/.temp/
 infra/supabase/.branches/
 infra/supabase/.generated/
 .tmp/
+SSH_BINANCE/
+SSH_INDODAX/
+**/bin/

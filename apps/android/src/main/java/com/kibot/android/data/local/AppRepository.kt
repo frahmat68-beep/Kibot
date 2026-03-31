@@ -34,10 +34,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.datetime.Clock
 import kotlinx.datetime.DatePeriod
 import kotlinx.datetime.DayOfWeek
@@ -49,10 +51,18 @@ import kotlinx.datetime.toLocalDateTime
 import org.json.JSONObject
 import java.net.URL
 import java.net.HttpURLConnection
+import java.net.URI
 import java.text.NumberFormat
 import java.util.Locale
 import kotlin.math.absoluteValue
 import kotlin.math.max
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readText
+import io.ktor.websocket.send
 
 class AppRepository(
     private val appContext: Context,
@@ -66,6 +76,7 @@ class AppRepository(
     private val botId: BotId = BotId("main"),
     private val macLanSyncBaseUrl: String? = null,
     private val serverMonitorBaseUrl: String? = null,
+    private val kinanceMonitorBaseUrl: String? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _uiState = MutableStateFlow(KiBotUiState.preview())
@@ -83,7 +94,15 @@ class AppRepository(
         ?.trim()
         ?.removeSuffix("/")
         ?.takeIf { it.isNotBlank() }
+    private val normalizedKinanceMonitorBaseUrl = kinanceMonitorBaseUrl
+        ?.trim()
+        ?.removeSuffix("/")
+        ?.takeIf { it.isNotBlank() }
     private var lastLanDiscoveryAttemptEpochMs: Long = 0L
+    private var realtimeStarted = false
+    private var kingDashboardRefetchStarted = false
+    private var cachedUsdtIdrRate: Double = 16_000.0
+    private var cachedUsdtRateAtEpochMs: Long = 0L
 
     private data class ValuedHolding(
         val asset: String,
@@ -106,15 +125,24 @@ class AppRepository(
         )
     }
 
-    suspend fun syncNow() {
+    suspend fun syncNow(includeLogs: Boolean = false) {
         val now = Clock.System.now()
-        val serverMonitor = fetchServerMonitorState()
-        if (serverMonitor != null) {
-            syncFromServerMonitor(serverMonitor, now)
-            persistState()
-            return
-        }
-        if (normalizedServerMonitorBaseUrl != null) {
+        if (normalizedServerMonitorBaseUrl != null || normalizedKinanceMonitorBaseUrl != null) {
+            val kidaxMonitor = fetchServerMonitorState(normalizedServerMonitorBaseUrl, includeLogs = includeLogs)
+            val kinanceMonitor = fetchServerMonitorState(normalizedKinanceMonitorBaseUrl, includeLogs = false)
+            if (kidaxMonitor != null || kinanceMonitor != null) {
+                val usdtIdrRate = fetchUsdtIdrRate(now)
+                if (kidaxMonitor != null) {
+                    syncFromServerMonitor(kidaxMonitor, now)
+                } else {
+                    syncFromUnavailableServerFeed(now)
+                }
+                if (kinanceMonitor != null) {
+                    applyKinanceServerOverlay(kinanceMonitor.state, now, usdtIdrRate)
+                }
+                persistState()
+                return
+            }
             syncFromUnavailableServerFeed(now)
             persistState()
             return
@@ -158,10 +186,7 @@ class AppRepository(
         val liveIdrBalance = liveBalances
             .firstOrNull { it.asset.equals("idr", ignoreCase = true) }
             ?.let { it.free.toDoubleOrZero() + it.locked.toDoubleOrZero() }
-        val auxiliary = fetchAuxiliaryData(gateway, now)
-        val logs = auxiliary.logs
-        val orders = auxiliary.orders
-        val weeklyReview = auxiliary.weeklyReview
+        val weeklyReview = fetchAuxiliaryData(gateway, now).weeklyReview
         val liveEquityIdr = estimateEquityIdr(liveBalances, liveQuotes)
             ?: fallbackSnapshot?.totalEquityIdr?.parseRupiahLabel()
         val openingEquityIdr = when {
@@ -227,7 +252,7 @@ class AppRepository(
         val serverTimeline = buildServerLiveEntries(
             liveTimeline = emptyList(),
             serverLogs = emptyList(),
-            orders = orders.map(::toServerRecentOrder),
+            orders = emptyList(),
             fallbackTimestamp = now.toEpochMilliseconds(),
         )
         val serverStatusMessage = serverTimeline.firstOrNull()?.message
@@ -283,16 +308,8 @@ class AppRepository(
             positions = livePositions.ifEmpty { emptyList() },
             portfolio = portfolioSection,
             liveLogEntries = serverTimeline,
-            logs = filterOperatorLogs(logs).map {
-                LogUi(
-                    level = it.level.name,
-                    category = it.category,
-                    message = it.message,
-                    timeLabel = formatMomentLabel(it.recordedAt),
-                )
-            },
-            trades = orders
-                .let(::buildTradeUiFromOrders),
+            logs = _uiState.value.logs,
+            trades = _uiState.value.trades,
             devices = devices.map {
                 val isActive = it.deviceId == activeDeviceId
                 DeviceStatusUi(
@@ -335,12 +352,94 @@ class AppRepository(
         persistState()
     }
 
+    private fun startKingDashboardRealtime() {
+        // Intentionally disabled for telemetry to reduce Supabase egress.
+        // Android monitor now relies on direct polling to server /api/state endpoints.
+    }
+
+    private fun startKingDashboardHardRefetch() {}
+
+    private fun buildRealtimeWsUrl(supabaseUrl: String, anonKey: String): String = ""
+
+    private fun applyKingDashboardRecord(record: JSONObject) {
+        val total = record.optDouble("total_balance_idr", _uiState.value.modalSaatIniIdr.parseRupiahLabel() ?: 0.0)
+        val ping = if (record.has("current_ping_ms")) record.optLong("current_ping_ms") else null
+        val active = mutableListOf<String>()
+        val arr = record.optJSONArray("active_live_pairs")
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                arr.optString(i)?.takeIf { it.isNotBlank() }?.let(active::add)
+            }
+        }
+        val managerLog = record.optString("latest_manager_log").takeIf { it.isNotBlank() } ?: _uiState.value.managerLog
+        val currentKidaxBalance = _uiState.value.kidaxBalanceIdrLabel.parseRupiahLabel()
+        val currentKinanceBalance = _uiState.value.kinanceBalanceIdrLabel.parseRupiahLabel()
+        val nextKidaxBalance = record.optDashboardDouble("kidax_balance_idr") ?: currentKidaxBalance
+        val nextKinanceBalance = record.optDashboardDouble("kinance_balance_idr")
+            ?: when {
+                total > 0.0 && nextKidaxBalance != null -> (total - nextKidaxBalance).coerceAtLeast(0.0)
+                else -> currentKinanceBalance
+            }
+        val nextKidaxPair = record.optString("kidax_pair_active").takeIf { it.isNotBlank() }
+            ?: active.firstOrNull { it.endsWith("_idr") }
+            ?: _uiState.value.kidaxPairAktif
+        val nextKinancePair = record.optString("kinance_pair_active").takeIf { it.isNotBlank() }
+            ?: active.firstOrNull { it.endsWith("_usdt") || it.endsWith("_btc") || it.endsWith("_eth") || it.endsWith("_bnb") }
+            ?: _uiState.value.kinancePairAktif
+        _uiState.value = _uiState.value.copy(
+            modalSaatIniIdr = formatIdr(total),
+            internetPingLabel = ping?.let { "${it}ms" } ?: _uiState.value.internetPingLabel,
+            radarPairs = active.ifEmpty { _uiState.value.radarPairs },
+            pairAktif = active.firstOrNull() ?: _uiState.value.pairAktif,
+            managerLog = managerLog,
+            targetProgressPct = record.optDouble("target_progress_pct", _uiState.value.targetProgressPct).coerceIn(0.0, 100.0),
+            udpPingMs = if (record.has("udp_ping_ms")) record.optLong("udp_ping_ms") else _uiState.value.udpPingMs,
+            kidaxPingMs = if (record.has("kidax_ping_ms")) record.optLong("kidax_ping_ms") else _uiState.value.kidaxPingMs,
+            kinancePingMs = if (record.has("kinance_ping_ms")) record.optLong("kinance_ping_ms") else _uiState.value.kinancePingMs,
+            kidaxBalanceIdrLabel = nextKidaxBalance?.let(::formatIdr) ?: _uiState.value.kidaxBalanceIdrLabel,
+            kinanceBalanceIdrLabel = nextKinanceBalance?.let(::formatIdr) ?: _uiState.value.kinanceBalanceIdrLabel,
+            kidaxPnlTodayPctLabel = record.optDashboardDouble("kidax_pnl_today_pct")?.let(::formatSignedPercentFromPct) ?: _uiState.value.kidaxPnlTodayPctLabel,
+            kinancePnlTodayPctLabel = record.optDashboardDouble("kinance_pnl_today_pct")?.let(::formatSignedPercentFromPct) ?: _uiState.value.kinancePnlTodayPctLabel,
+            kidaxPairAktif = nextKidaxPair,
+            kinancePairAktif = nextKinancePair,
+            statusMessage = "Realtime king_dashboard update diterima.",
+            lastUpdatedLabel = formatLastUpdated(Clock.System.now()),
+        )
+    }
+
+    suspend fun loadHistoryTab(limit: Int = 50) {
+        val gateway = controlPlaneGateway ?: return
+        val records = runCatching { gateway.fetchTradeHistory(limit = limit, offset = 0) }.getOrDefault(emptyList())
+        if (records.isEmpty()) return
+        _uiState.value = _uiState.value.copy(
+            trades = records.map {
+                TradeUi(
+                    pair = it.pair,
+                    side = it.side,
+                    status = it.status,
+                    detail = it.detail,
+                    timeLabel = it.createdAt?.let(::formatMomentLabel).orEmpty(),
+                )
+            },
+        )
+        persistState()
+    }
+
+    suspend fun onLogsTabSelected(limit: Int = 50) {
+        syncNow(includeLogs = true)
+        loadHistoryTab(limit = limit)
+    }
+
     private suspend fun syncFromServerMonitor(
         serverBundle: ServerMonitorBundle,
         now: Instant,
     ) {
         val state = serverBundle.state
+        val previousTotal = _uiState.value.modalSaatIniIdr.parseRupiahLabel()
         val totalEquityIdr = state.portfolioValueIdr.parseRupiahLabel()
+            ?.takeIf { it > 0.0 }
+            ?: previousTotal
+            ?: 0.0
         val valuedHoldings = buildServerValuedHoldings(state)
         val filteredRadarPairs = filterDisplayPairs(state.radarPairs)
         val livePair = state.topCandidate.lowercase().takeUnless { it in HIDDEN_STABLE_PAIRS }
@@ -359,7 +458,7 @@ class AppRepository(
         val portfolio = buildPortfolioSection(
             now = now,
             history = fetchServerEquityHistory(now),
-            totalEquityLabel = state.portfolioValueIdr,
+            totalEquityLabel = formatIdr(totalEquityIdr),
             totalEquityIdr = totalEquityIdr,
             pnlTodayLabel = state.pnlTodayIdr,
             pnlTodayPctLabel = state.pnlTodayPctLabel,
@@ -372,6 +471,11 @@ class AppRepository(
             thirtyDayReturnLabel = state.return30dIdr,
             thirtyDayReturnPctLabel = state.return30dPctLabel,
         )
+        val mergedTotalLabel = mergeUnifiedWealthLabel(
+            kidaxBalanceLabel = formatIdr(totalEquityIdr),
+            kinanceBalanceLabel = _uiState.value.kinanceBalanceIdrLabel,
+            fallbackTotalLabel = _uiState.value.modalSaatIniIdr,
+        )
 
         _uiState.value = _uiState.value.copy(
             isBotRunning = state.isBotRunning || state.effectiveState != BotEffectiveState.STOPPED,
@@ -379,17 +483,21 @@ class AppRepository(
             operatingMode = state.operatingMode,
             edgeConfidence = state.edgeConfidence,
             marketRegime = state.marketRegime,
-            activeEngine = state.activeEngine.ifBlank { "Oracle Cloud Server" },
-            standbyEngine = state.serverLocation.ifBlank { "-" },
+            activeEngine = "KiBot Engine",
+            standbyEngine = "KiDax + Kinance",
             syncHealth = state.syncHealth,
             internetPingLabel = state.exchangePingMs.ifBlank { "--" },
             pnlTodayIdr = state.pnlTodayIdr,
             pnlTodayPctLabel = state.pnlTodayPctLabel,
-            modalSaatIniIdr = state.portfolioValueIdr,
+            modalSaatIniIdr = mergedTotalLabel,
             scanUniverseCount = state.scanUniverseCount,
             releaseLabel = state.releaseLabel.ifBlank { _uiState.value.releaseLabel },
             targetPursuitLabel = state.targetPursuitLabel.ifBlank { "TRACKING" },
-            aiProviderSummary = state.aiProviderSummary.ifBlank { _uiState.value.aiProviderSummary },
+            aiProviderSummary = deriveAiStatusLabel(
+                rawSummary = state.aiProviderSummary,
+                managerLog = _uiState.value.managerLog,
+                serverLogs = serverBundle.serverLogs,
+            ),
             radarPairs = filteredRadarPairs,
             pairAktif = livePair,
             syncLagLabel = state.lastHeartbeatLabel.ifBlank { "--" },
@@ -402,7 +510,7 @@ class AppRepository(
             weeklyAdaptationSummary = state.weeklyAdaptationSummary
                 .takeIf { it.isNotBlank() }
                 ?: "Adaptasi mingguan belum tersedia.",
-            positions = buildServerPositions(state),
+            positions = buildServerPositions(state, state.recentOrders),
             portfolio = portfolio,
             liveLogEntries = liveEntries,
             logs = buildServerLogCards(
@@ -411,6 +519,9 @@ class AppRepository(
                 recentOrders = state.recentOrders,
             ),
             trades = buildTradeUiFromServerOrders(state.recentOrders),
+            kidaxBalanceIdrLabel = formatIdr(totalEquityIdr),
+            kidaxPnlTodayPctLabel = state.pnlTodayPctLabel.ifBlank { _uiState.value.kidaxPnlTodayPctLabel },
+            kidaxPairAktif = livePair,
             devices = listOf(
                 DeviceStatusUi(
                     name = state.serverLocation.ifBlank { "Oracle Cloud Server" },
@@ -455,8 +566,8 @@ class AppRepository(
         _uiState.value = previousState.copy(
             isBotRunning = false,
             effectiveState = BotEffectiveState.DEGRADED,
-            activeEngine = "Oracle Cloud Server",
-            standbyEngine = "-",
+            activeEngine = "KiBot Engine",
+            standbyEngine = "KiDax + Kinance",
             syncHealth = "DEGRADED",
             syncPathLabel = "Live Server",
             syncLagLabel = "--",
@@ -527,16 +638,113 @@ class AppRepository(
         return refreshed
     }
 
-    private suspend fun fetchServerMonitorState(): ServerMonitorBundle? {
-        val baseUrl = normalizedServerMonitorBaseUrl ?: return null
+    private suspend fun fetchServerMonitorState(baseUrl: String?, includeLogs: Boolean = false): ServerMonitorBundle? {
+        if (baseUrl.isNullOrBlank()) return null
         val stateDeferred = scope.async { fetchJsonObject("$baseUrl/api/state") }
-        val logsDeferred = scope.async { fetchJsonArrayStrings("$baseUrl/api/logs") }
+        val logsDeferred = if (includeLogs) {
+            scope.async { fetchJsonArrayStrings("$baseUrl/api/logs") }
+        } else {
+            null
+        }
 
         val stateJson = stateDeferred.await() ?: return null
         val parsedState = parseServerMonitorState(stateJson) ?: return null
         return ServerMonitorBundle(
             state = parsedState,
-            serverLogs = logsDeferred.await(),
+            serverLogs = logsDeferred?.await().orEmpty(),
+        )
+    }
+
+    private fun applyKinanceServerOverlay(
+        state: ServerMonitorState,
+        now: Instant,
+        usdtIdrRate: Double,
+    ) {
+        val current = _uiState.value
+        val kinancePing = state.exchangePingValueMs ?: state.exchangePingMs.parsePingMs() ?: current.kinancePingMs
+        val kinancePair = state.topCandidate.takeIf { it.isNotBlank() && it != "-" }
+            ?: state.radarPairs.firstOrNull()
+            ?: current.kinancePairAktif
+        val kinanceBalanceIdr = parseMonitorBalanceIdr(state.portfolioValueIdr, usdtIdrRate)
+            ?: current.kinanceBalanceIdrLabel.parseRupiahLabel()
+            ?: 0.0
+        val mergedTotal = mergeUnifiedWealthLabel(
+            kidaxBalanceLabel = current.kidaxBalanceIdrLabel,
+            kinanceBalanceLabel = formatIdr(kinanceBalanceIdr),
+            fallbackTotalLabel = current.modalSaatIniIdr,
+        )
+        _uiState.value = current.copy(
+            kinancePingMs = kinancePing,
+            kinanceBalanceIdrLabel = formatIdr(kinanceBalanceIdr),
+            kinancePnlTodayPctLabel = state.pnlTodayPctLabel.takeIf { it.isNotBlank() } ?: current.kinancePnlTodayPctLabel,
+            kinancePairAktif = kinancePair,
+            modalSaatIniIdr = mergedTotal,
+            radarPairs = filterDisplayPairs(current.radarPairs + state.radarPairs),
+            statusMessage = "KiBot sinkron KiDax + Kinance realtime.",
+            lastUpdatedLabel = state.lastUpdatedLabel.ifBlank { formatLastUpdated(now) },
+        )
+    }
+
+    private suspend fun applyKingDashboardOverlay(now: Instant) {
+        val gateway = controlPlaneGateway ?: return
+        val snapshot = runCatching { gateway.fetchKingDashboardSnapshot() }.getOrNull() ?: return
+        applyKingDashboardSnapshot(snapshot, now)
+    }
+
+    private fun applyKingDashboardSnapshot(
+        snapshot: com.kibot.core.KingDashboardSnapshot,
+        now: Instant,
+    ) {
+        val previousTotal = _uiState.value.modalSaatIniIdr.parseRupiahLabel()
+        val activePairs = snapshot.activeLivePairs.takeIf { it.isNotEmpty() } ?: _uiState.value.radarPairs
+        val currentKidaxBalance = _uiState.value.kidaxBalanceIdrLabel.parseRupiahLabel()
+        val currentKinanceBalance = _uiState.value.kinanceBalanceIdrLabel.parseRupiahLabel()
+        val nextKidaxBalance = snapshot.kidaxBalanceIdr ?: currentKidaxBalance
+        val nextKinanceBalance = snapshot.kinanceBalanceIdr
+            ?: when {
+                snapshot.totalBalanceIdr > 0.0 && nextKidaxBalance != null ->
+                    (snapshot.totalBalanceIdr - nextKidaxBalance).coerceAtLeast(0.0)
+                else -> currentKinanceBalance
+            }
+        val mergedTotal = when {
+            (nextKidaxBalance ?: 0.0) > 0.0 || (nextKinanceBalance ?: 0.0) > 0.0 ->
+                (nextKidaxBalance ?: 0.0) + (nextKinanceBalance ?: 0.0)
+            snapshot.totalBalanceIdr > 0.0 -> snapshot.totalBalanceIdr
+            previousTotal != null && previousTotal > 0.0 -> previousTotal
+            else -> 0.0
+        }
+        val nextKidaxPair = snapshot.kidaxPairActive?.takeIf { it.isNotBlank() }
+            ?: activePairs.firstOrNull { it.endsWith("_idr") }
+            ?: _uiState.value.kidaxPairAktif
+        val nextKinancePair = snapshot.kinancePairActive?.takeIf { it.isNotBlank() }
+            ?: activePairs.firstOrNull { it.endsWith("_usdt") || it.endsWith("_btc") || it.endsWith("_eth") || it.endsWith("_bnb") }
+            ?: _uiState.value.kinancePairAktif
+        _uiState.value = _uiState.value.copy(
+            isBotRunning = true,
+            modalSaatIniIdr = formatIdr(mergedTotal),
+            internetPingLabel = snapshot.currentPingMs?.let { "${it}ms" } ?: _uiState.value.internetPingLabel,
+            radarPairs = activePairs,
+            pairAktif = activePairs.firstOrNull() ?: _uiState.value.pairAktif,
+            managerLog = snapshot.latestManagerLog ?: _uiState.value.managerLog,
+            targetProgressPct = (snapshot.targetProgressPct ?: _uiState.value.targetProgressPct).coerceIn(0.0, 100.0),
+            udpPingMs = snapshot.udpPingMs ?: _uiState.value.udpPingMs,
+            kidaxPingMs = snapshot.kidaxPingMs ?: _uiState.value.kidaxPingMs,
+            kinancePingMs = snapshot.kinancePingMs ?: _uiState.value.kinancePingMs,
+            kidaxBalanceIdrLabel = nextKidaxBalance?.let(::formatIdr) ?: _uiState.value.kidaxBalanceIdrLabel,
+            kinanceBalanceIdrLabel = nextKinanceBalance?.let(::formatIdr) ?: _uiState.value.kinanceBalanceIdrLabel,
+            kidaxPnlTodayPctLabel = snapshot.kidaxPnlTodayPct?.let(::formatSignedPercentFromPct) ?: _uiState.value.kidaxPnlTodayPctLabel,
+            kinancePnlTodayPctLabel = snapshot.kinancePnlTodayPct?.let(::formatSignedPercentFromPct) ?: _uiState.value.kinancePnlTodayPctLabel,
+            kidaxPairAktif = nextKidaxPair,
+            kinancePairAktif = nextKinancePair,
+            aiProviderSummary = deriveAiStatusLabel(
+                rawSummary = _uiState.value.aiProviderSummary,
+                managerLog = snapshot.latestManagerLog ?: _uiState.value.managerLog,
+                serverLogs = emptyList(),
+            ),
+            activeEngine = "KiBot Engine",
+            standbyEngine = "KiDax + Kinance",
+            statusMessage = "Agregasi KiBot aktif (KiDax + Kinance).",
+            lastUpdatedLabel = formatLastUpdated(now),
         )
     }
 
@@ -606,16 +814,125 @@ class AppRepository(
 
     private fun buildServerPositions(
         state: ServerMonitorState,
+        recentOrders: List<ServerRecentOrder>,
     ): List<PositionCardUi> {
+        val avgBuyByPair = mutableMapOf<String, Pair<Double, Double>>() // pair -> (heldQty, avgBuy)
+        recentOrders
+            .sortedBy { it.timestampEpochMs }
+            .forEach { order ->
+                if (order.status !in setOf("FILLED", "PARTIALLY_FILLED")) return@forEach
+                val pair = order.pair.lowercase()
+                val qty = extractQuantityValue(order.detail).coerceAtLeast(0.0)
+                val price = extractPriceValue(order.detail).coerceAtLeast(0.0)
+                if (qty <= 0.0 || price <= 0.0) return@forEach
+                if (order.side.equals("BUY", ignoreCase = true)) {
+                    val (prevQty, prevAvg) = avgBuyByPair[pair] ?: (0.0 to price)
+                    val nextQty = prevQty + qty
+                    val nextAvg = if (nextQty > 0.0) ((prevQty * prevAvg) + (qty * price)) / nextQty else price
+                    avgBuyByPair[pair] = nextQty to nextAvg
+                } else if (order.side.equals("SELL", ignoreCase = true)) {
+                    val (heldQty, avgBuy) = avgBuyByPair[pair] ?: (0.0 to 0.0)
+                    avgBuyByPair[pair] = (heldQty - qty).coerceAtLeast(0.0) to avgBuy
+                }
+            }
         return state.holdingsDetailed
             .map { holding ->
+                val pairId = "${holding.assetCode.lowercase()}_idr"
+                val qty = extractQuantityValue(holding.quantityLabel)
+                val value = holding.valueIdrLabel.parseRupiahLabel() ?: 0.0
+                val markPrice = if (qty > 0.0) value / qty else 0.0
+                val avgBuy = avgBuyByPair[pairId]?.second ?: 0.0
+                val pnlLabel = if (avgBuy > 0.0 && qty > 0.0) {
+                    val pnlIdr = (markPrice - avgBuy) * qty
+                    val pnlPct = ((markPrice - avgBuy) / avgBuy) * 100.0
+                    "${formatSignedIdr(pnlIdr)} (${formatSignedPercentFromPct(pnlPct)})"
+                } else {
+                    ""
+                }
                 PositionCardUi(
                     pair = holding.assetCode.uppercase(),
                     quantity = holding.quantityLabel,
                     value = holding.valueIdrLabel,
+                    pnl = pnlLabel,
                 )
             }
             .sortedByDescending { extractCurrencyValue(it.value) }
+    }
+
+    private fun mergeUnifiedWealthLabel(
+        kidaxBalanceLabel: String,
+        kinanceBalanceLabel: String,
+        fallbackTotalLabel: String,
+    ): String {
+        val kidax = kidaxBalanceLabel.parseRupiahLabel() ?: 0.0
+        val kinance = kinanceBalanceLabel.parseRupiahLabel() ?: 0.0
+        val merged = kidax + kinance
+        return if (merged > 0.0) formatIdr(merged) else fallbackTotalLabel
+    }
+
+    private fun parseMonitorBalanceIdr(
+        monitorLabel: String,
+        usdtIdrRate: Double,
+    ): Double? {
+        val trimmed = monitorLabel.trim()
+        if (trimmed.isBlank()) return null
+        val rupiah = trimmed.parseRupiahLabel()
+        if (rupiah != null) return rupiah
+        val upper = trimmed.uppercase()
+        val numeric = upper
+            .replace("USDT", "")
+            .replace("USD", "")
+            .replace(" ", "")
+            .replace(",", "")
+            .toDoubleOrNull()
+            ?: return null
+        return numeric * usdtIdrRate
+    }
+
+    private fun fetchUsdtIdrRate(now: Instant): Double {
+        val nowMs = now.toEpochMilliseconds()
+        if (nowMs - cachedUsdtRateAtEpochMs <= USDT_RATE_CACHE_TTL_MS && cachedUsdtIdrRate > 0.0) {
+            return cachedUsdtIdrRate
+        }
+        val fresh = runCatching {
+            val ticker = fetchJsonObject("https://indodax.com/api/ticker/usdtidr")
+            val last = ticker
+                ?.optJSONObject("ticker")
+                ?.optString("last")
+                ?.replace(",", "")
+                ?.toDoubleOrNull()
+            last?.takeIf { it > 0.0 }
+        }.getOrNull()
+        if (fresh != null) {
+            cachedUsdtIdrRate = fresh
+            cachedUsdtRateAtEpochMs = nowMs
+        }
+        return cachedUsdtIdrRate
+    }
+
+    private fun deriveAiStatusLabel(
+        rawSummary: String,
+        managerLog: String,
+        serverLogs: List<String>,
+    ): String {
+        val merged = buildString {
+            append(rawSummary.lowercase())
+            append(" ")
+            append(managerLog.lowercase())
+            if (serverLogs.isNotEmpty()) {
+                append(" ")
+                append(serverLogs.take(40).joinToString(" ").lowercase())
+            }
+        }
+        val hasRecentAiEval = merged.contains("post_mortem") ||
+            merged.contains("evaluate") ||
+            merged.contains("ai_correlation_fetch") ||
+            merged.contains("kibot][ai")
+        return if (hasRecentAiEval) {
+            "AI EVALUATING (active)"
+        } else {
+            "AI STANDBY"
+        }
     }
 
     private fun buildServerLiveHoldings(
@@ -1057,6 +1374,11 @@ class AppRepository(
         return prefix + "%.1f%%".format(Locale.US, pct.absoluteValue)
     }
 
+    private fun formatSignedPercentFromPct(percent: Double): String {
+        val prefix = if (percent >= 0.0) "+" else "-"
+        return prefix + "%.1f%%".format(Locale.US, percent.absoluteValue)
+    }
+
     private fun formatMomentLabel(instant: Instant): String {
         val local = instant.toLocalDateTime(TimeZone.of("Asia/Jakarta"))
         val hh = local.hour.toString().padStart(2, '0')
@@ -1324,6 +1646,7 @@ class AppRepository(
         }
         return (timelineEntries + tradeEntries + serverEntries)
             .filter { it.message.isNotBlank() }
+            .filter { it.category.uppercase() in IMPORTANT_LOG_CATEGORIES }
             .sortedByDescending { it.timestampEpochMs }
             .distinctBy { "${it.category}|${it.message}" }
             .map { entry ->
@@ -1334,7 +1657,7 @@ class AppRepository(
                     timeLabel = formatMomentLabel(Instant.fromEpochMilliseconds(entry.timestampEpochMs)),
                 )
             }
-            .take(20)
+            .take(12)
     }
 
     private fun toServerRecentOrder(
@@ -1508,12 +1831,15 @@ class AppRepository(
 
     companion object {
         private val HIDDEN_STABLE_PAIRS = setOf("usdt_idr", "usdc_idr", "indr_idr")
+        private val IMPORTANT_LOG_CATEGORIES = setOf("BUY", "SELL", "LOSS", "PROFIT", "RISK", "GUARDRAIL", "ABORTED", "HEALTH", "AI")
         private const val MIN_VISIBLE_HOLDING_IDR = 1.0
         private const val AUXILIARY_CACHE_TTL_MS = 6_000L
         private const val LIVE_SNAPSHOT_FRESHNESS_MS = 15_000L
         private const val LIVE_SNAPSHOT_UI_TTL_MS = 60_000L
         private const val LAN_DISCOVERY_RETRY_MS = 60_000L
         private const val LAN_VERIFIED_TTL_MS = 120_000L
+        private const val KING_DASHBOARD_REFETCH_INTERVAL_MS = 5_000L
+        private const val USDT_RATE_CACHE_TTL_MS = 60_000L
     }
 
     private fun defaultStatusMessage(state: BotEffectiveState): String {
@@ -1587,6 +1913,16 @@ private data class ServerMonitorState(
 private fun org.json.JSONObject.optNullableLong(key: String): Long? {
     if (!has(key) || isNull(key)) return null
     return optLong(key)
+}
+
+private fun org.json.JSONObject.optDashboardDouble(key: String): Double? {
+    if (!has(key) || isNull(key)) return null
+    val raw = opt(key)
+    return when (raw) {
+        is Number -> raw.toDouble()
+        is String -> raw.toDoubleOrNull()
+        else -> null
+    }
 }
 
 private data class ServerHoldingDetail(

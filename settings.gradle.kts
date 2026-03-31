@@ -24,5 +24,6 @@ include(
     ":packages:core",
     ":packages:control-plane",
     ":packages:indodax-client",
+    ":packages:binance-client",
     ":packages:test-kit",
 )

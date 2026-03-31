@@ -56,11 +56,22 @@ class LiveRolloutGuard(
         if (cycle.modeSnapshot.edgeConfidence == EdgeConfidence.LOW) {
             return blocked("shadow", "Edge confidence masih rendah.")
         }
-        if (cycle.riskDecision.riskLadderLevel !in setOf(RiskLadderLevel.NORMAL, RiskLadderLevel.WARNING)) {
-            return blocked("shadow", "Risk ladder belum cukup sehat untuk rollout live.")
-        }
+        // V4.2 aggressive mode: risk ladder no longer blocks live rollout.
         if (executionPlan.speculativePocket) {
+            val allowAttackHungryFastLane =
+                cycle.modeSnapshot.mode == BotMode.ATTACK &&
+                    cycle.modeSnapshot.edgeConfidence != EdgeConfidence.LOW &&
+                    executionPlan.expectedNetEdgePct >= 0.22 &&
+                    executionPlan.pairRankingScore >= 0.52 &&
+                    cycle.marketSnapshot.botHealthScore >= 0.52 &&
+                    cycle.marketSnapshot.marketOpportunityScore >= 0.50
             if (weeklySummary == null || weeklySummary.tradeCount < config.speculativeMinWeeklyTradeSamples) {
+                if (allowAttackHungryFastLane) {
+                    return allowed(
+                        "guarded_live",
+                        "Sleeve spekulatif dibuka via ATTACK fast-lane karena setup momentum sudah cukup untuk eksekusi live.",
+                    )
+                }
                 return if (
                     executionPlan.pairRankingScore >= config.speculativeMinRankingScore + 0.04 &&
                     executionPlan.expectedNetEdgePct >= config.speculativeMinExpectedEdgePct + 0.08 &&
@@ -73,6 +84,12 @@ class LiveRolloutGuard(
                     blocked("shadow", "Sleeve spekulatif belum cukup matang untuk live penuh.")
                 }
             }
+            if (allowAttackHungryFastLane) {
+                return allowed(
+                    "guarded_live",
+                    "Sleeve spekulatif dibuka via ATTACK fast-lane meski confidence belum HIGH.",
+                )
+            }
             if (cycle.modeSnapshot.edgeConfidence != EdgeConfidence.HIGH) {
                 return blocked("guarded_live", "Sleeve spekulatif hanya boleh live saat edge confidence benar-benar tinggi.")
             }
@@ -82,16 +99,7 @@ class LiveRolloutGuard(
             ) {
                 return blocked("guarded_live", "Sleeve spekulatif hanya boleh live pada setup yang sangat dominan.")
             }
-            if (weeklySummary.falseEntryRate > config.speculativeMaxWeeklyFalseEntryRate) {
-                return if (canAggressivelyOverrideSpeculativeGate(cycle, weeklySummary)) {
-                    allowed(
-                        "guarded_live",
-                        "False entry mingguan untuk sleeve spekulatif sedang tinggi, tapi setup sekarang cukup dominan jadi live tetap dibuka.",
-                    )
-                } else {
-                    blocked("guarded_live", "False entry mingguan masih terlalu tinggi untuk jalur spekulatif.")
-                }
-            }
+            // V4.3: false-entry weekly gate fully bypassed in aggressive mode.
         }
 
         val hasEnoughWeeklyTrades = weeklySummary?.tradeCount?.let { it >= config.minimumWeeklyTradeSamples } == true
@@ -122,16 +130,7 @@ class LiveRolloutGuard(
             }
         }
 
-        if (weeklySummary.falseEntryRate > config.maxWeeklyFalseEntryRate) {
-            return if (canAggressivelyOverrideFalseEntryGate(cycle, weeklySummary)) {
-                allowed(
-                    "guarded_live",
-                    "False entry mingguan sedang tinggi, tapi setup sekarang cukup dominan jadi live tetap dibuka secara agresif.",
-                )
-            } else {
-                blocked("guarded_live", "False entry mingguan masih terlalu tinggi untuk live execution.")
-            }
-        }
+        // V4.3: false-entry weekly gate fully bypassed in aggressive mode.
         if (weeklySummary.tacticalExpectancy < -0.10 && weeklySummary.swingExpectancy < -0.10) {
             return blocked("guarded_live", "Expectancy mingguan masih buruk, jadi live tetap ditahan.")
         }
@@ -151,32 +150,5 @@ class LiveRolloutGuard(
         reason = reason,
     )
 
-    private fun canAggressivelyOverrideFalseEntryGate(
-        cycle: StrategyCycleResult,
-        weeklySummary: WeeklyLearningSummary,
-    ): Boolean {
-        val executionPlan = cycle.executionPlan ?: return false
-        if (weeklySummary.falseEntryRate > config.aggressiveOverrideMaxWeeklyFalseEntryRate) return false
-        if (cycle.modeSnapshot.mode !in setOf(BotMode.GROWTH, BotMode.ATTACK)) return false
-        if (cycle.modeSnapshot.edgeConfidence == EdgeConfidence.LOW) return false
-        return executionPlan.pairRankingScore >= config.aggressiveOverrideMinRankingScore &&
-            executionPlan.expectedNetEdgePct >= config.aggressiveOverrideMinExpectedEdgePct &&
-            cycle.marketSnapshot.botHealthScore >= config.aggressiveOverrideMinBotHealthScore &&
-            cycle.marketSnapshot.marketOpportunityScore >= config.aggressiveOverrideMinOpportunityScore
-    }
-
-    private fun canAggressivelyOverrideSpeculativeGate(
-        cycle: StrategyCycleResult,
-        weeklySummary: WeeklyLearningSummary,
-    ): Boolean {
-        val executionPlan = cycle.executionPlan ?: return false
-        if (!executionPlan.speculativePocket) return false
-        if (weeklySummary.falseEntryRate > config.speculativeAggressiveOverrideMaxWeeklyFalseEntryRate) return false
-        if (cycle.modeSnapshot.mode !in setOf(BotMode.GROWTH, BotMode.ATTACK)) return false
-        if (cycle.modeSnapshot.edgeConfidence != EdgeConfidence.HIGH) return false
-        return executionPlan.pairRankingScore >= config.speculativeAggressiveOverrideMinRankingScore &&
-            executionPlan.expectedNetEdgePct >= config.speculativeAggressiveOverrideMinExpectedEdgePct &&
-            cycle.marketSnapshot.botHealthScore >= config.speculativeAggressiveOverrideMinBotHealthScore &&
-            cycle.marketSnapshot.marketOpportunityScore >= config.speculativeAggressiveOverrideMinOpportunityScore
-    }
+    // Removed false-entry override helpers in V4.3 (gate removed).
 }

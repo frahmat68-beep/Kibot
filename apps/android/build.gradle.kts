@@ -77,9 +77,10 @@ android {
         buildConfigField("int", "KIBOT_GEMINI_SUPPORT_FAILURE_COOLDOWN_MINUTES", envOrDefault("GEMINI_SUPPORT_FAILURE_COOLDOWN_MINUTES", "120"))
         buildConfigField("String", "KIBOT_MAC_LAN_SYNC_URL", envOrDefault("MAC_ENGINE_LAN_SYNC_URL").asBuildConfigString())
         buildConfigField("String", "KIBOT_SERVER_MONITOR_BASE_URL", envOrDefault("SERVER_MONITOR_BASE_URL", "http://213.35.118.26:8787").asBuildConfigString())
+        buildConfigField("String", "KIBOT_KINANCE_MONITOR_BASE_URL", envOrDefault("KINANCE_MONITOR_BASE_URL", "http://152.69.218.198:8788").asBuildConfigString())
         buildConfigField("boolean", "KIBOT_ENABLE_LIVE_EXECUTION", envOrDefault("BOT_ENABLE_LIVE_EXECUTION", "false"))
         buildConfigField("String", "KIBOT_TRIAL_EXIT_PAIR", envOrDefault("BOT_TRIAL_EXIT_PAIR").asBuildConfigString())
-        buildConfigField("long", "KIBOT_POLL_INTERVAL_MS", envOrDefault("BOT_POLL_INTERVAL_MS", "1000") + "L")
+        buildConfigField("long", "KIBOT_POLL_INTERVAL_MS", envOrDefault("BOT_POLL_INTERVAL_MS", "5000") + "L")
         buildConfigField("int", "KIBOT_LEASE_TTL_SECONDS", envOrDefault("BOT_DEFAULT_LEASE_TTL_SECONDS", "30"))
     }
 
@@ -156,6 +157,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.datetime)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.ktor.client.core)
+    implementation(libs.ktor.client.cio)
+    implementation(libs.ktor.client.websockets)
 
     ksp(libs.androidx.room.compiler)
 

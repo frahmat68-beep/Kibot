@@ -8,6 +8,16 @@ import com.kibot.shared.models.MarketQuote
 import com.kibot.shared.models.OrderSnapshot
 import com.kibot.shared.models.PairId
 
+data class MarketBuyImpactEstimate(
+    val pairId: PairId,
+    val quoteBudget: Double,
+    val averagePrice: Double,
+    val lastPrice: Double,
+    val slippagePct: Double,
+    val consumedLevels: Int,
+    val exhaustedBook: Boolean,
+)
+
 interface ExchangeGateway {
     suspend fun ping(): Boolean
 
@@ -25,6 +35,11 @@ interface ExchangeGateway {
     ): OrderSnapshot
 
     suspend fun cancelOrder(clientOrderId: ClientOrderId): Boolean
+
+    suspend fun estimateMarketBuyImpact(
+        pairId: PairId,
+        quoteBudget: Double,
+    ): MarketBuyImpactEstimate? = null
 }
 
 open class ExchangeExecutionException(

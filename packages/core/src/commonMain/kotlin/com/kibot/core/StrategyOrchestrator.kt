@@ -72,7 +72,7 @@ class StrategyOrchestrator(
         weeklySummary: WeeklyLearningSummary? = null,
     ): StrategyCycleResult {
         val quoteByPair = marketQuotes.associateBy { it.pairId }
-        val equity = estimatePortfolioValueIdr(balances, marketQuotes)
+        val equity = estimatePortfolioValueReference(balances, marketQuotes)
         val syntheticPositions = deriveSyntheticPositions(balances, marketQuotes)
         val nowMs = Clock.System.now().toEpochMilliseconds()
         trackRecentPairExits(
@@ -679,15 +679,16 @@ class StrategyOrchestrator(
         val quote = quoteByPair[pairId] ?: return null
         val pairParts = pairId.assets()
         if (pairParts.quoteAsset !in executionConfig.executionAllowedQuoteAssets) return null
-        val quoteAssetPriceIdr = quoteAssetPriceIdr(pairParts.quoteAsset, marketQuotes) ?: return null
+        val quoteAssetPriceIdr = quoteAssetReferencePrice(pairParts.quoteAsset, marketQuotes) ?: return null
         val quoteBalanceUnits = balances
             .firstOrNull { it.asset.equals(pairParts.quoteAsset, ignoreCase = true) }
             ?.free
             ?.toDoubleOrZero()
             ?: 0.0
+        val availableQuoteBudgetIdr = quoteBalanceUnits * quoteAssetPriceIdr
         val rawBudgetIdr = minOf(
             maxOf(deploymentPlan.suggestedPerPositionBudgetIdr, executionConfig.minOrderNotionalIdr),
-            quoteBalanceUnits * quoteAssetPriceIdr,
+            availableQuoteBudgetIdr,
         )
         val rotationReserveBudgetIdr = if (
             deploymentPlan.allowRotation &&
@@ -711,8 +712,15 @@ class StrategyOrchestrator(
         val rotationFundingActive =
             deploymentPlan.allowRotation &&
                 positions.any { it.state != PositionState.CLOSED } &&
-                (quoteBalanceUnits * quoteAssetPriceIdr) < executionConfig.minOrderNotionalIdr
-        val effectiveRawBudgetIdr = maxOf(rawBudgetIdr, rotationReserveBudgetIdr)
+                availableQuoteBudgetIdr < executionConfig.minOrderNotionalIdr
+        val effectiveRawBudgetIdr = if (rotationFundingActive) {
+            maxOf(rawBudgetIdr, rotationReserveBudgetIdr)
+        } else {
+            minOf(
+                maxOf(rawBudgetIdr, rotationReserveBudgetIdr),
+                availableQuoteBudgetIdr,
+            )
+        }
         val budgetIdr = (effectiveRawBudgetIdr * (1.0 - executionConfig.entrySpendBufferPct))
             .coerceAtLeast(0.0)
         if (budgetIdr < executionConfig.minOrderNotionalIdr) return null
@@ -720,7 +728,7 @@ class StrategyOrchestrator(
         val projectedNetProfitIdr = budgetIdr * (expectedNetProfitabilityPct / 100.0)
 
         val priceInQuoteAsset = entryPrice?.toDoubleOrZero()?.takeIf { it > 0.0 } ?: return null
-        val budgetQuoteUnits = if (pairParts.quoteAsset == "idr") {
+        val budgetQuoteUnits = if (pairParts.quoteAsset == executionConfig.referenceQuoteAsset) {
             budgetIdr
         } else {
             budgetIdr / quoteAssetPriceIdr
@@ -746,7 +754,7 @@ class StrategyOrchestrator(
         }
         val useMarketBuy =
             executionConfig.marketEntryEnabled &&
-                pairParts.quoteAsset == "idr" &&
+                pairParts.quoteAsset == executionConfig.referenceQuoteAsset &&
                 setupType == com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION &&
                 confidence >= if (speculativePocket) {
                     executionConfig.breakoutAggressiveEntryMinRankingScore
@@ -964,25 +972,48 @@ class StrategyOrchestrator(
     ): Boolean {
         val parts = pairId.assets()
         val quoteBalance = balances.firstOrNull { it.asset.equals(parts.quoteAsset, ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
-        val quoteAssetPrice = quoteAssetPriceIdr(parts.quoteAsset, marketQuotes) ?: return false
+        val quoteAssetPrice = quoteAssetReferencePrice(parts.quoteAsset, marketQuotes) ?: return false
         return quoteBalance * quoteAssetPrice >= maxOf(targetBudgetIdr, executionConfig.minOrderNotionalIdr)
     }
 
-    private fun quoteAssetPriceIdr(asset: String, marketQuotes: List<MarketQuote>): Double? {
-        if (asset == "idr") return 1.0
-        return marketQuotes.firstOrNull { it.pairId.value.equals("${asset}_idr", ignoreCase = true) }?.midPrice?.toDoubleOrZero()
+    private fun quoteAssetReferencePrice(asset: String, marketQuotes: List<MarketQuote>): Double? {
+        val normalizedAsset = asset.lowercase()
+        val referenceQuoteAsset = executionConfig.referenceQuoteAsset.lowercase()
+        if (normalizedAsset == referenceQuoteAsset) return 1.0
+
+        val directPair = "${normalizedAsset}_${referenceQuoteAsset}"
+        marketQuotes.firstOrNull { it.pairId.value.equals(directPair, ignoreCase = true) }
+            ?.midPrice
+            ?.toDoubleOrZero()
+            ?.takeIf { it > 0.0 }
+            ?.let { return it }
+
+        if (referenceQuoteAsset != "idr") {
+            marketQuotes.firstOrNull { it.pairId.value.equals("${normalizedAsset}_idr", ignoreCase = true) }
+                ?.midPrice
+                ?.toDoubleOrZero()
+                ?.takeIf { it > 0.0 }
+                ?.let { directIdr ->
+                    val referenceIdr = marketQuotes.firstOrNull {
+                        it.pairId.value.equals("${referenceQuoteAsset}_idr", ignoreCase = true)
+                    }?.midPrice?.toDoubleOrZero()?.takeIf { price -> price > 0.0 }
+                    if (referenceIdr != null) return directIdr / referenceIdr
+                }
+        }
+
+        return null
     }
 
-    private fun estimatePortfolioValueIdr(
+    private fun estimatePortfolioValueReference(
         balances: List<BalanceSnapshot>,
         marketQuotes: List<MarketQuote>,
     ): Double {
         return balances.sumOf { balance ->
             val totalUnits = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
-            if (balance.asset.equals("idr", ignoreCase = true)) {
+            if (balance.asset.equals(executionConfig.referenceQuoteAsset, ignoreCase = true)) {
                 totalUnits
             } else {
-                totalUnits * (quoteAssetPriceIdr(balance.asset.lowercase(), marketQuotes) ?: 0.0)
+                totalUnits * (quoteAssetReferencePrice(balance.asset.lowercase(), marketQuotes) ?: 0.0)
             }
         }.coerceAtLeast(0.0)
     }
@@ -993,10 +1024,10 @@ class StrategyOrchestrator(
     ): List<PositionSnapshot> {
         val now = kotlinx.datetime.Clock.System.now()
         return balances.mapNotNull { balance ->
-            if (balance.asset.equals("idr", ignoreCase = true)) return@mapNotNull null
+            if (balance.asset.equals(executionConfig.referenceQuoteAsset, ignoreCase = true)) return@mapNotNull null
             val totalUnits = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
             if (totalUnits <= 0.0) return@mapNotNull null
-            val pairId = PairId("${balance.asset.lowercase()}_idr")
+            val pairId = PairId("${balance.asset.lowercase()}_${executionConfig.referenceQuoteAsset.lowercase()}")
             val quote = marketQuotes.firstOrNull { it.pairId == pairId } ?: return@mapNotNull null
             val markValue = totalUnits * quote.midPrice.toDoubleOrZero()
             if (markValue < executionConfig.minOrderNotionalIdr) return@mapNotNull null
@@ -1004,7 +1035,7 @@ class StrategyOrchestrator(
                 positionId = PositionId("synthetic-${balance.asset.lowercase()}"),
                 pairId = pairId,
                 baseAsset = balance.asset.lowercase(),
-                quoteAsset = "idr",
+                quoteAsset = executionConfig.referenceQuoteAsset.lowercase(),
                 state = PositionState.OPEN,
                 quantity = DecimalValue.fromDouble(totalUnits),
                 averageEntryPrice = quote.midPrice,

@@ -42,6 +42,17 @@ data class MacRecentOrder(
 )
 
 @Serializable
+data class MacTrailingFloorDetail(
+    val pair: String,
+    val entryPriceLabel: String,
+    val peakPriceLabel: String,
+    val trailingFloorLabel: String,
+    val currentBidLabel: String,
+    val dropFromPeakPctLabel: String,
+    val armed: Boolean,
+)
+
+@Serializable
 data class MacDashboardState(
     val isBotRunning: Boolean,
     val effectiveState: BotEffectiveState,
@@ -54,6 +65,8 @@ data class MacDashboardState(
     val releaseLabel: String,
     val liveExecutionEnabled: Boolean,
     val portfolioValueIdr: String,
+    val freeIdrLabel: String,
+    val totalValueIdr: String,
     val pnlTodayIdr: String,
     val pnlTodayPctLabel: String,
     val return7dIdr: String,
@@ -82,6 +95,7 @@ data class MacDashboardState(
     val exchangePingValueMs: Long? = null,
     val liveTimeline: List<MacTimelineEntry>,
     val recentOrders: List<MacRecentOrder>,
+    val trailingFloors: List<MacTrailingFloorDetail>,
 ) {
     companion object {
         fun preview(): MacDashboardState = MacDashboardState(
@@ -96,6 +110,8 @@ data class MacDashboardState(
             releaseLabel = "#0",
             liveExecutionEnabled = false,
             portfolioValueIdr = "Rp0",
+            freeIdrLabel = "Rp0",
+            totalValueIdr = "Rp0",
             pnlTodayIdr = "+Rp0",
             pnlTodayPctLabel = "+0.0%",
             return7dIdr = "+Rp0",
@@ -124,6 +140,7 @@ data class MacDashboardState(
             exchangePingValueMs = null,
             liveTimeline = emptyList(),
             recentOrders = emptyList(),
+            trailingFloors = emptyList(),
         )
     }
 }
@@ -136,7 +153,17 @@ class MacStateRepository {
     fun applyRuntimeState(next: MacDashboardState) {
         val uptimeMs = Clock.System.now().toEpochMilliseconds() - startedAtEpochMs
         val uptimeText = formatUptime(uptimeMs)
+        val prev = _state.value
+        val keepPortfolioFallback =
+            next.portfolioValueIdr == "Rp0" &&
+                prev.portfolioValueIdr != "Rp0" &&
+                (next.statusMessage.contains("sync", ignoreCase = true) ||
+                    next.statusMessage.contains("lease", ignoreCase = true) ||
+                    next.statusMessage.contains("failed", ignoreCase = true))
         _state.value = next.copy(
+            portfolioValueIdr = if (keepPortfolioFallback) prev.portfolioValueIdr else next.portfolioValueIdr,
+            totalValueIdr = if (keepPortfolioFallback) prev.totalValueIdr else next.totalValueIdr,
+            freeIdrLabel = if (next.freeIdrLabel == "Rp0" && prev.freeIdrLabel != "Rp0") prev.freeIdrLabel else next.freeIdrLabel,
             lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
             serverUptime = uptimeText,
             liveTimeline = if (next.liveTimeline.isNotEmpty()) {

@@ -21,6 +21,7 @@ data class AndroidRuntimeConfig(
     val trialExitPair: String?,
     val macLanSyncBaseUrl: String?,
     val serverMonitorBaseUrl: String?,
+    val kinanceMonitorBaseUrl: String?,
     val aiSupportConfig: GeminiSupportConfig?,
     val indodaxCredentials: IndodaxCredentials?,
     val indodaxClientConfig: IndodaxClientConfig,
@@ -95,6 +96,7 @@ object AndroidRuntimeConfigLoader {
             trialExitPair = BuildConfig.KIBOT_TRIAL_EXIT_PAIR.takeIf { it.isNotBlank() }?.lowercase(),
             macLanSyncBaseUrl = BuildConfig.KIBOT_MAC_LAN_SYNC_URL.takeIf { it.isNotBlank() },
             serverMonitorBaseUrl = BuildConfig.KIBOT_SERVER_MONITOR_BASE_URL.takeIf { it.isNotBlank() },
+            kinanceMonitorBaseUrl = BuildConfig.KIBOT_KINANCE_MONITOR_BASE_URL.takeIf { it.isNotBlank() },
             aiSupportConfig = aiSupportConfig,
             indodaxCredentials = credentials,
             indodaxClientConfig = IndodaxClientConfig(

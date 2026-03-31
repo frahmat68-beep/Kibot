@@ -2,8 +2,10 @@ package com.kibot.macengine
 
 import com.kibot.aisupport.GeminiSupportClient
 import com.kibot.aisupport.GeminiSupportCoordinator
+import com.kibot.binance.BinanceGateway
 import com.kibot.controlplane.SupabaseControlPlaneClient
 import com.kibot.indodax.IndodaxGateway
+import com.kibot.macengine.config.ExchangeKind
 import com.kibot.macengine.config.MacRuntimeConfigLoader
 import com.kibot.macengine.runtime.MacEngineDaemon
 import com.kibot.macengine.runtime.MacCommandDispatcher
@@ -25,8 +27,13 @@ fun main(args: Array<String>) {
     val config = MacRuntimeConfigLoader.load()
     val repository = MacStateRepository()
     val controlPlane = SupabaseControlPlaneClient(config.controlPlane)
-    val exchange = config.indodaxCredentials?.let {
-        IndodaxGateway(config.indodaxClientConfig, it)
+    val exchange = when (config.exchangeKind) {
+        ExchangeKind.INDODAX -> config.indodaxCredentials?.let {
+            IndodaxGateway(config.indodaxClientConfig, it)
+        }
+        ExchangeKind.BINANCE_SPOT -> config.binanceCredentials?.let {
+            BinanceGateway(config.binanceClientConfig, it)
+        }
     } ?: PassiveExchangeGateway()
     val dispatcher = MacCommandDispatcher(
         repository = repository,
@@ -60,7 +67,6 @@ fun main(args: Array<String>) {
     Runtime.getRuntime().addShutdownHook(
         Thread {
             logger.info("Shutting down KiBot mac engine.")
-            server.stop()
             scope.cancel()
         },
     )

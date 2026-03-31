@@ -19,6 +19,7 @@ import com.kibot.shared.models.OrderType
 import com.kibot.shared.models.PairId
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.plugins.ResponseException
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -29,6 +30,8 @@ import io.ktor.http.Parameters
 import io.ktor.http.isSuccess
 import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.serialization.SerialName
@@ -51,7 +54,7 @@ class IndodaxGateway internal constructor(
     private val json: Json,
 ) : ExchangeGateway {
     private val privateRequestFactory = IndodaxPrivateRequestFactory(credentials)
-    private val nonceCounter = atomic(Clock.System.now().toEpochMilliseconds())
+    private val privateCallMutex = Mutex()
 
     override suspend fun ping(): Boolean {
         return runCatching {
@@ -236,7 +239,7 @@ class IndodaxGateway internal constructor(
                 require(pairParts.quoteAsset == "idr") {
                     "Market buy is only supported safely for *_idr pairs in the current adapter."
                 }
-                params["idr"] = formatIndodaxDecimal(
+                params["idr"] = formatIndodaxIdrInteger(
                     plan.quoteBudget?.value ?: error("Market buy requires quoteBudget."),
                 )
             }
@@ -260,7 +263,28 @@ class IndodaxGateway internal constructor(
             }
         }
 
-        val tradeResponse = submitPrivate<TradeResponse>("trade", params)
+        val tradeResponse = runCatching {
+            submitPrivate<TradeResponse>("trade", params)
+        }.recoverCatching { throwable ->
+            if (
+                throwable is ExchangeRejectedException &&
+                throwable.message?.contains("amount can't be in decimal", ignoreCase = true) == true &&
+                plan.side == OrderSide.BUY
+            ) {
+                val amountKey = if (plan.orderType == OrderType.MARKET) "idr" else pairParts.baseAsset
+                val normalizedAmount = params[amountKey]
+                    ?.substringBefore('.')
+                    ?.trim()
+                    ?.ifBlank { null }
+                    ?: throw throwable
+                val normalizedLong = normalizedAmount.toLongOrNull() ?: throw throwable
+                if (normalizedLong <= 0L) throw throwable
+                params[amountKey] = normalizedLong.toString()
+                submitPrivate<TradeResponse>("trade", params)
+            } else {
+                throw throwable
+            }
+        }.getOrThrow()
         return awaitSubmittedOrder(
             plan = plan,
             clientOrderId = clientOrderId,
@@ -382,31 +406,57 @@ class IndodaxGateway internal constructor(
         method: String,
         params: Map<String, String> = emptyMap(),
     ): T {
-        val signed = privateRequestFactory.build(
-            method = method,
-            nonce = nextNonce(),
-            params = params,
-        )
-        val payload = client.submitForm(
-            url = config.privateBaseUrl,
-            formParameters = Parameters.build {
-                signed.body.forEach { (key, value) -> append(key, value) }
-            },
-        ) {
-            signed.headers.forEach { (key, value) -> header(key, value) }
-        }.bodyAsText()
-        val element = json.parseToJsonElement(payload)
-        if (element is JsonObject) {
-            val success = element["success"]?.jsonPrimitive?.contentOrNull
-            if (success == "0") {
-                val error = element["error"]?.jsonPrimitive?.contentOrNull ?: "Unknown Indodax API error"
-                val errorCode = element["error_code"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-                throw ExchangeRejectedException(
-                    if (errorCode != null) "$error ($errorCode)" else error,
+        return privateCallMutex.withLock {
+            var backoffMs = 1_000L
+            repeat(3) { attempt ->
+                val nonce = nextNonce()
+                val signed = privateRequestFactory.build(
+                    method = method,
+                    nonce = nonce,
+                    params = params,
                 )
+                val payload = runCatching {
+                    client.submitForm(
+                        url = config.privateBaseUrl,
+                        formParameters = Parameters.build {
+                            signed.body.forEach { (key, value) -> append(key, value) }
+                        },
+                    ) {
+                        signed.headers.forEach { (key, value) -> header(key, value) }
+                    }.bodyAsText()
+                }.getOrElse { error ->
+                    val responseError = error as? ResponseException
+                    if (responseError != null && responseError.response.status.value == 429 && attempt < 2) {
+                        delay(backoffMs)
+                        backoffMs = (backoffMs * 2).coerceAtMost(8_000L)
+                        return@repeat
+                    }
+                    throw error
+                }
+                val element = json.parseToJsonElement(payload)
+                if (element is JsonObject) {
+                    val success = element["success"]?.jsonPrimitive?.contentOrNull
+                    if (success == "0") {
+                        val error = element["error"]?.jsonPrimitive?.contentOrNull ?: "Unknown Indodax API error"
+                        if (error.contains("invalid_nonce", ignoreCase = true) || error.contains("Nonce must be greater than", ignoreCase = true)) {
+                            val minAccepted = parseMinimumAcceptedNonce(error)
+                            if (minAccepted != null) {
+                                GlobalIndodaxNonceManager.observeServerFloor(minAccepted)
+                            } else {
+                                GlobalIndodaxNonceManager.observeServerFloor(nonce + 8)
+                            }
+                            if (attempt < 2) return@repeat
+                        }
+                        val errorCode = element["error_code"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                        throw ExchangeRejectedException(
+                            if (errorCode != null) "$error ($errorCode)" else error,
+                        )
+                    }
+                }
+                return@withLock json.decodeFromString(payload)
             }
+            throw ExchangeRejectedException("Indodax request failed after nonce retry.")
         }
-        return json.decodeFromString(payload)
     }
 
     private suspend fun awaitSubmittedOrder(
@@ -450,13 +500,7 @@ class IndodaxGateway internal constructor(
     }
 
     private fun nextNonce(): Long {
-        while (true) {
-            val current = nonceCounter.value
-            val candidate = maxOf(current + 1, Clock.System.now().toEpochMilliseconds())
-            if (nonceCounter.compareAndSet(current, candidate)) {
-                return candidate
-            }
-        }
+        return GlobalIndodaxNonceManager.next()
     }
 
     private fun signedGetQuery(params: LinkedHashMap<String, String>): SignedQuery {
@@ -487,6 +531,31 @@ class IndodaxGateway internal constructor(
         client = createPlatformHttpClient(defaultJson),
         json = defaultJson,
     )
+}
+
+private object GlobalIndodaxNonceManager {
+    private val lastNonce = atomic(Clock.System.now().toEpochMilliseconds())
+
+    fun next(): Long {
+        while (true) {
+            val current = lastNonce.value
+            val candidate = maxOf(Clock.System.now().toEpochMilliseconds(), current + 1)
+            if (lastNonce.compareAndSet(current, candidate)) return candidate
+        }
+    }
+
+    fun observeServerFloor(serverFloor: Long) {
+        while (true) {
+            val current = lastNonce.value
+            val candidate = maxOf(current, serverFloor + 1)
+            if (candidate == current || lastNonce.compareAndSet(current, candidate)) return
+        }
+    }
+}
+
+private fun parseMinimumAcceptedNonce(error: String): Long? {
+    val match = Regex("""Nonce must be greater than\s+(\d+)""", RegexOption.IGNORE_CASE).find(error)
+    return match?.groupValues?.getOrNull(1)?.toLongOrNull()
 }
 
 internal data class SignedQuery(
@@ -876,6 +945,12 @@ internal fun formatIndodaxDecimal(
 
     val normalized = if (fraction.isEmpty()) integer else "$integer.$fraction"
     return if (negative && normalized != "0") "-$normalized" else normalized
+}
+
+internal fun formatIndodaxIdrInteger(raw: String): String {
+    val normalized = formatIndodaxDecimal(raw)
+    val integer = normalized.substringBefore('.').trim()
+    return integer.ifEmpty { "0" }
 }
 
 private fun weightedFillPrice(fills: List<FillSnapshot>): Double? {

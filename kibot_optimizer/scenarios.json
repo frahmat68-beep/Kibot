@@ -1,0 +1,161 @@
+{
+  "target_daily_pct": 25.0,
+  "target_hourly_pct": 1.04,
+  "scenarios": [
+    {
+      "id": "S1_both_sleeping_target_miss",
+      "title": "Dua bot lambat, target jauh tertinggal",
+      "hours_elapsed": 6,
+      "pnl_today_pct": 1.2,
+      "drawdown_pct": -0.6,
+      "kidax": {
+        "online": true,
+        "latency_ms": 170,
+        "hourly_pnl_pct": 0.11,
+        "stagnant_minutes": 34,
+        "opportunities_found": 1,
+        "conversion_quality": 0.31
+      },
+      "kinance": {
+        "online": true,
+        "latency_ms": 95,
+        "hourly_pnl_pct": 0.25,
+        "stagnant_minutes": 22,
+        "opportunities_found": 2,
+        "conversion_quality": 0.38
+      },
+      "expected": {
+        "mode": "EMERGENCY_PURSUIT",
+        "must_include_commands": [
+          "KIDAX_ROTATE_STAGNANT",
+          "KINANCE_EXPAND_SCAN",
+          "BOTH_TIGHTEN_LOOP_1H"
+        ]
+      }
+    },
+    {
+      "id": "S2_kinance_hot_kidax_stuck",
+      "title": "Kinance bagus, KiDax mandek",
+      "hours_elapsed": 8,
+      "pnl_today_pct": 7.4,
+      "drawdown_pct": -0.9,
+      "kidax": {
+        "online": true,
+        "latency_ms": 210,
+        "hourly_pnl_pct": 0.2,
+        "stagnant_minutes": 41,
+        "opportunities_found": 1,
+        "conversion_quality": 0.22
+      },
+      "kinance": {
+        "online": true,
+        "latency_ms": 88,
+        "hourly_pnl_pct": 1.56,
+        "stagnant_minutes": 4,
+        "opportunities_found": 8,
+        "conversion_quality": 0.71
+      },
+      "expected": {
+        "mode": "SPLIT_BRAIN_TUNING",
+        "must_include_commands": [
+          "KIDAX_FORCE_SLIPPAGE_GUARD_RECALIBRATE",
+          "KIDAX_ROTATE_STAGNANT",
+          "KINANCE_LEAD_SIGNAL_PRIORITY"
+        ]
+      }
+    },
+    {
+      "id": "S3_drawdown_danger",
+      "title": "Drawdown mendekati batas, perlu rem cerdas",
+      "hours_elapsed": 10,
+      "pnl_today_pct": -1.7,
+      "drawdown_pct": -1.95,
+      "kidax": {
+        "online": true,
+        "latency_ms": 180,
+        "hourly_pnl_pct": -0.42,
+        "stagnant_minutes": 17,
+        "opportunities_found": 3,
+        "conversion_quality": 0.27
+      },
+      "kinance": {
+        "online": true,
+        "latency_ms": 110,
+        "hourly_pnl_pct": -0.33,
+        "stagnant_minutes": 9,
+        "opportunities_found": 4,
+        "conversion_quality": 0.35
+      },
+      "expected": {
+        "mode": "CAPITAL_DEFENSE",
+        "must_include_commands": [
+          "GLOBAL_SIZE_DOWN",
+          "BLOCK_LOW_QUALITY_SETUPS",
+          "FORCE_HIGH_CONF_ONLY"
+        ]
+      }
+    },
+    {
+      "id": "S4_kinance_offline",
+      "title": "Kinance down, KiDax harus bertahan sambil fallback",
+      "hours_elapsed": 5,
+      "pnl_today_pct": 2.8,
+      "drawdown_pct": -0.4,
+      "kidax": {
+        "online": true,
+        "latency_ms": 145,
+        "hourly_pnl_pct": 0.73,
+        "stagnant_minutes": 12,
+        "opportunities_found": 5,
+        "conversion_quality": 0.44
+      },
+      "kinance": {
+        "online": false,
+        "latency_ms": 0,
+        "hourly_pnl_pct": 0.0,
+        "stagnant_minutes": 999,
+        "opportunities_found": 0,
+        "conversion_quality": 0.0
+      },
+      "expected": {
+        "mode": "DEGRADED_SINGLE_ENGINE",
+        "must_include_commands": [
+          "KINANCE_RECOVERY_ALERT",
+          "KIDAX_DEFENSIVE_AGGRESSION",
+          "FALLBACK_SIGNAL_MODE"
+        ]
+      }
+    },
+    {
+      "id": "S5_both_on_fire",
+      "title": "Dua bot perform, KiBot fokus scaling terukur",
+      "hours_elapsed": 9,
+      "pnl_today_pct": 14.5,
+      "drawdown_pct": -0.7,
+      "kidax": {
+        "online": true,
+        "latency_ms": 140,
+        "hourly_pnl_pct": 1.31,
+        "stagnant_minutes": 3,
+        "opportunities_found": 7,
+        "conversion_quality": 0.67
+      },
+      "kinance": {
+        "online": true,
+        "latency_ms": 82,
+        "hourly_pnl_pct": 1.94,
+        "stagnant_minutes": 2,
+        "opportunities_found": 10,
+        "conversion_quality": 0.79
+      },
+      "expected": {
+        "mode": "CONTROLLED_OVERDRIVE",
+        "must_include_commands": [
+          "SCALE_WINNERS",
+          "LOCK_PROFIT_WINDOWS",
+          "KEEP_SCANNING_ALL_MARKET"
+        ]
+      }
+    }
+  ]
+}

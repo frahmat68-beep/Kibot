@@ -2,6 +2,8 @@ package com.kibot.controlplane
 
 import com.kibot.core.ControlPlaneGateway
 import com.kibot.core.DeviceRegistration
+import com.kibot.core.KingDashboardSnapshot
+import com.kibot.core.TradeHistoryRecord
 import com.kibot.shared.models.AdvisorySeverity
 import com.kibot.shared.models.AuditLogRecord
 import com.kibot.shared.models.BotDesiredState
@@ -511,6 +513,70 @@ class SupabaseControlPlaneClient internal constructor(
                 put("created_at", record.recordedAt.toString())
             },
         )
+    }
+
+    override suspend fun upsertKingDashboardFastTelemetry(
+        totalBalanceIdr: Double,
+        currentPingMs: Long?,
+        activeLivePairs: List<String>,
+    ) {
+        upsertTable(
+            table = "king_dashboard",
+            body = buildJsonObject {
+                put("id", 1)
+                put("total_balance_idr", totalBalanceIdr)
+                put("current_ping_ms", currentPingMs)
+                put(
+                    "active_live_pairs",
+                    buildJsonArray {
+                        activeLivePairs.distinct().forEach { pair -> add(JsonPrimitive(pair)) }
+                    },
+                )
+                put("updated_at", Clock.System.now().toString())
+            },
+            onConflict = "id",
+        )
+    }
+
+    override suspend fun fetchKingDashboardSnapshot(): KingDashboardSnapshot? {
+        val row = selectSingle<KingDashboardRow>(
+            table = "king_dashboard",
+            filters = mapOf("id" to "eq.1"),
+        ) ?: return null
+        return KingDashboardSnapshot(
+            totalBalanceIdr = row.totalBalanceIdr,
+            currentPingMs = row.currentPingMs,
+            activeLivePairs = row.activeLivePairs?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty(),
+            latestManagerLog = row.latestManagerLog,
+            udpPingMs = row.udpPingMs,
+            kidaxPingMs = row.kidaxPingMs,
+            kinancePingMs = row.kinancePingMs,
+            targetProgressPct = row.targetProgressPct,
+            kidaxBalanceIdr = row.kidaxBalanceIdr,
+            kinanceBalanceIdr = row.kinanceBalanceIdr,
+            kidaxPnlTodayPct = row.kidaxPnlTodayPct,
+            kinancePnlTodayPct = row.kinancePnlTodayPct,
+            kidaxPairActive = row.kidaxPairActive,
+            kinancePairActive = row.kinancePairActive,
+        )
+    }
+
+    override suspend fun fetchTradeHistory(limit: Int, offset: Int): List<TradeHistoryRecord> {
+        return runCatching {
+            selectList<TradeHistoryRow>(
+                table = "trade_history",
+                orderBy = "created_at.desc",
+                limit = limit.coerceIn(1, 200),
+            ).map {
+                TradeHistoryRecord(
+                    pair = it.pair ?: "-",
+                    side = it.side ?: "-",
+                    status = it.status ?: "-",
+                    detail = it.detail ?: "",
+                    createdAt = it.createdAt,
+                )
+            }
+        }.getOrDefault(emptyList())
     }
 
     override suspend fun fetchRecentLogs(botId: BotId, limit: Int): List<AuditLogRecord> {
@@ -1297,6 +1363,34 @@ private fun EncryptedCredentialRow.toEncryptedCredentialBundle(): EncryptedCrede
     secretBundleNonce = secretBundleNonce,
     secretBundleSalt = secretBundleSalt,
     updatedAt = updatedAt,
+)
+
+@Serializable
+private data class KingDashboardRow(
+    val id: Int,
+    @SerialName("total_balance_idr") val totalBalanceIdr: Double = 0.0,
+    @SerialName("current_ping_ms") val currentPingMs: Long? = null,
+    @SerialName("active_live_pairs") val activeLivePairs: JsonArray? = null,
+    @SerialName("latest_manager_log") val latestManagerLog: String? = null,
+    @SerialName("udp_ping_ms") val udpPingMs: Long? = null,
+    @SerialName("kidax_ping_ms") val kidaxPingMs: Long? = null,
+    @SerialName("kinance_ping_ms") val kinancePingMs: Long? = null,
+    @SerialName("target_progress_pct") val targetProgressPct: Double? = null,
+    @SerialName("kidax_balance_idr") val kidaxBalanceIdr: Double? = null,
+    @SerialName("kinance_balance_idr") val kinanceBalanceIdr: Double? = null,
+    @SerialName("kidax_pnl_today_pct") val kidaxPnlTodayPct: Double? = null,
+    @SerialName("kinance_pnl_today_pct") val kinancePnlTodayPct: Double? = null,
+    @SerialName("kidax_pair_active") val kidaxPairActive: String? = null,
+    @SerialName("kinance_pair_active") val kinancePairActive: String? = null,
+)
+
+@Serializable
+private data class TradeHistoryRow(
+    val pair: String? = null,
+    val side: String? = null,
+    val status: String? = null,
+    val detail: String? = null,
+    @SerialName("created_at") val createdAt: Instant? = null,
 )
 
 private fun JsonObject?.stringValue(key: String): String {

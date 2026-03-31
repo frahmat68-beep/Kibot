@@ -7,7 +7,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.app.PendingIntent
-import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -26,7 +25,7 @@ import com.kibot.android.BuildConfig
 import com.kibot.shared.models.BotEffectiveState
 
 class BotForegroundService : Service() {
-    private val loggerTag = "KiBotService"
+    private val loggerTag = "KiBotEngine"
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var loopJob: Job? = null
 
@@ -56,8 +55,6 @@ class BotForegroundService : Service() {
     }
 
     private fun ensureChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -79,7 +76,7 @@ class BotForegroundService : Service() {
         val balanceLine = "${snapshot.totalEquityIdr} • ${snapshot.pnlTodayIdr} ${snapshot.derivedPnlPctLabel()}".trim()
         val updateTime = formatTime(snapshot.updatedAtEpochMs)
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("KiBot • Server $pingLabel • ${pairLabel.lowercase()}")
+            .setContentTitle("KiBot Engine • $pingLabel • ${pairLabel.lowercase()}")
             .setContentText("$balanceLine • $updateTime")
             .setSmallIcon(R.drawable.ic_stat_kibot_mark)
             .setOngoing(true)
@@ -106,7 +103,7 @@ class BotForegroundService : Service() {
                 updateNotification(currentPair = null)
             }
 
-            delay(BuildConfig.KIBOT_POLL_INTERVAL_MS.coerceAtLeast(1_000L))
+            delay(BuildConfig.KIBOT_POLL_INTERVAL_MS.coerceAtLeast(MIN_SYNC_INTERVAL_MS))
         }
     }
 
@@ -160,8 +157,9 @@ class BotForegroundService : Service() {
     }
 
     companion object {
-        private const val CHANNEL_ID = "kibot-engine"
+        private const val CHANNEL_ID = "kibot-control-panel"
         private const val NOTIFICATION_ID = 1001
+        private const val MIN_SYNC_INTERVAL_MS = 5_000L
         private const val ACTION_START = "com.kibot.android.runtime.START"
         private const val ACTION_STOP = "com.kibot.android.runtime.STOP"
 

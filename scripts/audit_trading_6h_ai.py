@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True, help="Path to rolling 6-hour JSON data.")
     parser.add_argument(
         "--provider",
-        choices=["auto", "gemini", "openrouter", "groq", "cohere"],
+        choices=["auto", "gemini", "openrouter", "groq", "cohere", "blackbox"],
         default="auto",
         help="Provider selection. default=auto (fallback chain).",
     )
@@ -254,16 +254,38 @@ def call_cohere(trade_json: str, env: Dict[str, str], model_override: str = "") 
     raise RuntimeError(str(last_error or RuntimeError("No working Cohere model found.")))
 
 
+def call_blackbox(trade_json: str, env: Dict[str, str], model_override: str = "") -> str:
+    api_key = env_first(env, "BLACKBOX_API_KEY", "BLACKBOX_KEY")
+    if not api_key:
+        raise RuntimeError("Blackbox API key missing.")
+    model = model_override or env.get("BLACKBOX_MODEL", "blackboxai/openai/gpt-4o-mini")
+    url = env.get("BLACKBOX_API_URL", "https://api.blackbox.ai/v1/chat/completions")
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_ROLE},
+            {"role": "user", "content": build_user_prompt(trade_json)},
+        ],
+        "temperature": 0.1,
+    }
+    result = http_json(
+        url=url,
+        payload=payload,
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    return result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+
 def provider_chain(selected: str) -> List[str]:
     if selected != "auto":
         return [selected]
-    return ["openrouter", "cohere", "gemini", "groq"]
+    return ["blackbox", "openrouter", "cohere", "gemini", "groq"]
 
 
 def parse_provider_override(raw: str) -> List[str]:
     if not raw.strip():
         return []
-    allowed = {"gemini", "openrouter", "groq", "cohere"}
+    allowed = {"gemini", "openrouter", "groq", "cohere", "blackbox"}
     parsed = []
     for provider in [item.strip().lower() for item in raw.split(",")]:
         if provider and provider in allowed and provider not in parsed:
@@ -280,6 +302,8 @@ def provider_has_credentials(provider: str, env: Dict[str, str]) -> bool:
         return bool(env_first(env, "GROQ_API_KEY", "GROQ_KEY"))
     if provider == "cohere":
         return bool(env_first(env, "COHERE_API_KEY", "COHERE_KEY"))
+    if provider == "blackbox":
+        return bool(env_first(env, "BLACKBOX_API_KEY", "BLACKBOX_KEY"))
     return False
 
 
@@ -332,6 +356,8 @@ def try_provider(provider: str, trade_json: str, env: Dict[str, str], model_over
         return call_groq(trade_json, env, model_override)
     if provider == "cohere":
         return call_cohere(trade_json, env, model_override)
+    if provider == "blackbox":
+        return call_blackbox(trade_json, env, model_override)
     raise RuntimeError(f"Unsupported provider: {provider}")
 
 

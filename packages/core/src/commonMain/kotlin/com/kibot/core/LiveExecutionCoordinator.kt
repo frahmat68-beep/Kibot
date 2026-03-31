@@ -79,24 +79,28 @@ class LiveExecutionCoordinator(
         exchange: ExchangeGateway,
         controlPlane: ControlPlaneGateway,
     ): LiveExecutionResult {
-        val orderIntentId = buildOrderIntentId(term, executionPlan)
-        val action = controlPlane.reserveExecutionAction(
+        val reservation = reserveExecutionActionWithLeaseRecovery(
             botId = botId,
             deviceId = deviceId,
-            term = term.value,
-            orderIntentId = orderIntentId,
-            actionType = "submit_order",
+            initialTerm = term,
+            executionPlan = executionPlan,
+            controlPlane = controlPlane,
+        ) ?: return LiveExecutionResult(
+            submitted = false,
+            message = "Lease tidak valid untuk submit ${executionPlan.signal.pairId.value}; menunggu holder aktif sinkron.",
         )
+        val action = reservation.action
+        val effectiveTerm = reservation.term
         val clientOrderId = clientOrderIdFactory.create(
             deviceId = deviceId,
-            term = term,
+            term = effectiveTerm,
             pairSymbol = executionPlan.signal.pairId.value,
         )
         val draftOrder = draftSnapshot(clientOrderId, executionPlan)
 
         controlPlane.upsertOrderSnapshot(
             botId = botId,
-            term = term.value,
+            term = effectiveTerm.value,
             deviceId = deviceId,
             order = draftOrder,
         )
@@ -105,7 +109,7 @@ class LiveExecutionCoordinator(
             val order = exchange.placeOrder(executionPlan, clientOrderId)
             controlPlane.upsertOrderSnapshot(
                 botId = botId,
-                term = term.value,
+                term = effectiveTerm.value,
                 deviceId = deviceId,
                 order = order,
             )
@@ -119,7 +123,7 @@ class LiveExecutionCoordinator(
         } catch (error: ExchangeRejectedException) {
             controlPlane.upsertOrderSnapshot(
                 botId = botId,
-                term = term.value,
+                term = effectiveTerm.value,
                 deviceId = deviceId,
                 order = draftOrder.copy(
                     status = OrderStatus.REJECTED,
@@ -140,7 +144,7 @@ class LiveExecutionCoordinator(
             if (reconciledOrder != null) {
                 controlPlane.upsertOrderSnapshot(
                     botId = botId,
-                    term = term.value,
+                    term = effectiveTerm.value,
                     deviceId = deviceId,
                     order = reconciledOrder,
                 )
@@ -154,7 +158,7 @@ class LiveExecutionCoordinator(
             } else {
                 controlPlane.upsertOrderSnapshot(
                     botId = botId,
-                    term = term.value,
+                    term = effectiveTerm.value,
                     deviceId = deviceId,
                     order = draftOrder.copy(
                         status = OrderStatus.UNKNOWN,
@@ -176,7 +180,71 @@ class LiveExecutionCoordinator(
         }
     }
 
+    private data class ReservedAction(
+        val action: com.kibot.shared.models.ExecutionActionTicket,
+        val term: LeaseTerm,
+    )
+
+    private suspend fun reserveExecutionActionWithLeaseRecovery(
+        botId: BotId,
+        deviceId: DeviceId,
+        initialTerm: LeaseTerm,
+        executionPlan: ExecutionPlan,
+        controlPlane: ControlPlaneGateway,
+    ): ReservedAction? {
+        val firstIntentId = buildOrderIntentId(initialTerm, executionPlan)
+        val first = runCatching {
+            controlPlane.reserveExecutionAction(
+                botId = botId,
+                deviceId = deviceId,
+                term = initialTerm.value,
+                orderIntentId = firstIntentId,
+                actionType = "submit_order",
+            )
+        }
+        if (first.isSuccess) {
+            return ReservedAction(first.getOrThrow(), initialTerm)
+        }
+        val error = first.exceptionOrNull()
+        if (!isLeaseReservationConflict(error)) return null
+
+        val latestLease = runCatching { controlPlane.fetchLease(botId) }.getOrNull() ?: return null
+        val latestTerm = if (latestLease.currentHolder == deviceId) {
+            latestLease.term
+        } else {
+            val forced = runCatching {
+                controlPlane.acquireLease(
+                    botId = botId,
+                    deviceId = deviceId,
+                    ttlSeconds = 90,
+                )
+            }.getOrNull() ?: return null
+            forced.term
+        }
+        if (latestTerm.value == initialTerm.value && latestLease.currentHolder == deviceId) return null
+
+        val retryIntentId = buildOrderIntentId(latestTerm, executionPlan)
+        val retry = runCatching {
+            controlPlane.reserveExecutionAction(
+                botId = botId,
+                deviceId = deviceId,
+                term = latestTerm.value,
+                orderIntentId = retryIntentId,
+                actionType = "submit_order",
+            )
+        }.getOrNull() ?: return null
+        return ReservedAction(retry, latestTerm)
+    }
+
+    private fun isLeaseReservationConflict(error: Throwable?): Boolean {
+        val message = error?.message?.lowercase().orEmpty()
+        return message.contains("only the active lease holder") ||
+            message.contains("lease is conflicted or expired") ||
+            message.contains("stale lease")
+    }
+
     private fun buildOrderIntentId(term: LeaseTerm, executionPlan: ExecutionPlan): String {
+        val timeWindow = (Clock.System.now().toEpochMilliseconds() / 5_000L).toString()
         return listOf(
             "submit",
             term.value.toString(),
@@ -184,6 +252,7 @@ class LiveExecutionCoordinator(
             executionPlan.signal.setupType.name.lowercase(),
             executionPlan.signal.horizon.name.lowercase(),
             executionPlan.side.name.lowercase(),
+            timeWindow,
         ).joinToString(":")
     }
 

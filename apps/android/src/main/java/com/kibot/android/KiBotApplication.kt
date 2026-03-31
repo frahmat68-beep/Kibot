@@ -68,6 +68,7 @@ data class AppContainer(
             botId = runtimeConfig.controlPlane?.botId ?: com.kibot.shared.models.BotId("main"),
             macLanSyncBaseUrl = runtimeConfig.macLanSyncBaseUrl,
             serverMonitorBaseUrl = runtimeConfig.serverMonitorBaseUrl,
+            kinanceMonitorBaseUrl = runtimeConfig.kinanceMonitorBaseUrl,
         )
     }
 

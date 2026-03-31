@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
+    id("com.github.johnrengelman.shadow") version "8.1.1"
     application
 }
 
@@ -18,6 +19,7 @@ dependencies {
     implementation(project(":packages:ai-support"))
     implementation(project(":packages:control-plane"))
     implementation(project(":packages:indodax-client"))
+    implementation(project(":packages:binance-client"))
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
@@ -42,36 +44,22 @@ tasks.test {
     useJUnitPlatform()
 }
 
-tasks.register<Jar>("fatJar") {
-    group = "build"
-    description = "Assemble a fat JAR containing the project and all runtime dependencies."
-
+tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar") {
     archiveClassifier.set("all")
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-
+    mergeServiceFiles()
     manifest {
         attributes(
             "Implementation-Title" to "KiBot Mac Engine",
             "Implementation-Version" to project.version,
-            "Main-Class" to "com.kibot.macengine.MainKt"
+            "Main-Class" to "com.kibot.macengine.MainKt",
         )
     }
+}
 
-    from(sourceSets.main.get().output)
-
-    dependsOn(configurations.runtimeClasspath)
-    from({
-        configurations.runtimeClasspath.get().filter { it.name.endsWith(".jar") }.map {
-            if (it.isDirectory) {
-                it
-            } else {
-                zipTree(it)
-            }
-        }
-    })
-
-    // Prevent duplicate entries
-    exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
+tasks.register("fatJar") {
+    group = "build"
+    description = "Assemble fat JAR via shadowJar for stable runtime dependencies."
+    dependsOn(tasks.named("shadowJar"))
 }
 
 tasks.register("fatJarCopy") {

@@ -1,6 +1,7 @@
 package com.kibot.testkit
 
 import com.kibot.core.ExchangeGateway
+import com.kibot.core.MarketBuyImpactEstimate
 import com.kibot.shared.models.BalanceSnapshot
 import com.kibot.shared.models.ClientOrderId
 import com.kibot.shared.models.ExecutionPlan
@@ -20,6 +21,7 @@ class FakeExchangeGateway(
     private val fills: MutableList<FillSnapshot> = mutableListOf(),
     private val failOnPlaceOrder: Boolean = false,
 ) : ExchangeGateway {
+    private val marketBuyImpactByPair = mutableMapOf<PairId, MarketBuyImpactEstimate>()
     override suspend fun ping(): Boolean = true
 
     override suspend fun fetchMarketQuotes(): List<MarketQuote> = marketQuotes.toList()
@@ -67,6 +69,11 @@ class FakeExchangeGateway(
         return true
     }
 
+    override suspend fun estimateMarketBuyImpact(
+        pairId: PairId,
+        quoteBudget: Double,
+    ): MarketBuyImpactEstimate? = marketBuyImpactByPair[pairId]
+
     fun recordFill(order: OrderSnapshot, quantity: String, price: String) {
         fills += FillSnapshot(
             fillId = FillId("fill-${fills.size + 1}"),
@@ -82,4 +89,20 @@ class FakeExchangeGateway(
     }
 
     fun currentOrders(): List<OrderSnapshot> = orders.toList()
+
+    fun seedMarketBuyImpact(impact: MarketBuyImpactEstimate) {
+        marketBuyImpactByPair[impact.pairId] = impact
+    }
+
+    fun markLatestOrderFilled(pairId: PairId, side: com.kibot.shared.models.OrderSide) {
+        val index = orders.indexOfLast { it.pairId == pairId && it.side == side }
+        if (index < 0) return
+        val current = orders[index]
+        orders[index] = current.copy(
+            status = OrderStatus.FILLED,
+            executedQuantity = current.originalQuantity,
+            remainingQuantity = com.kibot.shared.models.DecimalValue.Zero,
+            updatedAt = Clock.System.now(),
+        )
+    }
 }
