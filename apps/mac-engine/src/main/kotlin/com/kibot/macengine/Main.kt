@@ -56,6 +56,7 @@ fun main(args: Array<String>) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val server = LocalDashboardServer(
         repository = repository,
+        commandDispatcher = dispatcher,
         host = config.bindHost,
         port = config.port,
         androidReleaseDirectory = Paths.get("").toAbsolutePath().resolve(".dist/android/stable"),

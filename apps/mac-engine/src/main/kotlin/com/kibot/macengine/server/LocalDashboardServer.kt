@@ -1,7 +1,17 @@
 package com.kibot.macengine.server
 
+import com.kibot.macengine.runtime.MacCommandDispatcher
 import com.kibot.macengine.state.MacDashboardState
+import com.kibot.macengine.state.MacCommand
 import com.kibot.macengine.state.MacStateRepository
+import com.kibot.shared.models.BotDesiredState
+import com.kibot.shared.models.CommandCenterCommandReply
+import com.kibot.shared.models.CommandCenterCommandRequest
+import com.kibot.shared.models.CommandCenterLiveSnapshot
+import com.kibot.shared.models.CommandCenterTimelineEntry
+import com.kibot.shared.models.CommandCenterHolding
+import com.kibot.shared.models.CommandCenterOrder
+import com.kibot.shared.models.CommandCenterWsEnvelope
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
@@ -20,8 +30,15 @@ import io.ktor.server.response.respondTextWriter
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import io.ktor.server.websocket.WebSockets
+import io.ktor.server.websocket.webSocket
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.websocket.Frame
+import io.ktor.websocket.close
+import io.ktor.websocket.readText
+import io.ktor.websocket.send
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.html.BODY
 import kotlinx.html.FlowContent
 import kotlinx.html.button
@@ -41,6 +58,7 @@ import kotlinx.html.unsafe
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.decodeFromString
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
@@ -50,6 +68,7 @@ import org.slf4j.LoggerFactory
 
 class LocalDashboardServer(
     private val repository: MacStateRepository,
+    private val commandDispatcher: MacCommandDispatcher? = null,
     private val host: String = "0.0.0.0",
     private val port: Int = 8787,
     private val androidReleaseDirectory: Path,
@@ -64,6 +83,7 @@ class LocalDashboardServer(
     private val server = embeddedServer(CIO, host = host, port = port) {
         install(CallLogging)
         install(ContentNegotiation) { json() }
+        install(WebSockets)
         install(StatusPages) {
             exception<Throwable> { call, cause ->
                 call.respond(HttpStatusCode.InternalServerError, mapOf("error" to (cause.message ?: "unknown")))
@@ -449,6 +469,36 @@ class LocalDashboardServer(
                 }
             }
 
+            webSocket("/api/live/ws") {
+                send(
+                    Json.encodeToString(
+                        CommandCenterWsEnvelope.Snapshot(repository.state.value.toLiveSnapshot(host, port)),
+                    ),
+                )
+                val job = launch {
+                    repository.state.collect { latest ->
+                        if (!isActive) return@collect
+                        send(
+                            Json.encodeToString(
+                                CommandCenterWsEnvelope.Snapshot(latest.toLiveSnapshot(host, port)),
+                            ),
+                        )
+                    }
+                }
+                try {
+                    for (frame in incoming) {
+                        val text = (frame as? Frame.Text)?.readText() ?: continue
+                        val request = runCatching {
+                            Json.decodeFromString<CommandCenterCommandRequest>(text)
+                        }.getOrNull() ?: continue
+                        val reply = handleCommandRequest(request)
+                        send(Json.encodeToString(CommandCenterWsEnvelope.Reply(reply)))
+                    }
+                } finally {
+                    job.cancel()
+                }
+            }
+
             get("/api/logs") {
                 applyDashboardSecurityHeaders(call)
                 val freshCutoff = System.currentTimeMillis() - WEB_LOG_FRESHNESS_WINDOW_MS
@@ -504,6 +554,134 @@ class LocalDashboardServer(
             logger.warn("Dashboard stop encountered recoverable error: ${error.message}")
         }
     }
+
+    private suspend fun handleCommandRequest(request: CommandCenterCommandRequest): CommandCenterCommandReply {
+        val command = request.command.trim().lowercase()
+        val snapshot = repository.state.value.toLiveSnapshot(host, port)
+        return when (command) {
+            "/status" -> CommandCenterCommandReply(
+                accepted = true,
+                message = "Status: ${snapshot.effectiveState.name} / ${snapshot.syncHealth.name}",
+                echoCommand = request.command,
+                updatedSnapshot = snapshot,
+                issuedAtEpochMs = request.issuedAtEpochMs,
+            )
+            "/pause_kidax", "/veto_all" -> {
+                commandDispatcher?.dispatch(MacCommand.STOP_BOT)
+                CommandCenterCommandReply(
+                    accepted = true,
+                    message = "Emergency stop requested.",
+                    echoCommand = request.command,
+                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port),
+                    issuedAtEpochMs = request.issuedAtEpochMs,
+                )
+            }
+            "/sync" -> {
+                commandDispatcher?.dispatch(MacCommand.SYNC_NOW)
+                CommandCenterCommandReply(
+                    accepted = true,
+                    message = "Sync requested.",
+                    echoCommand = request.command,
+                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port),
+                    issuedAtEpochMs = request.issuedAtEpochMs,
+                )
+            }
+            "/start" -> {
+                commandDispatcher?.dispatch(MacCommand.START_BOT)
+                CommandCenterCommandReply(
+                    accepted = true,
+                    message = "Start requested.",
+                    echoCommand = request.command,
+                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port),
+                    issuedAtEpochMs = request.issuedAtEpochMs,
+                )
+            }
+            "/stop" -> {
+                commandDispatcher?.dispatch(MacCommand.STOP_BOT)
+                CommandCenterCommandReply(
+                    accepted = true,
+                    message = "Stop requested.",
+                    echoCommand = request.command,
+                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port),
+                    issuedAtEpochMs = request.issuedAtEpochMs,
+                )
+            }
+            else -> CommandCenterCommandReply(
+                accepted = false,
+                message = "Command not supported on server: ${request.command}",
+                echoCommand = request.command,
+                issuedAtEpochMs = request.issuedAtEpochMs,
+            )
+        }
+    }
+}
+
+private fun MacDashboardState.toLiveSnapshot(serverHost: String, serverPort: Int): CommandCenterLiveSnapshot {
+    val serverId = "$serverHost:$serverPort"
+        return CommandCenterLiveSnapshot(
+        serverId = serverId,
+        serverLabel = serverLocation.ifBlank { serverId },
+        botId = com.kibot.shared.models.BotId("main"),
+        effectiveState = effectiveState,
+        syncHealth = runCatching { com.kibot.shared.models.SyncHealth.valueOf(syncHealth) }.getOrDefault(com.kibot.shared.models.SyncHealth.DEGRADED),
+        liveExecutionEnabled = liveExecutionEnabled,
+        operatingMode = runCatching { com.kibot.shared.models.BotMode.valueOf(operatingMode) }.getOrDefault(com.kibot.shared.models.BotMode.GROWTH),
+        edgeConfidence = runCatching { com.kibot.shared.models.EdgeConfidence.valueOf(edgeConfidence) }.getOrDefault(com.kibot.shared.models.EdgeConfidence.MEDIUM),
+        marketRegime = runCatching { com.kibot.shared.models.MarketRegime.valueOf(marketRegime) }.getOrDefault(com.kibot.shared.models.MarketRegime.HIGH_VOLATILITY_UNCLEAR),
+        aiProviderSummary = aiProviderSummary,
+        activeEngine = activeEngine,
+        standbyEngine = standbyEngine,
+        topCandidate = topCandidate,
+        scanUniverseCount = scanUniverseCount,
+        leaseTerm = leaseTerm,
+        healthSummary = healthSummary,
+        statusMessage = statusMessage,
+        lastHeartbeatLabel = lastHeartbeatLabel,
+        lastUpdatedLabel = lastUpdatedLabel,
+        totalValueIdr = totalValueIdr,
+        portfolioValueIdr = portfolioValueIdr,
+        freeIdrLabel = freeIdrLabel,
+        referenceQuoteAssetPriceIdr = referenceQuoteAssetPriceIdr,
+        pnlTodayIdr = pnlTodayIdr,
+        pnlTodayPctLabel = pnlTodayPctLabel,
+        return7dIdr = return7dIdr,
+        return7dPctLabel = return7dPctLabel,
+        return30dIdr = return30dIdr,
+        return30dPctLabel = return30dPctLabel,
+        exchangePingMs = exchangePingMs,
+        exchangePingValueMs = exchangePingValueMs,
+        serverUptime = serverUptime,
+        releaseLabel = releaseLabel,
+        targetPursuitLabel = targetPursuitLabel,
+        radarPairs = radarPairs,
+        holdingsDetailed = holdingsDetailed.map {
+            CommandCenterHolding(
+                assetCode = it.assetCode,
+                assetLabel = it.assetLabel,
+                quantityLabel = it.quantityLabel,
+                valueIdrLabel = it.valueIdrLabel,
+                entryPriceLabel = it.entryPriceLabel,
+                currentPriceLabel = it.currentPriceLabel,
+                pnlIdrLabel = it.pnlIdrLabel,
+                pnlPctLabel = it.pnlPctLabel,
+            )
+        },
+        recentOrders = recentOrders.map {
+            CommandCenterOrder(
+                timestampEpochMs = it.timestampEpochMs,
+                pair = it.pair,
+                side = it.side,
+                status = it.status,
+                detail = it.detail,
+                pnlIdrLabel = it.pnlIdrLabel,
+                pnlPctLabel = it.pnlPctLabel,
+            )
+        },
+        liveTimeline = liveTimeline.map {
+            CommandCenterTimelineEntry(it.timestampEpochMs, it.category, it.message)
+        },
+        updatedAtEpochMs = lastUpdatedEpochMs,
+    )
 }
 
 private fun applyDashboardSecurityHeaders(

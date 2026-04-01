@@ -7,6 +7,7 @@ import com.kibot.shared.models.DecimalValue
 import com.kibot.shared.models.EngineHealthSnapshot
 import com.kibot.shared.models.HealthStatus
 import com.kibot.shared.models.MarketQuote
+import com.kibot.shared.models.MarketRegime
 import com.kibot.shared.models.OrderId
 import com.kibot.shared.models.OrderSide
 import com.kibot.shared.models.OrderSnapshot
@@ -122,6 +123,111 @@ class StrategyOrchestratorTest {
         assertTrue(boostedBeta.rankingScore > baselineBeta.rankingScore)
         assertFalse(boostedGamma.allowed)
         assertEquals("gamma_idr", boostedGamma.pairId.value)
+    }
+
+    @Test
+    fun `entry signal keeps take profit above stop loss`() {
+        val now = Clock.System.now()
+        val result = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = listOf(BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(100_000.0))),
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = healthyEngine(),
+            marketQuotes = listOf(
+                quote(
+                    pair = "swing_idr",
+                    price = 100.0,
+                    spreadPct = 0.10,
+                    slippagePct = 0.09,
+                    trendScore = 0.78,
+                    expectancyScore = 0.74,
+                    volume = 80_000_000.0,
+                    now = now,
+                    mediumTermReturnPct = 3.8,
+                ),
+            ),
+        )
+
+        val signal = result.selectedSignal
+        assertNotNull(signal)
+        val entry = signal.entryPrice!!.toDoubleOrZero()
+        val stop = signal.stopPrice!!.toDoubleOrZero()
+        val takeProfit = signal.takeProfitPrice!!.toDoubleOrZero()
+        val riskPct = ((entry - stop) / entry) * 100.0
+        val rewardPct = ((takeProfit - entry) / entry) * 100.0
+
+        assertTrue(rewardPct >= riskPct, "rewardPct=$rewardPct riskPct=$riskPct signal=$signal")
+    }
+
+    @Test
+    fun `daily profit lock suppresses new entry signals`() {
+        val now = Clock.System.now()
+        val result = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = listOf(BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(100_000.0))),
+            openOrders = emptyList(),
+            dailyRisk = com.kibot.shared.models.DailyRiskSnapshot(
+                openingEquityIdr = DecimalValue.fromDouble(100_000.0),
+                currentEquityIdr = DecimalValue.fromDouble(101_500.0),
+                realizedPnlIdr = DecimalValue.fromDouble(1_500.0),
+                unrealizedPnlIdr = DecimalValue.Zero,
+                drawdownPct = 0.0,
+                hardDailyLossLimitPct = 0.05,
+                hardStopTriggered = false,
+                rebasePending = false,
+            ),
+            health = healthyEngine(),
+            marketQuotes = listOf(
+                quote(
+                    pair = "safe_idr",
+                    price = 100.0,
+                    spreadPct = 0.10,
+                    slippagePct = 0.08,
+                    trendScore = 0.82,
+                    expectancyScore = 0.80,
+                    volume = 90_000_000.0,
+                    now = now,
+                    mediumTermReturnPct = 2.8,
+                ),
+            ),
+        )
+
+        assertNull(result.selectedSignal)
+        assertTrue(result.riskDecision.dailyProfitLockActive)
+        assertFalse(result.riskDecision.allowNewEntries)
+    }
+
+    @Test
+    fun `anomaly budget is trimmed by liquidity impact reducer`() {
+        val now = Clock.System.now()
+        val result = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = listOf(BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(200_000.0))),
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = healthyEngine(),
+            marketQuotes = listOf(
+                quote(
+                    pair = "pepe_idr",
+                    price = 100.0,
+                    spreadPct = 0.18,
+                    slippagePct = 0.12,
+                    trendScore = 0.82,
+                    expectancyScore = 0.78,
+                    volume = 180_000_000.0,
+                    bidDepthIdr = 40_000.0,
+                    askDepthIdr = 36_000.0,
+                    shortTermReturnPct = 4.2,
+                    mediumTermReturnPct = 2.6,
+                    now = now,
+                ),
+            ),
+        )
+
+        val executionPlan = result.executionPlan
+        assertNotNull(executionPlan)
+        assertTrue(executionPlan.quoteBudget!!.toDoubleOrZero() <= 20_000.0, executionPlan.toString())
     }
 
     @Test
@@ -574,6 +680,144 @@ class StrategyOrchestratorTest {
         assertEquals("beta_idr", analysis.selectedSignal?.pairId?.value)
     }
 
+    @Test
+    fun kellySizingGivesStrongerSetupHigherKellyFractionThanWeakerSetup() {
+        val now = Clock.System.now()
+        val balances = listOf(BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(100_000.0)))
+        val strong = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = balances,
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = healthyEngine(),
+            marketQuotes = listOf(
+                quote(
+                    pair = "sol_idr",
+                    price = 100.0,
+                    spreadPct = 0.10,
+                    slippagePct = 0.08,
+                    trendScore = 0.78,
+                    expectancyScore = 0.76,
+                    volume = 90_000_000.0,
+                    holdabilityScore = 0.70,
+                    shortTermReturnPct = 2.8,
+                    mediumTermReturnPct = 2.0,
+                    recentTradeActivityScore = 0.88,
+                    now = now,
+                    vwapDistancePct = 0.8,
+                    rsi14 = 60.0,
+                    emaFastOverSlowPct = 1.1,
+                    tickFrequencyPerMinute = 8.0,
+                    orderBookImbalance = 0.62,
+                    globalCorrelationScore = 0.82,
+                    btcContextScore = 0.80,
+                ),
+            ),
+        )
+        val weak = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = balances,
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = healthyEngine(),
+            marketQuotes = listOf(
+                quote(
+                    pair = "alt_idr",
+                    price = 100.0,
+                    spreadPct = 0.18,
+                    slippagePct = 0.16,
+                    trendScore = 0.60,
+                    expectancyScore = 0.58,
+                    volume = 40_000_000.0,
+                    holdabilityScore = 0.58,
+                    shortTermReturnPct = 1.0,
+                    mediumTermReturnPct = 0.8,
+                    recentTradeActivityScore = 0.60,
+                    now = now,
+                    vwapDistancePct = 2.6,
+                    rsi14 = 71.0,
+                    emaFastOverSlowPct = 0.2,
+                    tickFrequencyPerMinute = 1.4,
+                    orderBookImbalance = 0.18,
+                    globalCorrelationScore = 0.48,
+                    btcContextScore = 0.56,
+                ),
+            ),
+        )
+
+        val strongKelly = strong.rankedPairs.first().kellyFraction
+        val weakKelly = weak.rankedPairs.first().kellyFraction
+        assertTrue(strongKelly > weakKelly, "strong=$strongKelly weak=$weakKelly")
+    }
+
+    @Test
+    fun highlyCorrelatedSectorCandidateIsSkippedWhenPortfolioAlreadyLoaded() {
+        val now = Clock.System.now()
+        val balances = listOf(
+            BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(100_000.0)),
+            BalanceSnapshot(asset = "doge", free = DecimalValue("1000")),
+        )
+        val analysis = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = balances,
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = healthyEngine(),
+            marketQuotes = listOf(
+                quote(
+                    pair = "doge_idr",
+                    price = 100.0,
+                    spreadPct = 0.10,
+                    slippagePct = 0.08,
+                    trendScore = 0.72,
+                    expectancyScore = 0.70,
+                    volume = 98_000_000.0,
+                    holdabilityScore = 0.68,
+                    shortTermReturnPct = 2.2,
+                    mediumTermReturnPct = 1.9,
+                    recentTradeActivityScore = 0.86,
+                    now = now,
+                    globalCorrelationScore = 0.86,
+                    sectorMomentumScore = 0.88,
+                ),
+                quote(
+                    pair = "shib_idr",
+                    price = 100.0,
+                    spreadPct = 0.10,
+                    slippagePct = 0.08,
+                    trendScore = 0.80,
+                    expectancyScore = 0.76,
+                    volume = 95_000_000.0,
+                    holdabilityScore = 0.70,
+                    shortTermReturnPct = 2.4,
+                    mediumTermReturnPct = 2.0,
+                    recentTradeActivityScore = 0.90,
+                    now = now,
+                    globalCorrelationScore = 0.84,
+                    sectorMomentumScore = 0.86,
+                ),
+                quote(
+                    pair = "link_idr",
+                    price = 100.0,
+                    spreadPct = 0.10,
+                    slippagePct = 0.08,
+                    trendScore = 0.78,
+                    expectancyScore = 0.75,
+                    volume = 96_000_000.0,
+                    holdabilityScore = 0.70,
+                    shortTermReturnPct = 2.3,
+                    mediumTermReturnPct = 2.1,
+                    recentTradeActivityScore = 0.88,
+                    now = now,
+                    globalCorrelationScore = 0.52,
+                    sectorMomentumScore = 0.38,
+                ),
+            ),
+        )
+
+        assertTrue(analysis.entryExecutionPlans.none { it.signal.pairId.value == "shib_idr" })
+    }
+
     private fun healthyEngine() = EngineHealthSnapshot(
         status = HealthStatus.HEALTHY,
         syncHealth = SyncHealth.HEALTHY,
@@ -617,8 +861,24 @@ class StrategyOrchestratorTest {
         shortTermReturnPct: Double = 0.8,
         mediumTermReturnPct: Double = 1.2,
         recentTradeActivityScore: Double = 0.8,
+        volatilityQualityScore: Double = 0.72,
         fillQualityScore: Double = 0.8,
         orderBookStabilityScore: Double = 0.85,
+        bidDepthIdr: Double = 500_000.0,
+        askDepthIdr: Double = 500_000.0,
+        vwapDistancePct: Double = 0.0,
+        rsi14: Double = 50.0,
+        emaFastOverSlowPct: Double = 0.0,
+        tickFrequencyPerMinute: Double = 0.0,
+        orderBookImbalance: Double = 0.0,
+        globalCorrelationScore: Double = 0.5,
+        btcContextScore: Double = 0.5,
+        sectorMomentumScore: Double = 0.5,
+        zScoreCurrent: Double = 0.0,
+        cvdDivergenceScore: Double = 0.0,
+        smartMoneyIndex: Double = 0.5,
+        seasonalityMultiplier: Double = 1.0,
+        keltnerExtensionScore: Double = 0.0,
         now: kotlinx.datetime.Instant,
     ): MarketQuote = MarketQuote(
         pairId = PairId(pair),
@@ -631,17 +891,30 @@ class StrategyOrchestratorTest {
         estimatedSlippagePct = slippagePct,
         orderBookStabilityScore = orderBookStabilityScore,
         tradeCount24h = 250,
-        bidDepthTop5Idr = DecimalValue.fromDouble(500_000.0),
-        askDepthTop5Idr = DecimalValue.fromDouble(500_000.0),
+        bidDepthTop5Idr = DecimalValue.fromDouble(bidDepthIdr),
+        askDepthTop5Idr = DecimalValue.fromDouble(askDepthIdr),
         shortTermReturnPct = shortTermReturnPct,
         mediumTermReturnPct = mediumTermReturnPct,
         realizedVolatilityPct = 1.4,
         recentTradeActivityScore = recentTradeActivityScore,
-        volatilityQualityScore = 0.72,
+        volatilityQualityScore = volatilityQualityScore,
         trendQualityScore = trendScore,
         historicalExpectancyScore = expectancyScore,
         fillQualityScore = fillQualityScore,
         holdabilityScore = holdabilityScore,
         capturedAt = now,
+        vwapDistancePct = vwapDistancePct,
+        rsi14 = rsi14,
+        emaFastOverSlowPct = emaFastOverSlowPct,
+        tickFrequencyPerMinute = tickFrequencyPerMinute,
+        orderBookImbalance = orderBookImbalance,
+        globalCorrelationScore = globalCorrelationScore,
+        btcContextScore = btcContextScore,
+        sectorMomentumScore = sectorMomentumScore,
+        zScoreCurrent = zScoreCurrent,
+        cvdDivergenceScore = cvdDivergenceScore,
+        smartMoneyIndex = smartMoneyIndex,
+        seasonalityMultiplier = seasonalityMultiplier,
+        keltnerExtensionScore = keltnerExtensionScore,
     )
 }

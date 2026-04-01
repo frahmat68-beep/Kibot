@@ -1,7 +1,9 @@
 package com.kibot.macengine.runtime
 
 import com.kibot.aisupport.GeminiSupportCoordinator
+import com.kibot.aisupport.MultiAIClient
 import com.kibot.core.CapitalDeploymentEngine
+import com.kibot.core.ChartAnalyzer
 import com.kibot.core.ControlPlaneGateway
 import com.kibot.core.ExchangeGateway
 import com.kibot.core.MarketBuyImpactEstimate
@@ -61,6 +63,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.jsonArray
@@ -84,13 +87,17 @@ import java.net.SocketTimeoutException
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.file.Files
 import java.time.Duration
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.max
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -106,6 +113,7 @@ private fun buildStrategyOrchestrator(exchangeKind: ExchangeKind): StrategyOrche
         riskEngine = RiskEngine(config = riskConfig),
         deploymentEngine = CapitalDeploymentEngine(config = riskConfig),
         executionConfig = executionConfig,
+        riskConfig = riskConfig,
     )
 }
 
@@ -152,12 +160,20 @@ private fun exchangePairSelectionPolicy(exchangeKind: ExchangeKind): PairSelecti
 }
 
 private fun exchangeRiskConfig(exchangeKind: ExchangeKind): RiskConfig = when (exchangeKind) {
-    ExchangeKind.INDODAX -> RiskConfig()
+    ExchangeKind.INDODAX -> RiskConfig(
+        hardDailyLossLimitPct = 0.03,
+        hardRealizedLossLimitIdr = 15_000.0,
+        warningDrawdownPct = 0.02,
+        reduceSizeDrawdownPct = 0.04,
+        defensiveDrawdownPct = 0.06,
+        restrictedEntriesDrawdownPct = 0.08,
+        stopNewEntriesDrawdownPct = 0.10,
+    )
     ExchangeKind.BINANCE_SPOT -> RiskConfig(
         targetMinPositionBudgetIdr = 8.0,
         minimumCashReservePct = 0.02,
         attackCashReservePct = 0.015,
-        rotationMinClearProfitIdr = 0.10,
+        rotationMinClearProfitIdr = 120.0,
         dominantTierAMinCashReservePct = 0.03,
     )
 }
@@ -195,11 +211,11 @@ private fun exchangeTradeAutomationConfig(exchangeKind: ExchangeKind): TradeAuto
         estimatedRoundTripCostPct = 0.20,
         adaptiveFeeFloorPct = 0.08,
         maxAdaptiveRoundTripCostPct = 0.60,
-        minMeaningfulNonEmergencyExitProfitIdr = 0.05,
-        rotationMinNetUpgradePct = 0.22,
+        minMeaningfulNonEmergencyExitProfitIdr = 0.20,
+        rotationMinNetUpgradePct = 1.10,
         partialTakeProfitMinRemainingNotionalIdr = 7.5,
         partialTakeProfitMinPositionNotionalIdr = 10.0,
-        partialTakeProfitMinNetSurplusIdr = 0.08,
+        partialTakeProfitMinNetSurplusIdr = 0.20,
     )
 }
 
@@ -223,7 +239,9 @@ class MacEngineDaemon(
     private val situationalLearningEngine: SituationalLearningEngine = SituationalLearningEngine(),
     private val tradeAutomationCoordinator: TradeAutomationCoordinator = buildTradeAutomationCoordinator(config.exchangeKind),
     private val aiSupportCoordinator: GeminiSupportCoordinator? = null,
+    private val multiAiCoordinator: MultiAIClient? = MultiAIClient(),
 ) {
+    private val chartAnalyzer = ChartAnalyzer()
     private val onlyRuntimeLogPrefixes = setOf("EXECUTION_BUY", "EXECUTION_SELL", "WHY_NOT_BUY")
     private data class CapitalAwareness(
         val totalEquityIdr: Double,
@@ -239,6 +257,25 @@ class MacEngineDaemon(
         val lastCheckpointWindowIndex: Int = 0,
         val consecutiveCheckpointMisses: Int = 0,
         val lastCheckpointShortfallPct: Double = 0.0,
+    )
+
+    @Serializable
+    private data class MonthlyPnlAnchorSnapshot(
+        val botId: String,
+        val deviceId: String,
+        val monthKey: String,
+        val anchorEquityIdr: Double,
+        val observedAtEpochMs: Long,
+        val reason: String = "auto_month_reset",
+    )
+
+    @Serializable
+    private data class PnlResetAnchorSnapshot(
+        val botId: String,
+        val deviceId: String,
+        val anchorEquityIdr: Double,
+        val observedAtEpochMs: Long,
+        val reason: String = "manual_topup_reset",
     )
 
     @Serializable
@@ -258,6 +295,7 @@ class MacEngineDaemon(
         val forceRotation: Boolean = true,
         val sentAtEpochMs: Long,
         val expiresAtEpochMs: Long,
+        val payload: JsonObject? = null,
     )
 
     private data class ActiveLeadLagCallout(
@@ -309,6 +347,77 @@ class MacEngineDaemon(
         val positions: List<ActivePositionWire>,
     )
 
+    @Serializable
+    private data class TrinityHeartbeatPayload(
+        val kind: String = "trinity_state",
+        val msgType: String = "HEARTBEAT",
+        val senderBotId: String,
+        val sentAtEpochMs: Long,
+        val activePair: String? = null,
+        val safeModeArmed: Boolean = false,
+    )
+
+    private data class UdpExecutionPrewarm(
+        val traceId: String,
+        val pairId: com.kibot.shared.models.PairId,
+        val armedAt: Instant,
+        val expiresAt: Instant,
+        val msgType: String,
+    )
+
+    private enum class UdpBinaryMessageType(val code: Byte, val wireMsgType: String) {
+        HEARTBEAT(1, "HEARTBEAT"),
+        DETECTOR_HIT(10, "DETECTOR_HIT"),
+        INSTANT_BUY_ANOMALY(11, "INSTANT_BUY_ANOMALY"),
+        VETO_APPROVED(12, "VETO_APPROVED"),
+        VETO_REJECTED(13, "VETO_REJECTED"),
+        VETO_SELL_CONFIRMED(14, "VETO_SELL_CONFIRMED"),
+        EMERGENCY_VETO_SELL(15, "EMERGENCY_VETO_SELL"),
+        SELL_WALL_SURGE(16, "SELL_WALL_SURGE"),
+        MOMENTUM_LOSS(17, "MOMENTUM_LOSS"),
+        ORDERBOOK_COLLAPSE(18, "ORDERBOOK_COLLAPSE"),
+        UNKNOWN(127, "UNKNOWN");
+
+        companion object {
+            fun fromCode(code: Byte): UdpBinaryMessageType = entries.firstOrNull { it.code == code } ?: UNKNOWN
+            fun fromMsgType(msgType: String): UdpBinaryMessageType = entries.firstOrNull {
+                it.wireMsgType.equals(msgType, ignoreCase = true)
+            } ?: UNKNOWN
+        }
+    }
+
+    private data class DecodedUdpPacket(
+        val heartbeat: TrinityHeartbeatPayload? = null,
+        val leadLag: LeadLagCalloutPayload? = null,
+        val senderBotId: String? = null,
+        val sequenceId: Int? = null,
+        val dedupKey: String? = null,
+        val binary: Boolean = false,
+    )
+
+    @Serializable
+    private data class LocalManagedPositionState(
+        val pairId: String,
+        val baseAsset: String,
+        val quantity: String,
+        val averageEntryPrice: String,
+        val breakEvenPrice: String,
+        val stopPrice: String,
+        val takeProfitPrice: String,
+        val unrealizedPnlPct: Double,
+        val openedAtEpochMs: Long,
+        val updatedAtEpochMs: Long,
+    )
+
+    @Serializable
+    private data class LocalPositionStateSnapshot(
+        val botId: String,
+        val deviceId: String,
+        val observedAtEpochMs: Long,
+        val orders: List<com.kibot.shared.models.OrderSnapshot>,
+        val managedPositions: List<LocalManagedPositionState>,
+    )
+
     private data class HistoricalPeakCacheEntry(
         val peakPrice: Double,
         val fetchedAtEpochMs: Long,
@@ -319,7 +428,44 @@ class MacEngineDaemon(
         val distinctCloseBuckets: Int,
         val rangePct: Double,
         val lastClose: Double,
+        val dominantCloseShare: Double,
+        val directionFlipRate: Double,
+        val higherHighRatio: Double,
+        val higherLowRatio: Double,
+        val closingProgressRatio: Double,
+        val netProgressPct: Double,
         val fetchedAtEpochMs: Long,
+    )
+
+    private data class MultiTimeframeQuoteCacheEntry(
+        val quote: com.kibot.shared.models.MarketQuote,
+        val fetchedAtEpochMs: Long,
+    )
+
+    private data class OrderBookPulseSample(
+        val atEpochMs: Long,
+        val imbalance: Double,
+        val bidDepthIdr: Double,
+        val askDepthIdr: Double,
+        val stabilityScore: Double,
+    )
+
+    @Serializable
+    private data class ToxicFlowStateEntry(
+        val pairId: String,
+        val stopLossHits: Int = 0,
+        val lastStopLossAtEpochMs: Long = 0L,
+        val consecutiveSweepHits: Int = 0,
+        val quarantinedUntilEpochMs: Long = 0L,
+        val lastReason: String = "",
+    )
+
+    @Serializable
+    private data class ToxicFlowStateSnapshot(
+        val botId: String,
+        val deviceId: String,
+        val observedAtEpochMs: Long,
+        val entries: List<ToxicFlowStateEntry>,
     )
 
     private data class TrinityPendingSignal(
@@ -453,6 +599,10 @@ class MacEngineDaemon(
     private var cachedAdaptiveAiPolicy: AdaptiveAiPolicy? = null
     private var adaptiveAiPolicyFetchedAt: Instant? = null
     private var targetEnforcementMemory = loadTargetEnforcementMemory()
+    private var monthlyPnlAnchor = loadMonthlyPnlAnchor()
+    private var lastMonthlyPnlAnchorSignature: String? = null
+    private var pnlResetAnchor = loadPnlResetAnchor()
+    private var lastPnlResetAnchorSignature: String? = null
     private var activeLeadLagCallout: ActiveLeadLagCallout? = null
     private val pendingKinanceSignalsByTrace = mutableMapOf<String, TrinityPendingSignal>()
     private val pendingKibotVetosByTrace = mutableMapOf<String, TrinityPendingSignal>()
@@ -478,6 +628,9 @@ class MacEngineDaemon(
     private val localAutonomyTrailingFloorLogByPair = mutableMapOf<String, Double>()
     private val historicalPeakCacheByPair = mutableMapOf<String, HistoricalPeakCacheEntry>()
     private val candleHistoryGuardCacheByPair = mutableMapOf<String, CandleHistoryGuardCacheEntry>()
+    private val multiTimeframeQuoteCacheByPair = mutableMapOf<String, MultiTimeframeQuoteCacheEntry>()
+    private val spoofPulseByPair = mutableMapOf<String, ArrayDeque<OrderBookPulseSample>>()
+    private val spoofSuspiciousUntilByPair = mutableMapOf<String, Instant>()
     private val indodaxHistoryHttpClient: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(3))
         .build()
@@ -503,6 +656,19 @@ class MacEngineDaemon(
     private var holdingsFocusToggle = false
     private var lastActivePositionsBroadcastAt: Instant? = null
     private var lastLeaseLockdownAttemptAt: Instant? = null
+    private val daemonStartedAt: Instant = Clock.System.now()
+    private val lastTrinityHeartbeatByBotId = mutableMapOf<String, Instant>()
+    private var lastTrinityHeartbeatSentAt: Instant? = null
+    private val udpSequenceCounter = AtomicInteger(1)
+    private val udpLastSequenceBySender = mutableMapOf<String, Int>()
+    private val udpRecentDedupKeys = linkedMapOf<String, Instant>()
+    private val udpExecutionPrewarmByPair = mutableMapOf<String, UdpExecutionPrewarm>()
+    private var trinityHeartbeatSafeModeReason: String? = null
+    private var startupRecoveryAudited = false
+    private var lastLocalPositionStateSignature: String? = null
+    private var lastToxicFlowStateSignature: String? = null
+    private var localRecoveryFallbackAnnounced = false
+    private val toxicFlowStateByPair = loadToxicFlowState().entries.associateBy { it.pairId.lowercase() }.toMutableMap()
     private val hiveExtraUdpPeers: List<Pair<String, Int>> = run {
         val raw = System.getenv("KIBOT_HIVE_UDP_PEERS")
             ?.split(",")
@@ -1465,6 +1631,17 @@ class MacEngineDaemon(
             var activeCount = 0
             var lastClose = 0.0
             val closeBuckets = linkedSetOf<String>()
+            val closeBucketSequence = mutableListOf<String>()
+            val closes = mutableListOf<Double>()
+            var previousClose: Double? = null
+            var lastDirection = 0
+            var directionalMoves = 0
+            var directionFlips = 0
+            var previousHigh: Double? = null
+            var previousLow: Double? = null
+            var higherHighs = 0
+            var higherLows = 0
+            var structureComparisons = 0
             for (candle in candles) {
                 val high = candle.jsonObject["High"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
                 val low = candle.jsonObject["Low"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
@@ -1478,14 +1655,77 @@ class MacEngineDaemon(
                 if (low < minLow) minLow = low
                 if (close != null && close > 0.0) {
                     lastClose = close
-                    closeBuckets += priceBucketKey(close)
+                    val bucket = priceBucketKey(close)
+                    closeBuckets += bucket
+                    closeBucketSequence += bucket
+                    closes += close
+                    val priorClose = previousClose
+                    if (priorClose != null && priorClose > 0.0) {
+                        val delta = close - priorClose
+                        val direction = when {
+                            delta > 0.0 -> 1
+                            delta < 0.0 -> -1
+                            else -> 0
+                        }
+                        if (direction != 0) {
+                            directionalMoves += 1
+                            if (lastDirection != 0 && direction != lastDirection) directionFlips += 1
+                            lastDirection = direction
+                        }
+                    }
+                    previousClose = close
                 }
+                val priorHigh = previousHigh
+                val priorLow = previousLow
+                if (priorHigh != null && priorLow != null) {
+                    structureComparisons += 1
+                    if (high > priorHigh) higherHighs += 1
+                    if (low > priorLow) higherLows += 1
+                }
+                previousHigh = high
+                previousLow = low
                 val moved = if (open != null && close != null && open > 0.0) {
                     kotlin.math.abs(close - open) / open
                 } else {
                     0.0
                 }
                 if ((volume ?: 0.0) > 0.0 || moved >= 0.001) activeCount += 1
+            }
+            val dominantCloseShare = closeBucketSequence
+                .groupingBy { it }
+                .eachCount()
+                .values
+                .maxOrNull()
+                ?.toDouble()
+                ?.div(closeBucketSequence.size.coerceAtLeast(1).toDouble())
+                ?: 0.0
+            val directionFlipRate = if (directionalMoves > 1) {
+                directionFlips.toDouble() / directionalMoves.toDouble()
+            } else {
+                0.0
+            }
+            val higherHighRatio = if (structureComparisons > 0) {
+                higherHighs.toDouble() / structureComparisons.toDouble()
+            } else {
+                0.0
+            }
+            val higherLowRatio = if (structureComparisons > 0) {
+                higherLows.toDouble() / structureComparisons.toDouble()
+            } else {
+                0.0
+            }
+            val minClose = closes.minOrNull() ?: 0.0
+            val maxClose = closes.maxOrNull() ?: 0.0
+            val closingProgressRatio = if (maxClose > minClose && lastClose > 0.0) {
+                ((lastClose - minClose) / (maxClose - minClose)).coerceIn(0.0, 1.0)
+            } else {
+                0.0
+            }
+            val firstClose = closes.firstOrNull() ?: 0.0
+            val netProgressPct = if (firstClose > 0.0 && lastClose > 0.0) {
+                ((lastClose - firstClose) / firstClose) * 100.0
+            } else {
+                0.0
             }
             val rangePct = if (count > 0 && minLow > 0.0 && maxHigh >= minLow) {
                 ((maxHigh - minLow) / minLow) * 100.0
@@ -1498,6 +1738,12 @@ class MacEngineDaemon(
                 distinctCloseBuckets = closeBuckets.size,
                 rangePct = rangePct.coerceAtLeast(0.0),
                 lastClose = lastClose.coerceAtLeast(0.0),
+                dominantCloseShare = dominantCloseShare.coerceIn(0.0, 1.0),
+                directionFlipRate = directionFlipRate.coerceIn(0.0, 1.0),
+                higherHighRatio = higherHighRatio.coerceIn(0.0, 1.0),
+                higherLowRatio = higherLowRatio.coerceIn(0.0, 1.0),
+                closingProgressRatio = closingProgressRatio.coerceIn(0.0, 1.0),
+                netProgressPct = netProgressPct,
                 fetchedAtEpochMs = nowMs,
             ).also { candleHistoryGuardCacheByPair[pairKey] = it }
         }.getOrNull()
@@ -1511,6 +1757,332 @@ class MacEngineDaemon(
             price >= 1.0 -> formatDecimal(price, 2)
             else -> formatDecimal(price, 6)
         }
+    }
+
+    private fun enrichRuntimeMarketQuotes(
+        now: Instant,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        balances: List<BalanceSnapshot>,
+        openOrders: List<com.kibot.shared.models.OrderSnapshot>,
+    ): List<com.kibot.shared.models.MarketQuote> {
+        if (config.exchangeKind != ExchangeKind.INDODAX || marketQuotes.isEmpty()) return marketQuotes
+        val activePairs = openOrders.map { it.pairId }.toSet() +
+            balances
+                .asSequence()
+                .filterNot { it.asset.equals(referenceQuoteAsset(), ignoreCase = true) }
+                .map { PairId("${it.asset.lowercase()}_${referenceQuoteAsset()}") }
+                .toSet()
+        val focusPairs = marketQuotes
+            .sortedByDescending { quote ->
+                quote.quoteVolume24h.toDoubleOrZero() * 0.45 +
+                    quote.recentTradeActivityScore * 1_000_000.0 +
+                    kotlin.math.abs(quote.shortTermReturnPct) * 150_000.0 +
+                    quote.trendQualityScore * 800_000.0
+            }
+            .take(runtimeEnrichmentFocusPairs)
+            .map { it.pairId }
+            .toMutableSet()
+            .also { it.addAll(activePairs) }
+        if (focusPairs.isEmpty()) return marketQuotes
+        return marketQuotes.map { quote ->
+            if (quote.pairId !in focusPairs) {
+                quote
+            } else {
+                buildRuntimeEnrichedQuote(now, quote)
+            }
+        }
+    }
+
+    private fun buildRuntimeEnrichedQuote(
+        now: Instant,
+        quote: com.kibot.shared.models.MarketQuote,
+    ): com.kibot.shared.models.MarketQuote {
+        if (config.exchangeKind != ExchangeKind.INDODAX) return quote
+        val pairKey = quote.pairId.value.lowercase()
+        val cache = multiTimeframeQuoteCacheByPair[pairKey]
+        if (cache != null && (now.toEpochMilliseconds() - cache.fetchedAtEpochMs) <= runtimeEnrichmentCacheTtlMs) {
+            return cache.quote.copy(capturedAt = quote.capturedAt)
+        }
+        val history = fetchIndodaxCandleHistoryGuardStats(quote.pairId) ?: return quote
+        val rsi = deriveRsi14FromGuard(history)
+        val emaFastOverSlowPct = deriveEmaTrendPct(quote, history)
+        val vwapDistancePct = deriveRuntimeVwapDistancePct(quote, history)
+        val tickFrequencyPerMinute = deriveTickFrequencyPerMinute(history)
+        val orderBookImbalance = deriveRuntimeOrderBookImbalance(quote)
+        val zScoreCurrent = deriveRuntimeZScore(quote, history)
+        val keltnerExtensionScore = deriveRuntimeKeltnerExtensionScore(
+            quote = quote,
+            history = history,
+            vwapDistancePct = vwapDistancePct,
+            zScoreCurrent = zScoreCurrent,
+        )
+        val cvdDivergenceScore = deriveRuntimeCvdDivergenceScore(
+            quote = quote,
+            history = history,
+            orderBookImbalance = orderBookImbalance,
+            zScoreCurrent = zScoreCurrent,
+        )
+        val smartMoneyIndex = deriveRuntimeSmartMoneyIndex(
+            quote = quote,
+            orderBookImbalance = orderBookImbalance,
+            cvdDivergenceScore = cvdDivergenceScore,
+        )
+        val seasonalityMultiplier = deriveRuntimeSeasonalityMultiplier(now)
+        val localAnomalyScore = deriveLocalAnomalyScore(quote, history)
+        val toxicFlowScore = deriveRuntimeToxicFlowScore(quote, history)
+        val enriched = quote.copy(
+            vwapDistancePct = vwapDistancePct,
+            rsi14 = rsi,
+            emaFastOverSlowPct = emaFastOverSlowPct,
+            tickFrequencyPerMinute = tickFrequencyPerMinute,
+            orderBookImbalance = orderBookImbalance,
+            zScoreCurrent = zScoreCurrent,
+            cvdDivergenceScore = cvdDivergenceScore,
+            smartMoneyIndex = smartMoneyIndex,
+            seasonalityMultiplier = seasonalityMultiplier,
+            keltnerExtensionScore = keltnerExtensionScore,
+            localAnomalyScore = localAnomalyScore,
+            toxicFlowScore = maxOf(quote.toxicFlowScore, toxicFlowScore),
+            capturedAt = quote.capturedAt,
+        )
+        multiTimeframeQuoteCacheByPair[pairKey] = MultiTimeframeQuoteCacheEntry(
+            quote = enriched,
+            fetchedAtEpochMs = now.toEpochMilliseconds(),
+        )
+        return enriched
+    }
+
+    private fun deriveRsi14FromGuard(history: CandleHistoryGuardCacheEntry): Double {
+        val trendBias = ((history.higherHighRatio + history.higherLowRatio) / 2.0).coerceIn(0.0, 1.0)
+        val progressBias = ((history.closingProgressRatio * 0.7) + (history.netProgressPct / 8.0)).coerceIn(0.0, 1.0)
+        val reversalPenalty = history.directionFlipRate.coerceIn(0.0, 1.0) * 0.45
+        return (38.0 + (trendBias * 22.0) + (progressBias * 24.0) - (reversalPenalty * 20.0))
+            .coerceIn(15.0, 88.0)
+    }
+
+    private fun deriveEmaTrendPct(
+        quote: com.kibot.shared.models.MarketQuote,
+        history: CandleHistoryGuardCacheEntry,
+    ): Double {
+        return (
+            (history.higherHighRatio - 0.5) * 4.2 +
+                (history.higherLowRatio - 0.5) * 4.2 +
+                (history.closingProgressRatio - 0.5) * 2.4 +
+                (quote.shortTermReturnPct * 0.16) +
+                (quote.mediumTermReturnPct * 0.08)
+            ).coerceIn(-6.0, 6.0)
+    }
+
+    private fun deriveRuntimeVwapDistancePct(
+        quote: com.kibot.shared.models.MarketQuote,
+        history: CandleHistoryGuardCacheEntry,
+    ): Double {
+        val price = quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 } ?: return quote.vwapDistancePct
+        if (history.lastClose <= 0.0) return quote.vwapDistancePct
+        val syntheticVwap = history.lastClose / (1.0 + ((history.closingProgressRatio - 0.5) * 0.04))
+        if (syntheticVwap <= 0.0) return quote.vwapDistancePct
+        return (((price - syntheticVwap) / syntheticVwap) * 100.0).coerceIn(-8.0, 8.0)
+    }
+
+    private fun deriveTickFrequencyPerMinute(history: CandleHistoryGuardCacheEntry): Double {
+        return (history.activeCandleCount.toDouble() / runtimeEnrichmentLookbackMinutes.toDouble())
+            .coerceAtLeast(0.0)
+    }
+
+    private fun deriveRuntimeZScore(
+        quote: com.kibot.shared.models.MarketQuote,
+        history: CandleHistoryGuardCacheEntry,
+    ): Double {
+        val price = quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 } ?: return 0.0
+        val mean = history.lastClose.takeIf { it > 0.0 } ?: price
+        val rangePct = history.rangePct.coerceAtLeast(0.12)
+        val sigma = (mean * (rangePct / 100.0) * 0.42).coerceAtLeast(mean * 0.0012)
+        return ((price - mean) / sigma).coerceIn(-6.0, 6.0)
+    }
+
+    private fun deriveRuntimeKeltnerExtensionScore(
+        quote: com.kibot.shared.models.MarketQuote,
+        history: CandleHistoryGuardCacheEntry,
+        vwapDistancePct: Double,
+        zScoreCurrent: Double,
+    ): Double {
+        val atrProxyPct = maxOf(history.rangePct * 0.34, quote.realizedVolatilityPct * 0.70, 0.35)
+        val extensionFromCenter = kotlin.math.abs(vwapDistancePct) / (atrProxyPct * 1.45)
+        val extensionFromStatistic = kotlin.math.abs(zScoreCurrent) / 3.2
+        return ((extensionFromCenter * 0.58) + (extensionFromStatistic * 0.42)).coerceIn(0.0, 1.0)
+    }
+
+    private fun deriveRuntimeCvdDivergenceScore(
+        quote: com.kibot.shared.models.MarketQuote,
+        history: CandleHistoryGuardCacheEntry,
+        orderBookImbalance: Double,
+        zScoreCurrent: Double,
+    ): Double {
+        val pricePush = (quote.shortTermReturnPct.coerceAtLeast(0.0) / 4.0).coerceIn(0.0, 1.0)
+        val exhaustionFlow = ((-orderBookImbalance).coerceAtLeast(0.0) * 0.46)
+        val weakClose = history.dominantCloseShare.coerceIn(0.0, 1.0) * 0.22
+        val statisticalStretch = (kotlin.math.abs(zScoreCurrent) / 4.0).coerceIn(0.0, 1.0) * 0.18
+        val divergence = if (pricePush > 0.18) {
+            exhaustionFlow + weakClose + statisticalStretch
+        } else {
+            (history.directionFlipRate.coerceIn(0.0, 1.0) * 0.26) + weakClose
+        }
+        return divergence.coerceIn(0.0, 1.0)
+    }
+
+    private fun deriveRuntimeSmartMoneyIndex(
+        quote: com.kibot.shared.models.MarketQuote,
+        orderBookImbalance: Double,
+        cvdDivergenceScore: Double,
+    ): Double {
+        val flowSupport = ((orderBookImbalance + 1.0) / 2.0).coerceIn(0.0, 1.0)
+        val activitySupport = quote.recentTradeActivityScore.coerceIn(0.0, 1.0)
+        val depthSupport = (
+            quote.bidDepthTop5Idr.toDoubleOrZero() /
+                (quote.askDepthTop5Idr.toDoubleOrZero().coerceAtLeast(1.0))
+            ).coerceIn(0.35, 1.80) / 1.80
+        val stabilitySupport = quote.orderBookStabilityScore.coerceIn(0.0, 1.0)
+        val divergencePenalty = 1.0 - cvdDivergenceScore.coerceIn(0.0, 1.0)
+        return (
+            flowSupport * 0.28 +
+                activitySupport * 0.26 +
+                depthSupport * 0.18 +
+                stabilitySupport * 0.16 +
+                divergencePenalty * 0.12
+            ).coerceIn(0.0, 1.0)
+    }
+
+    private fun deriveRuntimeSeasonalityMultiplier(now: Instant): Double {
+        val local = now.toLocalDateTime(TimeZone.of("Asia/Jakarta"))
+        val hour = local.hour
+        val weekendPenalty = if (local.date.dayOfWeek in setOf(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)) 0.18 else 0.0
+        val sessionBoost = when (hour) {
+            in 20..23 -> 0.14
+            in 0..3 -> 0.18
+            in 7..10 -> 0.06
+            else -> 0.0
+        }
+        val deadSessionPenalty = when (hour) {
+            in 11..16 -> 0.08
+            in 4..6 -> 0.05
+            else -> 0.0
+        }
+        return (1.0 + sessionBoost - deadSessionPenalty - weekendPenalty).coerceIn(0.55, 1.24)
+    }
+
+    private fun deriveRuntimeOrderBookImbalance(
+        quote: com.kibot.shared.models.MarketQuote,
+    ): Double {
+        val bid = quote.bidDepthTop5Idr.toDoubleOrZero().coerceAtLeast(0.0)
+        val ask = quote.askDepthTop5Idr.toDoubleOrZero().coerceAtLeast(0.0)
+        val denom = (bid + ask).takeIf { it > 0.0 } ?: return quote.orderBookImbalance
+        return ((bid - ask) / denom).coerceIn(-1.0, 1.0)
+    }
+
+    private fun deriveLocalAnomalyScore(
+        quote: com.kibot.shared.models.MarketQuote,
+        history: CandleHistoryGuardCacheEntry,
+    ): Double {
+        val isolatedMove = kotlin.math.abs(quote.shortTermReturnPct - quote.mediumTermReturnPct).coerceAtLeast(0.0)
+        val structurePenalty = history.directionFlipRate * 0.35 + history.dominantCloseShare * 0.30
+        return ((isolatedMove / 6.0) + (history.rangePct / 12.0) - structurePenalty).coerceIn(0.0, 1.0)
+    }
+
+    private fun deriveRuntimeToxicFlowScore(
+        quote: com.kibot.shared.models.MarketQuote,
+        history: CandleHistoryGuardCacheEntry,
+    ): Double {
+        val flipPenalty = history.directionFlipRate.coerceIn(0.0, 1.0) * 0.42
+        val deadPenalty = history.dominantCloseShare.coerceIn(0.0, 1.0) * 0.28
+        val whipsawPenalty = if (history.rangePct > 0.0) {
+            (quote.realizedVolatilityPct / history.rangePct).coerceIn(0.0, 1.0) * 0.20
+        } else {
+            0.0
+        }
+        val stressPenalty = kotlin.math.abs(deriveRuntimeOrderBookImbalance(quote)) * (1.0 - quote.orderBookStabilityScore.coerceIn(0.0, 1.0)) * 0.18
+        return (flipPenalty + deadPenalty + whipsawPenalty + stressPenalty).coerceIn(0.0, 1.0)
+    }
+
+    private fun updateOrderBookSpoofRadar(
+        now: Instant,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    ) {
+        marketQuotes.forEach { quote ->
+            val pairKey = quote.pairId.value.lowercase()
+            val deque = spoofPulseByPair.getOrPut(pairKey) { ArrayDeque() }
+            deque.addLast(
+                OrderBookPulseSample(
+                    atEpochMs = now.toEpochMilliseconds(),
+                    imbalance = quote.orderBookImbalance.coerceIn(-1.0, 1.0),
+                    bidDepthIdr = quote.bidDepthTop5Idr.toDoubleOrZero().coerceAtLeast(0.0),
+                    askDepthIdr = quote.askDepthTop5Idr.toDoubleOrZero().coerceAtLeast(0.0),
+                    stabilityScore = quote.orderBookStabilityScore.coerceIn(0.0, 1.0),
+                ),
+            )
+            while (deque.size > spoofPulseWindowSamples) deque.removeFirst()
+            val samples = deque.toList()
+            if (samples.size < 3) return@forEach
+            val signFlips = samples.zipWithNext().count { (left, right) ->
+                left.imbalance != 0.0 && right.imbalance != 0.0 &&
+                    kotlin.math.sign(left.imbalance) != kotlin.math.sign(right.imbalance)
+            }
+            val averageStability = samples.map { it.stabilityScore }.average()
+            val depthBaseline = samples.first().run { bidDepthIdr + askDepthIdr }.coerceAtLeast(1.0)
+            val depthSwing = samples.maxOf { kotlin.math.abs((it.bidDepthIdr + it.askDepthIdr) - depthBaseline) } / depthBaseline
+            val maxImbalance = samples.maxOf { kotlin.math.abs(it.imbalance) }
+            if (signFlips >= 2 && averageStability < 0.55 && depthSwing >= 0.32 && maxImbalance >= 0.52) {
+                spoofSuspiciousUntilByPair[pairKey] = now.plus(spoofSuspicionCooldown)
+            }
+        }
+    }
+
+    private fun routeByAntiSpoofRadar(
+        executionPlan: com.kibot.shared.models.ExecutionPlan,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        now: Instant,
+    ): com.kibot.shared.models.ExecutionPlan? {
+        if (executionPlan.side != com.kibot.shared.models.OrderSide.BUY) return executionPlan
+        val pairKey = executionPlan.signal.pairId.value.lowercase()
+        val quote = marketQuotes.firstOrNull { it.pairId == executionPlan.signal.pairId } ?: return executionPlan
+        val suspicionUntil = spoofSuspiciousUntilByPair[pairKey]
+        val unstablePressure = kotlin.math.abs(quote.orderBookImbalance) >= 0.55 && quote.orderBookStabilityScore <= 0.42
+        if ((suspicionUntil == null || now >= suspicionUntil) && !unstablePressure) return executionPlan
+        if (quote.estimatedSlippagePct >= 1.35 && quote.spreadPct >= 0.85) return null
+        val passivePrice = quote.bestBid.toDoubleOrZero().takeIf { it > 0.0 }
+            ?: quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 }
+            ?: return executionPlan
+        return executionPlan.copy(
+            orderType = com.kibot.shared.models.OrderType.LIMIT,
+            limitPrice = DecimalValue.fromDouble(passivePrice),
+            postOnlyPreferred = false,
+        )
+    }
+
+    private fun applyAdaptiveOrderSlicing(
+        executionPlan: com.kibot.shared.models.ExecutionPlan,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    ): com.kibot.shared.models.ExecutionPlan {
+        if (executionPlan.side != com.kibot.shared.models.OrderSide.BUY) return executionPlan
+        val quote = marketQuotes.firstOrNull { it.pairId == executionPlan.signal.pairId } ?: return executionPlan
+        val budgetIdr = executionPlan.quoteBudget?.toDoubleOrZero()?.takeIf { it > 0.0 }
+            ?: return executionPlan
+        val topDepthIdr = quote.askDepthTop5Idr.toDoubleOrZero().takeIf { it > 0.0 } ?: return executionPlan
+        val spoofPenalty = if (spoofSuspiciousUntilByPair[executionPlan.signal.pairId.value.lowercase()] != null) 0.72 else 1.0
+        val sliceBudgetIdr = minOf(
+            budgetIdr,
+            topDepthIdr * depthGuardMaxTopBookImpactPct * spoofPenalty,
+        ).coerceAtLeast(minimumLiveNotionalForExchange())
+        if (sliceBudgetIdr >= budgetIdr * 0.96) return executionPlan
+        val referencePrice = executionPlan.limitPrice?.toDoubleOrZero()
+            ?.takeIf { it > 0.0 }
+            ?: quote.bestAsk.toDoubleOrZero().takeIf { it > 0.0 }
+            ?: quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 }
+            ?: return executionPlan
+        val slicedQty = (sliceBudgetIdr / referencePrice).coerceAtLeast(0.00000001)
+        return executionPlan.copy(
+            quantity = DecimalValue.fromDouble(slicedQty),
+            quoteBudget = DecimalValue.fromDouble(sliceBudgetIdr),
+        )
     }
 
     private fun captureLocalTrailingSnapshots(
@@ -1827,26 +2399,125 @@ class MacEngineDaemon(
         if (executionPlan.side != com.kibot.shared.models.OrderSide.BUY) return null
         val pairId = executionPlan.signal.pairId
         if (!pairId.pairAssets().quoteAsset.equals("idr", ignoreCase = true)) return null
+        return assessDynamicHistoryGuard(pairId)?.blockedReason
+    }
+
+    private fun assessDynamicHistoryGuard(
+        pairId: com.kibot.shared.models.PairId,
+    ): com.kibot.core.ChartAnalyzer.ChartHistoryAssessment? {
         val stats = fetchIndodaxCandleHistoryGuardStats(pairId) ?: return null
-        if (stats.candleCount < config.chartGuardMinCandles) {
-            return "chart_history_blocked candles=${stats.candleCount} min=${config.chartGuardMinCandles}"
+        return chartAnalyzer.assessHistoryGuard(
+            candleCount = stats.candleCount,
+            activeCandleCount = stats.activeCandleCount,
+            distinctCloseBuckets = stats.distinctCloseBuckets,
+            rangePct = stats.rangePct,
+            lastClose = stats.lastClose,
+            dominantCloseShare = stats.dominantCloseShare,
+            directionFlipRate = stats.directionFlipRate,
+            higherHighRatio = stats.higherHighRatio,
+            higherLowRatio = stats.higherLowRatio,
+            closingProgressRatio = stats.closingProgressRatio,
+            netProgressPct = stats.netProgressPct,
+            minCandles = config.chartGuardMinCandles,
+            minActiveCandles = config.chartGuardMinActiveCandles,
+            minDistinctCloseBuckets = config.chartGuardMinDistinctCloseBuckets,
+            cheapNominalMaxPrice = chartGuardCheapNominalMaxPriceIdr,
+            cheapNominalMinDistinctCloses = chartGuardCheapNominalMinDistinctCloses,
+            minRangePct = chartGuardMinRangePct,
+        )
+    }
+
+    private fun prioritizeExecutionPlansByChartAndCapital(
+        executionPlans: List<com.kibot.shared.models.ExecutionPlan>,
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    ): List<com.kibot.shared.models.ExecutionPlan> {
+        if (executionPlans.size <= 1) return executionPlans
+        val freeIdr = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
+        val totalEquityIdr = balances.sumOf { it.totalValueInIdr?.toDoubleOrZero() ?: 0.0 }.takeIf { it > 0.0 } ?: freeIdr
+        val lowCapital = totalEquityIdr in 0.0000001..150_000.0
+        return executionPlans.sortedByDescending { plan ->
+            val quote = marketQuotes.firstOrNull { it.pairId == plan.signal.pairId }
+            val chartAssessment = quote?.let { chartAnalyzer.analyzeQuoteSnapshot(it) }
+            val entryPrice = plan.signal.entryPrice?.toDoubleOrZero()
+                ?: plan.limitPrice?.toDoubleOrZero()
+                ?: quote?.bestAsk?.toDoubleOrZero()
+                ?: 0.0
+            val budgetIdr = plan.quoteBudget?.toDoubleOrZero()?.takeIf { it > 0.0 } ?: freeIdr
+            val affordableUnits = if (entryPrice > 0.0) budgetIdr / entryPrice else 0.0
+            val historyAssessment = assessDynamicHistoryGuard(plan.signal.pairId)
+            val underBalanceBias = when {
+                !lowCapital -> 0.0
+                entryPrice <= 0.0 -> -0.10
+                entryPrice > freeIdr -> -0.30
+                affordableUnits >= 120.0 -> 0.18
+                affordableUnits >= 40.0 -> 0.10
+                affordableUnits >= 16.0 -> 0.04
+                affordableUnits >= 8.0 -> 0.01
+                else -> -0.18
+            }
+            val capitalMismatchBias = when {
+                !lowCapital -> 0.0
+                entryPrice <= 0.0 -> -0.20
+                freeIdr <= 0.0 -> -1.20
+                entryPrice > freeIdr * 0.90 -> -1.40
+                affordableUnits < 4.0 -> -1.20
+                affordableUnits < 8.0 -> -0.65
+                affordableUnits < 16.0 -> -0.25
+                quote != null && quote.spreadPct > 1.8 && affordableUnits < 20.0 -> -0.45
+                else -> 0.08 * kotlin.math.min(affordableUnits / 10.0, 2.0)
+            }
+            val chartBias = when {
+                chartAssessment == null -> 0.0
+                chartAssessment.shouldAvoidEntry -> -0.50
+                else -> (
+                    chartAssessment.entryScore * 0.45 +
+                        (1.0 - chartAssessment.exhaustionRiskScore) * 0.20 +
+                        (1.0 - chartAssessment.rotationUrgencyScore) * 0.10 +
+                        chartAssessment.netEntryScore * 0.25
+                    )
+            }
+            val historyBias = when {
+                historyAssessment == null -> 0.0
+                historyAssessment.blocked -> -0.45
+                else -> (
+                    historyAssessment.rangeOpportunityScore * 0.22 +
+                        historyAssessment.progressiveScore * 0.14 -
+                        historyAssessment.deadChartScore * 0.20
+                    )
+            }
+            plan.pairRankingScore + underBalanceBias + capitalMismatchBias + chartBias + historyBias
         }
-        if (stats.activeCandleCount < config.chartGuardMinActiveCandles) {
-            return "chart_activity_blocked activeCandles=${stats.activeCandleCount} min=${config.chartGuardMinActiveCandles}"
+    }
+
+    private fun routeByChartAnalyzer(
+        executionPlan: com.kibot.shared.models.ExecutionPlan,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    ): com.kibot.shared.models.ExecutionPlan? {
+        if (executionPlan.side != com.kibot.shared.models.OrderSide.BUY) return executionPlan
+        val quote = marketQuotes.firstOrNull { it.pairId == executionPlan.signal.pairId } ?: return executionPlan
+        val chartAssessment = chartAnalyzer.analyzeQuoteSnapshot(quote)
+        if (chartAssessment.shouldAvoidEntry) return null
+        return when (chartAssessment.preferredOrderType) {
+            ChartAnalyzer.PreferredOrderType.AVOID -> null
+            ChartAnalyzer.PreferredOrderType.MARKET -> executionPlan
+            ChartAnalyzer.PreferredOrderType.LIMIT_MID -> {
+                val mid = quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 } ?: return executionPlan
+                executionPlan.copy(
+                    orderType = com.kibot.shared.models.OrderType.LIMIT,
+                    limitPrice = DecimalValue.fromDouble(mid),
+                    postOnlyPreferred = false,
+                )
+            }
+            ChartAnalyzer.PreferredOrderType.LIMIT_PASSIVE -> {
+                val bid = quote.bestBid.toDoubleOrZero().takeIf { it > 0.0 } ?: return executionPlan
+                executionPlan.copy(
+                    orderType = com.kibot.shared.models.OrderType.LIMIT,
+                    limitPrice = DecimalValue.fromDouble(bid),
+                    postOnlyPreferred = false,
+                )
+            }
         }
-        if (stats.distinctCloseBuckets < config.chartGuardMinDistinctCloseBuckets) {
-            return "chart_variation_blocked distinctCloses=${stats.distinctCloseBuckets} min=${config.chartGuardMinDistinctCloseBuckets}"
-        }
-        if (
-            stats.lastClose in 0.0000001..chartGuardCheapNominalMaxPriceIdr &&
-            stats.distinctCloseBuckets < chartGuardCheapNominalMinDistinctCloses
-        ) {
-            return "cheap_nominal_chart_blocked lastClose=${formatDecimal(stats.lastClose, 6)} distinctCloses=${stats.distinctCloseBuckets} min=${chartGuardCheapNominalMinDistinctCloses}"
-        }
-        if (stats.rangePct < chartGuardMinRangePct) {
-            return "chart_flat_blocked rangePct=${formatDecimal(stats.rangePct, 2)} min=${formatDecimal(chartGuardMinRangePct, 2)}"
-        }
-        return null
     }
 
     private fun routeByDepthGuard(
@@ -1886,7 +2557,6 @@ class MacEngineDaemon(
         if (balances.isEmpty()) return null
         val quoteByPair = marketQuotes.associateBy { it.pairId.value.lowercase() }
         val activeByPair = activeOrders.filter { it.status in activeOrderStatuses }.groupBy { it.pairId }
-        val minimumNotional = minimumLiveNotionalForExchange()
         val target = balances
             .asSequence()
             .filterNot { it.asset.equals(referenceQuoteAsset(), ignoreCase = true) }
@@ -1904,7 +2574,7 @@ class MacEngineDaemon(
             .filter { (pairValue, _, currentValue) ->
                 val key = pairValue.lowercase()
                 key in garbageNukePairs &&
-                    currentValue >= maxOf(garbageNukeMinNotionalIdr, minimumNotional) &&
+                    currentValue >= garbageNukeMinNotionalIdr &&
                     activeByPair[com.kibot.shared.models.PairId(pairValue)].orEmpty().none { it.side == com.kibot.shared.models.OrderSide.SELL }
             }
             .sortedByDescending { (_, _, currentValue) -> currentValue }
@@ -2023,6 +2693,57 @@ class MacEngineDaemon(
                     quoteBudget = null,
                     postOnlyPreferred = false,
                     expectedNetEdgePct = kotlin.math.abs(position.unrealizedPnlPct),
+                    botMode = cycle.modeSnapshot.mode,
+                    riskLadderLevel = cycle.modeSnapshot.riskLadderLevel,
+                    pairRankingScore = score,
+                    speculativePocket = true,
+                ),
+            )
+        }
+    }
+
+    private fun planTrinityHeartbeatEmergencyExit(
+        managedPositions: List<com.kibot.core.ManagedPosition>,
+        activeOrders: List<com.kibot.shared.models.OrderSnapshot>,
+        cycle: com.kibot.core.StrategyCycleResult,
+    ): com.kibot.core.ExitDecision? {
+        val brakeReason = trinityHeartbeatSafeModeReason ?: return null
+        if (managedPositions.isEmpty()) return null
+        val activeByPair = activeOrders.filter { it.status in activeOrderStatuses }.groupBy { it.pairId }
+        return managedPositions.firstOrNull { position ->
+            activeByPair[position.pairId].orEmpty().none { it.side == com.kibot.shared.models.OrderSide.SELL }
+        }?.let { position ->
+            val score = cycle.rankedPairs.firstOrNull { it.pairId == position.pairId }?.rankingScore ?: 0.60
+            val signal = com.kibot.shared.models.StrategySignal(
+                pairId = position.pairId,
+                signalType = com.kibot.shared.models.StrategySignalType.EXIT,
+                confidence = 0.99,
+                rationale = listOf("Trinity UDP heartbeat putus; lindungi aset dan flatten posisi."),
+                entryPrice = position.currentBidPrice,
+                takeProfitPrice = position.takeProfitPrice,
+                stopPrice = position.stopPrice,
+                setupType = position.setupType,
+                horizon = position.horizon,
+                pairTier = position.pairTier,
+                speculativePocket = true,
+                marketRegime = cycle.marketSnapshot.regime,
+                edgeConfidence = cycle.modeSnapshot.edgeConfidence,
+                expectedHoldingHours = position.expectedHoldingHours,
+                expectedNetProfitabilityPct = kotlin.math.abs(position.unrealizedPnlPct),
+            )
+            com.kibot.core.ExitDecision(
+                position = position,
+                reason = com.kibot.core.ExitReason.STOP_LOSS_EXIT,
+                message = "TRINITY_HEARTBEAT_BRAKE sell ${position.pairId.value}. $brakeReason",
+                executionPlan = com.kibot.shared.models.ExecutionPlan(
+                    signal = signal,
+                    side = com.kibot.shared.models.OrderSide.SELL,
+                    orderType = com.kibot.shared.models.OrderType.MARKET,
+                    quantity = position.quantity,
+                    limitPrice = null,
+                    quoteBudget = null,
+                    postOnlyPreferred = false,
+                    expectedNetEdgePct = 0.0,
                     botMode = cycle.modeSnapshot.mode,
                     riskLadderLevel = cycle.modeSnapshot.riskLadderLevel,
                     pairRankingScore = score,
@@ -2209,6 +2930,8 @@ class MacEngineDaemon(
 
     private fun refreshProtectiveState(now: Instant) {
         sinBinUntilByPair.entries.removeIf { (_, until) -> now >= until }
+        spoofSuspiciousUntilByPair.entries.removeIf { (_, until) -> now >= until }
+        refreshToxicFlowState(now)
         pruneDynamicVip(now)
         while (crashGuardTriggerTimeline.isNotEmpty() &&
             (now - crashGuardTriggerTimeline.first()).inWholeMilliseconds > crashGuardWindowMinutes * 60_000L
@@ -2243,6 +2966,11 @@ class MacEngineDaemon(
         sinBinUntilByPair[pairKey]?.let { until ->
             if (now < until) {
                 return "SIN_BIN_ACTIVE $pairKey sampai ${formatJktTime(until)} (cooldown patah hati)."
+            }
+        }
+        toxicFlowQuarantineUntil(pairId)?.let { until ->
+            if (now < until) {
+                return "TOXIC_QUARANTINE_ACTIVE $pairKey sampai ${formatJktTime(until)} karena kena sweep stop-loss berulang."
             }
         }
         return null
@@ -2337,8 +3065,10 @@ class MacEngineDaemon(
     }
 
     suspend fun syncOnce() = coroutineScope {
-        pollLeadLagUdpCommands(Clock.System.now())
-        pruneLeadLagTelemetry(Clock.System.now())
+        val cycleStartedAt = Clock.System.now()
+        pollLeadLagUdpCommands(cycleStartedAt)
+        maybeEmitTrinityHeartbeat(cycleStartedAt)
+        pruneLeadLagTelemetry(cycleStartedAt)
         ensureRegistered()
 
         val now = Clock.System.now()
@@ -2383,6 +3113,10 @@ class MacEngineDaemon(
             }
         }
         commandsFetchedAt = now
+        val trinityHeartbeatBrakeReason = enforceTrinityHeartbeatBrake(now)
+        if (trinityHeartbeatBrakeReason != null) {
+            healthWarnings += trinityHeartbeatBrakeReason
+        }
 
         val localHealth = buildLocalHealth(
             exchangeReachable = exchangeReachable,
@@ -2436,9 +3170,16 @@ class MacEngineDaemon(
         }
         val resolvedBalances = balancesDeferred?.await() ?: cachedBalances
         val resolvedOpenOrders = openOrdersDeferred?.await() ?: cachedOpenOrders
-        val resolvedMarketQuotes = marketQuotesDeferred?.await().orEmpty()
+        val rawMarketQuotes = marketQuotesDeferred?.await().orEmpty()
+        val resolvedMarketQuotes = enrichRuntimeMarketQuotes(
+            now = now,
+            marketQuotes = rawMarketQuotes,
+            balances = resolvedBalances,
+            openOrders = resolvedOpenOrders,
+        )
         if (resolvedMarketQuotes.isNotEmpty()) {
             updateLeadLagMicroPulseSnapshots(now, resolvedMarketQuotes)
+            updateOrderBookSpoofRadar(now, resolvedMarketQuotes)
         }
         if (exchangeReachable && resolvedMarketQuotes.isEmpty()) {
             healthWarnings += "Market quote feed kosong."
@@ -2474,10 +3215,17 @@ class MacEngineDaemon(
             liveHints = aiSupportHints,
             adaptivePolicy = adaptiveAiPolicy,
         ) + leadLagHints
+        val recentPersistedOrders = if (isMaster && exchangeReachable) {
+            refreshRecentOrders(now)
+        } else {
+            cachedRecentOrders
+        }
         val derivedDailyRisk = deriveDailyRiskSnapshot(
+            now = now,
             previous = dailyRisk,
             balances = resolvedBalances,
             marketQuotes = resolvedMarketQuotes,
+            recentOrders = recentPersistedOrders,
         ) ?: dailyRisk
         val strategyCycle = if (resolvedMarketQuotes.isNotEmpty()) {
             val baseCycle = strategyOrchestrator.analyze(
@@ -2512,11 +3260,6 @@ class MacEngineDaemon(
             marketQuotes = resolvedMarketQuotes,
             displayPingMs = displayPingMs ?: exchangePingMs,
         )
-        val recentPersistedOrders = if (isMaster && exchangeReachable) {
-            refreshRecentOrders(now)
-        } else {
-            cachedRecentOrders
-        }
         val recentFills = if (isMaster && exchangeReachable) {
             refreshRecentFills(
                 now = now,
@@ -2553,6 +3296,11 @@ class MacEngineDaemon(
             updates = reconciledOrderUpdates,
         )
         cachedRecentOrders = effectiveRecentOrders
+        auditLocalRecoveryStateIfNeeded(
+            now = now,
+            balances = resolvedBalances,
+            persistedOrders = effectiveRecentOrders,
+        )
         recentOrdersFetchedAt = now
 
         var runtimeBotState = initialBotState
@@ -2619,7 +3367,7 @@ class MacEngineDaemon(
         }
 
         val lastHeartbeatAt = lastControlPlaneHeartbeatAt
-        if (lastHeartbeatAt == null || (now - lastHeartbeatAt).inWholeSeconds >= 60) {
+        if (lastHeartbeatAt == null || (now - lastHeartbeatAt).inWholeSeconds >= 10) {
             controlPlane.appendHeartbeat(
                 EngineHeartbeatSnapshot(
                     botId = config.controlPlane.botId,
@@ -2754,8 +3502,12 @@ class MacEngineDaemon(
             }
 
             CommandType.FORCE_STANDBY,
-            CommandType.RESUME_FROM_SAFE_MODE,
             -> {
+                controlPlane.updateCommandStatus(command.commandId, CommandStatus.SUCCEEDED)
+                "Command ${command.commandType.name} acknowledged."
+            }
+            CommandType.RESUME_FROM_SAFE_MODE -> {
+                trinityHeartbeatSafeModeReason = null
                 controlPlane.updateCommandStatus(command.commandId, CommandStatus.SUCCEEDED)
                 "Command ${command.commandType.name} acknowledged."
             }
@@ -2917,12 +3669,35 @@ class MacEngineDaemon(
         if (payload.kind != "lead_lag_breakout") return null
         val normalizedMsgType = payload.msgType.uppercase()
         val payloadPairId = PairId(payload.pairId)
+        val payloadReason = payload.payload?.get("reason")?.jsonPrimitive?.contentOrNull?.uppercase()
+        val pairCooldownReject = payload.senderBotId.contains("kibot", ignoreCase = true) &&
+            normalizedMsgType == "VETO_REJECTED" &&
+            payloadReason == "PAIR_COOLDOWN"
+        if (pairCooldownReject) {
+            val pairKey = payloadPairId.value.lowercase()
+            val cooldownUntil = Instant.fromEpochMilliseconds(payload.expiresAtEpochMs).plus(sinBinHours.hours)
+            sinBinUntilByPair[pairKey] = cooldownUntil
+            logger.info(
+                "SELL_DECISION_REASON pair={} reason=pair_cooldown_veto trace={} cooldownUntil={}",
+                pairKey,
+                payload.traceId,
+                formatJktTime(cooldownUntil),
+            )
+            appendAuditLog(
+                level = LogLevel.WARN,
+                category = "LEAD_LAG",
+                message = "KiBot blacklist/cooldown aktif untuk $pairKey sampai ${formatJktTime(cooldownUntil)}.",
+            )
+            repository.noteStatus("KiBot blacklist aktif untuk $pairKey sampai ${formatJktTime(cooldownUntil)}.")
+            return "Pair ${payload.pairId} masuk cooldown dari KiBot; entry lokal diblok."
+        }
         if (normalizedMsgType in setOf("DETECTOR_HIT", "INSTANT_BUY_ANOMALY")) {
             markDynamicVip(
                 pairId = payloadPairId,
                 now = now,
                 reason = if (normalizedMsgType == "INSTANT_BUY_ANOMALY") "udp_instant_anomaly" else "udp_detector_hit",
             )
+            armUdpExecutionPrewarm(payload, now)
         }
         val isEmergencySell = payload.senderBotId.contains("kibot", ignoreCase = true) &&
             normalizedMsgType == "EMERGENCY_VETO_SELL"
@@ -2980,6 +3755,7 @@ class MacEngineDaemon(
         }
         if (isKibotVeto) {
             pendingKibotVetosByTrace[payload.traceId] = trinitySignal
+            armUdpExecutionPrewarm(payload, now)
         }
         val kinanceSignal = pendingKinanceSignalsByTrace[payload.traceId]
         val kibotVeto = pendingKibotVetosByTrace[payload.traceId]
@@ -3130,6 +3906,215 @@ class MacEngineDaemon(
         return "Lead-lag callout aktif: ${payload.pairId} dari ${payload.senderBotId}, force rotate siap diprioritaskan."
     }
 
+    private fun nextUdpSequenceId(): Int = udpSequenceCounter.getAndIncrement().coerceAtLeast(1)
+
+    private fun senderCodeFor(botId: String): Byte = when {
+        botId.contains("kinance", ignoreCase = true) -> 1
+        botId.contains("kibot", ignoreCase = true) -> 2
+        botId.contains("kidax", ignoreCase = true) -> 3
+        else -> 15
+    }
+
+    private fun botIdForSenderCode(code: Byte): String = when (code.toInt()) {
+        1 -> "kinance"
+        2 -> "kibot"
+        3 -> "kidax"
+        else -> "unknown"
+    }
+
+    private fun trendCodeFor(trend: String): Byte = when {
+        trend.equals("REVERSAL", ignoreCase = true) -> 2
+        trend.equals("ANOMALY_UP", ignoreCase = true) -> 3
+        trend.equals("GRADUAL_UP", ignoreCase = true) -> 4
+        else -> 1
+    }
+
+    private fun trendForCode(code: Byte): String = when (code.toInt()) {
+        2 -> "REVERSAL"
+        3 -> "ANOMALY_UP"
+        4 -> "GRADUAL_UP"
+        else -> "UP"
+    }
+
+    private fun ByteBuffer.putFixedAscii(value: String?, length: Int) {
+        val bytes = (value ?: "").toByteArray(Charsets.US_ASCII).copyOf(length)
+        put(bytes)
+    }
+
+    private fun ByteBuffer.readFixedAscii(length: Int): String {
+        val bytes = ByteArray(length)
+        get(bytes)
+        return bytes.toString(Charsets.US_ASCII).trimEnd('\u0000', ' ').trim()
+    }
+
+    private fun trimUdpCommandCaches(now: Instant) {
+        val cutoff = now - (config.leadLagUdpDedupTtlMillis * 2L).milliseconds
+        udpRecentDedupKeys.entries.removeIf { (_, seenAt) -> seenAt < cutoff }
+        udpExecutionPrewarmByPair.entries.removeIf { (_, prewarm) -> prewarm.expiresAt <= now }
+    }
+
+    private fun shouldRejectUdpSequence(senderBotId: String, sequenceId: Int): Boolean {
+        val sender = senderBotId.trim().lowercase()
+        if (sender.isBlank()) return false
+        val lastSeen = udpLastSequenceBySender[sender] ?: run {
+            udpLastSequenceBySender[sender] = sequenceId
+            return false
+        }
+        if (sequenceId <= lastSeen) return true
+        val staleFloor = sequenceId + config.leadLagUdpSequenceWindowSize
+        if (staleFloor < lastSeen) return true
+        udpLastSequenceBySender[sender] = sequenceId
+        return false
+    }
+
+    private fun shouldRejectUdpDedup(dedupKey: String?, now: Instant): Boolean {
+        val key = dedupKey?.trim()?.takeIf { it.isNotBlank() } ?: return false
+        val seenAt = udpRecentDedupKeys[key] ?: run {
+            udpRecentDedupKeys[key] = now
+            return false
+        }
+        return if ((now - seenAt).inWholeMilliseconds <= config.leadLagUdpDedupTtlMillis) {
+            true
+        } else {
+            udpRecentDedupKeys[key] = now
+            false
+        }
+    }
+
+    private fun armUdpExecutionPrewarm(payload: LeadLagCalloutPayload, now: Instant) {
+        val pairId = PairId(payload.pairId)
+        val expiresAt = Instant.fromEpochMilliseconds(payload.sentAtEpochMs) + config.leadLagUdpPrewarmTtlMillis.milliseconds
+        udpExecutionPrewarmByPair[pairId.value.lowercase()] = UdpExecutionPrewarm(
+            traceId = payload.traceId,
+            pairId = pairId,
+            armedAt = now,
+            expiresAt = expiresAt,
+            msgType = payload.msgType.uppercase(),
+        )
+    }
+
+    private fun isUdpExecutionPrewarmActive(pairId: PairId, now: Instant): Boolean {
+        val prewarm = udpExecutionPrewarmByPair[pairId.value.lowercase()] ?: return false
+        if (prewarm.expiresAt <= now) {
+            udpExecutionPrewarmByPair.remove(pairId.value.lowercase())
+            return false
+        }
+        return true
+    }
+
+    private fun encodeBinaryLeadLagPacket(payload: LeadLagCalloutPayload): ByteArray? {
+        val msgType = UdpBinaryMessageType.fromMsgType(payload.msgType)
+        if (msgType == UdpBinaryMessageType.UNKNOWN) return null
+        val buffer = ByteBuffer.allocate(84).order(ByteOrder.BIG_ENDIAN)
+        buffer.put('K'.code.toByte())
+        buffer.put('B'.code.toByte())
+        buffer.put(1)
+        buffer.put(msgType.code)
+        var flags = 0
+        if (payload.forceRotation) flags = flags or 0x01
+        buffer.put(flags.toByte())
+        buffer.put(senderCodeFor(payload.senderBotId))
+        buffer.put(trendCodeFor(payload.trend))
+        buffer.put(0)
+        buffer.putInt(nextUdpSequenceId())
+        buffer.putLong(payload.sentAtEpochMs)
+        buffer.putLong(payload.detectedAtEpochMs)
+        buffer.putLong(payload.expiresAtEpochMs)
+        buffer.putInt(payload.traceId.hashCode())
+        buffer.putFixedAscii(payload.pairId, 24)
+        buffer.putFloat(payload.confidence.toFloat())
+        buffer.putFloat(payload.expectedNetPct.toFloat())
+        buffer.putFloat(payload.shortTermReturnPct.toFloat())
+        buffer.putFloat(payload.tradeActivityScore.toFloat())
+        return buffer.array()
+    }
+
+    private fun encodeBinaryHeartbeatPacket(payload: TrinityHeartbeatPayload): ByteArray {
+        val buffer = ByteBuffer.allocate(84).order(ByteOrder.BIG_ENDIAN)
+        buffer.put('K'.code.toByte())
+        buffer.put('B'.code.toByte())
+        buffer.put(1)
+        buffer.put(UdpBinaryMessageType.HEARTBEAT.code)
+        var flags = 0
+        if (payload.safeModeArmed) flags = flags or 0x02
+        buffer.put(flags.toByte())
+        buffer.put(senderCodeFor(payload.senderBotId))
+        buffer.put(0)
+        buffer.put(0)
+        buffer.putInt(nextUdpSequenceId())
+        buffer.putLong(payload.sentAtEpochMs)
+        buffer.putLong(payload.sentAtEpochMs)
+        buffer.putLong(payload.sentAtEpochMs + config.leadLagUdpHeartbeatTimeoutMillis)
+        buffer.putInt((payload.activePair ?: "").hashCode())
+        buffer.putFixedAscii(payload.activePair, 24)
+        repeat(4) { buffer.putFloat(0f) }
+        return buffer.array()
+    }
+
+    private fun decodeBinaryUdpPacket(packetBytes: ByteArray, length: Int): DecodedUdpPacket? {
+        if (length < 84) return null
+        val buffer = ByteBuffer.wrap(packetBytes, 0, length).order(ByteOrder.BIG_ENDIAN)
+        val magicA = buffer.get()
+        val magicB = buffer.get()
+        if (magicA != 'K'.code.toByte() || magicB != 'B'.code.toByte()) return null
+        val version = buffer.get()
+        if (version.toInt() != 1) return null
+        val msgType = UdpBinaryMessageType.fromCode(buffer.get())
+        val flags = buffer.get().toInt()
+        val senderBotId = botIdForSenderCode(buffer.get())
+        val trend = trendForCode(buffer.get())
+        buffer.get()
+        val sequenceId = buffer.int
+        val sentAtEpochMs = buffer.long
+        val detectedAtEpochMs = buffer.long
+        val expiresAtEpochMs = buffer.long
+        val traceHash = buffer.int
+        val pairId = buffer.readFixedAscii(24)
+        val confidence = buffer.float.toDouble()
+        val expectedNetPct = buffer.float.toDouble()
+        val shortTermReturnPct = buffer.float.toDouble()
+        val tradeActivityScore = buffer.float.toDouble()
+        return when (msgType) {
+            UdpBinaryMessageType.HEARTBEAT -> DecodedUdpPacket(
+                heartbeat = TrinityHeartbeatPayload(
+                    senderBotId = senderBotId,
+                    sentAtEpochMs = sentAtEpochMs,
+                    activePair = pairId.takeIf { it.isNotBlank() },
+                    safeModeArmed = flags and 0x02 != 0,
+                ),
+                senderBotId = senderBotId,
+                sequenceId = sequenceId,
+                binary = true,
+            )
+            UdpBinaryMessageType.UNKNOWN -> null
+            else -> {
+                val dedupKey = "${senderBotId.lowercase()}:${msgType.wireMsgType}:${pairId.lowercase()}:${traceHash}"
+                DecodedUdpPacket(
+                    leadLag = LeadLagCalloutPayload(
+                        msgType = msgType.wireMsgType,
+                        traceId = "udp-$traceHash",
+                        senderBotId = senderBotId,
+                        pairId = pairId,
+                        trend = trend,
+                        detectedAtEpochMs = detectedAtEpochMs,
+                        confidence = confidence,
+                        expectedNetPct = expectedNetPct,
+                        shortTermReturnPct = shortTermReturnPct,
+                        mediumTermReturnPct = 0.0,
+                        tradeActivityScore = tradeActivityScore,
+                        forceRotation = flags and 0x01 != 0,
+                        sentAtEpochMs = sentAtEpochMs,
+                        expiresAtEpochMs = expiresAtEpochMs,
+                    ),
+                    senderBotId = senderBotId,
+                    sequenceId = sequenceId,
+                    dedupKey = dedupKey,
+                    binary = true,
+                )
+            }
+        }
+    }
+
     private fun ensureLeadLagListenerInitialized() {
         if (!config.leadLagUdpEnabled) return
         if (leadLagListenerReady.get()) return
@@ -3146,12 +4131,32 @@ class MacEngineDaemon(
 
     private suspend fun pollLeadLagUdpCommands(now: Instant) {
         val socket = leadLagListenerSocket ?: return
+        trimUdpCommandCaches(now)
         repeat(4) {
             val buffer = ByteArray(4096)
             val packet = DatagramPacket(buffer, buffer.size)
             try {
                 socket.receive(packet)
+                val decodedBinary = if (config.leadLagUdpBinaryProtocolEnabled || config.leadLagUdpBinaryDualStackEnabled) {
+                    decodeBinaryUdpPacket(packet.data, packet.length)
+                } else {
+                    null
+                }
+                if (decodedBinary != null) {
+                    val senderBotId = decodedBinary.senderBotId.orEmpty()
+                    val sequenceId = decodedBinary.sequenceId
+                    if (sequenceId != null && shouldRejectUdpSequence(senderBotId, sequenceId)) return@repeat
+                    if (shouldRejectUdpDedup(decodedBinary.dedupKey, now)) return@repeat
+                    val heartbeat = decodedBinary.heartbeat
+                    if (heartbeat != null && handleTrinityHeartbeatPayload(json.encodeToString(heartbeat), now)) return@repeat
+                    val leadLag = decodedBinary.leadLag
+                    if (leadLag != null) {
+                        handleLeadLagPayload(json.encodeToString(leadLag), now)
+                        return@repeat
+                    }
+                }
                 val payload = String(packet.data, 0, packet.length, Charsets.UTF_8)
+                if (handleTrinityHeartbeatPayload(payload, now)) return@repeat
                 if (handleActivePositionsPayload(payload)) return@repeat
                 if (handleDynamicCorrelationPayload(payload)) return@repeat
                 if (handleAiProviderStatusPayload(payload, now)) return@repeat
@@ -3163,6 +4168,74 @@ class MacEngineDaemon(
                 return
             }
         }
+    }
+
+    private fun maybeEmitTrinityHeartbeat(now: Instant) {
+        if (!config.leadLagUdpEnabled || !config.leadLagUdpHeartbeatEnabled) return
+        if (config.leadLagUdpHeartbeatRequiredBotIds.isEmpty()) return
+        val lastSent = lastTrinityHeartbeatSentAt
+        if (lastSent != null && (now - lastSent).inWholeMilliseconds < config.leadLagUdpHeartbeatIntervalMillis) return
+        val payload = TrinityHeartbeatPayload(
+            senderBotId = config.controlPlane.botId.value,
+            sentAtEpochMs = now.toEpochMilliseconds(),
+            activePair = activeLeadLagCallout?.pairId?.value ?: lastSuperSexyTarget?.value,
+            safeModeArmed = trinityHeartbeatSafeModeReason != null,
+        )
+        if (sendLeadLagUdp(json.encodeToString(payload))) {
+            lastTrinityHeartbeatSentAt = now
+        }
+    }
+
+    private suspend fun enforceTrinityHeartbeatBrake(now: Instant): String? {
+        if (!config.leadLagUdpEnabled || !config.leadLagUdpHeartbeatEnabled) return null
+        val expectedBots = config.leadLagUdpHeartbeatRequiredBotIds
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() && it != config.controlPlane.botId.value.lowercase() }
+            .toSet()
+        if (expectedBots.isEmpty()) return null
+        val graceMs = maxOf(
+            config.leadLagUdpHeartbeatTimeoutMillis * 2L,
+            config.leadLagUdpHeartbeatIntervalMillis * 4L,
+        )
+        val uptimeMs = (now - daemonStartedAt).inWholeMilliseconds
+        if (uptimeMs < graceMs) return null
+        val stalePeers = expectedBots.mapNotNull { botId ->
+            val seenAt = lastTrinityHeartbeatByBotId[botId]
+            if (seenAt == null) {
+                "$botId:no_heartbeat"
+            } else {
+                val ageMs = (now - seenAt).inWholeMilliseconds
+                if (ageMs > config.leadLagUdpHeartbeatTimeoutMillis) "$botId:${ageMs}ms" else null
+            }
+        }
+        if (stalePeers.isEmpty()) {
+            val previousReason = trinityHeartbeatSafeModeReason
+            if (previousReason != null) {
+                trinityHeartbeatSafeModeReason = null
+                repository.noteStatus("Trinity heartbeat pulih; safe mode dilepas.")
+                appendAuditLog(
+                    level = LogLevel.INFO,
+                    category = "TRINITY_HEARTBEAT",
+                    message = "Trinity heartbeat recovered; safe mode cleared.",
+                )
+            }
+            return null
+        }
+        val reason = "Trinity heartbeat timeout: ${stalePeers.joinToString(", ")}. Safe mode aktif, entry baru dibekukan."
+        if (trinityHeartbeatSafeModeReason == null) {
+            trinityHeartbeatSafeModeReason = reason
+            controlPlane.markConflictSafeMode(
+                botId = config.controlPlane.botId,
+                reason = reason,
+            )
+            repository.noteStatus(reason)
+            appendAuditLog(
+                level = LogLevel.ERROR,
+                category = "TRINITY_HEARTBEAT",
+                message = reason,
+            )
+        }
+        return reason
     }
 
     private fun handleActivePositionsPayload(payload: String): Boolean {
@@ -3222,6 +4295,18 @@ class MacEngineDaemon(
                 else -> "AI LIMITED (provider failover)"
             }
             aiRuntimeProviderStatusAt = now
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun handleTrinityHeartbeatPayload(payload: String, now: Instant): Boolean {
+        return runCatching {
+            val heartbeat = json.decodeFromString<TrinityHeartbeatPayload>(payload)
+            if (heartbeat.kind != "trinity_state") return false
+            if (!heartbeat.msgType.equals("HEARTBEAT", ignoreCase = true)) return false
+            val sender = heartbeat.senderBotId.trim().lowercase()
+            if (sender.isBlank() || sender == config.controlPlane.botId.value.lowercase()) return true
+            lastTrinityHeartbeatByBotId[sender] = now
             true
         }.getOrDefault(false)
     }
@@ -3410,9 +4495,33 @@ class MacEngineDaemon(
         if (!shouldRefresh(now, recentOrdersFetchedAt, config.recentOrdersRefreshIntervalMillis, force = recentOrdersFetchedAt == null)) {
             return cachedRecentOrders
         }
-        cachedRecentOrders = runCatching {
+        val fetchedOrders = runCatching {
             controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 200)
         }.getOrElse { cachedRecentOrders }
+        if (!config.localPositionStateEnabled) {
+            cachedRecentOrders = fetchedOrders
+            recentOrdersFetchedAt = now
+            return cachedRecentOrders
+        }
+        cachedRecentOrders = if (fetchedOrders.isNotEmpty()) {
+            fetchedOrders
+        } else {
+            val localOrders = loadLocalPositionState().orders
+            if (localOrders.isNotEmpty() && !localRecoveryFallbackAnnounced) {
+                localRecoveryFallbackAnnounced = true
+                val message = "Recovery audit: remote order snapshot kosong, fallback ke local position state."
+                repository.noteStatus(message)
+                appendAuditLog(
+                    level = LogLevel.INFO,
+                    category = "LOCAL_RECOVERY",
+                    message = message,
+                )
+            }
+            mergeRecentOrders(
+                base = fetchedOrders,
+                updates = localOrders,
+            )
+        }
         recentOrdersFetchedAt = now
         return cachedRecentOrders
     }
@@ -3573,6 +4682,11 @@ class MacEngineDaemon(
             rankedPairs = cycle.rankedPairs,
             now = now,
         )
+        persistLocalPositionState(
+            now = now,
+            recentOrders = stabilizedOrders,
+            managedPositions = managedPositions,
+        )
         maybeBroadcastActivePositions(
             now = now,
             balances = balances,
@@ -3641,6 +4755,11 @@ class MacEngineDaemon(
             balances = balances,
             cycle = cycle,
         )
+        val trinityHeartbeatEmergencyExit = planTrinityHeartbeatEmergencyExit(
+            managedPositions = managedPositions,
+            activeOrders = activePersistedOrders,
+            cycle = cycle,
+        )
         val crashHardStopExit = planCrashHardStopExit(
             managedPositions = managedPositions,
             activeOrders = activePersistedOrders,
@@ -3655,7 +4774,7 @@ class MacEngineDaemon(
             hungry = hyperAggressiveTracker.hungry,
             marketQuotes = marketQuotes,
         )
-        val exitDecision = emergencyGarbageExit ?: opportunityCostExit ?: emergencyLiquidityExit ?: crashHardStopExit ?: localAutonomyTrailingExit ?: forcedSellExit ?: hyperAggressiveTrailingExit ?: hyperAggressiveRotationExit ?: leadLagTrailingExit ?: adaptiveCoordinator.planExit(
+        val exitDecision = trinityHeartbeatEmergencyExit ?: emergencyGarbageExit ?: opportunityCostExit ?: emergencyLiquidityExit ?: crashHardStopExit ?: localAutonomyTrailingExit ?: forcedSellExit ?: hyperAggressiveTrailingExit ?: hyperAggressiveRotationExit ?: leadLagTrailingExit ?: adaptiveCoordinator.planExit(
             now = now,
             cycle = cycle,
             managedPositions = managedPositions,
@@ -3663,7 +4782,7 @@ class MacEngineDaemon(
         ) ?: cleanupRotationExit
         val filteredExitDecision = exitDecision?.takeUnless { decision ->
             val pairKey = decision.executionPlan.signal.pairId.value.lowercase()
-            if (!dustQuarantinePairs.contains(pairKey)) return@takeUnless false
+            if (!dustQuarantinePairs.contains(pairKey) && pairKey !in garbageNukePairs) return@takeUnless false
             val bid = marketQuotes
                 .firstOrNull { it.pairId == decision.executionPlan.signal.pairId }
                 ?.bestBid
@@ -3673,10 +4792,10 @@ class MacEngineDaemon(
                     .firstOrNull { it.pairId == decision.executionPlan.signal.pairId }
                     ?.midPrice
                     ?.toDoubleOrZero()
-                    ?.takeIf { it > 0.0 }
-                ?: 0.0
+                ?.takeIf { it > 0.0 }
+            ?: 0.0
             val notional = decision.executionPlan.quantity.toDoubleOrZero() * bid
-            notional < minimumLiveNotionalForExchange()
+            notional < minimumLiveNotionalForExchange() && pairKey !in garbageNukePairs
         }
         if (filteredExitDecision != null) {
             logger.info(
@@ -3818,27 +4937,18 @@ class MacEngineDaemon(
                     )
                 }
                 val exitedHyperPair = hyperAggressiveEntryReasonByPair[pairKey] != null
-                if (filteredExitDecision.message.startsWith("HyperAggressive rotation:", ignoreCase = true)) {
-                    appendAuditLog(
-                        level = LogLevel.INFO,
-                        category = "SELL_ROTATION",
-                        message = "SELL_ROTATION ${filteredExitDecision.executionPlan.signal.pairId.value} untuk mengejar ${sexyMomentumTargets.firstOrNull()?.value ?: "target_momentum"}.",
-                    )
-                    continueToEntryAfterExit = true
-                } else if (filteredExitDecision.message.startsWith("HyperAggressive ALL_IN liquidation:", ignoreCase = true)) {
-                    appendAuditLog(
-                        level = LogLevel.INFO,
-                        category = "LIQUIDATED_FOR_ALL_IN",
-                        message = "LIQUIDATED_FOR_ALL_IN ${filteredExitDecision.executionPlan.signal.pairId.value} -> ${(superSexyTarget ?: sexyMomentumTargets.firstOrNull())?.value ?: "target_all_in"}.",
-                    )
-                    continueToEntryAfterExit = true
-                } else if (exitedHyperPair) {
-                    // Re-entry protocol: selesai anomaly trade, langsung balik isi wallet baseline lagi.
-                    continueToEntryAfterExit = true
-                }
-                if (!isPartialExit && config.exchangeKind == ExchangeKind.INDODAX) {
-                    // Zero idle cash directive: setelah ada sell, langsung lanjut cari entry berikutnya.
-                    continueToEntryAfterExit = true
+                val allowFastReEntry =
+                    filteredExitDecision.position.unrealizedPnlPct > 0.0 ||
+                        filteredExitDecision.reason == com.kibot.core.ExitReason.PROFIT_EXIT ||
+                        filteredExitDecision.reason == com.kibot.core.ExitReason.PROFIT_PROTECTION_EXIT
+                continueToEntryAfterExit = when {
+                    filteredExitDecision.message.startsWith("HyperAggressive rotation:", ignoreCase = true) ->
+                        allowFastReEntry
+                    filteredExitDecision.message.startsWith("HyperAggressive ALL_IN liquidation:", ignoreCase = true) ->
+                        allowFastReEntry
+                    exitedHyperPair ->
+                        allowFastReEntry
+                    else -> false
                 }
                 if (!isPartialExit) {
                     leadLagEntrySubmittedAtByPair.remove(pairKey)
@@ -3851,8 +4961,19 @@ class MacEngineDaemon(
                     hyperAggressiveEntryReasonByPair.remove(pairKey)
                     partialTakeProfitExecutedByPair.remove(pairKey)
                 }
+                if (filteredExitDecision.reason == com.kibot.core.ExitReason.STOP_LOSS_EXIT) {
+                    recordStopLossToxicEvent(
+                        now = now,
+                        pairId = filteredExitDecision.executionPlan.signal.pairId,
+                        marketQuotes = marketQuotes,
+                    )
+                }
             }
             if (!continueToEntryAfterExit) return
+        }
+        if (trinityHeartbeatSafeModeReason != null) {
+            logWhyNotBuy(now, "entry", "trinity_heartbeat_safe_mode")
+            return
         }
 
         val directHyperEntrySubmitted = maybeSubmitDirectHyperAggressiveEntry(
@@ -3915,14 +5036,14 @@ class MacEngineDaemon(
             }
         } else {
             candidateExecutionPlans
+        }.let { prioritized ->
+            prioritizeExecutionPlansByChartAndCapital(
+                executionPlans = prioritized,
+                balances = balances,
+                marketQuotes = marketQuotes,
+            )
         }
-        // SINGLE MODE AGRESIF CUAN: do not stop entries behind defensive mode gates.
-        val entryManagedPositions = if (config.exchangeKind == ExchangeKind.INDODAX) {
-            // Force reset baseline assumption: treat wallet as ready-to-fire from fiat perspective.
-            emptyList()
-        } else {
-            managedPositions
-        }
+        val entryManagedPositions = managedPositions
         val activeBuyOrders = activePersistedOrders.filter { it.side == com.kibot.shared.models.OrderSide.BUY }
         val availableEntrySlots = (
             cycle.deploymentPlan.maxActivePositions -
@@ -3934,21 +5055,11 @@ class MacEngineDaemon(
             availableEntrySlots = availableEntrySlots,
             candidateExecutionPlans = prioritizedExecutionPlans,
         )
-        val forceWalletOccupancy =
-            true &&
-                activeBuyOrders.isEmpty() &&
-                prioritizedExecutionPlans.isNotEmpty() &&
-                true
-
-        if (batchLimit <= 0 && !cycle.deploymentPlan.allowRotation) {
-            logWhyNotBuy(now, "baseline", if (forceWalletOccupancy) "wallet_force_occupancy_waiting_slot" else "slot_or_pending_buy_full")
-            if (!forceWalletOccupancy) return
-        }
-
-        val effectiveBatchLimit = if (forceWalletOccupancy) maxOf(1, batchLimit) else batchLimit
-        if (effectiveBatchLimit <= 0 && !forceWalletOccupancy) {
+        if (batchLimit <= 0) {
+            logWhyNotBuy(now, "baseline", "slot_or_pending_buy_full")
             return
         }
+        val effectiveBatchLimit = batchLimit
 
         var workingOrders = activePersistedOrders
         var submittedCount = 0
@@ -3968,13 +5079,12 @@ class MacEngineDaemon(
                 cycle = cycle,
                 executionPlan = candidatePlan,
                 managedPositions = managedPositions,
+                activeOrders = workingOrders,
                 leadLagPriorityPair = leadLagPriorityPair,
             )?.let { blockedReason ->
                 lastBlockedReason = blockedReason
                 return@forEach
             }
-
-            // V4.4 Absolute Unleash: bypass all static historical rollout gates.
 
             val routedEntry = routeEntryPlanByLatency(
                 executionPlan = candidatePlan,
@@ -4014,6 +5124,15 @@ class MacEngineDaemon(
                 lastBlockedReason = antiKoinMahalBlocked
                 return@forEach
             }
+            val capitalMismatchBlocked = entryBlockedByCapitalMismatch(
+                executionPlan = effectiveExecutionPlan,
+                balances = balances,
+                marketQuotes = marketQuotes,
+            )
+            if (capitalMismatchBlocked != null) {
+                lastBlockedReason = capitalMismatchBlocked
+                return@forEach
+            }
             val blueChipBlocked = entryBlockedByBlueChipVolume(
                 executionPlan = effectiveExecutionPlan,
                 marketQuotes = marketQuotes,
@@ -4050,6 +5169,7 @@ class MacEngineDaemon(
                     marketQuotes = marketQuotes,
                 )
                 val activeCallout = activeLeadLagCallout
+                val prewarmed = isUdpExecutionPrewarmActive(effectiveExecutionPlan.signal.pairId, now)
                 if (activeCallout != null &&
                     activeCallout.pairId == effectiveExecutionPlan.signal.pairId &&
                     activeCallout.trend.equals("GRADUAL_UP", ignoreCase = true)
@@ -4064,6 +5184,13 @@ class MacEngineDaemon(
                         )
                     }
                 } else if (activeCallout != null && activeCallout.pairId == effectiveExecutionPlan.signal.pairId) {
+                    effectiveExecutionPlan = effectiveExecutionPlan.copy(
+                        orderType = com.kibot.shared.models.OrderType.MARKET,
+                        limitPrice = null,
+                        postOnlyPreferred = false,
+                    )
+                }
+                if (prewarmed) {
                     effectiveExecutionPlan = effectiveExecutionPlan.copy(
                         orderType = com.kibot.shared.models.OrderType.MARKET,
                         limitPrice = null,
@@ -4102,7 +5229,26 @@ class MacEngineDaemon(
                 lastBlockedReason = "spread_cap_enforcement_failed"
                 return@forEach
             }
+            effectiveExecutionPlan = routeByChartAnalyzer(
+                executionPlan = effectiveExecutionPlan,
+                marketQuotes = marketQuotes,
+            ) ?: run {
+                lastBlockedReason = "chart_analyzer_vetoed_entry"
+                return@forEach
+            }
+            effectiveExecutionPlan = routeByAntiSpoofRadar(
+                executionPlan = effectiveExecutionPlan,
+                marketQuotes = marketQuotes,
+                now = now,
+            ) ?: run {
+                lastBlockedReason = "anti_spoof_radar_blocked_entry"
+                return@forEach
+            }
             effectiveExecutionPlan = routeByDepthGuard(
+                executionPlan = effectiveExecutionPlan,
+                marketQuotes = marketQuotes,
+            )
+            effectiveExecutionPlan = applyAdaptiveOrderSlicing(
                 executionPlan = effectiveExecutionPlan,
                 marketQuotes = marketQuotes,
             )
@@ -4140,6 +5286,7 @@ class MacEngineDaemon(
             if (result.submitted) {
                 submittedCount += 1
                 val pairKey = effectiveExecutionPlan.signal.pairId.value.lowercase()
+                udpExecutionPrewarmByPair.remove(pairKey)
                 partialTakeProfitExecutedByPair[pairKey] = false
                 val entryAt = now
                 if (hyperAggressiveTracker.hungry) {
@@ -4316,6 +5463,19 @@ class MacEngineDaemon(
         return freshPersistedBuys
     }
 
+    private fun hasRotationExitInFlight(
+        managedPositions: List<com.kibot.core.ManagedPosition>,
+        activePersistedOrders: List<com.kibot.shared.models.OrderSnapshot>,
+    ): Boolean {
+        if (managedPositions.isEmpty()) return false
+        val activeSellPairs = activePersistedOrders
+            .filter { it.status in activeOrderStatuses && it.side == com.kibot.shared.models.OrderSide.SELL }
+            .map { it.pairId }
+            .toSet()
+        if (activeSellPairs.isEmpty()) return false
+        return managedPositions.any { it.pairId in activeSellPairs }
+    }
+
     private fun maybeBroadcastActivePositions(
         now: Instant,
         balances: List<BalanceSnapshot>,
@@ -4411,6 +5571,13 @@ class MacEngineDaemon(
             executionPlan = adaptedSynthetic,
             marketQuotes = marketQuotes,
         ) ?: return false
+        normalizedSynthetic = routeByChartAnalyzer(
+            executionPlan = normalizedSynthetic,
+            marketQuotes = marketQuotes,
+        ) ?: run {
+            logWhyNotBuy(now, target.pairId.value, "chart_guard_blocked_hyper_entry")
+            return false
+        }
         // Maker optimization for non-spike entries (gradual/sexy). Keep MARKET for anomaly spikes.
         if (target.kind == HyperTargetKind.SEXY) {
             val quote = marketQuotes.firstOrNull { it.pairId == target.pairId }
@@ -4454,6 +5621,19 @@ class MacEngineDaemon(
             )
             return false
         }
+        val capitalMismatchBlocked = entryBlockedByCapitalMismatch(
+            executionPlan = normalizedSynthetic,
+            balances = balances,
+            marketQuotes = marketQuotes,
+        )
+        if (capitalMismatchBlocked != null) {
+            appendAuditLog(
+                level = LogLevel.INFO,
+                category = "ENTRY_POLICY",
+                message = capitalMismatchBlocked,
+            )
+            return false
+        }
         val blueChipBlocked = entryBlockedByBlueChipVolume(
             executionPlan = normalizedSynthetic,
             marketQuotes = marketQuotes,
@@ -4470,6 +5650,10 @@ class MacEngineDaemon(
             return false
         }
         normalizedSynthetic = routeByDepthGuard(
+            executionPlan = normalizedSynthetic,
+            marketQuotes = marketQuotes,
+        )
+        normalizedSynthetic = applyAdaptiveOrderSlicing(
             executionPlan = normalizedSynthetic,
             marketQuotes = marketQuotes,
         )
@@ -4519,7 +5703,11 @@ class MacEngineDaemon(
     ): Boolean {
         if (config.exchangeKind != ExchangeKind.INDODAX) return false
         if (globalCooldownUntil?.let { now < it } == true) return false
-        if (managedPositions.isNotEmpty()) return false
+        val rotationExitInFlight = hasRotationExitInFlight(
+            managedPositions = managedPositions,
+            activePersistedOrders = activePersistedOrders,
+        )
+        if (managedPositions.isNotEmpty() && !rotationExitInFlight) return false
         val activeBuy = hasActiveBuyLock(
             now = now,
             activePersistedOrders = activePersistedOrders,
@@ -4535,6 +5723,13 @@ class MacEngineDaemon(
             .filter { it.midPrice.toDoubleOrZero() > 0.0 }
             .filter { it.spreadPct <= 3.0 }
             .filter { it.estimatedSlippagePct <= 2.4 }
+            .filter { quote ->
+                val entryPrice = quote.bestAsk.toDoubleOrZero().takeIf { it > 0.0 }
+                    ?: quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 }
+                    ?: 0.0
+                val affordabilityRatio = if (entryPrice > 0.0) idrFree / entryPrice else 0.0
+                idrFree > 150_000.0 || affordabilityRatio >= 4.0
+            }
             .filter { quote ->
                 isDynamicVipActive(quote.pairId, now) ||
                     hasStrongGlobalSentiment(quote.pairId) ||
@@ -4622,11 +5817,39 @@ class MacEngineDaemon(
             speculativePocket = false,
         )
         var normalized = normalizeExecutionPlanForVenue(executionPlan, marketQuotes) ?: return false
+        normalized = routeByChartAnalyzer(
+            executionPlan = normalized,
+            marketQuotes = marketQuotes,
+        ) ?: run {
+            logWhyNotBuy(now, targetQuote.pairId.value, "chart_guard_blocked_dynamic_vip")
+            return false
+        }
+        val slippageGuardFailure = evaluateLeadLagSlippageGuard(
+            now = now,
+            executionPlan = normalized,
+            marketQuotes = marketQuotes,
+        )
+        if (slippageGuardFailure != null) {
+            logWhyNotBuy(now, targetQuote.pairId.value, slippageGuardFailure)
+            return false
+        }
         normalized = routeByDepthGuard(
             executionPlan = normalized,
             marketQuotes = marketQuotes,
         )
+        normalized = applyAdaptiveOrderSlicing(
+            executionPlan = normalized,
+            marketQuotes = marketQuotes,
+        )
         entryBlockedByAntiKoinMahal(
+            executionPlan = normalized,
+            balances = balances,
+            marketQuotes = marketQuotes,
+        )?.let { blocked ->
+            logWhyNotBuy(now, targetQuote.pairId.value, blocked)
+            return false
+        }
+        entryBlockedByCapitalMismatch(
             executionPlan = normalized,
             balances = balances,
             marketQuotes = marketQuotes,
@@ -4688,7 +5911,11 @@ class MacEngineDaemon(
             logWhyNotBuy(now, "baseline", "GLOBAL_COOLDOWN_ACTIVE sampai ${formatJktTime(globalCooldownUntil!!)}")
             return false
         }
-        if (managedPositions.isNotEmpty()) {
+        val rotationExitInFlight = hasRotationExitInFlight(
+            managedPositions = managedPositions,
+            activePersistedOrders = activePersistedOrders,
+        )
+        if (managedPositions.isNotEmpty() && !rotationExitInFlight) {
             logWhyNotBuy(now, "baseline", "existing_managed_positions")
             return false
         }
@@ -4713,6 +5940,13 @@ class MacEngineDaemon(
             .filter { it.spreadPct <= 2.8 }
             .filter { it.estimatedSlippagePct <= 2.2 }
             .filter { it.midPrice.toDoubleOrZero() > 0.0 }
+            .filter { quote ->
+                val entryPrice = quote.bestAsk.toDoubleOrZero().takeIf { it > 0.0 }
+                    ?: quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 }
+                    ?: 0.0
+                val affordabilityRatio = if (entryPrice > 0.0) idrFree / entryPrice else 0.0
+                idrFree > 150_000.0 || affordabilityRatio >= 4.0
+            }
             .toList()
         val targetQuote = baselineCandidates
             .asSequence()
@@ -4794,8 +6028,24 @@ class MacEngineDaemon(
             pairRankingScore = pairScore,
             speculativePocket = false,
         )
-        val normalized = normalizeExecutionPlanForVenue(executionPlan, marketQuotes) ?: run {
+        var normalized = normalizeExecutionPlanForVenue(executionPlan, marketQuotes) ?: run {
             logWhyNotBuy(now, targetQuote.pairId.value, "venue_normalization_failed")
+            return false
+        }
+        normalized = routeByChartAnalyzer(
+            executionPlan = normalized,
+            marketQuotes = marketQuotes,
+        ) ?: run {
+            logWhyNotBuy(now, targetQuote.pairId.value, "chart_guard_blocked_baseline")
+            return false
+        }
+        val slippageGuardFailure = evaluateLeadLagSlippageGuard(
+            now = now,
+            executionPlan = normalized,
+            marketQuotes = marketQuotes,
+        )
+        if (slippageGuardFailure != null) {
+            logWhyNotBuy(now, targetQuote.pairId.value, slippageGuardFailure)
             return false
         }
         val antiKoinMahalBlocked = entryBlockedByAntiKoinMahal(
@@ -4805,6 +6055,15 @@ class MacEngineDaemon(
         )
         if (antiKoinMahalBlocked != null) {
             logWhyNotBuy(now, targetQuote.pairId.value, antiKoinMahalBlocked)
+            return false
+        }
+        val capitalMismatchBlocked = entryBlockedByCapitalMismatch(
+            executionPlan = normalized,
+            balances = balances,
+            marketQuotes = marketQuotes,
+        )
+        if (capitalMismatchBlocked != null) {
+            logWhyNotBuy(now, targetQuote.pairId.value, capitalMismatchBlocked)
             return false
         }
         val blueChipBlocked = entryBlockedByBlueChipVolume(
@@ -4822,6 +6081,10 @@ class MacEngineDaemon(
             logWhyNotBuy(now, targetQuote.pairId.value, shortFlatChartBlocked)
             return false
         }
+        normalized = applyAdaptiveOrderSlicing(
+            executionPlan = normalized,
+            marketQuotes = marketQuotes,
+        )
         val result = liveExecutionCoordinator.submitEntry(
             botId = config.controlPlane.botId,
             deviceId = config.device.deviceId,
@@ -5169,6 +6432,7 @@ class MacEngineDaemon(
         cycle: com.kibot.core.StrategyCycleResult,
         executionPlan: com.kibot.shared.models.ExecutionPlan,
         managedPositions: List<com.kibot.core.ManagedPosition>,
+        activeOrders: List<com.kibot.shared.models.OrderSnapshot>,
         leadLagPriorityPair: com.kibot.shared.models.PairId?,
     ): String? {
         if (managedPositions.isEmpty()) return null
@@ -5181,6 +6445,15 @@ class MacEngineDaemon(
         val slotsAreFull = managedPositions.size >= cycle.deploymentPlan.maxActivePositions.coerceAtLeast(1)
 
         if (!slotsAreFull) return null
+
+        val activeSellPairs = activeOrders
+            .filter { it.status in activeOrderStatuses && it.side == com.kibot.shared.models.OrderSide.SELL }
+            .map { it.pairId }
+            .toSet()
+        if (activeSellPairs.isNotEmpty() && cycle.deploymentPlan.allowRotation) {
+            val managedWaitingToExit = managedPositions.count { it.pairId in activeSellPairs }
+            if (managedWaitingToExit >= 1) return null
+        }
 
         if (leadLagPriorityPair != null && executionPlan.signal.pairId == leadLagPriorityPair && config.leadLagForceRotationOnReceive) {
             return null
@@ -5270,11 +6543,15 @@ class MacEngineDaemon(
                             pairRankingScore = ranked?.rankingScore ?: 0.70,
                             speculativePocket = true,
                         )
+                        val slicedChasePlan = applyAdaptiveOrderSlicing(
+                            executionPlan = chasePlan,
+                            marketQuotes = quoteByPair.values.toList(),
+                        )
                         val chaseResult = liveExecutionCoordinator.submitEntry(
                             botId = config.controlPlane.botId,
                             deviceId = config.device.deviceId,
                             term = lease.term,
-                            executionPlan = chasePlan,
+                            executionPlan = slicedChasePlan,
                             existingPersistedOrders = recentOrders,
                             exchange = exchange,
                             controlPlane = controlPlane,
@@ -5407,7 +6684,7 @@ class MacEngineDaemon(
         recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
     ): com.kibot.shared.models.WeeklyLearningSummary? {
         val shouldPublish = lastWeeklyReviewPublishedAt == null ||
-            (now - lastWeeklyReviewPublishedAt!!).inWholeHours >= 6
+            (now - lastWeeklyReviewPublishedAt!!).inWholeHours >= 1
         if (!shouldPublish) return currentWeeklyReview
 
         val summary = liveLearningReviewBuilder.build(
@@ -5445,7 +6722,7 @@ class MacEngineDaemon(
 
         val shouldPublish = lastLearningPublishedAt == null ||
             decision.signature != lastLearningSignature ||
-            (now - lastLearningPublishedAt!!).inWholeHours >= 6
+            (now - lastLearningPublishedAt!!).inWholeHours >= 1
         if (!shouldPublish) return
 
         decision.learningHints.take(2).forEach { hint ->
@@ -5546,14 +6823,11 @@ class MacEngineDaemon(
         healthDecision: com.kibot.core.EntryHealthDecision,
     ): BotEffectiveState {
         if (botState.desiredState == BotDesiredState.OFF) return BotEffectiveState.STOPPED
-        return if (healthDecision.tradingAllowed) {
-            if (lease.isHeldBy(config.device.deviceId, Clock.System.now())) {
-                BotEffectiveState.RUNNING
-            } else {
-                BotEffectiveState.STARTING
-            }
-        } else {
-            BotEffectiveState.DEGRADED
+        val leaseHeld = lease.isHeldBy(config.device.deviceId, Clock.System.now())
+        return when {
+            healthDecision.tradingAllowed -> BotEffectiveState.RUNNING
+            leaseHeld -> BotEffectiveState.DEGRADED
+            else -> BotEffectiveState.DEGRADED
         }
     }
 
@@ -5595,18 +6869,44 @@ class MacEngineDaemon(
             ?: dailyRisk?.currentEquityIdr?.toDoubleOrZero()
             ?: parseMonetaryLabel(repository.state.value.portfolioValueIdr)
             ?: 0.0
+        val manualResetBaseline = resolvePnlResetBaseline(jakartaDate)
         val freeIdr = balances
             .firstOrNull { it.asset.equals(referenceQuoteAsset(), ignoreCase = true) }
             ?.let { it.free.toDoubleOrZero() + it.locked.toDoubleOrZero() }
             ?.coerceAtLeast(0.0)
             ?: 0.0
-        val pnlToday = dailyRisk?.let {
-            it.realizedPnlIdr.toDoubleOrZero() + it.unrealizedPnlIdr.toDoubleOrZero()
-        } ?: 0.0
-        val openingEquity = (portfolioValue - pnlToday).takeIf { it > 0.0 }
+        val pnlToday = manualResetBaseline?.let { portfolioValue - it }
+            ?: dailyRisk?.let {
+                it.realizedPnlIdr.toDoubleOrZero() + it.unrealizedPnlIdr.toDoubleOrZero()
+            }
+            ?: 0.0
+        val openingEquity = manualResetBaseline?.takeIf { it > 0.0 }
+            ?: (portfolioValue - pnlToday).takeIf { it > 0.0 }
         val pnlTodayPctLabel = openingEquity
             ?.let { formatSignedPercent(pnlToday / it) }
             ?: "+0.0%"
+        val avgEntryByPair = mutableMapOf<String, Pair<Double, Double>>() // pair -> qty, avg entry
+        recentOrders.sortedBy { it.updatedAt }.forEach { order ->
+            val pair = order.pairId.value.lowercase()
+            val quantity = max(order.executedQuantity.toDoubleOrZero(), order.originalQuantity.toDoubleOrZero())
+            val price = order.price.toDoubleOrZero().coerceAtLeast(0.0)
+            if (quantity <= 0.0 || price <= 0.0) return@forEach
+            when (order.side.name.uppercase()) {
+                "BUY" -> {
+                    val (prevQty, prevAvg) = avgEntryByPair[pair] ?: (0.0 to price)
+                    val nextQty = prevQty + quantity
+                    val nextAvg = if (nextQty > 0.0) ((prevQty * prevAvg) + (quantity * price)) / nextQty else price
+                    avgEntryByPair[pair] = nextQty to nextAvg
+                }
+                "SELL" -> {
+                    val (heldQty, avgEntry) = avgEntryByPair[pair] ?: (0.0 to 0.0)
+                    val nextQty = (heldQty - quantity).coerceAtLeast(0.0)
+                    if (avgEntry > 0.0) {
+                        avgEntryByPair[pair] = nextQty to avgEntry
+                    }
+                }
+            }
+        }
         val heldAssets = balances
             .filterNot { it.asset.equals(referenceQuoteAsset(), ignoreCase = true) }
             .mapNotNull { balance ->
@@ -5628,11 +6928,26 @@ class MacEngineDaemon(
                     ?: quoteAssetReferencePrice(balance.asset, marketQuotes)?.let { it * quantity }
                     ?: 0.0
                 if (assetValueIdr < dustUiHideMinValueIdr) return@mapNotNull null
+                val pairKey = "${balance.asset.lowercase()}_${referenceQuoteAsset()}".lowercase()
+                val avgEntry = avgEntryByPair[pairKey]?.second ?: 0.0
+                val currentPrice = quoteAssetReferencePrice(balance.asset, marketQuotes)?.takeIf { it > 0.0 } ?: 0.0
+                val pnlIdr = if (avgEntry > 0.0 && currentPrice > 0.0) {
+                    (currentPrice - avgEntry) * quantity
+                } else 0.0
+                val pnlPct = if (avgEntry > 0.0 && currentPrice > 0.0) {
+                    ((currentPrice - avgEntry) / avgEntry) * 100.0
+                } else {
+                    0.0
+                }
                 com.kibot.macengine.state.MacHoldingDetail(
                     assetCode = assetCode,
                     assetLabel = displayAssetLabel(balance.asset),
                     quantityLabel = "${formatDecimal(quantity, 8)} $assetCode",
                     valueIdrLabel = formatMonetary(assetValueIdr),
+                    entryPriceLabel = formatMonetary(avgEntry),
+                    currentPriceLabel = formatMonetary(currentPrice),
+                    pnlIdrLabel = formatSignedMonetary(pnlIdr),
+                    pnlPctLabel = formatSignedPercent(pnlPct / 100.0),
                 )
             }
             .sortedByDescending { detail -> parseMonetaryLabel(detail.valueIdrLabel) ?: 0.0 }
@@ -5705,6 +7020,8 @@ class MacEngineDaemon(
                 val quantity = max(order.executedQuantity.toDoubleOrZero(), order.originalQuantity.toDoubleOrZero())
                 val price = order.price.toDoubleOrZero().coerceAtLeast(0.0)
                 val side = order.side.name.uppercase()
+                var pnlIdrLabel = ""
+                var pnlPctLabel = ""
                 val detail = when {
                     quantity <= 0.0 || price <= 0.0 -> "${formatDecimal(quantity, 8)} @ ${formatMonetary(price)}"
                     side == "BUY" -> {
@@ -5719,8 +7036,16 @@ class MacEngineDaemon(
                         val estimatedPnl = if (avgBuy > 0.0) (price - avgBuy) * quantity else 0.0
                         val outcome = when {
                             avgBuy <= 0.0 -> "PnL n/a"
-                            estimatedPnl >= 0.0 -> "Untung ${formatSignedMonetary(estimatedPnl)}"
-                            else -> "Rugi ${formatSignedMonetary(estimatedPnl)}"
+                            estimatedPnl >= 0.0 -> {
+                                pnlIdrLabel = formatSignedMonetary(estimatedPnl)
+                                pnlPctLabel = if (avgBuy > 0.0 && quantity > 0.0) formatSignedPercent((estimatedPnl / (avgBuy * quantity)) * 100.0) else "+0.0%"
+                                "Untung ${formatSignedMonetary(estimatedPnl)}"
+                            }
+                            else -> {
+                                pnlIdrLabel = formatSignedMonetary(estimatedPnl)
+                                pnlPctLabel = if (avgBuy > 0.0 && quantity > 0.0) formatSignedPercent((estimatedPnl / (avgBuy * quantity)) * 100.0) else "+0.0%"
+                                "Rugi ${formatSignedMonetary(estimatedPnl)}"
+                            }
                         }
                         val nextHeldQty = (heldQty - quantity).coerceAtLeast(0.0)
                         if (avgBuy > 0.0) {
@@ -5736,6 +7061,8 @@ class MacEngineDaemon(
                     side = order.side.name,
                     status = order.status.name,
                     detail = detail,
+                    pnlIdrLabel = pnlIdrLabel,
+                    pnlPctLabel = pnlPctLabel,
                 )
             }
             .sortedByDescending { it.timestampEpochMs }
@@ -5761,18 +7088,24 @@ class MacEngineDaemon(
             history = equityHistory,
             currentDate = jakartaDate,
             rangeStart = startOfWeek(jakartaDate),
-            fallbackEquity = portfolioValue,
+            fallbackEquity = manualResetBaseline ?: portfolioValue,
         )
         val monthlyBaseline = resolveReturnBaseline(
             history = equityHistory,
             currentDate = jakartaDate,
             rangeStart = LocalDate(jakartaDate.year, jakartaDate.month, 1),
-            fallbackEquity = portfolioValue,
+            fallbackEquity = manualResetBaseline ?: portfolioValue,
         )
-        val return7d = portfolioValue - weeklyBaseline
-        val return7dPct = if (weeklyBaseline > 0.0) return7d / weeklyBaseline else 0.0
-        val return30d = portfolioValue - monthlyBaseline
-        val return30dPct = if (monthlyBaseline > 0.0) return30d / monthlyBaseline else 0.0
+        val return7dBaseline = manualResetBaseline ?: weeklyBaseline
+        val return7d = portfolioValue - return7dBaseline
+        val return7dPct = if (return7dBaseline > 0.0) return7d / return7dBaseline else 0.0
+        val monthlyResetBaseline = manualResetBaseline ?: resolveMonthlyReturnBaseline(
+            currentDate = jakartaDate,
+            currentEquity = portfolioValue,
+            fallbackEquity = monthlyBaseline,
+        )
+        val return30d = portfolioValue - monthlyResetBaseline
+        val return30dPct = if (monthlyResetBaseline > 0.0) return30d / monthlyResetBaseline else 0.0
         return com.kibot.macengine.state.MacDashboardState(
             isBotRunning = botState.effectiveState != BotEffectiveState.STOPPED,
             effectiveState = botState.effectiveState,
@@ -5787,6 +7120,7 @@ class MacEngineDaemon(
             portfolioValueIdr = formatMonetary(portfolioValue),
             freeIdrLabel = formatMonetary(freeIdr),
             totalValueIdr = formatMonetary(portfolioValue),
+            referenceQuoteAssetPriceIdr = quoteAssetToIdrPrice(referenceQuoteAsset(), marketQuotes),
             pnlTodayIdr = formatSignedMonetary(pnlToday),
             pnlTodayPctLabel = pnlTodayPctLabel,
             return7dIdr = formatSignedMonetary(return7d),
@@ -5812,7 +7146,7 @@ class MacEngineDaemon(
                 ).joinToString(" • ")
             },
             weeklyLearningSummary = weeklyReview?.let {
-                "Week ${it.periodStart} - ${it.periodEnd} • no-trade ${(it.noTradeQualityScore * 100).toInt()}% • util ${(it.productiveUtilizationPct * 100).toInt()}%"
+                "Week ${it.periodStart} - ${it.periodEnd} • PF ${formatDecimal(it.profitFactor, 2)} • MDD ${formatSignedPercent(it.maximumDrawdownPct)} • no-trade ${(it.noTradeQualityScore * 100).toInt()}% • util ${(it.productiveUtilizationPct * 100).toInt()}%"
             } ?: "Belum ada review mingguan.",
             weeklyAdaptationSummary = weeklyReview?.adaptationPlan?.notes?.joinToString(" ")
                 ?.takeIf { it.isNotBlank() }
@@ -5874,12 +7208,13 @@ class MacEngineDaemon(
         balances: List<BalanceSnapshot>,
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
     ): DecimalValue {
+        val referenceQuoteIdr = quoteAssetToIdrPrice(referenceQuoteAsset(), marketQuotes) ?: 1.0
         val total = balances.sumOf { balance ->
             val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
             val totalValueInIdr = balance.totalValueInIdr
             when {
                 quantity <= 0.0 -> 0.0
-                balance.asset.equals(referenceQuoteAsset(), ignoreCase = true) -> quantity
+                balance.asset.equals(referenceQuoteAsset(), ignoreCase = true) -> quantity * referenceQuoteIdr
                 totalValueInIdr != null -> totalValueInIdr.toDoubleOrZero()
                 else -> (quoteAssetReferencePrice(balance.asset, marketQuotes) ?: 0.0) * quantity
             }
@@ -5888,16 +7223,30 @@ class MacEngineDaemon(
     }
 
     private fun deriveDailyRiskSnapshot(
+        now: Instant,
         previous: DailyRiskSnapshot?,
         balances: List<BalanceSnapshot>,
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
     ): DailyRiskSnapshot? {
         if (balances.isEmpty() || marketQuotes.isEmpty()) return previous
+        val referenceQuoteIdr = quoteAssetToIdrPrice(referenceQuoteAsset(), marketQuotes) ?: 1.0
+        val jakartaDate = now.toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
+        val filledOrderStatuses = setOf(
+            com.kibot.shared.models.OrderStatus.FILLED,
+            com.kibot.shared.models.OrderStatus.PARTIALLY_FILLED,
+        )
+        val recentFilledOrders = recentOrders.filter { order ->
+            val orderDate = order.updatedAt.toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
+            orderDate == jakartaDate && order.status in filledOrderStatuses
+        }
+        val dailyTradeCount = recentFilledOrders.size
+        val dailyRoundTripCount = recentFilledOrders.count { it.side == com.kibot.shared.models.OrderSide.SELL }
         val currentEquity = balances.sumOf { balance ->
             val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
             when {
                 quantity <= 0.0 -> 0.0
-                balance.asset.equals(referenceQuoteAsset(), ignoreCase = true) -> quantity
+                balance.asset.equals(referenceQuoteAsset(), ignoreCase = true) -> quantity * referenceQuoteIdr
                 else -> quantity * (quoteAssetReferencePrice(balance.asset, marketQuotes) ?: 0.0)
             }
         }
@@ -5923,7 +7272,7 @@ class MacEngineDaemon(
             profitableRange <= 0.0 || currentEquity >= highWatermark -> 0.0
             else -> ((highWatermark - currentEquity) / profitableRange).coerceIn(0.0, 1.0)
         }
-        val hardLimitPct = previous?.hardDailyLossLimitPct ?: 0.25
+        val hardLimitPct = previous?.hardDailyLossLimitPct ?: 0.05
         val drawdownPct = if (openingEquity > 0.0 && currentEquity < openingEquity) {
             ((openingEquity - currentEquity) / openingEquity).coerceIn(0.0, 1.0)
         } else {
@@ -5934,6 +7283,7 @@ class MacEngineDaemon(
             currentEquityIdr = DecimalValue.fromDouble(currentEquity),
             realizedPnlIdr = DecimalValue.fromDouble(realizedPnl),
             unrealizedPnlIdr = DecimalValue.fromDouble(unrealizedPnl),
+            tradeCount24h = dailyTradeCount,
             drawdownPct = drawdownPct,
             hardDailyLossLimitPct = hardLimitPct,
             hardStopTriggered = previous?.hardStopTriggered == true || drawdownPct >= hardLimitPct,
@@ -5945,6 +7295,8 @@ class MacEngineDaemon(
             highWatermarkEquityIdr = DecimalValue.fromDouble(highWatermark),
             givebackPct = givebackPct,
             profitProtectionStatus = previous?.profitProtectionStatus ?: com.kibot.shared.models.ProfitProtectionStatus.INACTIVE,
+            dailyTradeCount = dailyTradeCount,
+            dailyRoundTripCount = dailyRoundTripCount,
         )
     }
 
@@ -5969,6 +7321,37 @@ class MacEngineDaemon(
             }
         }
         return null
+    }
+
+    private fun quoteAssetToIdrPrice(
+        asset: String,
+        quotes: List<com.kibot.shared.models.MarketQuote>,
+    ): Double? {
+        val normalizedAsset = asset.lowercase()
+        if (normalizedAsset == "idr") return 1.0
+        val directIdr = quotes.firstOrNull { it.pairId.value.equals("${normalizedAsset}_idr", ignoreCase = true) }
+        if (directIdr != null) return directIdr.midPrice.toDoubleOrZero()
+        val refQuote = referenceQuoteAsset()
+        if (normalizedAsset == refQuote.lowercase()) {
+            val refIdr = quotes.firstOrNull { it.pairId.value.equals("${refQuote}_idr", ignoreCase = true) }
+            if (refIdr != null) return refIdr.midPrice.toDoubleOrZero()
+            val crossRate = listOf("btc", "eth", "xrp", "sol", "bnb", "trx", "doge")
+                .asSequence()
+                .mapNotNull { anchor ->
+                    val refPair = quotes.firstOrNull { it.pairId.value.equals("${anchor}_$refQuote", ignoreCase = true) }
+                    val idrPair = quotes.firstOrNull { it.pairId.value.equals("${anchor}_idr", ignoreCase = true) }
+                    val refMid = refPair?.midPrice?.toDoubleOrZero()?.takeIf { it > 0.0 }
+                    val idrMid = idrPair?.midPrice?.toDoubleOrZero()?.takeIf { it > 0.0 }
+                    if (refMid != null && idrMid != null) idrMid / refMid else null
+                }
+                .firstOrNull { it > 0.0 }
+            return crossRate ?: 16_000.0
+        }
+        val directRef = quotes.firstOrNull { it.pairId.value.equals("${normalizedAsset}_$refQuote", ignoreCase = true) }
+        val refIdr = quotes.firstOrNull { it.pairId.value.equals("${refQuote}_idr", ignoreCase = true) }
+        return if (directRef != null && refIdr != null) {
+            directRef.midPrice.toDoubleOrZero() * refIdr.midPrice.toDoubleOrZero()
+        } else null
     }
 
     private fun jakartaNowDate(now: Instant): kotlinx.datetime.LocalDate {
@@ -6690,6 +8073,23 @@ class MacEngineDaemon(
         return queued to false
     }
 
+    private fun encodeBinaryUdpPayloadIfSupported(payloadJson: String): ByteArray? {
+        if (!config.leadLagUdpBinaryProtocolEnabled) return null
+        runCatching {
+            val heartbeat = json.decodeFromString<TrinityHeartbeatPayload>(payloadJson)
+            if (heartbeat.kind == "trinity_state" && heartbeat.msgType.equals("HEARTBEAT", ignoreCase = true)) {
+                return encodeBinaryHeartbeatPacket(heartbeat)
+            }
+        }
+        runCatching {
+            val payload = json.decodeFromString<LeadLagCalloutPayload>(payloadJson)
+            if (payload.kind == "lead_lag_breakout") {
+                return encodeBinaryLeadLagPacket(payload)
+            }
+        }
+        return null
+    }
+
     private fun sendLeadLagUdp(payloadJson: String): Boolean {
         if (!config.leadLagUdpEnabled) return false
         val peers = buildUdpPeerList()
@@ -6697,7 +8097,7 @@ class MacEngineDaemon(
         return runCatching {
             DatagramSocket().use { socket ->
                 socket.soTimeout = 100
-                val bytes = payloadJson.toByteArray(Charsets.UTF_8)
+                val bytes = encodeBinaryUdpPayloadIfSupported(payloadJson) ?: payloadJson.toByteArray(Charsets.UTF_8)
                 peers.forEach { (targetHost, targetPort) ->
                     val targetAddress = InetAddress.getByName(targetHost)
                     val packet = DatagramPacket(bytes, bytes.size, targetAddress, targetPort)
@@ -7239,6 +8639,45 @@ class MacEngineDaemon(
         return null
     }
 
+    private fun entryBlockedByCapitalMismatch(
+        executionPlan: com.kibot.shared.models.ExecutionPlan,
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    ): String? {
+        if (config.exchangeKind != ExchangeKind.INDODAX) return null
+        if (executionPlan.side != com.kibot.shared.models.OrderSide.BUY) return null
+        val pair = executionPlan.signal.pairId
+        val assets = pair.pairAssets()
+        if (!assets.quoteAsset.equals("idr", ignoreCase = true)) return null
+
+        val quote = marketQuotes.firstOrNull { it.pairId == pair } ?: return null
+        val entryPrice = executionPlan.signal.entryPrice?.toDoubleOrZero()
+            ?: executionPlan.limitPrice?.toDoubleOrZero()
+            ?: quote.bestAsk.toDoubleOrZero()
+            ?: quote.midPrice.toDoubleOrZero()
+            ?: 0.0
+        if (entryPrice <= 0.0) {
+            return "Capital mismatch block ${pair.value}: harga referensi tidak valid."
+        }
+
+        val freeIdr = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }
+            ?.free
+            ?.toDoubleOrZero()
+            ?: 0.0
+        val totalEquityIdr = balances.sumOf { it.totalValueInIdr?.toDoubleOrZero() ?: 0.0 }
+        val lowCapital = totalEquityIdr in 0.0000001..150_000.0 || freeIdr in 0.0000001..150_000.0
+        if (!lowCapital) return null
+
+        val affordabilityRatio = if (entryPrice > 0.0) freeIdr / entryPrice else 0.0
+        return when {
+            freeIdr <= 0.0 -> "Capital mismatch block ${pair.value}: saldo IDR kosong."
+            entryPrice > freeIdr * 0.90 -> "Capital mismatch block ${pair.value}: harga entry Rp${formatDecimal(entryPrice, 0)} terlalu mahal dibanding saldo free Rp${formatDecimal(freeIdr, 0)}."
+            affordabilityRatio < 4.0 -> "Capital mismatch block ${pair.value}: affordability ratio ${formatDecimal(affordabilityRatio, 2)}x terlalu kecil untuk modal rendah."
+            quote.spreadPct > 1.8 && affordabilityRatio < 8.0 -> "Capital mismatch block ${pair.value}: spread ${formatDecimal(quote.spreadPct, 2)}% terlalu lebar untuk modal rendah."
+            else -> null
+        }
+    }
+
     private fun adaptExecutionPlanByCapital(
         executionPlan: com.kibot.shared.models.ExecutionPlan,
         totalEquityIdr: Double,
@@ -7458,6 +8897,238 @@ class MacEngineDaemon(
         }
     }
 
+    private fun toxicFlowStatePath(): java.nio.file.Path {
+        val basePath = if (config.localPositionStateEnabled) {
+            config.localPositionStatePath
+        } else {
+            config.targetEnforcementMemoryPath
+        }
+        val parent = basePath.parent ?: java.nio.file.Paths.get(".")
+        return parent.resolve("pair-toxic-flow-state.json")
+    }
+
+    private fun loadToxicFlowState(): ToxicFlowStateSnapshot {
+        val path = toxicFlowStatePath()
+        return runCatching {
+            if (!Files.exists(path)) return ToxicFlowStateSnapshot(
+                botId = config.controlPlane.botId.value,
+                deviceId = config.device.deviceId.value,
+                observedAtEpochMs = 0L,
+                entries = emptyList(),
+            )
+            json.decodeFromString<ToxicFlowStateSnapshot>(Files.readString(path))
+        }.getOrElse {
+            logger.warn("Failed to load toxic flow state: {}", it.message)
+            ToxicFlowStateSnapshot(
+                botId = config.controlPlane.botId.value,
+                deviceId = config.device.deviceId.value,
+                observedAtEpochMs = 0L,
+                entries = emptyList(),
+            )
+        }
+    }
+
+    private fun persistToxicFlowState(now: Instant) {
+        val snapshot = ToxicFlowStateSnapshot(
+            botId = config.controlPlane.botId.value,
+            deviceId = config.device.deviceId.value,
+            observedAtEpochMs = now.toEpochMilliseconds(),
+            entries = toxicFlowStateByPair.values
+                .sortedBy { it.pairId }
+                .toList(),
+        )
+        val encoded = json.encodeToString(snapshot)
+        if (encoded == lastToxicFlowStateSignature) return
+        runCatching {
+            val path = toxicFlowStatePath()
+            path.parent?.let { Files.createDirectories(it) }
+            Files.writeString(path, encoded)
+            lastToxicFlowStateSignature = encoded
+        }.onFailure {
+            logger.warn("Failed to persist toxic flow state: {}", it.message)
+        }
+    }
+
+    private fun refreshToxicFlowState(now: Instant) {
+        val updated = toxicFlowStateByPair.mapValues { (_, entry) ->
+            if (entry.quarantinedUntilEpochMs > 0L && now.toEpochMilliseconds() >= entry.quarantinedUntilEpochMs) {
+                entry.copy(quarantinedUntilEpochMs = 0L, consecutiveSweepHits = 0, lastReason = "quarantine_expired")
+            } else {
+                entry
+            }
+        }
+        toxicFlowStateByPair.clear()
+        toxicFlowStateByPair.putAll(updated)
+    }
+
+    private fun toxicFlowQuarantineUntil(pairId: PairId): Instant? {
+        val state = toxicFlowStateByPair[pairId.value.lowercase()] ?: return null
+        val epochMs = state.quarantinedUntilEpochMs.takeIf { it > 0L } ?: return null
+        return Instant.fromEpochMilliseconds(epochMs)
+    }
+
+    private fun recordStopLossToxicEvent(
+        now: Instant,
+        pairId: PairId,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    ) {
+        val key = pairId.value.lowercase()
+        val previous = toxicFlowStateByPair[key]
+        val quote = marketQuotes.firstOrNull { it.pairId == pairId }
+        val constructiveMacro = quote?.let {
+            it.emaFastOverSlowPct > -0.20 ||
+                it.btcContextScore >= 0.48 ||
+                it.globalCorrelationScore >= 0.52 ||
+                it.vwapDistancePct >= -2.2
+        } ?: false
+        val repeatedWithinWindow = previous?.lastStopLossAtEpochMs?.let {
+            (now.toEpochMilliseconds() - it).coerceAtLeast(0L) <= 60.minutes.inWholeMilliseconds
+        } ?: false
+        val nextSweepHits = if (repeatedWithinWindow) {
+            (previous?.consecutiveSweepHits ?: 0) + 1
+        } else {
+            1
+        }
+        val shouldQuarantine = constructiveMacro && nextSweepHits >= 2
+        val updated = ToxicFlowStateEntry(
+            pairId = pairId.value,
+            stopLossHits = (previous?.stopLossHits ?: 0) + 1,
+            lastStopLossAtEpochMs = now.toEpochMilliseconds(),
+            consecutiveSweepHits = nextSweepHits,
+            quarantinedUntilEpochMs = if (shouldQuarantine) {
+                now.plus(4.hours).toEpochMilliseconds()
+            } else {
+                previous?.quarantinedUntilEpochMs ?: 0L
+            },
+            lastReason = if (shouldQuarantine) "repeated_stop_loss_sweep" else "single_stop_loss",
+        )
+        toxicFlowStateByPair[key] = updated
+        persistToxicFlowState(now)
+        if (shouldQuarantine) {
+            val until = Instant.fromEpochMilliseconds(updated.quarantinedUntilEpochMs)
+            logger.warn(
+                "TOXIC_FLOW pair={} quarantineUntil={} reason=repeated_stop_loss_sweep",
+                pairId.value.lowercase(),
+                formatJktTime(until),
+            )
+            repository.noteStatus("Toxic flow quarantine aktif untuk ${pairId.value} sampai ${formatJktTime(until)}.")
+        }
+    }
+
+    private fun loadLocalPositionState(): LocalPositionStateSnapshot {
+        if (!config.localPositionStateEnabled) {
+            return LocalPositionStateSnapshot(
+                botId = config.controlPlane.botId.value,
+                deviceId = config.device.deviceId.value,
+                observedAtEpochMs = 0L,
+                orders = emptyList(),
+                managedPositions = emptyList(),
+            )
+        }
+        val path = config.localPositionStatePath
+        return runCatching {
+            if (!Files.exists(path)) return LocalPositionStateSnapshot(
+                botId = config.controlPlane.botId.value,
+                deviceId = config.device.deviceId.value,
+                observedAtEpochMs = 0L,
+                orders = emptyList(),
+                managedPositions = emptyList(),
+            )
+            json.decodeFromString<LocalPositionStateSnapshot>(Files.readString(path))
+        }.getOrElse {
+            logger.warn("Failed to load local position state: {}", it.message)
+            LocalPositionStateSnapshot(
+                botId = config.controlPlane.botId.value,
+                deviceId = config.device.deviceId.value,
+                observedAtEpochMs = 0L,
+                orders = emptyList(),
+                managedPositions = emptyList(),
+            )
+        }
+    }
+
+    private fun persistLocalPositionState(
+        now: Instant,
+        recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
+        managedPositions: List<com.kibot.core.ManagedPosition>,
+    ) {
+        if (!config.localPositionStateEnabled) return
+        val snapshot = LocalPositionStateSnapshot(
+            botId = config.controlPlane.botId.value,
+            deviceId = config.device.deviceId.value,
+            observedAtEpochMs = now.toEpochMilliseconds(),
+            orders = recentOrders.takeLast(80),
+            managedPositions = managedPositions.map { position ->
+                LocalManagedPositionState(
+                    pairId = position.pairId.value,
+                    baseAsset = position.pairId.pairAssets().baseAsset,
+                    quantity = position.quantity.value,
+                    averageEntryPrice = position.averageEntryPrice.value,
+                    breakEvenPrice = position.breakEvenPrice.value,
+                    stopPrice = position.stopPrice.value,
+                    takeProfitPrice = position.takeProfitPrice.value,
+                    unrealizedPnlPct = position.unrealizedPnlPct,
+                    openedAtEpochMs = position.openedAt.toEpochMilliseconds(),
+                    updatedAtEpochMs = position.updatedAt.toEpochMilliseconds(),
+                )
+            },
+        )
+        val encoded = json.encodeToString(snapshot)
+        if (encoded == lastLocalPositionStateSignature) return
+        runCatching {
+            val path = config.localPositionStatePath
+            path.parent?.let { Files.createDirectories(it) }
+            Files.writeString(path, encoded)
+            lastLocalPositionStateSignature = encoded
+        }.onFailure {
+            logger.warn("Failed to persist local position state: {}", it.message)
+        }
+    }
+
+    private suspend fun auditLocalRecoveryStateIfNeeded(
+        now: Instant,
+        balances: List<BalanceSnapshot>,
+        persistedOrders: List<com.kibot.shared.models.OrderSnapshot>,
+    ) {
+        if (!config.localPositionStateEnabled) return
+        if (startupRecoveryAudited) return
+        startupRecoveryAudited = true
+        val localState = loadLocalPositionState()
+        val heldAssets = balances
+            .filterNot { it.asset.equals(referenceQuoteAsset(), ignoreCase = true) }
+            .filter { (it.free.toDoubleOrZero() + it.locked.toDoubleOrZero()) > 0.0 }
+            .map { it.asset.lowercase() }
+            .toSet()
+        val recoveredPositions = localState.managedPositions.filter { it.baseAsset.lowercase() in heldAssets }
+        val recoveredOrders = localState.orders.filter { order ->
+            order.side == com.kibot.shared.models.OrderSide.BUY &&
+                order.pairId.pairAssets().baseAsset.lowercase() in heldAssets
+        }
+        if (recoveredPositions.isEmpty() && recoveredOrders.isEmpty()) return
+        val missingOrderCoverage = recoveredPositions.any { recoveredState ->
+            persistedOrders.none { it.pairId.value.equals(recoveredState.pairId, ignoreCase = true) }
+        }
+        val summary = when {
+            recoveredPositions.isNotEmpty() -> recoveredPositions.joinToString(", ") {
+                "${it.pairId}@${formatDecimal(it.averageEntryPrice.toDoubleOrNull() ?: 0.0, 8)}"
+            }
+            else -> recoveredOrders.joinToString(", ") {
+                "${it.pairId.value}@${formatDecimal(it.price.toDoubleOrZero(), 8)}"
+            }
+        }
+        val statusMessage = if (missingOrderCoverage) {
+            "Recovery audit: local state temukan holding aktif $summary. Bot pakai snapshot lokal sebagai cadangan startup."
+        } else {
+            "Recovery audit: holding aktif $summary tervalidasi dari state lokal + order sink."
+        }
+        repository.noteStatus(statusMessage)
+        appendAuditLog(
+            level = LogLevel.INFO,
+            category = "LOCAL_RECOVERY",
+            message = "$statusMessage age=${(now.toEpochMilliseconds() - localState.observedAtEpochMs).coerceAtLeast(0L)}ms.",
+        )
+    }
+
     private fun com.kibot.shared.models.PairId.belongsToAvoidFamily(
         families: List<String>,
     ): Boolean {
@@ -7488,29 +9159,29 @@ class MacEngineDaemon(
         val defaults = TradeAutomationConfig()
         val adjusted = TradeAutomationConfig(
             staleRotationMinAgeHours = (defaults.staleRotationMinAgeHours + aiAdjustments.rotationAgeHoursDelta + pursuit.rotationAgeHoursDelta - (repeatedHourlyPenalty * 0.03) - (repeatedCheckpointPenalty * 0.04) - aiReplacementPressure)
-                .coerceAtLeast(0.12),
+                .coerceAtLeast(0.50),
             staleRotationMinScoreGap = (defaults.staleRotationMinScoreGap + aiAdjustments.rotationScoreGapDelta + pursuit.rotationScoreGapDelta)
-                .coerceIn(0.02, 0.14),
+                .coerceIn(0.05, 0.14),
             loserRotationMinAgeHours = (defaults.loserRotationMinAgeHours + ((aiAdjustments.rotationAgeHoursDelta + pursuit.rotationAgeHoursDelta) * 0.75) - (repeatedHourlyPenalty * 0.02) - (repeatedCheckpointPenalty * 0.03) - (aiReplacementPressure * 0.75))
-                .coerceAtLeast(0.12),
+                .coerceAtLeast(0.35),
             loserRotationMinScoreGap = (defaults.loserRotationMinScoreGap + aiAdjustments.rotationScoreGapDelta + pursuit.rotationScoreGapDelta)
-                .coerceIn(0.02, 0.10),
+                .coerceIn(0.04, 0.10),
             maxStaleLossPctForTimeExit = (defaults.maxStaleLossPctForTimeExit + 0.08 + (repeatedHourlyPenalty * 0.04) + (repeatedCheckpointPenalty * 0.06))
                 .coerceIn(0.10, 0.42),
             partialTakeProfitMinPnlPct = (defaults.partialTakeProfitMinPnlPct + aiAdjustments.partialTakeProfitPnlDelta + pursuit.partialTakeProfitPnlDelta)
-                .coerceIn(0.95, 2.8),
+                .coerceIn(1.80, 2.8),
             minMeaningfulNonEmergencyExitProfitPct = (defaults.minMeaningfulNonEmergencyExitProfitPct + aiAdjustments.meaningfulExitProfitDelta + pursuit.meaningfulExitProfitDelta - (repeatedHourlyPenalty * 0.03) - (repeatedCheckpointPenalty * 0.05))
-                .coerceIn(0.16, 0.95),
+                .coerceIn(0.75, 0.95),
             breakoutWinnerRunMinPnlPct = (defaults.breakoutWinnerRunMinPnlPct + aiAdjustments.winnerRunPnlDelta + pursuit.winnerRunPnlDelta)
-                .coerceIn(0.35, 1.2),
+                .coerceIn(0.60, 1.2),
             speculativeWinnerRunMinPnlPct = (defaults.speculativeWinnerRunMinPnlPct + aiAdjustments.winnerRunPnlDelta + pursuit.winnerRunPnlDelta)
-                .coerceIn(0.80, 1.8),
+                .coerceIn(1.10, 1.8),
             staleUnderwaterKillMinAgeHours = (defaults.staleUnderwaterKillMinAgeHours - (repeatedHourlyPenalty * 0.03) - (repeatedCheckpointPenalty * 0.04) - aiReplacementPressure)
-                .coerceAtLeast(0.25),
+                .coerceAtLeast(0.50),
             staleUnderwaterKillMinScoreGap = (defaults.staleUnderwaterKillMinScoreGap - (repeatedHourlyPenalty * 0.01) - (repeatedCheckpointPenalty * 0.015) - (aiReplacementPressure * 0.10))
-                .coerceIn(0.03, 0.10),
+                .coerceIn(0.05, 0.10),
             staleUnderwaterKillMinNetUpgradePct = (defaults.staleUnderwaterKillMinNetUpgradePct - (repeatedHourlyPenalty * 0.06) - (repeatedCheckpointPenalty * 0.08) - (aiReplacementPressure * 0.9))
-                .coerceIn(0.88, 1.30),
+                .coerceIn(1.10, 1.30),
             tacticalStaleMaxAgeHours = (defaults.tacticalStaleMaxAgeHours - (repeatedHourlyPenalty * 0.25) - (repeatedCheckpointPenalty * 0.40) - (aiReplacementPressure * 4.0))
                 .coerceIn(1.0, defaults.tacticalStaleMaxAgeHours),
         )
@@ -7532,6 +9203,107 @@ class MacEngineDaemon(
             ?: anchor?.currentEquityIdr?.toDoubleOrZero()
             ?.takeIf { it > 0.0 }
             ?: fallbackEquity
+    }
+
+    private fun resolveMonthlyReturnBaseline(
+        currentDate: LocalDate,
+        currentEquity: Double,
+        fallbackEquity: Double,
+    ): Double {
+        resolvePnlResetBaseline(currentDate)?.let { return it }
+        if (currentEquity <= 0.0) return fallbackEquity
+        val currentMonthKey = monthKey(currentDate)
+        val existing = monthlyPnlAnchor
+        if (existing != null && existing.monthKey == currentMonthKey && existing.anchorEquityIdr > 0.0) {
+            return existing.anchorEquityIdr
+        }
+        val snapshot = MonthlyPnlAnchorSnapshot(
+            botId = config.controlPlane.botId.value,
+            deviceId = config.device.deviceId.value,
+            monthKey = currentMonthKey,
+            anchorEquityIdr = currentEquity,
+            observedAtEpochMs = kotlinx.datetime.Clock.System.now().toEpochMilliseconds(),
+        )
+        monthlyPnlAnchor = snapshot
+        persistMonthlyPnlAnchor(snapshot)
+        repository.noteStatus("Monthly PnL reset anchor diset ke ${formatMonetary(currentEquity)} untuk ${currentMonthKey}.")
+        return currentEquity
+    }
+
+    private fun resolvePnlResetBaseline(currentDate: LocalDate): Double? {
+        val anchor = pnlResetAnchor ?: return null
+        val anchorDate = kotlinx.datetime.Instant.fromEpochMilliseconds(anchor.observedAtEpochMs)
+            .toLocalDateTime(TimeZone.of("Asia/Jakarta"))
+            .date
+        if (anchorDate != currentDate) return null
+        return anchor.anchorEquityIdr.takeIf { it > 0.0 }
+    }
+
+    private fun monthKey(date: LocalDate): String = "%04d-%02d".format(date.year, date.monthNumber)
+
+    private fun monthlyPnlAnchorPath(): java.nio.file.Path = config.monthlyPnlAnchorPath
+
+    private fun pnlResetAnchorPath(): java.nio.file.Path = config.pnlResetAnchorPath
+
+    private fun loadPnlResetAnchor(): PnlResetAnchorSnapshot? {
+        val path = pnlResetAnchorPath()
+        return runCatching {
+            if (!Files.exists(path)) return null
+            json.decodeFromString<PnlResetAnchorSnapshot>(Files.readString(path))
+        }.getOrElse {
+            logger.warn("Failed to load manual PnL reset anchor: {}", it.message)
+            null
+        }
+    }
+
+    private fun persistPnlResetAnchor(snapshot: PnlResetAnchorSnapshot) {
+        val encoded = json.encodeToString(snapshot)
+        if (encoded == lastPnlResetAnchorSignature) return
+        runCatching {
+            val path = pnlResetAnchorPath()
+            path.parent?.let { Files.createDirectories(it) }
+            Files.writeString(path, encoded)
+            lastPnlResetAnchorSignature = encoded
+        }.onFailure {
+            logger.warn("Failed to persist manual PnL reset anchor: {}", it.message)
+        }
+    }
+
+    private fun setManualPnlResetAnchor(currentEquity: Double, reason: String = "manual_topup_reset") {
+        val snapshot = PnlResetAnchorSnapshot(
+            botId = config.controlPlane.botId.value,
+            deviceId = config.device.deviceId.value,
+            anchorEquityIdr = currentEquity,
+            observedAtEpochMs = kotlinx.datetime.Clock.System.now().toEpochMilliseconds(),
+            reason = reason,
+        )
+        pnlResetAnchor = snapshot
+        persistPnlResetAnchor(snapshot)
+        repository.noteStatus("Manual PnL reset anchor diset ke ${formatMonetary(currentEquity)}.")
+    }
+
+    private fun loadMonthlyPnlAnchor(): MonthlyPnlAnchorSnapshot? {
+        val path = monthlyPnlAnchorPath()
+        return runCatching {
+            if (!Files.exists(path)) return null
+            json.decodeFromString<MonthlyPnlAnchorSnapshot>(Files.readString(path))
+        }.getOrElse {
+            logger.warn("Failed to load monthly PnL anchor: {}", it.message)
+            null
+        }
+    }
+
+    private fun persistMonthlyPnlAnchor(snapshot: MonthlyPnlAnchorSnapshot) {
+        val encoded = json.encodeToString(snapshot)
+        if (encoded == lastMonthlyPnlAnchorSignature) return
+        runCatching {
+            val path = monthlyPnlAnchorPath()
+            path.parent?.let { Files.createDirectories(it) }
+            Files.writeString(path, encoded)
+            lastMonthlyPnlAnchorSignature = encoded
+        }.onFailure {
+            logger.warn("Failed to persist monthly PnL anchor: {}", it.message)
+        }
     }
 
     private fun startOfWeek(date: LocalDate): LocalDate {
@@ -7561,7 +9333,7 @@ class MacEngineDaemon(
 
     private companion object {
         private const val staleEntryOrderMaxAgeMinutes = 10.0 / 60.0
-        private const val stalePartialFillMaxAgeMinutes = 10.0 / 60.0
+        private const val stalePartialFillMaxAgeMinutes = 5.0 / 60.0
         private const val staleEntryOrderPairFlipGraceMinutes = 10.0 / 60.0
         private const val staleEntryOrderMaxDriftPct = 0.15
         private const val staleExitOrderMaxAgeMinutes = 10.0 / 60.0
@@ -7585,6 +9357,10 @@ class MacEngineDaemon(
         private const val chartGuardCheapNominalMaxPriceIdr = 25.0
         private const val chartGuardCheapNominalMinDistinctCloses = 10
         private const val chartGuardMinRangePct = 0.80
+        private const val runtimeEnrichmentFocusPairs = 12
+        private const val runtimeEnrichmentLookbackMinutes = 360
+        private const val runtimeEnrichmentCacheTtlMs = 60_000L
+        private const val spoofPulseWindowSamples = 6
         private const val aListPriorityScoreBoost = 8.0
         private const val aListInstantSignalCooldownMs = 2_500L
         private const val indodaxSummariesEndpoint = "https://indodax.com/api/summaries"
@@ -7600,6 +9376,7 @@ class MacEngineDaemon(
         private const val autonomousResolverIntervalMs = 5_000L
         private const val autonomousResolverStaleOrderMs = 10_000L
         private const val depthGuardMaxTopBookImpactPct = 0.30
+        private val spoofSuspicionCooldown = 75.seconds
         private const val makerFirstMaxLatencyMs = 150L
         private const val aggressiveLimitFallbackLatencyMs = 1500L
         private const val entryBlockLatencyMs = 2300L
@@ -7697,6 +9474,7 @@ class MacEngineDaemon(
             "inj",
         )
         private val garbageNukePairs = setOf(
+            "h2o_idr",
             "rvm_idr",
             "mpro_idr",
             "dusk_idr",

@@ -50,6 +50,10 @@ data class MacRuntimeConfig(
     val aiSupportConfig: GeminiSupportConfig?,
     val adaptiveAiPolicyPath: Path,
     val targetEnforcementMemoryPath: Path,
+    val pnlResetAnchorPath: Path,
+    val monthlyPnlAnchorPath: Path,
+    val localPositionStateEnabled: Boolean,
+    val localPositionStatePath: Path,
     val analysisPublishIntervalMillis: Long,
     val strategyMetricsPublishIntervalMillis: Long,
     val supabaseLogUploadEnabled: Boolean,
@@ -84,6 +88,15 @@ data class MacRuntimeConfig(
     val leadLagUdpListenPort: Int,
     val leadLagUdpTargetHost: String?,
     val leadLagUdpTargetPort: Int,
+    val leadLagUdpBinaryProtocolEnabled: Boolean = false,
+    val leadLagUdpBinaryDualStackEnabled: Boolean = true,
+    val leadLagUdpSequenceWindowSize: Int = 64,
+    val leadLagUdpDedupTtlMillis: Long = 4_000L,
+    val leadLagUdpPrewarmTtlMillis: Long = 1_500L,
+    val leadLagUdpHeartbeatEnabled: Boolean,
+    val leadLagUdpHeartbeatIntervalMillis: Long,
+    val leadLagUdpHeartbeatTimeoutMillis: Long,
+    val leadLagUdpHeartbeatRequiredBotIds: Set<String>,
     val indodaxHyperGuardrailEnabled: Boolean,
     val indodaxHyperGuardrailTakerFeePct: Double,
     val hyperAggressiveConfig: HyperAggressiveConfig,
@@ -92,7 +105,8 @@ data class MacRuntimeConfig(
     val chartGuardMinCandles: Int = 18,
     val chartGuardMinActiveCandles: Int = 6,
     val chartGuardMinDistinctCloseBuckets: Int = 4,
-    val antiKoinMahalUseBudgetCheck: Boolean = false,
+val antiKoinMahalUseBudgetCheck: Boolean = true,
+    val blockedBaseAssets: Set<String> = setOf("usdt", "usdc", "indr", "fdusd", "tusd", "busd", "toko"),
 )
 
 object MacRuntimeConfigLoader {
@@ -201,6 +215,24 @@ object MacRuntimeConfigLoader {
                 scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/target_enforcement_memory.json"),
                 legacyDefault = cwd.resolve(".tmp/runtime/target_enforcement_memory.json"),
             ),
+            pnlResetAnchorPath = resolveScopedRuntimePath(
+                explicit = optional("KIBOT_PNL_RESET_ANCHOR_PATH"),
+                scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/pnl_reset_anchor.json"),
+                legacyDefault = cwd.resolve(".tmp/runtime/pnl_reset_anchor.json"),
+            ),
+            monthlyPnlAnchorPath = resolveScopedRuntimePath(
+                explicit = optional("KIBOT_MONTHLY_PNL_ANCHOR_PATH"),
+                scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/monthly_pnl_anchor.json"),
+                legacyDefault = cwd.resolve(".tmp/runtime/monthly_pnl_anchor.json"),
+            ),
+            localPositionStatePath = resolveScopedRuntimePath(
+                explicit = optional("KIBOT_LOCAL_POSITION_STATE_PATH"),
+                scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/local_position_state.json"),
+                legacyDefault = cwd.resolve(".tmp/runtime/local_position_state.json"),
+            ),
+            localPositionStateEnabled = optional("KIBOT_LOCAL_POSITION_STATE_ENABLED")
+                ?.equals("true", ignoreCase = true)
+                ?: true,
             analysisPublishIntervalMillis = optional("BOT_ANALYSIS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 30_000L,
             strategyMetricsPublishIntervalMillis = optional("BOT_STRATEGY_METRICS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 300_000L,
             supabaseLogUploadEnabled = optional("BOT_SUPABASE_LOG_UPLOAD_ENABLED")
@@ -272,6 +304,42 @@ object MacRuntimeConfigLoader {
             leadLagUdpListenPort = optional("KIBOT_LEAD_LAG_UDP_LISTEN_PORT")?.toIntOrNull() ?: 9999,
             leadLagUdpTargetHost = optional("KIBOT_LEAD_LAG_UDP_TARGET_HOST"),
             leadLagUdpTargetPort = optional("KIBOT_LEAD_LAG_UDP_TARGET_PORT")?.toIntOrNull() ?: 9999,
+            leadLagUdpBinaryProtocolEnabled = optional("KIBOT_LEAD_LAG_UDP_BINARY_ENABLED")
+                ?.equals("true", ignoreCase = true)
+                ?: false,
+            leadLagUdpBinaryDualStackEnabled = optional("KIBOT_LEAD_LAG_UDP_BINARY_DUAL_STACK")
+                ?.equals("true", ignoreCase = true)
+                ?: true,
+            leadLagUdpSequenceWindowSize = optional("KIBOT_LEAD_LAG_UDP_SEQUENCE_WINDOW")
+                ?.toIntOrNull()
+                ?.coerceAtLeast(1)
+                ?: 64,
+            leadLagUdpDedupTtlMillis = optional("KIBOT_LEAD_LAG_UDP_DEDUP_TTL_MS")
+                ?.toLongOrNull()
+                ?.coerceAtLeast(500L)
+                ?: 4_000L,
+            leadLagUdpPrewarmTtlMillis = optional("KIBOT_LEAD_LAG_UDP_PREWARM_TTL_MS")
+                ?.toLongOrNull()
+                ?.coerceAtLeast(250L)
+                ?: 1_500L,
+            leadLagUdpHeartbeatEnabled = optional("KIBOT_LEAD_LAG_UDP_HEARTBEAT_ENABLED")
+                ?.equals("true", ignoreCase = true)
+                ?: true,
+            leadLagUdpHeartbeatIntervalMillis = optional("KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS")
+                ?.toLongOrNull()
+                ?: 100L,
+            leadLagUdpHeartbeatTimeoutMillis = optional("KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS")
+                ?.toLongOrNull()
+                ?: 500L,
+            leadLagUdpHeartbeatRequiredBotIds = optional("KIBOT_HIVE_EXPECTED_BOT_IDS")
+                ?.split(",")
+                ?.mapNotNull { token ->
+                    token.trim()
+                        .takeIf { it.isNotBlank() }
+                        ?.lowercase()
+                }
+                ?.toSet()
+                ?: defaultHeartbeatPeers(botId.value),
             indodaxHyperGuardrailEnabled = optional("KIBOT_INDODAX_HYPER_GUARDRAIL_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
@@ -336,6 +404,15 @@ object MacRuntimeConfigLoader {
             .replace(Regex("[^a-z0-9_-]+"), "-")
             .trim('-')
             .ifBlank { "bot" }
+    }
+
+    private fun defaultHeartbeatPeers(botId: String): Set<String> {
+        return when (botId.trim().lowercase()) {
+            "kinance" -> setOf("kidax", "kibot")
+            "kibot" -> setOf("kinance", "kidax")
+            "kidax", "main" -> setOf("kinance", "kibot")
+            else -> emptySet()
+        }
     }
 
     private fun resolveScopedRuntimePath(

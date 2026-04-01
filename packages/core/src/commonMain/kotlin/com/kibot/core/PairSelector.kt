@@ -9,10 +9,12 @@ import kotlin.math.abs
 
 class PairSelector(
     private val policy: PairSelectionPolicy = PairSelectionPolicy(),
+    private val chartAnalyzer: ChartAnalyzer = ChartAnalyzer(),
+    private val coinProfiler: CoinProfiler = CoinProfiler(policy),
 ) {
     fun rank(quotes: List<MarketQuote>): List<PairScore> {
         val candidates = prefilter(quotes)
-        return candidates.map(::scoreQuote).sortedWith(pairRankingComparator())
+        return candidates.map { scoreQuote(it, quotes) }.sortedWith(pairRankingComparator())
     }
 
     fun shortlist(quotes: List<MarketQuote>): List<PairScore> {
@@ -53,7 +55,13 @@ class PairSelector(
             .take(poolSize)
     }
 
-    private fun scoreQuote(quote: MarketQuote): PairScore {
+    private fun scoreQuote(quote: MarketQuote, marketUniverse: List<MarketQuote>): PairScore {
+        val chartAssessment = chartAnalyzer.analyzeQuoteSnapshot(quote)
+        val profileAssessment = coinProfiler.assess(
+            quote = quote,
+            referenceQuotes = marketUniverse,
+        )
+        val chartPatternsScore = chartAssessment.netEntryScore
         val momentumAccelerationScore = deriveMomentumAccelerationScore(quote)
         val liquidityScore = normalizeRatio(
             value = quote.quoteVolume24h.toDoubleOrZero(),
@@ -123,30 +131,44 @@ class PairSelector(
                 quote.spreadPct <= (policy.smallCapitalMaxSpreadPct * 1.12) &&
                 quote.estimatedSlippagePct <= (policy.smallCapitalMaxSlippagePct * 1.10)
         val rankingScoreBase = weightedAverage(
-            liquidityScore to 0.08,
-            depthScore to 0.08,
-            spreadScore to 0.10,
-            slippageScore to 0.10,
-            stabilityScore to 0.08,
+            liquidityScore to 0.06,
+            depthScore to 0.06,
+            spreadScore to 0.07,
+            slippageScore to 0.07,
+            stabilityScore to 0.07,
             volumeConsistencyScore to 0.07,
-            volatilityQualityScore to 0.08,
-            trendQualityScore to 0.10,
-            momentumAccelerationScore to 0.15,
-            historicalExpectancyScore to 0.11,
-            recentHealthScore to 0.08,
-            fillQualityScore to 0.08,
-            holdabilityScore to 0.07,
+            volatilityQualityScore to 0.06,
+            trendQualityScore to 0.07,
+            momentumAccelerationScore to 0.10,
+            historicalExpectancyScore to 0.07,
+            recentHealthScore to 0.06,
+            fillQualityScore to 0.05,
+            holdabilityScore to 0.05,
+            chartPatternsScore to 0.09,
+            profileAssessment.structureScore to 0.08,
+            profileAssessment.microstructureScore to 0.07,
+            profileAssessment.contextScore to 0.06,
+            profileAssessment.executionQualityScore to 0.05,
+            profileAssessment.progressiveScore to 0.05,
+            (1.0 - profileAssessment.deadChartScore) to 0.03,
+            (1.0 - profileAssessment.statisticalStretchScore) to 0.03,
+            profileAssessment.smartMoneyScore to 0.03,
         )
         val rankingScore = (
             rankingScoreBase -
                 if (stagnantPair) 0.12 else 0.0 +
-                if (earlyBreakoutEligible) 0.08 else 0.0
+                if (earlyBreakoutEligible) 0.08 else 0.0 -
+                (profileAssessment.toxicityScore * 0.14) -
+                (profileAssessment.statisticalStretchScore * 0.10)
             ).coerceIn(0.0, 1.0)
         val marketOpportunityScore = averageOf(
             rankingScore,
             recentHealthScore,
             maxOf(trendQualityScore, volatilityQualityScore),
             momentumAccelerationScore,
+            (1.0 - chartAssessment.exhaustionRiskScore),
+            profileAssessment.contextScore,
+            profileAssessment.progressiveScore,
         )
         val preferredHorizon = if (
             !smallCapitalEligible &&
@@ -193,6 +215,7 @@ class PairSelector(
             val maxSlippage = if (earlyBreakoutEligible) policy.smallCapitalMaxSlippagePct else policy.maxEstimatedSlippagePct
             val minStability = if (earlyBreakoutEligible) policy.minOrderBookStabilityScore * 0.70 else policy.minOrderBookStabilityScore
             val minTradeActivity = if (earlyBreakoutEligible) policy.minRecentTradeActivityScore * 0.75 else policy.minRecentTradeActivityScore
+            if (quote.spreadPct > policy.hardSpreadVetoPct) add("Spread melewati batas pajak siluman.")
             if (quote.spreadPct > maxSpread) add("Spread terlalu lebar.")
             if (quote.estimatedSlippagePct > maxSlippage) add("Estimasi slippage terlalu tinggi.")
             if (stabilityScore < minStability) add("Kualitas order book belum aman.")
@@ -210,6 +233,20 @@ class PairSelector(
             if (feeAdjustedEdgePct < if (earlyBreakoutEligible) policy.minFeeAdjustedEdgeScore * 0.65 else policy.minFeeAdjustedEdgeScore) {
                 add("Net edge setelah biaya belum layak.")
             }
+            if (profileAssessment.deadChartScore >= 0.72 && !speculativePocket) {
+                add("Chart mati/zombie, progres harga tidak sehat.")
+            }
+            if (profileAssessment.progressiveScore < 0.34 && profileAssessment.contextScore < 0.40) {
+                add("Belum ada progres struktur dan konteks yang cukup kuat.")
+            }
+            if (profileAssessment.toxicityScore >= policy.toxicFlowCautionScore) {
+                add("Pair sedang toxic, entry harus dihindari dulu.")
+            }
+            if (profileAssessment.statisticalStretchScore >= 0.82) {
+                add("Harga sudah terlalu jauh dari pusat statistik intraday.")
+            }
+            addAll(profileAssessment.rejectionReasons)
+            addAll(chartAssessment.vetoReasons)
         }
 
         val pairTier = when {
@@ -243,6 +280,17 @@ class PairSelector(
             speculativePocket = speculativePocket,
             allowed = allowed,
             rejectionReasons = rejectionReasons,
+            structureScore = profileAssessment.structureScore,
+            microstructureScore = profileAssessment.microstructureScore,
+            contextScore = profileAssessment.contextScore,
+            toxicityScore = profileAssessment.toxicityScore,
+            executionQualityScore = profileAssessment.executionQualityScore,
+            progressiveScore = profileAssessment.progressiveScore,
+            deadChartScore = profileAssessment.deadChartScore,
+            kellyFraction = profileAssessment.kellyFraction,
+            profileLabel = profileAssessment.archetype.name.lowercase(),
+            statisticalStretchScore = profileAssessment.statisticalStretchScore,
+            smartMoneyScore = profileAssessment.smartMoneyScore,
         )
     }
 
@@ -374,14 +422,18 @@ class PairSelector(
         )
         val stabilityScore = quote.orderBookStabilityScore.coerceIn(0.0, 1.0)
         val momentumScore = deriveMomentumAccelerationScore(quote)
+        val profileAssessment = coinProfiler.assess(quote)
         return weightedAverage(
-            liquidityScore to 0.26,
-            depthScore to 0.16,
-            spreadScore to 0.17,
-            slippageScore to 0.17,
-            tradeFlowScore to 0.14,
-            momentumScore to 0.16,
-            stabilityScore to 0.04,
+            liquidityScore to 0.20,
+            depthScore to 0.12,
+            spreadScore to 0.13,
+            slippageScore to 0.13,
+            tradeFlowScore to 0.12,
+            momentumScore to 0.12,
+            stabilityScore to 0.03,
+            profileAssessment.structureScore to 0.08,
+            profileAssessment.microstructureScore to 0.05,
+            (1.0 - profileAssessment.deadChartScore) to 0.02,
         )
     }
 
@@ -487,6 +539,9 @@ class PairSelector(
         .thenByDescending { it.speculativePocket }
         .thenByDescending { it.rankingScore }
         .thenByDescending { it.marketOpportunityScore }
+        .thenByDescending { it.progressiveScore }
+        .thenByDescending { it.contextScore }
+        .thenByDescending { 1.0 - it.toxicityScore }
         .thenByDescending { it.fillQualityScore }
         .thenByDescending { it.historicalExpectancyScore }
         .thenByDescending { it.spreadScore + it.slippageScore }

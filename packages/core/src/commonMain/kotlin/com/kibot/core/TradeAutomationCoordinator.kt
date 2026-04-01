@@ -29,7 +29,7 @@ data class TradeAutomationConfig(
     val timeExitGraceMultiplier: Double = 1.25,
     val maxStaleLossPctForTimeExit: Double = 0.10,
     val orderFillTolerancePct: Double = 0.0025,
-    val emergencyMarketExitLossPct: Double = -2.2,
+    val emergencyMarketExitLossPct: Double = -1.2,
     val ambiguousOrderGraceMinutes: Double = 4.0,
     val estimatedRoundTripCostPct: Double = 0.52,
     val adaptiveFeeFloorPct: Double = 0.32,
@@ -37,6 +37,7 @@ data class TradeAutomationConfig(
     val adaptiveSlippageWeight: Double = 1.10,
     val maxAdaptiveRoundTripCostPct: Double = 1.20,
     val breakEvenExitBufferPct: Double = 0.18,
+    val breakEvenArmingNetPnlPct: Double = 0.80,
     val speculativeWinnerRunMinPnlPct: Double = 1.2,
     val speculativeWinnerRunMinTrendScore: Double = 0.62,
     val speculativeWinnerRunMinHealthScore: Double = 0.60,
@@ -45,24 +46,27 @@ data class TradeAutomationConfig(
     val breakoutWinnerRunMinTrendScore: Double = 0.60,
     val breakoutWinnerRunMinHealthScore: Double = 0.58,
     val breakoutWinnerRunMinOpportunityScore: Double = 0.58,
-    val minMeaningfulNonEmergencyExitProfitPct: Double = 0.55,
-    val minMeaningfulNonEmergencyExitProfitIdr: Double = 90.0,
-    val loserRotationMinAgeHours: Double = 0.22,
-    val loserRotationMinLossPct: Double = -0.06,
+    val minMeaningfulNonEmergencyExitProfitPct: Double = 0.75,
+    val minMeaningfulNonEmergencyExitProfitIdr: Double = 120.0,
+    val loserRotationMinAgeHours: Double = 0.35,
+    val loserRotationMinLossPct: Double = -0.10,
     val loserRotationMinTopCandidateRanking: Double = 0.56,
     val loserRotationMinScoreGap: Double = 0.035,
-    val rotationMinNetUpgradePct: Double = 0.88,
+    val rotationMinNetUpgradePct: Double = 1.20,
     val loserRotationIncrementalUpgradeFloorPct: Double = 0.10,
     val staleRotationMinAgeHours: Double = 1.0,
     val staleRotationMaxAbsPnlPct: Double = 0.50,
     val staleRotationMinTopCandidateRanking: Double = 0.56,
     val staleRotationMinScoreGap: Double = 0.06,
-    val staleRotationIncrementalUpgradeFloorPct: Double = 0.08,
+    val staleRotationIncrementalUpgradeFloorPct: Double = 0.12,
+    val microTimeStopMinutes: Double = 15.0,
+    val microTimeStopLossFloorPct: Double = -0.50,
+    val microTimeStopProfitCeilingPct: Double = 0.20,
     val staleUnderwaterKillMinAgeHours: Double = 0.32,
     val staleUnderwaterKillLossPct: Double = -0.16,
     val staleUnderwaterKillTopCandidateRanking: Double = 0.62,
     val staleUnderwaterKillMinScoreGap: Double = 0.05,
-    val staleUnderwaterKillMinNetUpgradePct: Double = 0.95,
+    val staleUnderwaterKillMinNetUpgradePct: Double = 1.10,
     val staleUnderwaterKillIncrementalUpgradeFloorPct: Double = 0.05,
     val tacticalStaleMaxAgeHours: Double = 2.0,
     val tacticalStaleLossPct: Double = -0.10,
@@ -72,11 +76,11 @@ data class TradeAutomationConfig(
     val tacticalStaleReplacementRankingFloor: Double = 0.70,
     val tacticalStaleReplacementNetPct: Double = 1.20,
     val partialTakeProfitEnabled: Boolean = true,
-    val partialTakeProfitMinPnlPct: Double = 1.8,
+    val partialTakeProfitMinPnlPct: Double = 2.2,
     val partialTakeProfitSellRatio: Double = 0.45,
     val partialTakeProfitMinRemainingNotionalIdr: Double = 16_000.0,
     val partialTakeProfitMinPositionNotionalIdr: Double = 26_000.0,
-    val partialTakeProfitMinNetSurplusIdr: Double = 220.0,
+    val partialTakeProfitMinNetSurplusIdr: Double = 300.0,
 )
 
 data class ManagedPosition(
@@ -97,6 +101,13 @@ data class ManagedPosition(
     val pairTier: com.kibot.shared.models.PairTier,
     val speculativePocket: Boolean,
     val expectedHoldingHours: Double,
+    val chartEntryScore: Double = 0.0,
+    val chartExitUrgencyScore: Double = 0.0,
+    val chartRotationUrgencyScore: Double = 0.0,
+    val chartSuggestedTrailingStopPct: Double = 0.0,
+    val chartSoftTakeProfitPct: Double = 0.0,
+    val chartEstimatedRoundTripCostPct: Double = 0.0,
+    val chartPreferredOrderType: ChartAnalyzer.PreferredOrderType = ChartAnalyzer.PreferredOrderType.LIMIT_MID,
 )
 
 enum class ExitReason {
@@ -118,6 +129,7 @@ data class ExitDecision(
 class TradeAutomationCoordinator(
     private val executionConfig: StrategyExecutionConfig = StrategyExecutionConfig(),
     private val config: TradeAutomationConfig = TradeAutomationConfig(),
+    private val chartAnalyzer: ChartAnalyzer = ChartAnalyzer(),
 ) {
     fun reconcileOrders(
         persistedOrders: List<OrderSnapshot>,
@@ -242,10 +254,30 @@ class TradeAutomationCoordinator(
             val openedAt = buyOrders.maxByOrNull { it.updatedAt }?.updatedAt
                 ?: pairOrders.firstOrNull { it.side == OrderSide.BUY }?.createdAt
                 ?: now
+            val currentBid = quote.bestBid.toDoubleOrZero()
+            val unrealizedPnlPct = if (weightedEntryPrice > 0.0) {
+                ((currentBid - weightedEntryPrice) / weightedEntryPrice) * 100.0
+            } else {
+                0.0
+            }
+            val ageMinutes = ((now.toEpochMilliseconds() - openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 60_000.0)
+            val chartAssessment = chartAnalyzer.analyzeQuoteSnapshot(
+                quote = quote,
+                positionAgeMinutes = ageMinutes,
+                unrealizedPnlPct = unrealizedPnlPct,
+            )
             val horizon = rankedPair?.preferredHorizon
                 ?: if (quote.mediumTermReturnPct >= 1.0) TradingHorizon.SWING else TradingHorizon.TACTICAL
             val speculativePocket = rankedPair?.speculativePocket == true
             val volatilityFactor = (quote.realizedVolatilityPct / 3.0).coerceIn(0.75, 1.65)
+            val volatilityClusterMultiplier = (
+                1.0 +
+                    (quote.keltnerExtensionScore.coerceIn(0.0, 1.0) * 0.42) +
+                    (quote.toxicFlowScore.coerceIn(0.0, 1.0) * 0.26)
+                ).coerceIn(1.0, 1.65)
+            val statisticalExtreme = kotlin.math.abs(quote.zScoreCurrent) >= 3.35 ||
+                quote.keltnerExtensionScore >= 0.82 ||
+                quote.cvdDivergenceScore >= 0.72
             val baseTakeProfitPct = when {
                 speculativePocket -> 11.0
                 horizon == TradingHorizon.SWING -> 6.8
@@ -256,16 +288,35 @@ class TradeAutomationCoordinator(
                 horizon == TradingHorizon.SWING -> 3.7
                 else -> 1.4
             }
-            val takeProfitPct = (baseTakeProfitPct * volatilityFactor).coerceIn(2.0, 16.0)
-            val stopLossPct = (baseStopLossPct * (0.92 + (volatilityFactor * 0.28))).coerceIn(0.9, 4.8)
+            val takeProfitPct = max(
+                chartAssessment.softTakeProfitPct,
+                (
+                    baseTakeProfitPct *
+                        volatilityFactor *
+                        if (statisticalExtreme) 0.78 else 1.0
+                    ).coerceIn(2.0, 16.0),
+            )
+            val stopLossPct = minOf(
+                2.0,
+                max(
+                    chartAssessment.suggestedStopLossPct,
+                    (
+                        baseStopLossPct *
+                            (0.92 + (volatilityFactor * 0.24)) *
+                            volatilityClusterMultiplier *
+                            if (statisticalExtreme) 0.86 else 1.0
+                        ).coerceIn(0.9, 4.8),
+                ),
+            )
             val takeProfitPrice = DecimalValue.fromDouble(weightedEntryPrice * (1.0 + (takeProfitPct / 100.0)))
-            val stopPrice = DecimalValue.fromDouble(weightedEntryPrice * (1.0 - (stopLossPct / 100.0)))
-            val currentBid = quote.bestBid.toDoubleOrZero()
-            val unrealizedPnlPct = if (weightedEntryPrice > 0.0) {
-                ((currentBid - weightedEntryPrice) / weightedEntryPrice) * 100.0
-            } else {
-                0.0
-            }
+            val rawStopPrice = weightedEntryPrice * (1.0 - (stopLossPct / 100.0))
+            val stopPrice = DecimalValue.fromDouble(
+                if (unrealizedPnlPct >= config.breakEvenArmingNetPnlPct) {
+                    max(rawStopPrice, breakEvenPrice.toDoubleOrZero())
+                } else {
+                    rawStopPrice
+                },
+            )
             val unrealizedPnlIdr = (currentBid - weightedEntryPrice) * balanceQuantity * quoteAssetPriceIdr
             ManagedPosition(
                 pairId = pairId,
@@ -294,6 +345,13 @@ class TradeAutomationCoordinator(
                     horizon == TradingHorizon.SWING -> 72.0
                     else -> 12.0
                 },
+                chartEntryScore = chartAssessment.entryScore,
+                chartExitUrgencyScore = chartAssessment.exitUrgencyScore,
+                chartRotationUrgencyScore = chartAssessment.rotationUrgencyScore,
+                chartSuggestedTrailingStopPct = chartAssessment.suggestedTrailingStopPct,
+                chartSoftTakeProfitPct = chartAssessment.softTakeProfitPct,
+                chartEstimatedRoundTripCostPct = chartAssessment.estimatedRoundTripCostPct,
+                chartPreferredOrderType = chartAssessment.preferredOrderType,
             )
         }.sortedByDescending { it.currentValueIdr.toDoubleOrZero() }
     }
@@ -352,6 +410,7 @@ class TradeAutomationCoordinator(
         val stopPrice = position.stopPrice.toDoubleOrZero()
         val takeProfitPrice = position.takeProfitPrice.toDoubleOrZero()
         val ageHours = ((now.toEpochMilliseconds() - position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 3_600_000.0)
+        val ageMinutes = ageHours * 60.0
         val keepWinnerRunning = shouldKeepWinnerRunning(
             position = position,
             pairScore = pairScore,
@@ -364,7 +423,11 @@ class TradeAutomationCoordinator(
             positionPairScore = pairScore,
             candidates = replacementCandidates,
         )
+        val microTimeStopTriggered =
+            ageMinutes >= config.microTimeStopMinutes &&
+                position.unrealizedPnlPct in config.microTimeStopLossFloorPct..config.microTimeStopProfitCeilingPct
         val exitReason = when {
+            position.unrealizedPnlPct <= config.emergencyMarketExitLossPct -> ExitReason.STOP_LOSS_EXIT
             currentBid <= stopPrice -> ExitReason.STOP_LOSS_EXIT
             currentBid >= takeProfitPrice && !keepWinnerRunning -> ExitReason.PROFIT_EXIT
             marketRegime == MarketRegime.BREAKDOWN_PANIC -> ExitReason.THESIS_INVALID_EXIT
@@ -389,6 +452,7 @@ class TradeAutomationCoordinator(
                 ageHours = ageHours,
                 allowRotation = allowRotation,
             ) -> ExitReason.ROTATION_EXIT
+            microTimeStopTriggered -> ExitReason.TIME_EXIT
             shouldTimeOutTactical(
                 position = position,
                 positionPairScore = pairScore,
@@ -419,9 +483,9 @@ class TradeAutomationCoordinator(
         val useRapidRotationMarketExit = !useEmergencyMarketExit &&
             exitReason == ExitReason.ROTATION_EXIT &&
             (
-                position.unrealizedPnlPct <= 0.12 ||
-                    ageHours >= max(config.staleRotationMinAgeHours, config.loserRotationMinAgeHours) * 2.0 ||
-                    (topCandidate?.expectedNetProfitabilityPct ?: 0.0) >= 1.35
+                position.unrealizedPnlPct <= 0.0 ||
+                    ageHours >= max(config.staleRotationMinAgeHours, config.loserRotationMinAgeHours) * 2.5 ||
+                    (topCandidate?.expectedNetProfitabilityPct ?: 0.0) >= 1.65
                 )
 
         val nonEmergencyExitBelowBreakEven = !useEmergencyMarketExit &&
@@ -515,18 +579,21 @@ class TradeAutomationCoordinator(
             position.speculativePocket ->
                 position.unrealizedPnlPct >= config.speculativeWinnerRunMinPnlPct &&
                     score.allowed &&
+                    position.chartExitUrgencyScore < 0.62 &&
                     score.trendQualityScore >= config.speculativeWinnerRunMinTrendScore &&
                     score.recentHealthScore >= config.speculativeWinnerRunMinHealthScore &&
                     score.marketOpportunityScore >= config.speculativeWinnerRunMinOpportunityScore
             position.setupType == SetupType.LIGHT_BREAKOUT_CONTINUATION ->
                 position.unrealizedPnlPct >= config.breakoutWinnerRunMinPnlPct &&
                     score.allowed &&
+                    position.chartExitUrgencyScore < 0.60 &&
                     score.trendQualityScore >= config.breakoutWinnerRunMinTrendScore &&
                     score.recentHealthScore >= config.breakoutWinnerRunMinHealthScore &&
                     score.marketOpportunityScore >= config.breakoutWinnerRunMinOpportunityScore
             position.horizon == TradingHorizon.SWING ->
                 position.unrealizedPnlPct >= 1.20 &&
                     score.allowed &&
+                    position.chartExitUrgencyScore < 0.58 &&
                     score.trendQualityScore >= 0.60 &&
                     score.marketOpportunityScore >= 0.58
             else -> false
@@ -620,6 +687,7 @@ class TradeAutomationCoordinator(
         allowRotation: Boolean,
     ): Boolean {
         if (!allowRotation) return false
+        if (position.chartRotationUrgencyScore >= 0.80 && ageHours >= 0.80) return true
         if (ageHours < config.staleRotationMinAgeHours) return false
         if (abs(position.unrealizedPnlPct) > config.staleRotationMaxAbsPnlPct) return false
         val candidate = topCandidate ?: return false
@@ -657,6 +725,7 @@ class TradeAutomationCoordinator(
     ): Boolean {
         if (position.horizon != TradingHorizon.TACTICAL) return false
         if (position.speculativePocket) return false
+        if (position.chartRotationUrgencyScore >= 0.74 && ageHours >= 1.0) return true
         if (ageHours < config.tacticalStaleMaxAgeHours) return false
         if (position.unrealizedPnlPct > config.tacticalStaleHealthyPnlCeilingPct) return false
         if (position.unrealizedPnlPct <= config.tacticalStaleLossPct) return true

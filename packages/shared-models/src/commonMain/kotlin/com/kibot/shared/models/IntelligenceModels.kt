@@ -22,6 +22,7 @@ data class MarketOpportunitySnapshot(
     val swingBiasScore: Double,
     val opportunityAvailabilityScore: Double,
     val microstructureHealthScore: Double,
+    val volatilityClusterScore: Double = 0.0,
     val rationale: List<String> = emptyList(),
 )
 
@@ -119,6 +120,23 @@ data class LearningObservation(
 )
 
 @Serializable
+data class ExecutionAnomalySignature(
+    val observedAt: Instant,
+    val pairId: PairId,
+    val setupType: SetupType,
+    val anomalyGrade: String,
+    val preFillLookbackMinutes: Int = 5,
+    val vwapDistancePct: Double = 0.0,
+    val orderBookImbalance: Double = 0.0,
+    val cvdDivergenceScore: Double = 0.0,
+    val tickFrequencyPerMinute: Double = 0.0,
+    val realizedPnlPct: Double = 0.0,
+    val expectedNetEdgePct: Double = 0.0,
+    val confidenceScore: Double = 0.0,
+    val rationale: List<String> = emptyList(),
+)
+
+@Serializable
 data class WeeklyAdaptationPlan(
     val whitelistPairs: List<PairId> = emptyList(),
     val temporaryBlacklistPairs: List<PairId> = emptyList(),
@@ -137,6 +155,8 @@ data class WeeklyLearningSummary(
     val periodStart: LocalDate,
     val periodEnd: LocalDate,
     val tradeCount: Int = 0,
+    val profitFactor: Double = 0.0,
+    val maximumDrawdownPct: Double = 0.0,
     val bestPairs: List<PairId> = emptyList(),
     val worstPairs: List<PairId> = emptyList(),
     val bestSetups: List<SetupType> = emptyList(),
@@ -153,6 +173,7 @@ data class WeeklyLearningSummary(
     val swingExpectancy: Double,
     val adaptationPlan: WeeklyAdaptationPlan,
     val notes: List<String> = emptyList(),
+    val executionSignatures: List<ExecutionAnomalySignature> = emptyList(),
 )
 
 @Serializable

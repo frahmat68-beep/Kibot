@@ -84,6 +84,8 @@ class WeeklyLearningLoopTest {
 
         assertEquals(PairId("btc_idr"), review.bestPairs.first())
         assertEquals(PairId("thin_pair"), review.worstPairs.first())
+        assertTrue(review.profitFactor > 2.0)
+        assertTrue(review.maximumDrawdownPct < 0.0)
         assertTrue(review.falseEntryRate > 0.20)
         assertTrue(review.noTradeQualityScore >= 0.5)
         assertTrue(review.adaptationPlan.temporaryBlacklistPairs.contains(PairId("thin_pair")))

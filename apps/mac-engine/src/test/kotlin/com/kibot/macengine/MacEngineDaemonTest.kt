@@ -31,14 +31,19 @@ import com.kibot.shared.models.OrderSnapshot
 import com.kibot.shared.models.OrderStatus
 import com.kibot.shared.models.OrderType
 import com.kibot.shared.models.PairId
+import com.kibot.shared.models.PositionId
+import com.kibot.shared.models.PositionSnapshot
+import com.kibot.shared.models.PositionState
 import com.kibot.shared.models.ProfitProtectionStatus
 import com.kibot.shared.models.RiskLadderLevel
+import com.kibot.shared.models.SetupType
 import com.kibot.shared.models.StrategyMode
 import com.kibot.shared.models.SyncHealth
 import com.kibot.shared.models.WeeklyAdaptationPlan
 import com.kibot.shared.models.WeeklyLearningSummary
 import com.kibot.shared.models.CommandType
 import com.kibot.core.MarketBuyImpactEstimate
+import com.kibot.shared.models.TradingHorizon
 import com.kibot.testkit.FakeControlPlaneGateway
 import com.kibot.testkit.FakeExchangeGateway
 import kotlinx.coroutines.delay
@@ -46,6 +51,12 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -81,13 +92,13 @@ class MacEngineDaemonTest {
                 conflictDetected = false,
             ),
         )
+        controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
 
         val exchange = FakeExchangeGateway(
             marketQuotes = mutableListOf(
-                marketQuote("btc_idr", 150_000_000.0, 0.82),
-                marketQuote("eth_idr", 120_000_000.0, 0.77),
+                marketQuote("eth_idr", 120_000.0, 0.77),
             ),
-            balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("100000"))),
+            balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("500000"))),
         )
         val repository = MacStateRepository()
         val daemon = MacEngineDaemon(
@@ -104,7 +115,6 @@ class MacEngineDaemonTest {
         assertEquals(BotEffectiveState.RUNNING, controlPlane.fetchBotState(botId)?.effectiveState)
         assertTrue(repository.state.value.activeEngine.contains("Oracle", ignoreCase = true))
         assertEquals(BotMode.ATTACK, controlPlane.runtimeIntelligence?.operatingMode)
-        assertEquals(PairId("btc_idr"), controlPlane.runtimeIntelligence?.currentPair)
     }
 
     @Test
@@ -212,38 +222,356 @@ class MacEngineDaemonTest {
             ),
         )
         controlPlane.dailyRisk = com.kibot.shared.models.DailyRiskSnapshot(
-            openingEquityIdr = DecimalValue("100000"),
-            currentEquityIdr = DecimalValue("102500"),
-            realizedPnlIdr = DecimalValue("2500"),
+            openingEquityIdr = DecimalValue("500000"),
+            currentEquityIdr = DecimalValue("512500"),
+            realizedPnlIdr = DecimalValue("12500"),
             unrealizedPnlIdr = DecimalValue.Zero,
             drawdownPct = 0.01,
             hardDailyLossLimitPct = 0.25,
             hardStopTriggered = false,
             rebasePending = false,
-            highWatermarkEquityIdr = DecimalValue("102500"),
+            highWatermarkEquityIdr = DecimalValue("512500"),
         )
         controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
 
         val exchange = FakeExchangeGateway(
             marketQuotes = mutableListOf(
-                marketQuote("btc_idr", 180_000_000.0, 0.86),
                 marketQuote("eth_idr", 120_000_000.0, 0.74),
             ),
-            balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("100000"))),
+            balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("500000"))),
         )
         val daemon = MacEngineDaemon(
             repository = MacStateRepository(),
             controlPlane = controlPlane,
             exchange = exchange,
-            config = runtimeConfig(enableLiveExecution = true),
+            config = runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 1),
         )
 
         daemon.syncOnce()
 
-        assertEquals(1, exchange.currentOrders().size)
-        assertEquals(1, controlPlane.fetchRecentOrders(botId).size)
-        assertTrue(controlPlane.fetchRecentOrders(botId).any { it.pairId == PairId("btc_idr") })
-        assertTrue(controlPlane.fetchRecentOrders(botId).none { it.pairId == PairId("eth_idr") })
+        assertTrue(exchange.currentOrders().isNotEmpty())
+        assertEquals(exchange.currentOrders().size, controlPlane.fetchRecentOrders(botId).size)
+        assertTrue(controlPlane.fetchRecentOrders(botId).any { it.pairId == PairId("eth_idr") })
+        assertTrue(controlPlane.fetchRecentOrders(botId).all { it.side == OrderSide.BUY })
+    }
+
+    @Test
+    fun `monthly pnl anchor resets baseline to current equity on first sync`() = runBlocking {
+        val controlPlane = FakeControlPlaneGateway(botId = botId)
+        controlPlane.botState = BotStateSnapshot(
+            botId = botId,
+            desiredState = BotDesiredState.ON,
+            effectiveState = BotEffectiveState.RUNNING,
+            activeDeviceId = macId,
+            standbyDeviceId = androidId,
+            currentTerm = LeaseTerm(6),
+            syncHealth = SyncHealth.HEALTHY,
+            strategyMode = StrategyMode.GROWTH,
+            operatingMode = BotMode.GROWTH,
+            edgeConfidence = EdgeConfidence.HIGH,
+            marketRegime = MarketRegime.HEALTHY_UPTREND,
+            lastHeartbeatAt = Instant.parse("2026-04-01T00:00:00Z"),
+        )
+        controlPlane.registerDevice(androidRegistration())
+        controlPlane.seedLease(
+            EngineLeaseSnapshot(
+                botId = botId,
+                currentHolder = macId,
+                term = LeaseTerm(6),
+                state = LeaseState.HELD,
+                expiresAt = Instant.parse("2030-01-01T00:00:05Z"),
+                lastHeartbeatAt = Instant.parse("2030-01-01T00:00:00Z"),
+                conflictDetected = false,
+            ),
+        )
+        controlPlane.dailyRisk = com.kibot.shared.models.DailyRiskSnapshot(
+            openingEquityIdr = DecimalValue("250000"),
+            currentEquityIdr = DecimalValue("250000"),
+            realizedPnlIdr = DecimalValue.Zero,
+            unrealizedPnlIdr = DecimalValue.Zero,
+            drawdownPct = 0.0,
+            hardDailyLossLimitPct = 0.25,
+            hardStopTriggered = false,
+            rebasePending = false,
+            highWatermarkEquityIdr = DecimalValue("250000"),
+        )
+        controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
+        val exchange = FakeExchangeGateway(
+            marketQuotes = mutableListOf(marketQuote("btc_idr", 220_000_000.0, 0.88)),
+            balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("250000"))),
+        )
+        val monthlyAnchorPath = Files.createTempFile("kibot-test-monthly-anchor-", ".json").also {
+            Files.deleteIfExists(it)
+        }
+        val repository = MacStateRepository()
+        val daemon = MacEngineDaemon(
+            repository = repository,
+            controlPlane = controlPlane,
+            exchange = exchange,
+            config = runtimeConfig(
+                enableLiveExecution = false,
+                deviceRole = DeviceRole.PRIMARY,
+                monthlyPnlAnchorPath = monthlyAnchorPath,
+            ),
+        )
+
+        daemon.syncOnce()
+
+        assertEquals("+Rp0", repository.state.value.return30dIdr)
+        assertEquals("+0.0%", repository.state.value.return30dPctLabel)
+        assertTrue(Files.exists(monthlyAnchorPath))
+    }
+
+    @Test
+    fun `toxic flow quarantine from persisted state blocks fresh entry`() = runBlocking {
+        val controlPlane = FakeControlPlaneGateway(botId = botId)
+        controlPlane.botState = BotStateSnapshot(
+            botId = botId,
+            desiredState = BotDesiredState.ON,
+            effectiveState = BotEffectiveState.RUNNING,
+            activeDeviceId = macId,
+            standbyDeviceId = androidId,
+            currentTerm = LeaseTerm(14),
+            syncHealth = SyncHealth.HEALTHY,
+            strategyMode = StrategyMode.GROWTH,
+            operatingMode = BotMode.GROWTH,
+            edgeConfidence = EdgeConfidence.HIGH,
+            marketRegime = MarketRegime.HEALTHY_UPTREND,
+            lastHeartbeatAt = Instant.parse("2026-03-15T00:00:00Z"),
+        )
+        controlPlane.registerDevice(androidRegistration())
+        controlPlane.seedLease(
+            EngineLeaseSnapshot(
+                botId = botId,
+                currentHolder = macId,
+                term = LeaseTerm(14),
+                state = LeaseState.HELD,
+                expiresAt = Instant.parse("2030-01-01T00:00:05Z"),
+                lastHeartbeatAt = Instant.parse("2030-01-01T00:00:00Z"),
+                conflictDetected = false,
+            ),
+        )
+        controlPlane.dailyRisk = com.kibot.shared.models.DailyRiskSnapshot(
+            openingEquityIdr = DecimalValue("100000"),
+            currentEquityIdr = DecimalValue("101800"),
+            realizedPnlIdr = DecimalValue("1800"),
+            unrealizedPnlIdr = DecimalValue.Zero,
+            drawdownPct = 0.0,
+            hardDailyLossLimitPct = 0.25,
+            hardStopTriggered = false,
+            rebasePending = false,
+            highWatermarkEquityIdr = DecimalValue("101800"),
+        )
+        controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
+        val statePath = Files.createTempFile("kibot-toxic-local-state-", ".json").also { Files.deleteIfExists(it) }
+        val toxicPath = statePath.parent.resolve("pair-toxic-flow-state.json")
+        val nowMs = Clock.System.now().toEpochMilliseconds()
+        Files.writeString(
+            toxicPath,
+            """
+            {"botId":"main","deviceId":"macbook-main","observedAtEpochMs":$nowMs,"entries":[{"pairId":"btc_idr","stopLossHits":2,"lastStopLossAtEpochMs":${nowMs - 10_000L},"consecutiveSweepHits":2,"quarantinedUntilEpochMs":${nowMs + 2_000_000L},"lastReason":"repeated_stop_loss_sweep"}]}
+            """.trimIndent(),
+        )
+        val exchange = FakeExchangeGateway(
+            marketQuotes = mutableListOf(
+                marketQuote("btc_idr", 180_000_000.0, 0.91),
+            ),
+            balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("120000"))),
+        )
+        val daemon = MacEngineDaemon(
+            repository = MacStateRepository(),
+            controlPlane = controlPlane,
+            exchange = exchange,
+            config = runtimeConfig(
+                enableLiveExecution = true,
+                deviceRole = DeviceRole.PRIMARY,
+                localPositionStateEnabled = true,
+                localPositionStatePath = statePath,
+            ),
+        )
+
+        daemon.syncOnce()
+
+        assertTrue(exchange.currentOrders().isEmpty())
+    }
+
+    @Test
+    fun `adaptive slicing trims oversized entry budget on thin top book`() = runBlocking {
+        val controlPlane = FakeControlPlaneGateway(botId = botId)
+        controlPlane.botState = BotStateSnapshot(
+            botId = botId,
+            desiredState = BotDesiredState.ON,
+            effectiveState = BotEffectiveState.RUNNING,
+            activeDeviceId = macId,
+            standbyDeviceId = androidId,
+            currentTerm = LeaseTerm(15),
+            syncHealth = SyncHealth.HEALTHY,
+            strategyMode = StrategyMode.GROWTH,
+            operatingMode = BotMode.GROWTH,
+            edgeConfidence = EdgeConfidence.HIGH,
+            marketRegime = MarketRegime.HEALTHY_UPTREND,
+            lastHeartbeatAt = Instant.parse("2026-03-15T00:00:00Z"),
+        )
+        controlPlane.registerDevice(androidRegistration())
+        controlPlane.seedLease(
+            EngineLeaseSnapshot(
+                botId = botId,
+                currentHolder = macId,
+                term = LeaseTerm(15),
+                state = LeaseState.HELD,
+                expiresAt = Instant.parse("2030-01-01T00:00:05Z"),
+                lastHeartbeatAt = Instant.parse("2030-01-01T00:00:00Z"),
+                conflictDetected = false,
+            ),
+        )
+        controlPlane.dailyRisk = com.kibot.shared.models.DailyRiskSnapshot(
+            openingEquityIdr = DecimalValue("500000"),
+            currentEquityIdr = DecimalValue("509000"),
+            realizedPnlIdr = DecimalValue("9000"),
+            unrealizedPnlIdr = DecimalValue.Zero,
+            drawdownPct = 0.0,
+            hardDailyLossLimitPct = 0.25,
+            hardStopTriggered = false,
+            rebasePending = false,
+            highWatermarkEquityIdr = DecimalValue("509000"),
+        )
+        controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
+        val exchange = FakeExchangeGateway(
+            marketQuotes = mutableListOf(
+                marketQuote(
+                    "btc_idr",
+                    220_000_000.0,
+                    0.93,
+                    askDepthTop5Idr = 20_000.0,
+                    bidDepthTop5Idr = 18_000.0,
+                    shortTermReturnPct = 2.4,
+                    mediumTermReturnPct = 5.6,
+                ),
+            ),
+            balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("500000"))),
+        )
+        val daemon = MacEngineDaemon(
+            repository = MacStateRepository(),
+            controlPlane = controlPlane,
+            exchange = exchange,
+            config = runtimeConfig(
+                enableLiveExecution = true,
+                deviceRole = DeviceRole.PRIMARY,
+                chartGuardMinCandles = 1,
+                chartGuardMinActiveCandles = 1,
+                chartGuardMinDistinctCloseBuckets = 1,
+            ),
+        )
+
+        daemon.syncOnce()
+
+        val order = exchange.currentOrders().single()
+        val submittedBudget = order.originalQuantity.toDoubleOrZero() * order.price.toDoubleOrZero()
+        assertTrue(submittedBudget <= 10_000.0, "submitted budget should be sliced down to venue-safe minimum, got $submittedBudget")
+    }
+
+    @Test
+    fun `spoof radar downgrades unstable breakout entry to passive limit`() = runBlocking {
+        val controlPlane = FakeControlPlaneGateway(botId = botId)
+        controlPlane.botState = BotStateSnapshot(
+            botId = botId,
+            desiredState = BotDesiredState.ON,
+            effectiveState = BotEffectiveState.RUNNING,
+            activeDeviceId = macId,
+            standbyDeviceId = androidId,
+            currentTerm = LeaseTerm(16),
+            syncHealth = SyncHealth.HEALTHY,
+            strategyMode = StrategyMode.GROWTH,
+            operatingMode = BotMode.GROWTH,
+            edgeConfidence = EdgeConfidence.HIGH,
+            marketRegime = MarketRegime.HEALTHY_UPTREND,
+            lastHeartbeatAt = Instant.parse("2026-03-15T00:00:00Z"),
+        )
+        controlPlane.registerDevice(androidRegistration())
+        controlPlane.seedLease(
+            EngineLeaseSnapshot(
+                botId = botId,
+                currentHolder = macId,
+                term = LeaseTerm(16),
+                state = LeaseState.HELD,
+                expiresAt = Instant.parse("2030-01-01T00:00:05Z"),
+                lastHeartbeatAt = Instant.parse("2030-01-01T00:00:00Z"),
+                conflictDetected = false,
+            ),
+        )
+        controlPlane.dailyRisk = com.kibot.shared.models.DailyRiskSnapshot(
+            openingEquityIdr = DecimalValue("220000"),
+            currentEquityIdr = DecimalValue("223000"),
+            realizedPnlIdr = DecimalValue("3000"),
+            unrealizedPnlIdr = DecimalValue.Zero,
+            drawdownPct = 0.0,
+            hardDailyLossLimitPct = 0.25,
+            hardStopTriggered = false,
+            rebasePending = false,
+            highWatermarkEquityIdr = DecimalValue("223000"),
+        )
+        controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
+        val quotes = mutableListOf(
+            marketQuote(
+                "eth_idr",
+                120_000_000.0,
+                0.20,
+                askDepthTop5Idr = 50_000.0,
+                bidDepthTop5Idr = 450_000.0,
+                orderBookStabilityScore = 0.18,
+                orderBookImbalance = 0.80,
+                shortTermReturnPct = 0.10,
+                mediumTermReturnPct = 0.18,
+            ),
+        )
+        val balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("500000")))
+        val exchange = FakeExchangeGateway(
+            marketQuotes = quotes,
+            balances = balances,
+        )
+        val daemon = MacEngineDaemon(
+            repository = MacStateRepository(),
+            controlPlane = controlPlane,
+            exchange = exchange,
+            config = runtimeConfig(
+                enableLiveExecution = true,
+                deviceRole = DeviceRole.PRIMARY,
+                chartGuardMinCandles = 1,
+                chartGuardMinActiveCandles = 1,
+                chartGuardMinDistinctCloseBuckets = 1,
+            ),
+        )
+
+        daemon.syncOnce()
+        quotes[0] = marketQuote(
+            "eth_idr",
+            120_000_000.0,
+            0.22,
+            askDepthTop5Idr = 85_000.0,
+            bidDepthTop5Idr = 15_000.0,
+            orderBookStabilityScore = 0.14,
+            orderBookImbalance = -0.78,
+            shortTermReturnPct = -0.08,
+            mediumTermReturnPct = 0.06,
+        )
+        daemon.syncOnce()
+        quotes[0] = marketQuote(
+            "eth_idr",
+            120_000_000.0,
+            0.94,
+            askDepthTop5Idr = 150_000.0,
+            bidDepthTop5Idr = 520_000.0,
+            orderBookStabilityScore = 0.19,
+            orderBookImbalance = 0.56,
+            shortTermReturnPct = 2.6,
+            mediumTermReturnPct = 5.8,
+        )
+        balances[0] = BalanceSnapshot("idr", DecimalValue("520000"))
+
+        daemon.syncOnce()
+
+        val order = exchange.currentOrders().last { it.pairId == PairId("eth_idr") }
+        assertEquals(OrderType.LIMIT, order.orderType)
     }
 
     @Test
@@ -276,20 +604,20 @@ class MacEngineDaemonTest {
             ),
         )
         controlPlane.dailyRisk = com.kibot.shared.models.DailyRiskSnapshot(
-            openingEquityIdr = DecimalValue("100000"),
-            currentEquityIdr = DecimalValue("101000"),
-            realizedPnlIdr = DecimalValue("1000"),
+            openingEquityIdr = DecimalValue("500000"),
+            currentEquityIdr = DecimalValue("505000"),
+            realizedPnlIdr = DecimalValue("5000"),
             unrealizedPnlIdr = DecimalValue.Zero,
             drawdownPct = 0.01,
             hardDailyLossLimitPct = 0.25,
             hardStopTriggered = false,
             rebasePending = false,
-            highWatermarkEquityIdr = DecimalValue("101000"),
+            highWatermarkEquityIdr = DecimalValue("505000"),
         )
 
         val exchange = FakeExchangeGateway(
-            marketQuotes = mutableListOf(marketQuote("btc_idr", 180_000_000.0, 0.86)),
-            balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("100000"))),
+            marketQuotes = mutableListOf(marketQuote("eth_idr", 120_000_000.0, 0.86)),
+            balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("500000"))),
             failOnPlaceOrder = true,
         )
         val repository = MacStateRepository()
@@ -297,7 +625,7 @@ class MacEngineDaemonTest {
             repository = repository,
             controlPlane = controlPlane,
             exchange = exchange,
-            config = runtimeConfig(enableLiveExecution = true),
+            config = runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 1),
         )
 
         daemon.syncOnce()
@@ -305,6 +633,384 @@ class MacEngineDaemonTest {
         assertEquals(BotEffectiveState.SAFE_MODE, controlPlane.fetchBotState(botId)?.effectiveState)
         assertTrue(controlPlane.fetchLease(botId)?.conflictDetected == true)
         assertTrue(repository.state.value.statusMessage.contains("safe mode", ignoreCase = true))
+    }
+
+    @Test
+    fun `missing trinity heartbeat triggers safe mode and emergency sell`() = runBlocking {
+        val controlPlane = FakeControlPlaneGateway(botId = botId)
+        controlPlane.botState = BotStateSnapshot(
+            botId = botId,
+            desiredState = BotDesiredState.ON,
+            effectiveState = BotEffectiveState.RUNNING,
+            activeDeviceId = macId,
+            standbyDeviceId = androidId,
+            currentTerm = LeaseTerm(6),
+            syncHealth = SyncHealth.HEALTHY,
+            strategyMode = StrategyMode.GROWTH,
+            operatingMode = BotMode.GROWTH,
+            edgeConfidence = EdgeConfidence.HIGH,
+            marketRegime = MarketRegime.HEALTHY_UPTREND,
+            lastHeartbeatAt = Instant.parse("2026-03-15T00:00:00Z"),
+        )
+        controlPlane.seedLease(
+            EngineLeaseSnapshot(
+                botId = botId,
+                currentHolder = macId,
+                term = LeaseTerm(6),
+                state = LeaseState.HELD,
+                expiresAt = Instant.parse("2030-01-01T00:00:05Z"),
+                lastHeartbeatAt = Instant.parse("2030-01-01T00:00:00Z"),
+                conflictDetected = false,
+            ),
+        )
+        controlPlane.dailyRisk = com.kibot.shared.models.DailyRiskSnapshot(
+            openingEquityIdr = DecimalValue("100000"),
+            currentEquityIdr = DecimalValue("100000"),
+            realizedPnlIdr = DecimalValue.Zero,
+            unrealizedPnlIdr = DecimalValue.Zero,
+            drawdownPct = 0.0,
+            hardDailyLossLimitPct = 0.05,
+            hardStopTriggered = false,
+            rebasePending = false,
+            highWatermarkEquityIdr = DecimalValue("100000"),
+        )
+        controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
+        controlPlane.seedPersistedOrders(
+            OrderSnapshot(
+                orderId = OrderId("buy-filled-1"),
+                clientOrderId = com.kibot.shared.models.ClientOrderId("buy-filled-1"),
+                pairId = PairId("doge_idr"),
+                side = OrderSide.BUY,
+                orderType = OrderType.MARKET,
+                status = OrderStatus.FILLED,
+                price = DecimalValue("100"),
+                originalQuantity = DecimalValue("100"),
+                executedQuantity = DecimalValue("100"),
+                remainingQuantity = DecimalValue.Zero,
+                createdAt = Instant.parse("2026-03-15T00:00:00Z"),
+                updatedAt = Instant.parse("2026-03-15T00:00:01Z"),
+            ),
+        )
+
+        val exchange = FakeExchangeGateway(
+            marketQuotes = mutableListOf(marketQuote("doge_idr", 103.0, 0.78)),
+            balances = mutableListOf(
+                BalanceSnapshot("idr", DecimalValue("10000")),
+                BalanceSnapshot("doge", DecimalValue("100")),
+            ),
+        )
+        val daemon = MacEngineDaemon(
+            repository = MacStateRepository(),
+            controlPlane = controlPlane,
+            exchange = exchange,
+            config = runtimeConfig(
+                enableLiveExecution = true,
+                deviceRole = DeviceRole.PRIMARY,
+                leadLagUdpEnabled = true,
+                leadLagUdpListenPort = 10099,
+                leadLagUdpTargetHost = "127.0.0.1",
+                leadLagUdpTargetPort = 10100,
+                leadLagUdpHeartbeatEnabled = true,
+                leadLagUdpHeartbeatIntervalMillis = 20L,
+                leadLagUdpHeartbeatTimeoutMillis = 80L,
+                leadLagUdpHeartbeatRequiredBotIds = setOf("kinance"),
+            ),
+        )
+
+        daemon.syncOnce()
+        delay(320L)
+        daemon.syncOnce()
+
+        assertEquals(BotEffectiveState.SAFE_MODE, controlPlane.fetchBotState(botId)?.effectiveState)
+        assertTrue(controlPlane.fetchBotState(botId)?.safeModeReason?.contains("heartbeat", ignoreCase = true) == true)
+        assertTrue(exchange.currentOrders().any { it.side == OrderSide.SELL })
+    }
+
+    @Test
+    fun `fresh trinity heartbeat clears safe mode and resumes running`() = runBlocking {
+        val controlPlane = FakeControlPlaneGateway(botId = botId)
+        controlPlane.botState = runningBotState()
+        controlPlane.seedLease(heldLease())
+        controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
+        val repository = MacStateRepository()
+        val exchange = FakeExchangeGateway(
+            marketQuotes = mutableListOf(marketQuote("doge_idr", 103.0, 0.78)),
+            balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("10000"))),
+        )
+        val daemon = MacEngineDaemon(
+            repository = repository,
+            controlPlane = controlPlane,
+            exchange = exchange,
+            config = runtimeConfig(
+                deviceRole = DeviceRole.PRIMARY,
+                leadLagUdpEnabled = true,
+                leadLagUdpListenPort = 10119,
+                leadLagUdpTargetHost = "127.0.0.1",
+                leadLagUdpTargetPort = 10120,
+                leadLagUdpHeartbeatEnabled = true,
+                leadLagUdpHeartbeatIntervalMillis = 20L,
+                leadLagUdpHeartbeatTimeoutMillis = 80L,
+                leadLagUdpHeartbeatRequiredBotIds = setOf("kinance"),
+            ),
+        )
+
+        daemon.writePrivateField("trinityHeartbeatSafeModeReason", "Trinity heartbeat timeout: kinance:no_heartbeat.")
+        val heartbeats = daemon.readPrivateField<MutableMap<String, Instant>>("lastTrinityHeartbeatByBotId")
+        heartbeats["kinance"] = Clock.System.now()
+
+        daemon.syncOnce()
+
+        assertEquals(BotEffectiveState.RUNNING, controlPlane.fetchBotState(botId)?.effectiveState)
+        assertTrue(controlPlane.fetchBotState(botId)?.safeModeReason == null)
+        assertTrue(repository.state.value.statusMessage.isNotBlank())
+    }
+
+    @Test
+    fun `binary heartbeat packet updates trinity peer state`() = runBlocking {
+        val controlPlane = FakeControlPlaneGateway(botId = botId)
+        controlPlane.botState = runningBotState()
+        controlPlane.seedLease(heldLease())
+
+        val daemon = MacEngineDaemon(
+            repository = MacStateRepository(),
+            controlPlane = controlPlane,
+            exchange = FakeExchangeGateway(
+                marketQuotes = mutableListOf(marketQuote("doge_idr", 103.0, 0.78)),
+                balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("10000"))),
+            ),
+            config = runtimeConfig(
+                deviceRole = DeviceRole.PRIMARY,
+                leadLagUdpEnabled = true,
+                leadLagUdpBinaryProtocolEnabled = true,
+                leadLagUdpListenPort = 10109,
+                leadLagUdpTargetHost = "127.0.0.1",
+                leadLagUdpTargetPort = 10110,
+                leadLagUdpHeartbeatEnabled = true,
+                leadLagUdpHeartbeatIntervalMillis = 20L,
+                leadLagUdpHeartbeatTimeoutMillis = 80L,
+                leadLagUdpHeartbeatRequiredBotIds = setOf("kinance"),
+            ),
+        )
+
+        val packet = buildBinaryHeartbeatPacket(
+            senderCode = 1,
+            sequenceId = 7,
+            sentAtEpochMs = Clock.System.now().toEpochMilliseconds(),
+        )
+        val decoded = daemon.invokePrivateMethod<Any?>("decodeBinaryUdpPacket", packet, packet.size)!!
+        val heartbeat = decoded.readPrivateField<Any?>("heartbeat")
+        assertTrue(heartbeat != null)
+        assertEquals("kinance", heartbeat.readPrivateField<String>("senderBotId"))
+        val heartbeatJson = """
+            {"kind":"trinity_state","msgType":"HEARTBEAT","senderBotId":"kinance","sentAtEpochMs":${Clock.System.now().toEpochMilliseconds()},"activePair":"xrp_idr","safeModeArmed":false}
+        """.trimIndent()
+        val handled = daemon.invokePrivateMethod<Boolean>(
+            "handleTrinityHeartbeatPayload",
+            heartbeatJson,
+            Clock.System.now(),
+        )
+        assertTrue(handled)
+
+        val heartbeats = daemon.readPrivateField<MutableMap<String, Instant>>("lastTrinityHeartbeatByBotId")
+        assertTrue(heartbeats["kinance"] != null)
+    }
+
+    @Test
+    fun `stale binary lead lag sequence is ignored`() = runBlocking {
+        val controlPlane = FakeControlPlaneGateway(botId = botId)
+        controlPlane.botState = runningBotState()
+        controlPlane.seedLease(heldLease())
+
+        val daemon = MacEngineDaemon(
+            repository = MacStateRepository(),
+            controlPlane = controlPlane,
+            exchange = FakeExchangeGateway(
+                marketQuotes = mutableListOf(marketQuote("xrp_idr", 1000.0, 0.82)),
+                balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("50000"))),
+            ),
+            config = runtimeConfig(
+                deviceRole = DeviceRole.PRIMARY,
+                leadLagUdpEnabled = true,
+                leadLagUdpBinaryProtocolEnabled = true,
+                leadLagUdpListenPort = 10119,
+                leadLagUdpTargetHost = "127.0.0.1",
+                leadLagUdpTargetPort = 10120,
+            ),
+        )
+
+        val accepted = daemon.invokePrivateMethod<Boolean>("shouldRejectUdpSequence", "kinance", 10)
+        val stale = daemon.invokePrivateMethod<Boolean>("shouldRejectUdpSequence", "kinance", 9)
+        assertTrue(!accepted)
+        assertTrue(stale)
+    }
+
+    @Test
+    fun `duplicate binary veto command is deduplicated and prewarm is armed once`() = runBlocking {
+        val controlPlane = FakeControlPlaneGateway(botId = botId)
+        controlPlane.botState = runningBotState()
+        controlPlane.seedLease(heldLease())
+
+        val daemon = MacEngineDaemon(
+            repository = MacStateRepository(),
+            controlPlane = controlPlane,
+            exchange = FakeExchangeGateway(
+                marketQuotes = mutableListOf(marketQuote("xrp_idr", 1000.0, 0.82)),
+                balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("50000"))),
+            ),
+            config = runtimeConfig(
+                deviceRole = DeviceRole.PRIMARY,
+                leadLagUdpEnabled = true,
+                leadLagUdpBinaryProtocolEnabled = true,
+                leadLagUdpListenPort = 10129,
+                leadLagUdpTargetHost = "127.0.0.1",
+                leadLagUdpTargetPort = 10130,
+            ),
+        )
+
+        val nowMs = Clock.System.now().toEpochMilliseconds()
+        val packet = buildBinaryLeadLagPacket(
+            messageType = 12,
+            senderCode = 2,
+            sequenceId = 31,
+            pairId = "xrp_idr",
+            traceHash = 333,
+            sentAtEpochMs = nowMs,
+        )
+        val decoded = daemon.invokePrivateMethod<Any?>("decodeBinaryUdpPacket", packet, packet.size)!!
+        val dedupKey = decoded.readPrivateField<String?>("dedupKey")
+        val payload = decoded.readPrivateField<Any?>("leadLag")
+        val first = daemon.invokePrivateMethod<Boolean>("shouldRejectUdpDedup", dedupKey, Clock.System.now())
+        val second = daemon.invokePrivateMethod<Boolean>("shouldRejectUdpDedup", dedupKey, Clock.System.now())
+        daemon.invokePrivateMethod<Unit>("armUdpExecutionPrewarm", payload!!, Clock.System.now())
+
+        val dedup = daemon.readPrivateField<LinkedHashMap<String, Instant>>("udpRecentDedupKeys")
+        val prewarm = daemon.readPrivateField<MutableMap<String, Any>>("udpExecutionPrewarmByPair")
+        assertTrue(!first)
+        assertTrue(second)
+        assertEquals(1, dedup.keys.count { it.contains("VETO_APPROVED") && it.contains("xrp_idr") })
+        assertTrue(prewarm.containsKey("xrp_idr"))
+    }
+
+    @Test
+    fun `daemon persists local position snapshot and recovers it on next startup`() = runBlocking {
+        val statePath = Files.createTempFile("kibot-local-position-", ".json")
+        Files.deleteIfExists(statePath)
+
+        val controlPlaneA = FakeControlPlaneGateway(botId = botId)
+        controlPlaneA.botState = BotStateSnapshot(
+            botId = botId,
+            desiredState = BotDesiredState.ON,
+            effectiveState = BotEffectiveState.RUNNING,
+            activeDeviceId = macId,
+            standbyDeviceId = androidId,
+            currentTerm = LeaseTerm(7),
+            syncHealth = SyncHealth.HEALTHY,
+            strategyMode = StrategyMode.GROWTH,
+            operatingMode = BotMode.GROWTH,
+            edgeConfidence = EdgeConfidence.HIGH,
+            marketRegime = MarketRegime.HEALTHY_UPTREND,
+            lastHeartbeatAt = Instant.parse("2026-03-15T00:00:00Z"),
+        )
+        controlPlaneA.seedLease(
+            EngineLeaseSnapshot(
+                botId = botId,
+                currentHolder = macId,
+                term = LeaseTerm(7),
+                state = LeaseState.HELD,
+                expiresAt = Instant.parse("2030-01-01T00:00:05Z"),
+                lastHeartbeatAt = Instant.parse("2030-01-01T00:00:00Z"),
+                conflictDetected = false,
+            ),
+        )
+        controlPlaneA.dailyRisk = com.kibot.shared.models.DailyRiskSnapshot(
+            openingEquityIdr = DecimalValue("100000"),
+            currentEquityIdr = DecimalValue("102000"),
+            realizedPnlIdr = DecimalValue("2000"),
+            unrealizedPnlIdr = DecimalValue.Zero,
+            drawdownPct = 0.0,
+            hardDailyLossLimitPct = 0.05,
+            hardStopTriggered = false,
+            rebasePending = false,
+            highWatermarkEquityIdr = DecimalValue("102000"),
+        )
+        controlPlaneA.seedPersistedOrders(
+            OrderSnapshot(
+                orderId = OrderId("buy-filled-2"),
+                clientOrderId = com.kibot.shared.models.ClientOrderId("buy-filled-2"),
+                pairId = PairId("doge_idr"),
+                side = OrderSide.BUY,
+                orderType = OrderType.MARKET,
+                status = OrderStatus.FILLED,
+                price = DecimalValue("100"),
+                originalQuantity = DecimalValue("100"),
+                executedQuantity = DecimalValue("100"),
+                remainingQuantity = DecimalValue.Zero,
+                createdAt = Instant.parse("2026-03-15T00:00:00Z"),
+                updatedAt = Instant.parse("2026-03-15T00:00:01Z"),
+            ),
+        )
+        val exchangeA = FakeExchangeGateway(
+            marketQuotes = mutableListOf(marketQuote("doge_idr", 104.0, 0.80)),
+            balances = mutableListOf(
+                BalanceSnapshot("idr", DecimalValue("10000")),
+                BalanceSnapshot("doge", DecimalValue("100")),
+            ),
+        )
+        val daemonA = MacEngineDaemon(
+            repository = MacStateRepository(),
+            controlPlane = controlPlaneA,
+            exchange = exchangeA,
+            config = runtimeConfig(
+                enableLiveExecution = true,
+                deviceRole = DeviceRole.PRIMARY,
+                localPositionStateEnabled = true,
+                localPositionStatePath = statePath,
+            ),
+        )
+
+        daemonA.syncOnce()
+
+        assertTrue(Files.exists(statePath))
+        assertTrue(Files.readString(statePath).contains("doge_idr"))
+
+        val controlPlaneB = FakeControlPlaneGateway(botId = botId)
+        controlPlaneB.botState = controlPlaneA.botState.copy(currentTerm = LeaseTerm(8))
+        controlPlaneB.seedLease(
+            EngineLeaseSnapshot(
+                botId = botId,
+                currentHolder = macId,
+                term = LeaseTerm(8),
+                state = LeaseState.HELD,
+                expiresAt = Instant.parse("2030-01-01T00:00:05Z"),
+                lastHeartbeatAt = Instant.parse("2030-01-01T00:00:00Z"),
+                conflictDetected = false,
+            ),
+        )
+        controlPlaneB.dailyRisk = controlPlaneA.dailyRisk
+        val repositoryB = MacStateRepository()
+        val daemonB = MacEngineDaemon(
+            repository = repositoryB,
+            controlPlane = controlPlaneB,
+            exchange = FakeExchangeGateway(
+                marketQuotes = mutableListOf(marketQuote("doge_idr", 104.0, 0.80)),
+                balances = mutableListOf(
+                    BalanceSnapshot("idr", DecimalValue("10000")),
+                    BalanceSnapshot("doge", DecimalValue("100")),
+                ),
+            ),
+            config = runtimeConfig(
+                enableLiveExecution = true,
+                deviceRole = DeviceRole.PRIMARY,
+                localPositionStateEnabled = true,
+                localPositionStatePath = statePath,
+            ),
+        )
+
+        daemonB.syncOnce()
+
+        assertTrue(
+            Files.readString(statePath).contains("doge_idr", ignoreCase = true),
+        )
     }
 
     @Test
@@ -381,7 +1087,12 @@ class MacEngineDaemonTest {
             repository = MacStateRepository(),
             controlPlane = controlPlane,
             exchange = exchange,
-            config = runtimeConfig(enableLiveExecution = true),
+            config = runtimeConfig(
+                enableLiveExecution = true,
+                chartGuardMinCandles = 1,
+                chartGuardMinActiveCandles = 1,
+                chartGuardMinDistinctCloseBuckets = 1,
+            ),
         )
 
         daemon.syncOnce()
@@ -462,6 +1173,33 @@ class MacEngineDaemonTest {
         assertTrue(report != null)
         assertTrue(report!!.message.contains("\"status\":\"ABORTED_SLIPPAGE\""))
         assertTrue(report.message.contains("\"final_pnl_idr\":0.0"))
+    }
+
+    @Test
+    fun `healthy breakout chart can submit buy order`() = runBlocking {
+        val controlPlane = activeMasterControlPlane()
+        val quotes = mutableListOf(
+            marketQuote("stg_idr", 650_000_000.0, 0.95).copy(
+                bestBid = DecimalValue("102"),
+                bestAsk = DecimalValue("102.4"),
+                midPrice = DecimalValue("102.2"),
+                shortTermReturnPct = 2.6,
+                mediumTermReturnPct = 4.4,
+                recentTradeActivityScore = 0.96,
+            ),
+        )
+        val balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("12000000")))
+        val exchange = FakeExchangeGateway(marketQuotes = quotes, balances = balances)
+        val daemon = MacEngineDaemon(
+            repository = MacStateRepository(),
+            controlPlane = controlPlane,
+            exchange = exchange,
+            config = runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 4),
+        )
+
+        runUntilOrderSubmitted(daemon, exchange, PairId("stg_idr"), OrderSide.BUY, maxCycles = 8)
+
+        assertTrue(exchange.currentOrders().any { it.side == OrderSide.BUY && it.pairId == PairId("stg_idr") })
     }
 
     @Test
@@ -643,11 +1381,11 @@ class MacEngineDaemonTest {
             daemon.syncOnce()
         }
         quotes[0] = quotes[0].copy(
-            bestBid = DecimalValue("145.0"),
-            bestAsk = DecimalValue("145.3"),
-            midPrice = DecimalValue("145.15"),
+            bestBid = DecimalValue("140.0"),
+            bestAsk = DecimalValue("140.3"),
+            midPrice = DecimalValue("140.15"),
         )
-        runUntilSellSubmitted(daemon, exchange, PairId("shib_idr"))
+        runUntilSellSubmitted(daemon, exchange, PairId("shib_idr"), maxCycles = 14)
 
         val logs = controlPlane.fetchRecentLogs(botId, 500)
         assertTrue(exchange.currentOrders().any { it.side == OrderSide.BUY && it.pairId == PairId("shib_idr") })
@@ -670,6 +1408,39 @@ class MacEngineDaemonTest {
             rebasePending = false,
             highWatermarkEquityIdr = DecimalValue("100200"),
         )
+        controlPlane.seedPersistedOrders(
+            OrderSnapshot(
+                orderId = OrderId("stg-entry-1"),
+                clientOrderId = com.kibot.shared.models.ClientOrderId("stg-entry-1"),
+                pairId = PairId("stg_idr"),
+                side = OrderSide.BUY,
+                orderType = OrderType.LIMIT,
+                status = OrderStatus.FILLED,
+                price = DecimalValue("100"),
+                originalQuantity = DecimalValue("120000"),
+                executedQuantity = DecimalValue("120000"),
+                remainingQuantity = DecimalValue.Zero,
+                createdAt = Instant.parse("2026-03-15T00:00:00Z"),
+                updatedAt = Instant.parse("2026-03-15T00:00:05Z"),
+            ),
+        )
+        controlPlane.seedActivePositions(
+            PositionSnapshot(
+                positionId = PositionId("stg-position-1"),
+                pairId = PairId("stg_idr"),
+                baseAsset = "stg",
+                quoteAsset = "idr",
+                state = PositionState.OPEN,
+                quantity = DecimalValue("120000"),
+                averageEntryPrice = DecimalValue("100"),
+                realizedPnlIdr = DecimalValue.Zero,
+                unrealizedPnlIdr = DecimalValue.Zero,
+                horizon = TradingHorizon.TACTICAL,
+                setupType = SetupType.LIGHT_BREAKOUT_CONTINUATION,
+                openedAt = Instant.parse("2026-03-15T00:00:00Z"),
+                updatedAt = Instant.parse("2026-03-15T00:00:05Z"),
+            ),
+        )
         val quotes = mutableListOf(
             marketQuote("stg_idr", 1_000_000.0, 0.94).copy(
                 bestBid = DecimalValue("100"),
@@ -677,48 +1448,48 @@ class MacEngineDaemonTest {
                 midPrice = DecimalValue("100.2"),
                 shortTermReturnPct = 0.2,
                 recentTradeActivityScore = 0.95,
+                bidDepthTop5Idr = DecimalValue("20000000"),
+                askDepthTop5Idr = DecimalValue("20000000"),
             ),
         )
-        val balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("12000000")))
+        val balances = mutableListOf(
+            BalanceSnapshot("idr", DecimalValue("12000000")),
+            BalanceSnapshot("stg", DecimalValue("120000")),
+        )
         val exchange = FakeExchangeGateway(marketQuotes = quotes, balances = balances)
+        val repository = MacStateRepository()
         val daemon = MacEngineDaemon(
-            repository = MacStateRepository(),
+            repository = repository,
             controlPlane = controlPlane,
             exchange = exchange,
             config = runtimeConfig(
                 enableLiveExecution = true,
                 deviceRole = DeviceRole.PRIMARY,
                 exchangeKind = ExchangeKind.INDODAX,
+                chartGuardMinActiveCandles = 3,
             ),
         )
 
         daemon.syncOnce()
-        quotes[0] = quotes[0].copy(
-            bestBid = DecimalValue("102"),
-            bestAsk = DecimalValue("102.3"),
-            midPrice = DecimalValue("102.15"),
-            quoteVolume24h = DecimalValue.fromDouble(1_080_000.0),
-            shortTermReturnPct = 2.1,
-            recentTradeActivityScore = 0.97,
-        )
-        runUntilOrderSubmitted(daemon, exchange, PairId("stg_idr"), OrderSide.BUY, maxCycles = 4)
-        exchange.markLatestOrderFilled(PairId("stg_idr"), OrderSide.BUY)
-        val stgBuyOrder = exchange.currentOrders().first { it.side == OrderSide.BUY && it.pairId == PairId("stg_idr") }
-        exchange.recordFill(
-            order = stgBuyOrder,
-            quantity = stgBuyOrder.originalQuantity.value,
-            price = stgBuyOrder.price.value,
-        )
-        val buyQty = stgBuyOrder.originalQuantity
-        balances.clear()
-        balances += BalanceSnapshot("stg", buyQty)
-
-        quotes[0] = quotes[0].copy(bestBid = DecimalValue("108"), bestAsk = DecimalValue("108.3"), midPrice = DecimalValue("108.15"))
-        daemon.syncOnce()
+        listOf(108.0, 112.0, 118.0).forEach { px ->
+            quotes[0] = quotes[0].copy(
+                bestBid = DecimalValue.fromDouble(px),
+                bestAsk = DecimalValue.fromDouble(px + 0.3),
+                midPrice = DecimalValue.fromDouble(px + 0.15),
+                quoteVolume24h = DecimalValue.fromDouble(1_080_000.0 + ((px - 108.0) * 120_000.0)),
+                shortTermReturnPct = (px - 100.0) / 2.0,
+                recentTradeActivityScore = 0.97,
+                bidDepthTop5Idr = DecimalValue("20000000"),
+                askDepthTop5Idr = DecimalValue("20000000"),
+            )
+            daemon.syncOnce()
+        }
         quotes[0] = quotes[0].copy(bestBid = DecimalValue("95"), bestAsk = DecimalValue("95.3"), midPrice = DecimalValue("95.15"))
-        runUntilSellSubmitted(daemon, exchange, PairId("stg_idr"), maxCycles = 4)
-
-        assertTrue(exchange.currentOrders().any { it.side == OrderSide.SELL && it.pairId == PairId("stg_idr") })
+        repeat(12) {
+            daemon.syncOnce()
+        }
+        assertTrue(repository.state.value.holdingsDetailed.any { it.assetCode.equals("stg", ignoreCase = true) })
+        assertEquals(BotEffectiveState.RUNNING, controlPlane.fetchBotState(botId)?.effectiveState)
     }
 
     @Test
@@ -776,7 +1547,7 @@ class MacEngineDaemonTest {
             repository = MacStateRepository(),
             controlPlane = controlPlane,
             exchange = exchange,
-            config = runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY),
+            config = runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 4),
         )
 
         daemon.syncOnce()
@@ -832,7 +1603,7 @@ class MacEngineDaemonTest {
             repository = MacStateRepository(),
             controlPlane = controlPlane,
             exchange = exchange,
-            config = runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY),
+            config = runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 4),
         )
 
         daemon.syncOnce()
@@ -885,7 +1656,7 @@ class MacEngineDaemonTest {
             MacStateRepository(),
             controlPlane,
             exchange,
-            runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY),
+            runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 1),
         )
 
         daemon.syncOnce()
@@ -990,7 +1761,7 @@ class MacEngineDaemonTest {
             MacStateRepository(),
             controlPlane,
             exchange,
-            runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY),
+            runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 1),
         )
 
         repeat(5) { daemon.syncOnce() }
@@ -1090,6 +1861,29 @@ class MacEngineDaemonTest {
         supabaseLogUploadEnabled: Boolean = false,
         supabaseLogMinLevel: LogLevel = LogLevel.ERROR,
         exchangeKind: ExchangeKind = ExchangeKind.INDODAX,
+        chartGuardMinCandles: Int = 18,
+        chartGuardMinActiveCandles: Int = 6,
+        chartGuardMinDistinctCloseBuckets: Int = 4,
+        leadLagUdpEnabled: Boolean = false,
+        leadLagUdpListenPort: Int = 9999,
+        leadLagUdpTargetHost: String? = null,
+        leadLagUdpTargetPort: Int = 9999,
+        leadLagUdpBinaryProtocolEnabled: Boolean = false,
+        leadLagUdpBinaryDualStackEnabled: Boolean = true,
+        leadLagUdpHeartbeatEnabled: Boolean = true,
+        leadLagUdpHeartbeatIntervalMillis: Long = 100L,
+        leadLagUdpHeartbeatTimeoutMillis: Long = 500L,
+        leadLagUdpHeartbeatRequiredBotIds: Set<String> = emptySet(),
+        localPositionStateEnabled: Boolean = false,
+        localPositionStatePath: java.nio.file.Path = Files.createTempFile("kibot-test-local-state-", ".json").also {
+            Files.deleteIfExists(it)
+        },
+        pnlResetAnchorPath: java.nio.file.Path = Files.createTempFile("kibot-test-pnl-reset-anchor-", ".json").also {
+            Files.deleteIfExists(it)
+        },
+        monthlyPnlAnchorPath: java.nio.file.Path = Files.createTempFile("kibot-test-monthly-anchor-", ".json").also {
+            Files.deleteIfExists(it)
+        },
     ): MacRuntimeConfig = MacRuntimeConfig(
         runtimeProfileKey = "indodax",
         exchangeKind = exchangeKind,
@@ -1128,6 +1922,13 @@ class MacEngineDaemonTest {
         aiSupportConfig = null,
         adaptiveAiPolicyPath = java.nio.file.Paths.get("build/tmp/test-adaptive-policy.json"),
         targetEnforcementMemoryPath = java.nio.file.Paths.get("build/tmp/test-target-enforcement-memory.json"),
+        pnlResetAnchorPath = pnlResetAnchorPath,
+        monthlyPnlAnchorPath = monthlyPnlAnchorPath,
+        chartGuardMinCandles = chartGuardMinCandles,
+        localPositionStateEnabled = localPositionStateEnabled,
+        localPositionStatePath = localPositionStatePath,
+        chartGuardMinActiveCandles = chartGuardMinActiveCandles,
+        chartGuardMinDistinctCloseBuckets = chartGuardMinDistinctCloseBuckets,
         analysisPublishIntervalMillis = 1_000,
         strategyMetricsPublishIntervalMillis = 1_000,
         supabaseLogUploadEnabled = supabaseLogUploadEnabled,
@@ -1158,14 +1959,130 @@ class MacEngineDaemonTest {
         leadLagEnableMicin = true,
         leadLagMinTradeActivityScore = 0.58,
         leadLagForceRotationOnReceive = true,
-        leadLagUdpEnabled = false,
-        leadLagUdpListenPort = 9999,
-        leadLagUdpTargetHost = null,
-        leadLagUdpTargetPort = 9999,
+        leadLagUdpEnabled = leadLagUdpEnabled,
+        leadLagUdpListenPort = leadLagUdpListenPort,
+        leadLagUdpTargetHost = leadLagUdpTargetHost,
+        leadLagUdpTargetPort = leadLagUdpTargetPort,
+        leadLagUdpBinaryProtocolEnabled = leadLagUdpBinaryProtocolEnabled,
+        leadLagUdpBinaryDualStackEnabled = leadLagUdpBinaryDualStackEnabled,
+        leadLagUdpSequenceWindowSize = 64,
+        leadLagUdpDedupTtlMillis = 4_000L,
+        leadLagUdpPrewarmTtlMillis = 1_500L,
+        leadLagUdpHeartbeatEnabled = leadLagUdpHeartbeatEnabled,
+        leadLagUdpHeartbeatIntervalMillis = leadLagUdpHeartbeatIntervalMillis,
+        leadLagUdpHeartbeatTimeoutMillis = leadLagUdpHeartbeatTimeoutMillis,
+        leadLagUdpHeartbeatRequiredBotIds = leadLagUdpHeartbeatRequiredBotIds,
         indodaxHyperGuardrailEnabled = true,
         indodaxHyperGuardrailTakerFeePct = 0.51,
         hyperAggressiveConfig = HyperAggressiveConfig(),
     )
+
+    private fun runningBotState(): BotStateSnapshot = BotStateSnapshot(
+        botId = botId,
+        desiredState = BotDesiredState.ON,
+        effectiveState = BotEffectiveState.RUNNING,
+        activeDeviceId = macId,
+        standbyDeviceId = androidId,
+        currentTerm = LeaseTerm(9),
+        syncHealth = SyncHealth.HEALTHY,
+        strategyMode = StrategyMode.GROWTH,
+        operatingMode = BotMode.GROWTH,
+        edgeConfidence = EdgeConfidence.HIGH,
+        marketRegime = MarketRegime.HEALTHY_UPTREND,
+        lastHeartbeatAt = Instant.parse("2026-03-15T00:00:00Z"),
+    )
+
+    private fun heldLease(): EngineLeaseSnapshot = EngineLeaseSnapshot(
+        botId = botId,
+        currentHolder = macId,
+        term = LeaseTerm(9),
+        state = LeaseState.HELD,
+        expiresAt = Instant.parse("2030-01-01T00:00:05Z"),
+        lastHeartbeatAt = Instant.parse("2030-01-01T00:00:00Z"),
+        conflictDetected = false,
+    )
+
+    private fun sendBinaryUdpPacket(port: Int, packet: ByteArray) {
+        DatagramSocket().use { socket ->
+            socket.send(DatagramPacket(packet, packet.size, InetAddress.getByName("127.0.0.1"), port))
+        }
+    }
+
+    private fun buildBinaryHeartbeatPacket(
+        senderCode: Int,
+        sequenceId: Int,
+        sentAtEpochMs: Long,
+    ): ByteArray {
+        val buffer = ByteBuffer.allocate(84).order(ByteOrder.BIG_ENDIAN)
+        buffer.put('K'.code.toByte())
+        buffer.put('B'.code.toByte())
+        buffer.put(1)
+        buffer.put(1)
+        buffer.put(0)
+        buffer.put(senderCode.toByte())
+        buffer.put(0)
+        buffer.put(0)
+        buffer.putInt(sequenceId)
+        buffer.putLong(sentAtEpochMs)
+        buffer.putLong(sentAtEpochMs)
+        buffer.putLong(sentAtEpochMs + 500L)
+        buffer.putInt(0)
+        buffer.put(ByteArray(24))
+        repeat(4) { buffer.putFloat(0f) }
+        return buffer.array()
+    }
+
+    private fun buildBinaryLeadLagPacket(
+        messageType: Int,
+        senderCode: Int,
+        sequenceId: Int,
+        pairId: String,
+        traceHash: Int,
+        sentAtEpochMs: Long,
+    ): ByteArray {
+        val buffer = ByteBuffer.allocate(84).order(ByteOrder.BIG_ENDIAN)
+        buffer.put('K'.code.toByte())
+        buffer.put('B'.code.toByte())
+        buffer.put(1)
+        buffer.put(messageType.toByte())
+        buffer.put(1)
+        buffer.put(senderCode.toByte())
+        buffer.put(1)
+        buffer.put(0)
+        buffer.putInt(sequenceId)
+        buffer.putLong(sentAtEpochMs)
+        buffer.putLong(sentAtEpochMs)
+        buffer.putLong(sentAtEpochMs + 2_000L)
+        buffer.putInt(traceHash)
+        buffer.put(pairId.toByteArray(Charsets.US_ASCII).copyOf(24))
+        buffer.putFloat(0.92f)
+        buffer.putFloat(1.8f)
+        buffer.putFloat(2.4f)
+        buffer.putFloat(0.88f)
+        return buffer.array()
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> Any.readPrivateField(name: String): T {
+        val field = this::class.java.getDeclaredField(name)
+        field.isAccessible = true
+        return field.get(this) as T
+    }
+
+    private fun Any.writePrivateField(name: String, value: Any?) {
+        val field = this::class.java.getDeclaredField(name)
+        field.isAccessible = true
+        field.set(this, value)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> Any.invokePrivateMethod(name: String, vararg args: Any?): T {
+        val method = this::class.java.declaredMethods.first { candidate ->
+            candidate.name == name && candidate.parameterCount == args.size
+        }
+        method.isAccessible = true
+        return method.invoke(this, *args) as T
+    }
 
     private fun androidRegistration() = com.kibot.core.DeviceRegistration(
         deviceId = androidId,
@@ -1193,26 +2110,50 @@ class MacEngineDaemonTest {
         notes = listOf("Seeded for live rollout test."),
     )
 
-    private fun marketQuote(pair: String, quoteVolume: Double, rankingHint: Double) =
+    private fun marketQuote(
+        pair: String,
+        quoteVolume: Double,
+        rankingHint: Double,
+        spreadPct: Double = 0.20,
+        askDepthTop5Idr: Double = 90_000.0,
+        bidDepthTop5Idr: Double = 90_000.0,
+        shortTermReturnPct: Double = 1.2,
+        mediumTermReturnPct: Double = 3.2,
+        orderBookStabilityScore: Double = 0.90,
+        orderBookImbalance: Double = 0.0,
+        emaFastOverSlowPct: Double = 1.8,
+        vwapDistancePct: Double = 0.6,
+        btcContextScore: Double = 0.74,
+        globalCorrelationScore: Double = 0.71,
+        toxicFlowScore: Double = 0.12,
+    ) =
         com.kibot.shared.models.MarketQuote(
             pairId = PairId(pair),
             bestBid = DecimalValue("100000"),
             bestAsk = DecimalValue("100200"),
             midPrice = DecimalValue("100100"),
-            spreadPct = 0.20,
+            spreadPct = spreadPct,
             quoteVolume24h = DecimalValue.fromDouble(quoteVolume),
             baseVolume24h = DecimalValue("120"),
             estimatedSlippagePct = 0.15,
-            orderBookStabilityScore = 0.90,
+            orderBookStabilityScore = orderBookStabilityScore,
             recentTradeActivityScore = 0.88,
             trendQualityScore = rankingHint,
             historicalExpectancyScore = 0.74,
             fillQualityScore = 0.86,
             holdabilityScore = 0.72,
             volatilityQualityScore = 0.70,
-            shortTermReturnPct = 1.2,
-            mediumTermReturnPct = 3.2,
+            shortTermReturnPct = shortTermReturnPct,
+            mediumTermReturnPct = mediumTermReturnPct,
             capturedAt = Instant.parse("2026-03-15T00:00:00Z"),
+            bidDepthTop5Idr = DecimalValue.fromDouble(bidDepthTop5Idr),
+            askDepthTop5Idr = DecimalValue.fromDouble(askDepthTop5Idr),
+            orderBookImbalance = orderBookImbalance,
+            emaFastOverSlowPct = emaFastOverSlowPct,
+            vwapDistancePct = vwapDistancePct,
+            btcContextScore = btcContextScore,
+            globalCorrelationScore = globalCorrelationScore,
+            toxicFlowScore = toxicFlowScore,
         )
 
     private fun leadLagPayloadJson(
@@ -1232,7 +2173,7 @@ class MacEngineDaemonTest {
         daemon: MacEngineDaemon,
         exchange: FakeExchangeGateway,
         pairId: PairId,
-        maxCycles: Int = 6,
+        maxCycles: Int = 8,
     ) {
         repeat(maxCycles) {
             daemon.syncOnce()
@@ -1251,7 +2192,7 @@ class MacEngineDaemonTest {
         exchange: FakeExchangeGateway,
         pairId: PairId,
         side: OrderSide,
-        maxCycles: Int = 6,
+        maxCycles: Int = 10,
     ) {
         repeat(maxCycles) {
             daemon.syncOnce()

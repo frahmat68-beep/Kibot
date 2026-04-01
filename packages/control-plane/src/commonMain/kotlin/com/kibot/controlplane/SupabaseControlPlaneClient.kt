@@ -1084,6 +1084,9 @@ private data class DailyEquityRow(
     @SerialName("high_watermark_equity_idr") val highWatermarkEquityIdr: JsonElement? = null,
     @SerialName("giveback_pct") val givebackPct: Double? = null,
     @SerialName("profit_protection_status") val profitProtectionStatus: String? = null,
+    @SerialName("trade_count_24h") val tradeCount24h: Int? = null,
+    @SerialName("daily_trade_count") val dailyTradeCount: Int? = null,
+    @SerialName("daily_round_trip_count") val dailyRoundTripCount: Int? = null,
 )
 
 private fun DailyEquityRow.toDailyRiskSnapshot(): DailyRiskSnapshot = DailyRiskSnapshot(
@@ -1102,6 +1105,9 @@ private fun DailyEquityRow.toDailyRiskSnapshot(): DailyRiskSnapshot = DailyRiskS
     highWatermarkEquityIdr = (highWatermarkEquityIdr ?: currentEquityIdr).toDecimalValue(),
     givebackPct = givebackPct ?: 0.0,
     profitProtectionStatus = profitProtectionStatus?.let(ProfitProtectionStatus::valueOf) ?: ProfitProtectionStatus.INACTIVE,
+    tradeCount24h = tradeCount24h ?: dailyTradeCount ?: 0,
+    dailyTradeCount = dailyTradeCount ?: tradeCount24h ?: 0,
+    dailyRoundTripCount = dailyRoundTripCount ?: dailyTradeCount ?: tradeCount24h ?: 0,
 )
 
 private fun DailyEquityRow.toDailyEquityHistoryPoint(): DailyEquityHistoryPoint? {

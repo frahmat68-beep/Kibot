@@ -23,7 +23,7 @@ class LiveRolloutGuardTest {
     private val guard = LiveRolloutGuard()
 
     @Test
-    fun `small weekly sample can go guarded live when setup is strong`() {
+    fun `small weekly sample is blocked until sample is enough`() {
         val cycle = healthyCycle()
         val summary = WeeklyLearningSummary(
             botId = BotId("main"),
@@ -43,8 +43,8 @@ class LiveRolloutGuardTest {
 
         val decision = guard.evaluate(cycle, summary)
 
-        assertTrue(decision.allowed)
-        assertEquals("guarded_live", decision.phase)
+        assertFalse(decision.allowed)
+        assertEquals("shadow", decision.phase)
     }
 
     @Test
@@ -82,7 +82,7 @@ class LiveRolloutGuardTest {
     }
 
     @Test
-    fun `speculative setup can seed live when momentum is dominant`() {
+    fun `speculative setup can live once sample is enough and quality is high`() {
         val cycle = healthyCycle().copy(
             selectedSignal = healthyCycle().selectedSignal?.copy(
                 pairTier = PairTier.TIER_B,
@@ -98,7 +98,7 @@ class LiveRolloutGuardTest {
             botId = BotId("main"),
             periodStart = LocalDate(2026, 3, 10),
             periodEnd = LocalDate(2026, 3, 16),
-            tradeCount = 1,
+            tradeCount = 5,
             falseEntryRate = 0.0,
             noTradeQualityScore = 0.75,
             avoidedBadTradesIndicator = 0.45,

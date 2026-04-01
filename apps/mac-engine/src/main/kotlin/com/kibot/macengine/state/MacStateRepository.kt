@@ -23,6 +23,10 @@ data class MacHoldingDetail(
     val assetLabel: String,
     val quantityLabel: String,
     val valueIdrLabel: String,
+    val entryPriceLabel: String,
+    val currentPriceLabel: String,
+    val pnlIdrLabel: String,
+    val pnlPctLabel: String,
 )
 
 @Serializable
@@ -39,6 +43,8 @@ data class MacRecentOrder(
     val side: String,
     val status: String,
     val detail: String,
+    val pnlIdrLabel: String = "",
+    val pnlPctLabel: String = "",
 )
 
 @Serializable
@@ -67,6 +73,7 @@ data class MacDashboardState(
     val portfolioValueIdr: String,
     val freeIdrLabel: String,
     val totalValueIdr: String,
+    val referenceQuoteAssetPriceIdr: Double? = null,
     val pnlTodayIdr: String,
     val pnlTodayPctLabel: String,
     val return7dIdr: String,
@@ -112,6 +119,7 @@ data class MacDashboardState(
             portfolioValueIdr = "Rp0",
             freeIdrLabel = "Rp0",
             totalValueIdr = "Rp0",
+            referenceQuoteAssetPriceIdr = null,
             pnlTodayIdr = "+Rp0",
             pnlTodayPctLabel = "+0.0%",
             return7dIdr = "+Rp0",

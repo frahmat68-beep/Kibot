@@ -38,6 +38,14 @@ def _load_dotenv_if_exists() -> None:
 
 _load_dotenv_if_exists()
 
+
+def _env_first(*keys: str, default: str = "") -> str:
+    for key in keys:
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+    return default
+
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
 TIMEOUT = float(os.getenv("KIBOT_MANAGER_HTTP_TIMEOUT_SEC", "12"))
@@ -47,6 +55,7 @@ KINANCE_UDP_HOST = os.getenv("KINANCE_UDP_HOST", "")
 KINANCE_UDP_PORT = int(os.getenv("KINANCE_UDP_PORT", "9999"))
 KIDAX_UDP_HOST = os.getenv("KIDAX_UDP_HOST", "")
 KIDAX_UDP_PORT = int(os.getenv("KIDAX_UDP_PORT", "9999"))
+MANAGER_HEARTBEAT_INTERVAL_SEC = float(os.getenv("KIBOT_MANAGER_HEARTBEAT_INTERVAL_SEC", "0.10"))
 TAKER_FEE_PCT = float(os.getenv("KIDAX_TAKER_FEE_PCT", "0.51"))
 STALE_SIGNAL_ABORT_MS = int(os.getenv("KIBOT_STALE_SIGNAL_ABORT_MS", "1500"))
 FOMO_GUARD_PCT = float(os.getenv("KIBOT_FOMO_GUARD_PCT", "15.0"))
@@ -66,6 +75,15 @@ POST_MORTEM_API_URL = os.getenv("KIBOT_POST_MORTEM_API_URL", "")
 POST_MORTEM_API_KEY = os.getenv("KIBOT_POST_MORTEM_API_KEY", "")
 POST_MORTEM_MODEL = os.getenv("KIBOT_POST_MORTEM_MODEL", "llama-3.1-8b-instant")
 POST_MORTEM_TIMEOUT_SEC = float(os.getenv("KIBOT_POST_MORTEM_TIMEOUT_SEC", "12"))
+AI_APPROVAL_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_MIN_SCORE", "0.62"))
+AI_APPROVAL_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_MIN_EXPECTED_NET_PCT", "0.18"))
+AI_APPROVAL_INSTANT_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_SCORE", "0.48"))
+AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT", "-0.02"))
+POST_MORTEM_BLACKLIST_ENABLED = os.getenv("KIBOT_POST_MORTEM_BLACKLIST_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+POST_MORTEM_BLACKLIST_MINUTES = int(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_MINUTES", "30"))
+POST_MORTEM_BLACKLIST_NET_LOSS_IDR = float(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_NET_LOSS_IDR", "500"))
+POST_MORTEM_BLACKLIST_PNL_PCT = float(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_PNL_PCT", "-1.0"))
+DAILY_SUMMARY_ENABLED = os.getenv("KIBOT_DAILY_SUMMARY_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 CORRELATION_ENABLED = os.getenv("KIBOT_CORRELATION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 CORRELATION_INTERVAL_SEC = int(os.getenv("KIBOT_CORRELATION_INTERVAL_SEC", "1800"))
 CORRELATION_API_URL = os.getenv("KIBOT_CORRELATION_API_URL", POST_MORTEM_API_URL)
@@ -77,18 +95,31 @@ AI_PROVIDER_ORDER = [
     token.strip().lower()
     for token in os.getenv(
         "KIBOT_AI_PROVIDER_ORDER",
-        "blackbox,groq,openrouter,cohere,gemini",
+        "groq,openrouter,cohere,gemini",
     ).split(",")
     if token.strip()
 ]
 AI_REQUEST_TIMEOUT_SEC = float(os.getenv("KIBOT_AI_REQUEST_TIMEOUT_SEC", "18"))
+AI_PROVIDER_DEFAULT_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_DEFAULT_COOLDOWN_SEC", "600"))
+AI_PROVIDER_NETWORK_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_NETWORK_COOLDOWN_SEC", "180"))
+AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC", "3600"))
+AI_PROVIDER_EMPTY_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_EMPTY_COOLDOWN_SEC", "120"))
+STATE_ROOT = Path(os.getenv("KIBOT_MANAGER_STATE_DIR", str(Path.cwd() / ".state")))
+PROVIDER_STATE_PATH = Path(
+    os.getenv("KIBOT_MANAGER_PROVIDER_STATE_FILE", str(STATE_ROOT / "ai_provider_state.json"))
+)
+RUNTIME_NOTE_PATH = Path(
+    os.getenv("KIBOT_MANAGER_RUNTIME_NOTE_FILE", str(STATE_ROOT / "runtime_note.json"))
+)
+RUNTIME_NOTE_MIN_INTERVAL_SEC = int(os.getenv("KIBOT_MANAGER_RUNTIME_NOTE_MIN_INTERVAL_SEC", "15"))
+DAILY_SUMMARY_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_SUMMARY_FILE", str(STATE_ROOT / "daily_summary.json")))
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 GROQ_API_URL = os.getenv("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
+GEMINI_API_KEY = _env_first("GEMINI_API_KEY", "GEMINI_SUPPORT_API_KEY")
+GEMINI_MODEL = _env_first("GEMINI_MODEL", "GEMINI_SUPPORT_MODEL", default="gemini-2.0-flash-lite")
 GEMINI_API_URL = os.getenv("GEMINI_API_URL", "https://generativelanguage.googleapis.com/v1beta")
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
@@ -122,6 +153,250 @@ _last_sector_map: Dict[str, list[str]] = {}
 _active_positions_cache: Dict[str, Dict[str, Any]] = {}
 _emergency_sell_cooldown_until: Dict[str, float] = {}
 _last_active_positions_log_at: float = 0.0
+_last_runtime_note_write_at: float = 0.0
+_recent_runtime_events: List[Dict[str, Any]] = []
+_veto_metrics: Dict[str, int] = {"approved": 0, "rejected": 0, "sell_confirmed": 0, "emergency_sell": 0}
+
+
+def _load_json_file(path: Path, default: Any) -> Any:
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+    return default
+
+
+def _write_json_file(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+_provider_runtime_state: Dict[str, Dict[str, Any]] = _load_json_file(PROVIDER_STATE_PATH, {})
+_pair_cooldown_state: Dict[str, Dict[str, Any]] = _load_json_file(STATE_ROOT / "pair_cooldowns.json", {})
+
+
+def _save_pair_cooldown_state() -> None:
+    _write_json_file(STATE_ROOT / "pair_cooldowns.json", _pair_cooldown_state)
+
+
+def _cooldown_pair(pair: str, *, reason: str, minutes: int, metadata: Dict[str, Any] | None = None) -> None:
+    pair_key = pair.lower().strip()
+    if not pair_key:
+        return
+    now_ts = time.time()
+    until_ts = now_ts + max(60, minutes * 60)
+    _pair_cooldown_state[pair_key] = {
+        "until_epoch": until_ts,
+        "reason": reason,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "metadata": metadata or {},
+    }
+    _save_pair_cooldown_state()
+    _append_runtime_event(
+        "pair_cooldown_set",
+        {"pair": pair_key, "reason": reason, "minutes": minutes},
+    )
+
+
+def _pair_cooldown_active(pair: str) -> Tuple[bool, str]:
+    pair_key = pair.lower().strip()
+    if not pair_key:
+        return False, ""
+    state = _pair_cooldown_state.get(pair_key, {})
+    until_ts = float(state.get("until_epoch") or 0.0)
+    now_ts = time.time()
+    if until_ts <= now_ts:
+        if pair_key in _pair_cooldown_state:
+            del _pair_cooldown_state[pair_key]
+            _save_pair_cooldown_state()
+        return False, ""
+    return True, str(state.get("reason") or "cooldown_active")
+
+
+def _load_daily_summary() -> Dict[str, Any]:
+    today = datetime.now(timezone.utc).date().isoformat()
+    data = _load_json_file(
+        DAILY_SUMMARY_PATH,
+        {
+            "date": today,
+            "ai_success": {},
+            "ai_failure": {},
+            "veto_metrics": {},
+            "loss_blacklist_pairs": [],
+            "recent_notes": [],
+        },
+    )
+    if data.get("date") != today:
+        data = {
+            "date": today,
+            "ai_success": {},
+            "ai_failure": {},
+            "veto_metrics": {},
+            "loss_blacklist_pairs": [],
+            "recent_notes": [],
+        }
+    return data
+
+
+def _update_daily_summary(kind: str, detail: Dict[str, Any]) -> None:
+    if not DAILY_SUMMARY_ENABLED:
+        return
+    summary = _load_daily_summary()
+    if kind == "ai_success":
+        provider = str(detail.get("provider") or "")
+        if provider:
+            summary["ai_success"][provider] = int(summary["ai_success"].get(provider) or 0) + 1
+    elif kind == "ai_failure":
+        provider = str(detail.get("provider") or "")
+        if provider:
+            summary["ai_failure"][provider] = int(summary["ai_failure"].get(provider) or 0) + 1
+    elif kind == "veto_metric":
+        name = str(detail.get("name") or "")
+        if name:
+            summary["veto_metrics"][name] = int(summary["veto_metrics"].get(name) or 0) + 1
+    elif kind == "loss_blacklist":
+        pair = str(detail.get("pair") or "")
+        if pair and pair not in summary["loss_blacklist_pairs"]:
+            summary["loss_blacklist_pairs"].append(pair)
+    note_line = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "kind": kind,
+        "detail": detail,
+    }
+    recent_notes = list(summary.get("recent_notes") or [])
+    recent_notes.append(note_line)
+    summary["recent_notes"] = recent_notes[-25:]
+    _write_json_file(DAILY_SUMMARY_PATH, summary)
+
+
+def _append_runtime_event(kind: str, detail: Dict[str, Any]) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    _recent_runtime_events.append(
+        {
+            "at": now_iso,
+            "kind": kind,
+            "detail": detail,
+        }
+    )
+    if len(_recent_runtime_events) > 40:
+        del _recent_runtime_events[:-40]
+
+
+def _heartbeat_loop() -> None:
+    interval = max(0.05, MANAGER_HEARTBEAT_INTERVAL_SEC)
+    while True:
+        try:
+            _emit_trinity_heartbeat()
+            _append_runtime_event("trinity_heartbeat_emit", {"sender": "kibot"})
+        except Exception as error:
+            print(f"[KIBOT][HEARTBEAT][WARN] emit failed reason={error}", flush=True)
+        time.sleep(interval)
+
+
+def _write_runtime_note(*, force: bool = False) -> None:
+    global _last_runtime_note_write_at
+    now_ts = time.time()
+    if not force and (now_ts - _last_runtime_note_write_at) < max(5, RUNTIME_NOTE_MIN_INTERVAL_SEC):
+        return
+    _last_runtime_note_write_at = now_ts
+    note = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "service": "kibot_manager",
+        "host_bind": f"{UDP_BIND_HOST}:{UDP_BIND_PORT}",
+        "kidax_target": f"{KIDAX_UDP_HOST}:{KIDAX_UDP_PORT}" if KIDAX_UDP_HOST else "",
+        "kinance_target": f"{KINANCE_UDP_HOST}:{KINANCE_UDP_PORT}" if KINANCE_UDP_HOST else "",
+        "ai_router_enabled": AI_ROUTER_ENABLED,
+        "ai_provider_order": _iter_ai_provider_order(),
+        "ai_provider_last_status": dict(_ai_provider_last_status),
+        "provider_runtime_state": _provider_runtime_state,
+        "tracked_active_positions": sorted(_active_positions_cache.keys()),
+        "pair_cooldowns": _pair_cooldown_state,
+        "veto_metrics": _veto_metrics,
+        "sector_count": len(_last_sector_map),
+        "sector_preview": {key: value[:5] for key, value in list(_last_sector_map.items())[:5]},
+        "recent_events": list(_recent_runtime_events[-15:]),
+    }
+    try:
+        _write_json_file(RUNTIME_NOTE_PATH, note)
+    except Exception as error:
+        print(f"[KIBOT][NOTE][WARN] write failed reason={error}", flush=True)
+
+
+def _classify_provider_failure(message: str) -> Tuple[int, str]:
+    raw = (message or "").lower()
+    if any(token in raw for token in ["429", "rate", "quota", "too many requests"]):
+        return AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC, "rate_limited"
+    if any(token in raw for token in ["timeout", "temporarily", "connection", "network", "bad gateway"]):
+        return AI_PROVIDER_NETWORK_COOLDOWN_SEC, "transient_network"
+    if "empty_response" in raw:
+        return AI_PROVIDER_EMPTY_COOLDOWN_SEC, "empty_response"
+    return AI_PROVIDER_DEFAULT_COOLDOWN_SEC, "generic_failure"
+
+
+def _provider_rank(provider: str) -> Tuple[int, float]:
+    state = _provider_runtime_state.get(provider, {})
+    success = int(state.get("success_count") or 0)
+    failure = int(state.get("failure_count") or 0)
+    last_success = float(state.get("last_success_epoch") or 0.0)
+    return (success - (failure * 2), last_success)
+
+
+def _iter_ai_provider_order() -> List[str]:
+    configured = [provider for provider in AI_PROVIDER_ORDER if provider]
+    return sorted(
+        configured,
+        key=lambda provider: (
+            -_provider_rank(provider)[0],
+            -_provider_rank(provider)[1],
+            configured.index(provider),
+        ),
+    )
+
+
+def _provider_is_available(provider: str, now_ts: float) -> Tuple[bool, str]:
+    state = _provider_runtime_state.get(provider, {})
+    cooldown_until = float(state.get("cooldown_until_epoch") or 0.0)
+    if cooldown_until > now_ts:
+        return False, str(state.get("reason") or "cooldown_active")
+    return True, ""
+
+
+def _remember_provider_success(provider: str, task: str) -> None:
+    now_ts = time.time()
+    state = dict(_provider_runtime_state.get(provider, {}))
+    state.update(
+        {
+            "task": task,
+            "last_success_epoch": now_ts,
+            "cooldown_until_epoch": 0,
+            "reason": "",
+            "success_count": int(state.get("success_count") or 0) + 1,
+        }
+    )
+    _provider_runtime_state[provider] = state
+    _write_json_file(PROVIDER_STATE_PATH, _provider_runtime_state)
+    _update_daily_summary("ai_success", {"provider": provider, "task": task})
+
+
+def _remember_provider_failure(provider: str, task: str, error_message: str) -> str:
+    now_ts = time.time()
+    cooldown_sec, reason = _classify_provider_failure(error_message)
+    state = dict(_provider_runtime_state.get(provider, {}))
+    state.update(
+        {
+            "task": task,
+            "last_failure_epoch": now_ts,
+            "cooldown_until_epoch": now_ts + max(30, cooldown_sec),
+            "reason": reason,
+            "last_error": error_message[:320],
+            "failure_count": int(state.get("failure_count") or 0) + 1,
+        }
+    )
+    _provider_runtime_state[provider] = state
+    _write_json_file(PROVIDER_STATE_PATH, _provider_runtime_state)
+    _update_daily_summary("ai_failure", {"provider": provider, "task": task, "reason": reason})
+    return reason
 
 
 def _parse_json_candidate(text: str) -> Any:
@@ -353,9 +628,14 @@ def _call_ai_router(
     if not AI_ROUTER_ENABLED:
         return "", ""
     provider_errors: Dict[str, str] = {}
-    for provider in AI_PROVIDER_ORDER:
+    now_ts = time.time()
+    for provider in _iter_ai_provider_order():
         if not _provider_has_credentials(provider):
             provider_errors[provider] = "missing_credentials"
+            continue
+        available, reason = _provider_is_available(provider, now_ts)
+        if not available:
+            provider_errors[provider] = f"cooldown:{reason}"
             continue
         try:
             text = _call_provider(
@@ -377,6 +657,11 @@ def _call_ai_router(
                     "ok": True,
                 },
             )
+            _remember_provider_success(provider, task)
+            _append_runtime_event(
+                "ai_provider_success",
+                {"provider": provider, "task": task},
+            )
             _broadcast_udp(
                 {
                     "msgType": "AI_PROVIDER_STATUS",
@@ -387,9 +672,16 @@ def _call_ai_router(
                     "sentAtEpochMs": now_ms,
                 },
             )
+            _write_runtime_note(force=True)
             return text, provider
         except Exception as error:
-            provider_errors[provider] = str(error)
+            error_text = str(error)
+            reason = _remember_provider_failure(provider, task, error_text)
+            provider_errors[provider] = f"{reason}:{error_text}"
+            _append_runtime_event(
+                "ai_provider_failure",
+                {"provider": provider, "task": task, "reason": reason},
+            )
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     _ai_provider_last_status.update(
         {
@@ -410,6 +702,11 @@ def _call_ai_router(
             "sentAtEpochMs": now_ms,
         },
     )
+    _append_runtime_event(
+        "ai_router_unavailable",
+        {"task": task, "errors": provider_errors},
+    )
+    _write_runtime_note(force=True)
     return "", ""
 
 
@@ -450,6 +747,20 @@ def _broadcast_udp(payload: Dict[str, Any]) -> None:
         f"[KIBOT][UDP_BROADCAST] msgType={payload.get('msgType')} pair={payload.get('pairId')} trace={payload.get('traceId')}",
         flush=True,
     )
+
+
+def _emit_trinity_heartbeat() -> None:
+    sent_at = int(time.time() * 1000)
+    for sender_bot_id in ("kibot", "kidax", "kinance"):
+        payload = {
+            "kind": "trinity_state",
+            "msgType": "HEARTBEAT",
+            "senderBotId": sender_bot_id,
+            "sentAtEpochMs": sent_at,
+            "activePair": "",
+            "safeModeArmed": False,
+        }
+        _broadcast_udp(payload)
 
 
 def _coingecko_track_record_score(pair: str) -> float:
@@ -585,6 +896,11 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
             f"[KIBOT][LEDGER] BOOK_ENTRY pair={msg.get('pair')} net={net:.4f} trace={msg.get('traceId')}",
             flush=True,
         )
+        _append_runtime_event(
+            "book_entry",
+            {"pair": msg.get("pair"), "net_pnl_idr": round(net, 4), "trace_id": msg.get("traceId")},
+        )
+        _write_runtime_note()
     except Exception as error:
         print(
             f"[KIBOT][LEDGER][WARN] upsert failed pair={msg.get('pair')} trace={msg.get('traceId')} reason={error}",
@@ -600,6 +916,7 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
                     "gross_pnl_idr": gross,
                     "estimated_cost_idr": est_cost,
                     "net_pnl_idr": net,
+                    "pnl_pct": float(msg.get("pnl_pct") or msg.get("pnlPct") or 0.0),
                     "slippage_pct": float(msg.get("slippage_pct") or 0.0),
                     "hold_seconds": float(msg.get("hold_seconds") or 0.0),
                     "closed_at": now_iso,
@@ -626,6 +943,25 @@ def evaluate_foolish_trade(trade_data: Dict[str, Any]) -> None:
             f"[KIBOT][POST_MORTEM] provider={provider} trace={trade_data.get('trace_id')} result={routed_text[:320]}",
             flush=True,
         )
+        parsed = _parse_json_candidate(routed_text)
+        pair = str(trade_data.get("pair") or "").lower().strip()
+        net_pnl = float(trade_data.get("net_pnl_idr") or 0.0)
+        pnl_pct = float(trade_data.get("pnl_pct") or 0.0)
+        action_text = json.dumps(parsed, ensure_ascii=False).lower() if parsed else routed_text.lower()
+        if POST_MORTEM_BLACKLIST_ENABLED and pair and (
+            "blacklist" in action_text
+            or "freeze" in action_text
+            or net_pnl <= -abs(POST_MORTEM_BLACKLIST_NET_LOSS_IDR)
+            or pnl_pct <= POST_MORTEM_BLACKLIST_PNL_PCT
+        ):
+            _cooldown_pair(
+                pair,
+                reason="post_mortem_loss_blacklist",
+                minutes=POST_MORTEM_BLACKLIST_MINUTES,
+                metadata={"trace_id": trade_data.get("trace_id"), "provider": provider, "net_pnl_idr": net_pnl},
+            )
+            _update_daily_summary("loss_blacklist", {"pair": pair, "provider": provider})
+            _write_runtime_note(force=True)
         return
     if not POST_MORTEM_API_URL:
         print("[KIBOT][POST_MORTEM] skipped (router+legacy unavailable).", flush=True)
@@ -735,6 +1071,36 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     if not pair:
         print(f"[KIBOT][WARN] missing pair in msgType={msg_type}", flush=True)
         return
+    pair_on_cooldown, cooldown_reason = _pair_cooldown_active(pair)
+    if pair_on_cooldown and msg_type not in {"SELL_WALL_SURGE", "MOMENTUM_LOSS"}:
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        print(
+            f"[KIBOT][VETO_REJECTED] pair={pair} reason=PAIR_COOLDOWN cooldown_reason={cooldown_reason}",
+            flush=True,
+        )
+        veto = {
+            "kind": "lead_lag_breakout",
+            "msgType": "VETO_REJECTED",
+            "traceId": str(msg.get("traceId") or f"trace-{now_ms}"),
+            "senderBotId": "kibot",
+            "pairId": pair,
+            "trend": "UP",
+            "detectedAtEpochMs": now_ms,
+            "sentAtEpochMs": now_ms,
+            "expiresAtEpochMs": now_ms + 3_000,
+            "confidence": 0.35,
+            "expectedNetPct": -0.01,
+            "shortTermReturnPct": float(msg.get("shortTermReturnPct") or 0.0),
+            "mediumTermReturnPct": float(msg.get("mediumTermReturnPct") or 0.0),
+            "tradeActivityScore": 0.35,
+            "forceRotation": False,
+            "payload": {"reason": "PAIR_COOLDOWN", "cooldown_reason": cooldown_reason},
+        }
+        _veto_metrics["rejected"] += 1
+        _update_daily_summary("veto_metric", {"name": "rejected"})
+        _broadcast_udp(veto)
+        _write_runtime_note()
+        return
     trace_id = str(msg.get("traceId") or f"trace-{int(datetime.now(timezone.utc).timestamp() * 1000)}")
     payload = msg.get("payload", {}) if isinstance(msg.get("payload"), dict) else {}
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -823,24 +1189,34 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     pair_symbol = pair.split("_", 1)[0].lower()
     if pair_symbol in trending_symbols:
         score = min(0.98, score + 0.12)
+    ai_confidence = float(payload.get("confidence") or msg.get("confidence") or score)
+    min_score = AI_APPROVAL_INSTANT_MIN_SCORE if msg_type == "INSTANT_BUY_ANOMALY" else AI_APPROVAL_MIN_SCORE
+    min_net = AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT if msg_type == "INSTANT_BUY_ANOMALY" else AI_APPROVAL_MIN_EXPECTED_NET_PCT
     if msg_type == "INSTANT_BUY_ANOMALY":
-        # Jalur cepat: tetap fee-aware, tapi jangan terlalu takut saat momentum kilat.
-        approved = viability["net_profit_pct"] > -0.05 and score >= 0.45
+        approved = viability["net_profit_pct"] >= min_net and score >= min_score and ai_confidence >= min_score
     else:
-        approved = viability["net_profit_pct"] > 0 and score >= 0.55
+        approved = viability["net_profit_pct"] >= min_net and score >= min_score and ai_confidence >= min_score
 
     veto_msg_type = "VETO_SELL_CONFIRMED" if msg_type in {"SELL_WALL_SURGE", "MOMENTUM_LOSS"} else "VETO_APPROVED"
     if not approved:
         veto_msg_type = "VETO_REJECTED"
         print(
-            f"[KIBOT][VETO_REJECTED] pair={pair} net={viability['net_profit_pct']:.4f}% reason=NEGATIVE_NET_OR_LOW_SCORE",
+            f"[KIBOT][VETO_REJECTED] pair={pair} net={viability['net_profit_pct']:.4f}% reason=AI_CONFIDENCE_GATE score={score:.3f} ai={ai_confidence:.3f}",
             flush=True,
         )
+        _veto_metrics["rejected"] += 1
+        _update_daily_summary("veto_metric", {"name": "rejected"})
     else:
         print(
-            f"[KIBOT][{veto_msg_type}] pair={pair} net={viability['net_profit_pct']:.4f}% trackScore={score:.3f}",
+            f"[KIBOT][{veto_msg_type}] pair={pair} net={viability['net_profit_pct']:.4f}% trackScore={score:.3f} ai={ai_confidence:.3f}",
             flush=True,
         )
+        if veto_msg_type == "VETO_APPROVED":
+            _veto_metrics["approved"] += 1
+            _update_daily_summary("veto_metric", {"name": "approved"})
+        elif veto_msg_type == "VETO_SELL_CONFIRMED":
+            _veto_metrics["sell_confirmed"] += 1
+            _update_daily_summary("veto_metric", {"name": "sell_confirmed"})
 
     veto = {
         "kind": "lead_lag_breakout",
@@ -852,7 +1228,7 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         "detectedAtEpochMs": now_ms,
         "sentAtEpochMs": now_ms,
         "expiresAtEpochMs": now_ms + 3_000,
-        "confidence": score,
+        "confidence": min(0.99, (score * 0.55) + (ai_confidence * 0.45)),
         "expectedNetPct": viability["net_profit_pct"],
         "shortTermReturnPct": expected_move_pct,
         "mediumTermReturnPct": expected_move_pct * 0.5,
@@ -861,10 +1237,14 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         "payload": {
             "exit_viability": viability,
             "track_record_score": score,
+            "ai_confidence": ai_confidence,
+            "ai_gate_min_score": min_score,
+            "ai_gate_min_expected_net_pct": min_net,
             "coingecko_trending_match": pair_symbol in trending_symbols,
         },
     }
     _broadcast_udp(veto)
+    _write_runtime_note()
 
 
 def _extract_symbol_from_text(text: str) -> str:
@@ -1063,6 +1443,8 @@ def _broadcast_dynamic_correlation_map() -> None:
         }
         _broadcast_udp(msg)
         print(f"[KIBOT][AI_CORRELATION_FETCH] sectors={len(sectors)}", flush=True)
+        _append_runtime_event("correlation_matrix_refresh", {"sector_count": len(sectors)})
+        _write_runtime_note()
     except Exception as error:
         print(f"[KIBOT][AI_CORRELATION_FETCH][ERROR] {error}", flush=True)
 
@@ -1138,6 +1520,13 @@ def _emit_emergency_veto_sell(
         f"[KIBOT][EMERGENCY_VETO_SELL] pair={pair_key} reason={reason} trace={veto['traceId']}",
         flush=True,
     )
+    _veto_metrics["emergency_sell"] += 1
+    _update_daily_summary("veto_metric", {"name": "emergency_sell"})
+    _append_runtime_event(
+        "emergency_veto_sell",
+        {"pair": pair_key, "reason": reason, "trace_id": veto["traceId"]},
+    )
+    _write_runtime_note()
 
 
 def _process_orderbook_collapse(msg: Dict[str, Any]) -> None:
@@ -1183,6 +1572,11 @@ def _process_active_positions(msg: Dict[str, Any]) -> None:
             f"[KIBOT][ACTIVE_POSITIONS] count={len(tracked_pairs)} pairs={','.join(sorted(tracked_pairs.keys())[:6])}",
             flush=True,
         )
+        _append_runtime_event(
+            "active_positions_snapshot",
+            {"count": len(tracked_pairs), "pairs": sorted(tracked_pairs.keys())[:6]},
+        )
+        _write_runtime_note()
     relay_payload = {
         "kind": "trinity_state",
         "msgType": "ACTIVE_POSITIONS",
@@ -1215,6 +1609,19 @@ def _process_active_positions(msg: Dict[str, Any]) -> None:
 
 def main() -> None:
     _ensure_env()
+    STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    _write_json_file(PROVIDER_STATE_PATH, _provider_runtime_state)
+    _save_pair_cooldown_state()
+    if DAILY_SUMMARY_ENABLED:
+        _write_json_file(DAILY_SUMMARY_PATH, _load_daily_summary())
+    _append_runtime_event(
+        "manager_start",
+        {
+            "kidax_target": f"{KIDAX_UDP_HOST}:{KIDAX_UDP_PORT}" if KIDAX_UDP_HOST else "",
+            "kinance_target": f"{KINANCE_UDP_HOST}:{KINANCE_UDP_PORT}" if KINANCE_UDP_HOST else "",
+        },
+    )
+    _write_runtime_note(force=True)
     force_evaluate_recent_loss()
     scanner_thread = threading.Thread(target=_news_scanner_loop, name="kibot-news-scanner", daemon=True)
     scanner_thread.start()
@@ -1222,6 +1629,8 @@ def main() -> None:
     corr_thread.start()
     gecko_thread = threading.Thread(target=_coingecko_trending_loop, name="kibot-coingecko-loop", daemon=True)
     gecko_thread.start()
+    heartbeat_thread = threading.Thread(target=_heartbeat_loop, name="kibot-heartbeat-loop", daemon=True)
+    heartbeat_thread.start()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((UDP_BIND_HOST, UDP_BIND_PORT))
     print(

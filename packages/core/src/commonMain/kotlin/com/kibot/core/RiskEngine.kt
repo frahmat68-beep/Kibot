@@ -17,6 +17,7 @@ data class RiskDecision(
     val riskLadderLevel: RiskLadderLevel,
     val suggestedModeFloor: BotMode,
     val profitProtectionStatus: ProfitProtectionStatus,
+    val dailyProfitLockActive: Boolean,
     val sizeMultiplier: Double,
     val deploymentMultiplier: Double,
     val reasons: List<String>,
@@ -36,11 +37,22 @@ class RiskEngine(
         val currentEquity = portfolio.totalEquityIdr.toDoubleOrZero()
         val heat = derivePortfolioHeat(portfolio, currentEquity)
         val ladderLevel = deriveRiskLadder(dailyRisk)
-        val hardStopTriggered = dailyRisk.hardStopTriggered || ladderLevel == RiskLadderLevel.HARD_STOP
+        val realizedLoss = (-dailyRisk.realizedPnlIdr.toDoubleOrZero()).coerceAtLeast(0.0)
+        val dailyTradeCount = dailyRisk.dailyTradeCount.coerceAtLeast(0)
+        val dailyRoundTripCount = dailyRisk.dailyRoundTripCount.coerceAtLeast(0)
+        val realizedLossTriggered = realizedLoss >= config.hardRealizedLossLimitIdr
+        val dailyProfitLockActive = dailyNetProfitPct(dailyRisk) >= config.dailyProfitLockPct
+        val hardStopTriggered =
+            dailyRisk.hardStopTriggered ||
+            ladderLevel == RiskLadderLevel.HARD_STOP ||
+            realizedLossTriggered
         val profitProtection = profitProtectionEngine.evaluate(dailyRisk)
 
         if (hardStopTriggered) {
             reasons += "Emergency daily stop aktif."
+        }
+        if (realizedLossTriggered) {
+            reasons += "Realized loss harian melewati batas rupiah."
         }
         if (dailyRisk.rebasePending) {
             reasons += "Baseline harian perlu rebase manual."
@@ -66,6 +78,15 @@ class RiskEngine(
         if (openPositions >= config.maxConcurrentPositions) {
             reasons += "Batas posisi aktif sudah penuh."
         }
+        if (dailyTradeCount >= config.maxDailyTradeActions) {
+            reasons += "Batas trade harian sudah penuh."
+        }
+        if (dailyRoundTripCount >= config.maxDailyRoundTrips) {
+            reasons += "Batas round-trip harian sudah penuh."
+        }
+        if (dailyProfitLockActive) {
+            reasons += "Daily profit lock aktif, entry baru dikunci sampai reset berikutnya."
+        }
         if (ladderLevel == RiskLadderLevel.RESTRICTED_NEW_ENTRIES) {
             reasons += "Risk ladder membatasi entry baru kecuali peluang sangat kuat."
         }
@@ -78,9 +99,13 @@ class RiskEngine(
 
         val allowNewEntries = when {
             hardStopTriggered -> false
+            realizedLossTriggered -> false
             dailyRisk.rebasePending -> false
+            dailyProfitLockActive -> false
             !health.exchangeReachable || !health.supabaseReachable -> false
             health.syncHealth == com.kibot.shared.models.SyncHealth.BROKEN -> false
+            dailyTradeCount >= config.maxDailyTradeActions -> false
+            dailyRoundTripCount >= config.maxDailyRoundTrips -> false
             ladderLevel in setOf(RiskLadderLevel.STOP_NEW_ENTRIES, RiskLadderLevel.HARD_STOP) -> false
             openPositions >= config.maxConcurrentPositions -> false
             else -> true
@@ -133,6 +158,7 @@ class RiskEngine(
             riskLadderLevel = ladderLevel,
             suggestedModeFloor = deriveModeFloor(ladderLevel, allowNewEntries, profitProtection.status),
             profitProtectionStatus = profitProtection.status,
+            dailyProfitLockActive = dailyProfitLockActive,
             sizeMultiplier = sizeMultiplier,
             deploymentMultiplier = deploymentMultiplier,
             reasons = reasons,
@@ -202,6 +228,12 @@ class RiskEngine(
             RiskLadderLevel.HARD_STOP,
             -> BotMode.SAFE
         }
+    }
+
+    private fun dailyNetProfitPct(dailyRisk: DailyRiskSnapshot): Double {
+        val opening = dailyRisk.openingEquityIdr.toDoubleOrZero().coerceAtLeast(1.0)
+        val current = dailyRisk.currentEquityIdr.toDoubleOrZero().coerceAtLeast(0.0)
+        return ((current - opening) / opening).coerceAtLeast(-1.0)
     }
 }
 

@@ -50,8 +50,8 @@ class PairSelectorTest {
             ),
         )
 
-        assertEquals(listOf("btc_idr"), shortlist.map { it.pairId.value })
-        assertTrue(shortlist.first().allowed)
+        assertEquals(listOf("btc_idr"), shortlist.map { it.pairId.value }, shortlist.joinToString())
+        assertTrue(shortlist.first().allowed, shortlist.first().toString())
         assertTrue(shortlist.first().pairTier != PairTier.TIER_C)
         assertEquals(TradingHorizon.SWING, shortlist.first().preferredHorizon)
         assertTrue(shortlist.first().rankingScore > 0.65)
@@ -88,7 +88,7 @@ class PairSelectorTest {
         )
 
         assertEquals("micro_idr", ranked.first().pairId.value)
-        assertTrue(ranked.first().allowed)
+        assertTrue(ranked.first().allowed, ranked.first().toString())
         assertEquals(PairTier.TIER_B, ranked.first().pairTier)
         assertEquals(TradingHorizon.TACTICAL, ranked.first().preferredHorizon)
     }
@@ -127,5 +127,76 @@ class PairSelectorTest {
         assertTrue(ranked.first().speculativePocket)
         assertEquals(PairTier.TIER_B, ranked.first().pairTier)
         assertEquals(TradingHorizon.TACTICAL, ranked.first().preferredHorizon)
+    }
+
+    @Test
+    fun `zombie pair is rejected by profiler aware selector`() {
+        val selector = PairSelector()
+        val ranked = selector.rank(
+            listOf(
+                MarketQuote(
+                    pairId = PairId("dead_idr"),
+                    bestBid = DecimalValue("10"),
+                    bestAsk = DecimalValue("10"),
+                    midPrice = DecimalValue("10"),
+                    spreadPct = 0.0,
+                    quoteVolume24h = DecimalValue("800000"),
+                    baseVolume24h = DecimalValue("80000"),
+                    estimatedSlippagePct = 0.12,
+                    orderBookStabilityScore = 0.30,
+                    tradeCount24h = 4,
+                    bidDepthTop5Idr = DecimalValue("2000"),
+                    askDepthTop5Idr = DecimalValue("2000"),
+                    shortTermReturnPct = 0.05,
+                    mediumTermReturnPct = 0.10,
+                    recentTradeActivityScore = 0.05,
+                    trendQualityScore = 0.18,
+                    historicalExpectancyScore = 0.22,
+                    fillQualityScore = 0.20,
+                    holdabilityScore = 0.10,
+                    tickFrequencyPerMinute = 0.02,
+                    capturedAt = Instant.parse("2026-03-31T01:00:00Z"),
+                ),
+            ),
+        )
+
+        assertEquals("dead_idr", ranked.first().pairId.value)
+        assertTrue(!ranked.first().allowed, ranked.first().toString())
+        assertTrue(ranked.first().rejectionReasons.any { it.contains("zombie", ignoreCase = true) || it.contains("mati", ignoreCase = true) }, ranked.first().toString())
+        assertTrue(ranked.first().deadChartScore > 0.70, ranked.first().toString())
+    }
+
+    @Test
+    fun `spread above hard allowance is vetoed even when other metrics look good`() {
+        val selector = PairSelector()
+        val ranked = selector.rank(
+            listOf(
+                MarketQuote(
+                    pairId = PairId("taxed_idr"),
+                    bestBid = DecimalValue("100"),
+                    bestAsk = DecimalValue("100.9"),
+                    midPrice = DecimalValue("100.45"),
+                    spreadPct = 0.90,
+                    quoteVolume24h = DecimalValue("95000000"),
+                    baseVolume24h = DecimalValue("940000"),
+                    estimatedSlippagePct = 0.20,
+                    orderBookStabilityScore = 0.88,
+                    tradeCount24h = 1400,
+                    bidDepthTop5Idr = DecimalValue("1500000"),
+                    askDepthTop5Idr = DecimalValue("1400000"),
+                    shortTermReturnPct = 2.2,
+                    mediumTermReturnPct = 2.8,
+                    recentTradeActivityScore = 0.84,
+                    trendQualityScore = 0.76,
+                    historicalExpectancyScore = 0.71,
+                    fillQualityScore = 0.86,
+                    holdabilityScore = 0.72,
+                    capturedAt = Instant.parse("2026-03-31T01:00:00Z"),
+                ),
+            ),
+        )
+
+        assertTrue(!ranked.first().allowed, ranked.first().toString())
+        assertTrue(ranked.first().rejectionReasons.any { it.contains("pajak", ignoreCase = true) }, ranked.first().toString())
     }
 }
