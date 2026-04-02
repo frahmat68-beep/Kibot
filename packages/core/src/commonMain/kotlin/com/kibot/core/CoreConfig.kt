@@ -6,15 +6,17 @@ data class LeaseProtocolConfig(
 )
 
 data class PairSelectionPolicy(
-    val minDailyQuoteVolumeIdr: Double = 10_000_000.0,
-    val smallCapitalMinDailyQuoteVolumeIdr: Double = 280_000.0,
-    val smallCapitalMinTop5DepthIdr: Double = 10_000.0,
-    val smallCapitalMinTradeCount24h: Int = 14,
-    val smallCapitalMaxSpreadPct: Double = 1.25,
-    val smallCapitalMaxSlippagePct: Double = 1.20,
-    val maxSpreadPct: Double = 0.88,
-    val hardSpreadVetoPct: Double = 0.80,
-    val maxEstimatedSlippagePct: Double = 0.92,
+    // MICRO-CAP AGGRESSIVE: Lowered volume minimums for small coins
+    val minDailyQuoteVolumeIdr: Double = 5_000_000.0,
+    val smallCapitalMinDailyQuoteVolumeIdr: Double = 150_000.0,
+    val smallCapitalMinTop5DepthIdr: Double = 5_000.0,
+    val smallCapitalMinTradeCount24h: Int = 8,
+    // MICRO-CAP AGGRESSIVE: Widened spread/slippage tolerance
+    val smallCapitalMaxSpreadPct: Double = 2.50,
+    val smallCapitalMaxSlippagePct: Double = 2.80,
+    val maxSpreadPct: Double = 1.80,
+    val hardSpreadVetoPct: Double = 1.50,
+    val maxEstimatedSlippagePct: Double = 1.80,
     val minOrderBookStabilityScore: Double = 0.34,
     val minRecentTradeActivityScore: Double = 0.24,
     val minFillQualityScore: Double = 0.28,
@@ -55,12 +57,28 @@ data class PairSelectionPolicy(
     val kellyFractionCap: Double = 0.35,
 )
 
+data class PairSelectionContext(
+    val userBalanceIdr: Double = 0.0,
+    val availableCashIdr: Double = 0.0,
+    val minimumExecutableNotionalIdr: Double = 10_000.0,
+    val basketCount: Int = 1,
+    val maxSpreadPct: Double = 2.0,
+    val leadSectorFamily: String? = null,
+    val leadPairId: String? = null,
+    val leadMomentumScore: Double = 0.0,
+    val leadSectorHotnessScore: Double = 0.0,
+    val leadVolumeVelocityScore: Double = 0.0,
+    val urgentEntryMode: Boolean = false,
+    val leadLagEnabled: Boolean = false,
+)
+
 data class RiskConfig(
-    val hardDailyLossLimitPct: Double = 0.05,
-    val hardRealizedLossLimitIdr: Double = 15_000.0,
-    val maxDailyTradeActions: Int = 16,
-    val maxDailyRoundTrips: Int = 8,
-    val dailyProfitLockPct: Double = 0.015,
+    // MICRO-CAP: Tighter loss limits for protection
+    val hardDailyLossLimitPct: Double = 0.03,
+    val hardRealizedLossLimitIdr: Double = 10_000.0,
+    val maxDailyTradeActions: Int = 24,
+    val maxDailyRoundTrips: Int = 12,
+    val dailyProfitLockPct: Double = 0.010,
     val dailyProfitLockRankingScore: Double = 0.99,
     val dailyProfitLockOpportunityScore: Double = 0.90,
     val dailyProfitLockConfidenceFloor: Double = 0.99,
@@ -74,7 +92,8 @@ data class RiskConfig(
     val defensiveCashReservePct: Double = 0.40,
     val attackCashReservePct: Double = 0.01,
     val maxPerPositionBudgetPct: Double = 0.98,
-    val targetMinPositionBudgetIdr: Double = 28_000.0,
+    // MICRO-CAP: Lower minimum position sizes
+    val targetMinPositionBudgetIdr: Double = 15_000.0,
     val minSecondSlotRankingScore: Double = 0.66,
     val minSecondSlotOpportunityScore: Double = 0.56,
     val singlePositionBudgetBoostMultiplier: Double = 1.55,

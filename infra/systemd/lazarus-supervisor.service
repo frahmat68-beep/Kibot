@@ -1,0 +1,25 @@
+[Unit]
+Description=KiBot Lazarus Supervisor
+After=network-online.target kibot-engine.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/KiBot
+Environment=ROOT_DIR=/home/ubuntu/KiBot
+Environment=LOG_FILE=/home/ubuntu/KiBot/logs/lazarus.supervisor.log
+Environment=WATCH_SCRIPT=/home/ubuntu/KiBot/infra/scripts/lazarus_autostart_watch.sh
+Environment=PID_FILE=/home/ubuntu/KiBot/logs/lazarus.pid
+Environment=WATCH_OUT=/home/ubuntu/KiBot/logs/lazarus.watch.out
+Environment=RESTART_DELAY_SECONDS=10
+Environment=HEALTH_CHECK_INTERVAL_SECONDS=20
+ExecStart=/bin/bash /home/ubuntu/KiBot/infra/scripts/lazarus_supervisor.sh
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lazarus-supervisor
+
+[Install]
+WantedBy=multi-user.target

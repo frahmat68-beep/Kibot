@@ -24,11 +24,20 @@ sudo systemctl start "$SERVICE_NAME"
 
 sudo systemctl status "$SERVICE_NAME" --no-pager || true
 
-CRON_JOB="*/5 * * * * ${RECOVERY_SCRIPT_PATH}"
-AI_CRON_JOB="5 * * * * ${AI_SCRIPT_PATH}"
-(crontab -l 2>/dev/null; echo "$CRON_JOB"; echo "$AI_CRON_JOB") | awk '!seen[$0]++' | crontab -
+CRON_JOB="*/2 * * * * KIBOT_RUNTIME_ROOT=${RUNTIME_ROOT} KIBOT_SERVICE_NAME=${SERVICE_NAME} KIBOT_DASHBOARD_PORT=${DASHBOARD_PORT} KIBOT_ENV_FILE=${KIBOT_ENV_FILE:-} ${RECOVERY_SCRIPT_PATH}"
+if [[ -n "${KIBOT_EXPECT_LIVE_EXECUTION:-}" ]]; then
+  CRON_JOB="*/2 * * * * KIBOT_RUNTIME_ROOT=${RUNTIME_ROOT} KIBOT_SERVICE_NAME=${SERVICE_NAME} KIBOT_DASHBOARD_PORT=${DASHBOARD_PORT} KIBOT_ENV_FILE=${KIBOT_ENV_FILE:-} KIBOT_EXPECT_LIVE_EXECUTION=${KIBOT_EXPECT_LIVE_EXECUTION} ${RECOVERY_SCRIPT_PATH}"
+fi
 
-chmod +x "$RECOVERY_SCRIPT_PATH" "${RUNTIME_ROOT}/setup-autorecover.sh" "$AI_SCRIPT_PATH"
+if [[ -f "$AI_SCRIPT_PATH" ]]; then
+  AI_CRON_JOB="5 * * * * ${AI_SCRIPT_PATH}"
+  (crontab -l 2>/dev/null; echo "$CRON_JOB"; echo "$AI_CRON_JOB") | awk '!seen[$0]++' | crontab -
+  chmod +x "$AI_SCRIPT_PATH"
+else
+  (crontab -l 2>/dev/null; echo "$CRON_JOB") | awk '!seen[$0]++' | crontab -
+fi
+
+chmod +x "$RECOVERY_SCRIPT_PATH"
 
 echo "Setup complete for ${SERVICE_NAME}."
 echo "Dashboard should be available at http://<server-ip>:${DASHBOARD_PORT}"

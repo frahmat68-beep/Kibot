@@ -199,4 +199,165 @@ class PairSelectorTest {
         assertTrue(!ranked.first().allowed, ranked.first().toString())
         assertTrue(ranked.first().rejectionReasons.any { it.contains("pajak", ignoreCase = true) }, ranked.first().toString())
     }
+
+    @Test
+    fun `pair above max spread context is rejected before ranking`() {
+        val selector = PairSelector()
+        val ranked = selector.rank(
+            listOf(
+                MarketQuote(
+                    pairId = PairId("cheap_idr"),
+                    bestBid = DecimalValue("20"),
+                    bestAsk = DecimalValue("21"),
+                    midPrice = DecimalValue("20.5"),
+                    spreadPct = 5.0,
+                    quoteVolume24h = DecimalValue("100000000"),
+                    baseVolume24h = DecimalValue("5000000"),
+                    estimatedSlippagePct = 0.12,
+                    orderBookStabilityScore = 0.80,
+                    tradeCount24h = 900,
+                    bidDepthTop5Idr = DecimalValue("400000"),
+                    askDepthTop5Idr = DecimalValue("390000"),
+                    shortTermReturnPct = 1.2,
+                    mediumTermReturnPct = 2.2,
+                    recentTradeActivityScore = 0.74,
+                    trendQualityScore = 0.66,
+                    historicalExpectancyScore = 0.62,
+                    fillQualityScore = 0.78,
+                    holdabilityScore = 0.60,
+                    capturedAt = Instant.parse("2026-03-31T01:00:00Z"),
+                ),
+            ),
+            PairSelectionContext(
+                userBalanceIdr = 66_000.0,
+                availableCashIdr = 0.0,
+                basketCount = 1,
+                maxSpreadPct = 2.0,
+            ),
+        )
+
+        assertTrue(!ranked.first().allowed, ranked.first().toString())
+        assertTrue(ranked.first().rejectionReasons.any { it.contains("Spread", ignoreCase = true) }, ranked.first().toString())
+    }
+
+    @Test
+    fun `urgent lead lag mode prefers low price correlated laggard over eth`() {
+        val selector = PairSelector()
+        val ranked = selector.rank(
+            listOf(
+                MarketQuote(
+                    pairId = PairId("eth_idr"),
+                    bestBid = DecimalValue("3600000"),
+                    bestAsk = DecimalValue("3605000"),
+                    midPrice = DecimalValue("3602500"),
+                    spreadPct = 0.14,
+                    quoteVolume24h = DecimalValue("185000000000"),
+                    baseVolume24h = DecimalValue("51000"),
+                    estimatedSlippagePct = 0.12,
+                    orderBookStabilityScore = 0.96,
+                    tradeCount24h = 2200,
+                    bidDepthTop5Idr = DecimalValue("120000000"),
+                    askDepthTop5Idr = DecimalValue("118000000"),
+                    shortTermReturnPct = 0.8,
+                    mediumTermReturnPct = 1.4,
+                    recentTradeActivityScore = 0.90,
+                    trendQualityScore = 0.82,
+                    historicalExpectancyScore = 0.76,
+                    fillQualityScore = 0.92,
+                    holdabilityScore = 0.84,
+                    sectorMomentumScore = 0.92,
+                    capturedAt = Instant.parse("2026-03-31T01:00:00Z"),
+                ),
+                MarketQuote(
+                    pairId = PairId("ont_idr"),
+                    bestBid = DecimalValue("1895"),
+                    bestAsk = DecimalValue("1897"),
+                    midPrice = DecimalValue("1896"),
+                    spreadPct = 0.18,
+                    quoteVolume24h = DecimalValue("98000000"),
+                    baseVolume24h = DecimalValue("51600"),
+                    estimatedSlippagePct = 0.18,
+                    orderBookStabilityScore = 0.90,
+                    tradeCount24h = 1500,
+                    bidDepthTop5Idr = DecimalValue("960000"),
+                    askDepthTop5Idr = DecimalValue("940000"),
+                    shortTermReturnPct = 2.1,
+                    mediumTermReturnPct = 3.3,
+                    recentTradeActivityScore = 0.88,
+                    trendQualityScore = 0.79,
+                    historicalExpectancyScore = 0.72,
+                    fillQualityScore = 0.89,
+                    holdabilityScore = 0.75,
+                    sectorMomentumScore = 0.86,
+                    capturedAt = Instant.parse("2026-03-31T01:00:00Z"),
+                ),
+            ),
+            PairSelectionContext(
+                userBalanceIdr = 66_000.0,
+                availableCashIdr = 66_000.0,
+                basketCount = 1,
+                maxSpreadPct = 5.0,
+                leadSectorFamily = "l1_l2",
+                leadPairId = "ont_idr",
+                leadMomentumScore = 0.91,
+                leadSectorHotnessScore = 0.91,
+                leadVolumeVelocityScore = 0.92,
+                urgentEntryMode = true,
+                leadLagEnabled = true,
+            ),
+        )
+
+        val eth = ranked.first { it.pairId.value == "eth_idr" }
+        val ont = ranked.first { it.pairId.value == "ont_idr" }
+
+        assertEquals("ont_idr", ont.pairId.value, ranked.joinToString())
+        assertTrue(!eth.allowed, eth.toString())
+        assertTrue(
+            eth.rejectionReasons.any { it.contains("band saldo", ignoreCase = true) },
+            eth.toString(),
+        )
+    }
+
+    @Test
+    fun `available cash band blocks expensive pair even if equity is larger`() {
+        val selector = PairSelector()
+        val ranked = selector.rank(
+            listOf(
+                MarketQuote(
+                    pairId = PairId("cast_idr"),
+                    bestBid = DecimalValue("4100000"),
+                    bestAsk = DecimalValue("4110000"),
+                    midPrice = DecimalValue("4105000"),
+                    spreadPct = 0.24,
+                    quoteVolume24h = DecimalValue("350000000"),
+                    baseVolume24h = DecimalValue("85"),
+                    estimatedSlippagePct = 0.18,
+                    orderBookStabilityScore = 0.93,
+                    tradeCount24h = 1220,
+                    bidDepthTop5Idr = DecimalValue("85000000"),
+                    askDepthTop5Idr = DecimalValue("83000000"),
+                    shortTermReturnPct = 1.1,
+                    mediumTermReturnPct = 2.0,
+                    recentTradeActivityScore = 0.84,
+                    trendQualityScore = 0.79,
+                    historicalExpectancyScore = 0.73,
+                    fillQualityScore = 0.89,
+                    holdabilityScore = 0.78,
+                    capturedAt = Instant.parse("2026-03-31T01:00:00Z"),
+                ),
+            ),
+            PairSelectionContext(
+                userBalanceIdr = 5_000_000.0,
+                availableCashIdr = 32_058.0,
+                basketCount = 1,
+                maxSpreadPct = 2.0,
+            ),
+        )
+
+        assertTrue(!ranked.first().allowed, ranked.first().toString())
+        assertTrue(
+            ranked.first().rejectionReasons.any { it.contains("band saldo", ignoreCase = true) },
+            ranked.first().toString(),
+        )
+    }
 }

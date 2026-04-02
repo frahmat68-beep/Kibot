@@ -662,15 +662,17 @@ class ChartAnalyzer(
 }
 
 data class ChartAnalysisConfig(
-    val absoluteMinDailyVolumeIdr: Double = 80_000_000.0,
-    val absoluteMinTop5DepthIdr: Double = 25_000.0,
-    val minHealthyDailyVolumeIdr: Double = 140_000_000.0,
-    val minHealthyTop5DepthIdr: Double = 90_000.0,
-    val absoluteMaxSpreadPct: Double = 1.40,
-    val absoluteMaxSlippagePct: Double = 1.60,
-    val maxHealthySpreadPct: Double = 0.90,
-    val maxHealthySlippagePct: Double = 0.85,
-    val marketOrderMaxSlippagePct: Double = 0.42,
+    // MICRO-CAP FRIENDLY: Lowered volume requirements for small coins
+    val absoluteMinDailyVolumeIdr: Double = 25_000_000.0,
+    val absoluteMinTop5DepthIdr: Double = 8_000.0,
+    val minHealthyDailyVolumeIdr: Double = 50_000_000.0,
+    val minHealthyTop5DepthIdr: Double = 25_000.0,
+    // MICRO-CAP FRIENDLY: Widened spread/slippage tolerance for illiquid micro-caps
+    val absoluteMaxSpreadPct: Double = 2.50,
+    val absoluteMaxSlippagePct: Double = 2.80,
+    val maxHealthySpreadPct: Double = 1.80,
+    val maxHealthySlippagePct: Double = 1.60,
+    val marketOrderMaxSlippagePct: Double = 0.85,
     val estimatedRoundTripFeePct: Double = 0.60,
     val feeSafetyBufferPct: Double = 0.12,
     val minAtrPct: Double = 0.35,

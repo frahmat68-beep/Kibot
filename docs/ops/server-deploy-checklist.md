@@ -106,6 +106,10 @@ Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiBot` s
   - `.tmp/runtime/<profile>/monthly_pnl_anchor.json`
 - Pastikan direktori runtime writable oleh service user.
 - Jangan share file runtime antar node.
+- Recovery service lokal:
+  - `infra/scripts/engine-recovery.sh`
+  - jalan tiap 2 menit lewat cron setelah `setup-engine-autorecover.sh`
+  - kalau `api/state` masih tidak sehat, service di-restart otomatis dengan bounded retry
 
 ## Systemd Memory Baseline
 - Baseline aman awal:
@@ -125,11 +129,14 @@ Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiBot` s
 6. Restart `Kinance`.
 7. Restart `KiBot`.
 8. Restart `KiDax` terakhir.
+9. Pastikan cron recovery aktif:
+   - `crontab -l | grep engine-recovery.sh`
 
 Alasan:
 - `Kinance` dulu supaya feed global dan heartbeat siap.
 - `KiBot` kedua supaya veto/safe-mode layer aktif.
 - `KiDax` terakhir supaya executor tidak start sendirian tanpa partner.
+- Recovery check tetap jalan tiap 2 menit agar 1 server lebih tahan crash kecil.
 
 ## Smoke Test Pasca Deploy
 1. Cek service hidup:

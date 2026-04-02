@@ -11,19 +11,32 @@ class PairSelector(
     private val policy: PairSelectionPolicy = PairSelectionPolicy(),
     private val chartAnalyzer: ChartAnalyzer = ChartAnalyzer(),
     private val coinProfiler: CoinProfiler = CoinProfiler(policy),
-) {
-    fun rank(quotes: List<MarketQuote>): List<PairScore> {
-        val candidates = prefilter(quotes)
-        return candidates.map { scoreQuote(it, quotes) }.sortedWith(pairRankingComparator())
+) : SelectionStrategy {
+    fun rank(quotes: List<MarketQuote>): List<PairScore> = rank(quotes, PairSelectionContext())
+
+    fun shortlist(quotes: List<MarketQuote>): List<PairScore> = shortlist(quotes, PairSelectionContext())
+
+    override fun rank(
+        quotes: List<MarketQuote>,
+        context: PairSelectionContext,
+    ): List<PairScore> {
+        val candidates = prefilter(quotes, context)
+        return candidates.map { scoreQuote(it, quotes, context) }.sortedWith(pairRankingComparator())
     }
 
-    fun shortlist(quotes: List<MarketQuote>): List<PairScore> {
-        return rank(quotes)
+    override fun shortlist(
+        quotes: List<MarketQuote>,
+        context: PairSelectionContext,
+    ): List<PairScore> {
+        return rank(quotes, context)
             .filter { it.allowed }
             .take(policy.shortlistSize)
     }
 
-    private fun prefilter(quotes: List<MarketQuote>): List<MarketQuote> {
+    private fun prefilter(
+        quotes: List<MarketQuote>,
+        context: PairSelectionContext,
+    ): List<MarketQuote> {
         val eligibleQuotes = quotes.filterNot(::isDormantStablePair)
         if (eligibleQuotes.isEmpty()) return emptyList()
         val poolSize = policy.prefilterCandidatePoolSize.coerceAtLeast(policy.shortlistSize)
@@ -31,6 +44,8 @@ class PairSelector(
 
         val lenientCandidates = eligibleQuotes.asSequence()
             .filter { quote ->
+                passesPriceBandGate(quote, context) &&
+                quote.spreadPct <= context.maxSpreadPct.coerceAtLeast(0.0) &&
                 (
                     quote.quoteVolume24h.toDoubleOrZero() >= policy.minDailyQuoteVolumeIdr * 0.25 ||
                         isSmallCapitalOverrideEligible(
@@ -51,11 +66,16 @@ class PairSelector(
         if (lenientCandidates.isNotEmpty()) return lenientCandidates
 
         return eligibleQuotes
+            .filter { passesPriceBandGate(it, context) && it.spreadPct <= context.maxSpreadPct.coerceAtLeast(0.0) }
             .sortedByDescending(::prefilterScore)
             .take(poolSize)
     }
 
-    private fun scoreQuote(quote: MarketQuote, marketUniverse: List<MarketQuote>): PairScore {
+    private fun scoreQuote(
+        quote: MarketQuote,
+        marketUniverse: List<MarketQuote>,
+        context: PairSelectionContext,
+    ): PairScore {
         val chartAssessment = chartAnalyzer.analyzeQuoteSnapshot(quote)
         val profileAssessment = coinProfiler.assess(
             quote = quote,
@@ -63,6 +83,8 @@ class PairSelector(
         )
         val chartPatternsScore = chartAssessment.netEntryScore
         val momentumAccelerationScore = deriveMomentumAccelerationScore(quote)
+        val spreadGuardPct = context.maxSpreadPct.coerceAtLeast(0.0)
+        val capitalBandIdr = capitalBandIdr(context)
         val liquidityScore = normalizeRatio(
             value = quote.quoteVolume24h.toDoubleOrZero(),
             baseline = policy.minDailyQuoteVolumeIdr,
@@ -73,7 +95,7 @@ class PairSelector(
             baseline = policy.smallCapitalMinTop5DepthIdr,
             saturationMultiplier = 5.0,
         )
-        val spreadScore = inverseThresholdScore(quote.spreadPct, policy.maxSpreadPct)
+        val spreadScore = inverseThresholdScore(quote.spreadPct, spreadGuardPct.coerceAtLeast(policy.maxSpreadPct))
         val slippageScore = inverseThresholdScore(quote.estimatedSlippagePct, policy.maxEstimatedSlippagePct)
         val stabilityScore = quote.orderBookStabilityScore.coerceIn(0.0, 1.0)
         val tradeCountScore = quote.tradeCount24h
@@ -110,6 +132,67 @@ class PairSelector(
             volumeConsistencyScore = volumeConsistencyScore,
             fillQualityScore = fillQualityScore,
         )
+        val spreadRejected = quote.spreadPct > spreadGuardPct
+        val priceBandAllowed = passesPriceBandGate(quote, context)
+        val sectorLeadFamily = context.leadSectorFamily?.lowercase()
+        val quoteFamily = correlationFamily(quote.pairId)
+        val leadLagAffinity = when {
+            !context.leadLagEnabled -> 0.0
+            sectorLeadFamily != null && sectorLeadFamily == quoteFamily -> 0.18
+            context.leadPairId != null && context.leadPairId.equals(quote.pairId.value, ignoreCase = true) -> 0.26
+            context.leadMomentumScore >= 0.72 && quote.sectorMomentumScore >= 0.60 -> 0.08
+            else -> 0.0
+        }
+        val sectorHotnessBias = when {
+            !context.leadLagEnabled -> 0.0
+            context.leadSectorHotnessScore >= 0.88 &&
+                sectorLeadFamily != null &&
+                sectorLeadFamily == quoteFamily -> 0.16
+            context.leadSectorHotnessScore >= 0.76 &&
+                sectorLeadFamily != null &&
+                sectorLeadFamily == quoteFamily -> 0.11
+            context.leadSectorHotnessScore >= 0.60 &&
+                quote.sectorMomentumScore >= 0.58 -> 0.06
+            else -> 0.0
+        }
+        val volumeVelocityBias = when {
+            !context.leadLagEnabled -> 0.0
+            context.urgentEntryMode && quote.recentTradeActivityScore >= 0.80 && quote.tradeCount24h >= 250 -> 0.10
+            context.urgentEntryMode && quote.recentTradeActivityScore >= 0.70 -> 0.06
+            context.leadVolumeVelocityScore >= 0.80 && quote.recentTradeActivityScore >= 0.66 -> 0.04
+            else -> 0.0
+        }
+        val urgentLeadLagMatch = context.urgentEntryMode &&
+            priceBandAllowed &&
+            quote.spreadPct <= spreadGuardPct &&
+            (
+                leadLagAffinity >= 0.10 ||
+                    sectorHotnessBias >= 0.06 ||
+                    volumeVelocityBias >= 0.04
+                )
+        val urgentEntryBias = if (context.urgentEntryMode && priceBandAllowed) {
+            val band = capitalBandIdr
+            val nominalPrice = quote.midPrice.toDoubleOrZero().coerceAtLeast(0.0)
+            if (band > 0.0 && nominalPrice > 0.0) {
+                val affordability = (1.0 - (nominalPrice / band).coerceIn(0.0, 1.0)) * 0.10
+                affordability + if (quote.spreadPct <= spreadGuardPct) 0.04 else 0.0
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        }
+        val lowPriceBias = if (context.userBalanceIdr > 0.0 && priceBandAllowed) {
+            val band = capitalBandIdr
+            val nominalPrice = quote.midPrice.toDoubleOrZero().coerceAtLeast(0.0)
+            if (band > 0.0 && nominalPrice > 0.0) {
+                (1.0 - (nominalPrice / band).coerceIn(0.0, 1.0)) * if (context.urgentEntryMode) 0.14 else 0.10
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        }
         val speculativePocket = isSpeculativePocketEligible(
             quote = quote,
             depthScore = depthScore,
@@ -153,13 +236,18 @@ class PairSelector(
             (1.0 - profileAssessment.deadChartScore) to 0.03,
             (1.0 - profileAssessment.statisticalStretchScore) to 0.03,
             profileAssessment.smartMoneyScore to 0.03,
+            sectorHotnessBias to 0.04,
+            volumeVelocityBias to 0.04,
         )
         val rankingScore = (
             rankingScoreBase -
                 if (stagnantPair) 0.12 else 0.0 +
                 if (earlyBreakoutEligible) 0.08 else 0.0 -
                 (profileAssessment.toxicityScore * 0.14) -
-                (profileAssessment.statisticalStretchScore * 0.10)
+                (profileAssessment.statisticalStretchScore * 0.10) +
+                leadLagAffinity +
+                lowPriceBias +
+                urgentEntryBias
             ).coerceIn(0.0, 1.0)
         val marketOpportunityScore = averageOf(
             rankingScore,
@@ -204,6 +292,7 @@ class PairSelector(
             }
             if (dormantStablePair) add("Pair datar/stable tidak dipakai untuk growth trading.")
             if (stagnantPair) add("Pergerakan pair terlalu datar untuk mode agresif.")
+            if (spreadRejected) add("Spread melewati batas guardrail.")
             if (
                 quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr &&
                 !smallCapitalEligible &&
@@ -226,6 +315,7 @@ class PairSelector(
             ) {
                 add("Depth order book belum cukup aman untuk modal kecil.")
             }
+            if (!priceBandAllowed) add("Harga pair melewati band saldo per basket.")
             if (fillQualityScore < if (earlyBreakoutEligible) policy.minFillQualityScore * 0.72 else policy.minFillQualityScore) {
                 add("Kualitas fill memburuk.")
             }
@@ -242,11 +332,19 @@ class PairSelector(
             if (profileAssessment.toxicityScore >= policy.toxicFlowCautionScore) {
                 add("Pair sedang toxic, entry harus dihindari dulu.")
             }
+            if (leadLagAffinity >= 0.18) {
+                add("Lead-lag sector cocok dengan sinyal Kinance.")
+            }
+            if (context.urgentEntryMode) {
+                add("PEKA mode aktif: prioritas pada kandidat murah yang masih nyambung ke lead sector.")
+            }
             if (profileAssessment.statisticalStretchScore >= 0.82) {
                 add("Harga sudah terlalu jauh dari pusat statistik intraday.")
             }
-            addAll(profileAssessment.rejectionReasons)
-            addAll(chartAssessment.vetoReasons)
+            if (!urgentLeadLagMatch) {
+                addAll(profileAssessment.rejectionReasons)
+                addAll(chartAssessment.vetoReasons)
+            }
         }
 
         val pairTier = when {
@@ -292,6 +390,48 @@ class PairSelector(
             statisticalStretchScore = profileAssessment.statisticalStretchScore,
             smartMoneyScore = profileAssessment.smartMoneyScore,
         )
+    }
+
+    private fun passesPriceBandGate(
+        quote: MarketQuote,
+        context: PairSelectionContext,
+    ): Boolean {
+        val price = quote.midPrice.toDoubleOrZero()
+        if (price <= 0.0) return false
+        val balanceBand = capitalBandIdr(context)
+        return balanceBand <= 0.0 || price <= balanceBand
+    }
+
+    private fun capitalBandIdr(context: PairSelectionContext): Double {
+        val freeCash = context.availableCashIdr.takeIf { it > 0.0 } ?: 0.0
+        val cashIsExecutable = freeCash >= context.minimumExecutableNotionalIdr
+        val base = when {
+            cashIsExecutable -> freeCash
+            context.userBalanceIdr > 0.0 -> context.userBalanceIdr
+            else -> freeCash
+        }
+        return base / context.basketCount.coerceAtLeast(1).toDouble()
+    }
+
+    private fun correlationFamily(pairId: PairId): String {
+        val base = pairId.value.substringBefore('_').lowercase()
+        return when (base) {
+            // Meme coins - high BTC correlation but extreme volatility
+            in setOf("doge", "shib", "pepe", "floki", "bonk", "wif", "pippin", "neiro", "turbo", "mog", "bome", "brett", "dog", "popcat") -> "meme"
+            // AI/ML tokens - moderate correlation with ETH ecosystem
+            in setOf("fet", "agix", "ocean", "render", "tao", "ai16z", "grt", "worldcoin", "rndr") -> "ai"
+            // Layer 1/2 - high correlation with ETH
+            in setOf("sol", "ada", "avax", "matic", "arb", "op", "eth", "near", "ont", "trx", "xlm", "plpa", "kaito", "dot", "atom", "inj", "sui", "sei", "apt", "ftm", "klay", "cro", "zil") -> "l1_l2"
+            // BTC ecosystem
+            in setOf("btc", "stx", "ordi", "sats", "rune", "tia") -> "btc"
+            // DeFi - high ETH correlation
+            in setOf("uni", "aave", "link", "snx", "crv", "mkr", "comp", "ldo", "gmx", "dydx", "1inch", "cake", "sushi", "pendle", "eigen") -> "defi"
+            // Gaming/Metaverse
+            in setOf("axs", "sand", "mana", "gala", "imx", "ilv", "enjin", "alice", "rmrk", "magic") -> "gaming"
+            // Micro-caps (Indodax specific) - uncorrelated but volatile
+            in setOf("sto", "drx", "d", "cast", "one", "hot", "reef", "btt", "win", "xec", "luna2", "ustc") -> "microcap"
+            else -> base
+        }
     }
 
     private fun deriveVolatilityQuality(quote: MarketQuote): Double {
@@ -535,8 +675,10 @@ class PairSelector(
         return values.map { it.coerceIn(0.0, 1.0) }.average().coerceIn(0.0, 1.0)
     }
 
-    private fun pairRankingComparator() = compareByDescending<PairScore> { it.pairTier == PairTier.TIER_A }
+    private fun pairRankingComparator() = compareByDescending<PairScore> { it.allowed }
+        .thenByDescending { it.pairTier == PairTier.TIER_A }
         .thenByDescending { it.speculativePocket }
+        .thenByDescending { it.feeAdjustedEdgeScore }
         .thenByDescending { it.rankingScore }
         .thenByDescending { it.marketOpportunityScore }
         .thenByDescending { it.progressiveScore }

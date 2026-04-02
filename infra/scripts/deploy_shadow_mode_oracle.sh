@@ -46,16 +46,28 @@ else
 fi
 
 touch "$ENV_FILE"
-if grep -q '^SHADOW_MODE=' "$ENV_FILE"; then
-  sed -i 's/^SHADOW_MODE=.*/SHADOW_MODE=true/' "$ENV_FILE"
-else
-  printf '\nSHADOW_MODE=true\n' >> "$ENV_FILE"
-fi
+  if grep -q '^SHADOW_MODE=' "$ENV_FILE"; then
+    sed -i 's/^SHADOW_MODE=.*/SHADOW_MODE=false/' "$ENV_FILE"
+  else
+    printf '\nSHADOW_MODE=false\n' >> "$ENV_FILE"
+  fi
 
-if ! grep -q '^SHADOW_MODE=true$' "$ENV_FILE"; then
-  echo "[FATAL] SHADOW_MODE lock failed on Kinance."
-  exit 1
-fi
+  if grep -q '^KIBOT_HIVE_UDP_PEERS=' "$ENV_FILE"; then
+    sed -i 's|^KIBOT_HIVE_UDP_PEERS=.*|KIBOT_HIVE_UDP_PEERS=127.0.0.1:9997,127.0.0.1:9998|' "$ENV_FILE"
+  else
+    printf '\nKIBOT_HIVE_UDP_PEERS=127.0.0.1:9997,127.0.0.1:9998\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^KIBOT_HIVE_EXPECTED_BOT_IDS=' "$ENV_FILE"; then
+    sed -i 's/^KIBOT_HIVE_EXPECTED_BOT_IDS=.*/KIBOT_HIVE_EXPECTED_BOT_IDS=main,kibot/' "$ENV_FILE"
+  else
+    printf '\nKIBOT_HIVE_EXPECTED_BOT_IDS=main,kibot\n' >> "$ENV_FILE"
+  fi
+
+  if ! grep -q '^SHADOW_MODE=false$' "$ENV_FILE"; then
+    echo "[FATAL] SHADOW_MODE lock failed on Kinance."
+    exit 1
+  fi
 
 cd "$REPO_ROOT"
 ./gradlew :apps:mac-engine:fatJar -q
@@ -85,16 +97,22 @@ git checkout "$BRANCH"
 git pull --ff-only origin "$BRANCH"
 
 touch "$ENV_FILE"
-if grep -q '^SHADOW_MODE=' "$ENV_FILE"; then
-  sed -i 's/^SHADOW_MODE=.*/SHADOW_MODE=true/' "$ENV_FILE"
-else
-  printf '\nSHADOW_MODE=true\n' >> "$ENV_FILE"
-fi
+  if grep -q '^SHADOW_MODE=' "$ENV_FILE"; then
+    sed -i 's/^SHADOW_MODE=.*/SHADOW_MODE=false/' "$ENV_FILE"
+  else
+    printf '\nSHADOW_MODE=false\n' >> "$ENV_FILE"
+  fi
 
-if ! grep -q '^SHADOW_MODE=true$' "$ENV_FILE"; then
-  echo "[FATAL] SHADOW_MODE lock failed on KiDax."
-  exit 1
-fi
+  if grep -q '^KIBOT_HIVE_UDP_PEERS=' "$ENV_FILE"; then
+    sed -i 's|^KIBOT_HIVE_UDP_PEERS=.*|KIBOT_HIVE_UDP_PEERS=127.0.0.1:9998,127.0.0.1:9999|' "$ENV_FILE"
+  else
+    printf '\nKIBOT_HIVE_UDP_PEERS=127.0.0.1:9998,127.0.0.1:9999\n' >> "$ENV_FILE"
+  fi
+
+  if ! grep -q '^SHADOW_MODE=false$' "$ENV_FILE"; then
+    echo "[FATAL] SHADOW_MODE lock failed on KiDax."
+    exit 1
+  fi
 
 ./gradlew :apps:mac-engine:fatJar -q
 install -m 0644 apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar "$APP_ROOT/server/mac-engine-all.jar"
@@ -110,6 +128,6 @@ REMOTE
 deploy_kinance
 deploy_kidax
 
-echo "==> Deploy done. Shadow mode locked on both nodes."
+echo "==> Deploy done. Live mode locked on both nodes."
 echo "Live log watch KiDax:"
 echo "ssh -i \"$KIDAX_KEY\" -p \"$KIDAX_PORT\" \"$KIDAX_USER@$KIDAX_HOST\" 'sudo journalctl -u kidax-engine -f -n 200 | grep --line-buffered -E \"SHADOW MODE|LEAD_LAG|ORDER|Executed\"'"

@@ -9,8 +9,8 @@ User=ubuntu
 PermissionsStartOnly=true
 WorkingDirectory=/home/ubuntu/KiDax
 EnvironmentFile=-/home/ubuntu/KiDax/.env.kidax
-Environment=BOT_ID=main
-Environment=BOT_PROFILE_KEY=indodax
+Environment=BOT_ID=kidax
+Environment=BOT_PROFILE_KEY=kidax
 Environment=KIBOT_EXCHANGE_KIND=INDODAX
 Environment=DEVICE_ID=kidax-oracle-sg
 Environment=DEVICE_DISPLAY_NAME="KiDax Oracle Singapore"
@@ -25,8 +25,8 @@ Environment=MAC_ENGINE_ENABLE_LAN_ADVERTISE=false
 Environment=KIBOT_LOCAL_POSITION_STATE_ENABLED=true
 Environment=KIBOT_LEAD_LAG_UDP_ENABLED=true
 Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_ENABLED=true
-Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=100
-Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=500
+Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=250
+Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000
 Environment=KIBOT_HIVE_EXPECTED_BOT_IDS=kinance,kibot
 Environment="JAVA_OPTS=-XX:+UseSerialGC -Xms128m -Xmx300m -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
 ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/KiDax/server/mac-engine-all.jar
