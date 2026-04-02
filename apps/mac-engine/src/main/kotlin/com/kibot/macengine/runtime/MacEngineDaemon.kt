@@ -4,6 +4,8 @@ import com.kibot.aisupport.GeminiSupportCoordinator
 import com.kibot.aisupport.MultiAIClient
 import com.kibot.core.CapitalDeploymentEngine
 import com.kibot.core.ChartAnalyzer
+import com.kibot.core.PumpDetector
+import com.kibot.core.LossPreventionSystem
 import com.kibot.core.ControlPlaneGateway
 import com.kibot.core.ExchangeGateway
 import com.kibot.core.MarketBuyImpactEstimate
@@ -244,6 +246,8 @@ class MacEngineDaemon(
     private val multiAiCoordinator: MultiAIClient? = MultiAIClient(),
 ) {
     private val chartAnalyzer = ChartAnalyzer()
+    private val pumpDetector = PumpDetector()  // NEW: Pump detection for 100%+ moves
+    private val lossPreventionSystem = LossPreventionSystem()  // NEW: Aggressive loss prevention
     private val onlyRuntimeLogPrefixes = setOf("EXECUTION_BUY", "EXECUTION_SELL", "WHY_NOT_BUY")
     private data class CapitalAwareness(
         val totalEquityIdr: Double,
