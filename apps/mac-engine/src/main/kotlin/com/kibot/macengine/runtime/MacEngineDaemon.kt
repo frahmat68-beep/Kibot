@@ -6,6 +6,11 @@ import com.kibot.core.CapitalDeploymentEngine
 import com.kibot.core.ChartAnalyzer
 import com.kibot.core.PumpDetector
 import com.kibot.core.LossPreventionSystem
+import com.kibot.core.SharedPositionTracker
+import com.kibot.core.TradeLedger
+import com.kibot.core.TrinityHeartbeatMonitor
+import com.kibot.core.LatePumpEntryStrategy
+import com.kibot.core.PositionStrategy
 import com.kibot.core.ControlPlaneGateway
 import com.kibot.core.ExchangeGateway
 import com.kibot.core.MarketBuyImpactEstimate
@@ -248,6 +253,13 @@ class MacEngineDaemon(
     private val chartAnalyzer = ChartAnalyzer()
     private val pumpDetector = PumpDetector()  // NEW: Pump detection for 100%+ moves
     private val lossPreventionSystem = LossPreventionSystem()  // NEW: Aggressive loss prevention
+    
+    // Trinity Communication & Learning Systems
+    private val sharedPositionTracker = SharedPositionTracker()  // All bots know what KiDax holds
+    private val tradeLedger = TradeLedger()  // Track every trade for learning
+    private val heartbeatMonitor = TrinityHeartbeatMonitor()  // Monitor bot health
+    private val latePumpEntry = LatePumpEntryStrategy()  // Enter pumps that already started
+    
     private val onlyRuntimeLogPrefixes = setOf("EXECUTION_BUY", "EXECUTION_SELL", "WHY_NOT_BUY")
     private data class CapitalAwareness(
         val totalEquityIdr: Double,
@@ -3650,7 +3662,7 @@ class MacEngineDaemon(
     }
 
     private suspend fun handleLeadLagPayload(payloadJson: String?, now: Instant): String? {
-        if (!config.leadLagSignalEnabled || config.exchangeKind != ExchangeKind.INDODAX) return null
+        if (!config.leadLagSignalEnabled) return null  // Accept signals on any exchange
         val payload = payloadJson
             ?.takeIf { it.contains("lead_lag_breakout") || it.contains("\"msgType\"") }
             ?.let { raw -> runCatching { json.decodeFromString<LeadLagCalloutPayload>(raw) }.getOrNull() }
@@ -8211,7 +8223,7 @@ class MacEngineDaemon(
         if (peers.isEmpty()) return false
         return runCatching {
             DatagramSocket().use { socket ->
-                socket.soTimeout = 100
+                socket.soTimeout = 500  // Increased from 100ms
                 val bytes = encodeBinaryUdpPayloadIfSupported(payloadJson) ?: payloadJson.toByteArray(Charsets.UTF_8)
                 peers.forEach { (targetHost, targetPort) ->
                     val targetAddress = InetAddress.getByName(targetHost)
@@ -9500,7 +9512,7 @@ class MacEngineDaemon(
         private const val entryBlockLatencyMs = 2300L
         private const val executionPolicyLogCooldownMinutes = 2L
         private const val leadLagFreshnessHighVelocityShortReturnPct = 2.2
-        private const val leadLagSignalMaxAgeMillis = 500L
+        private const val leadLagSignalMaxAgeMillis = 2000L  // Increased from 500ms
         private const val leadLagSellWallConfirmMs = 2_200L
         private const val leadLagSellWallFastConfirmMs = 900L
         private const val leadLagFomoThresholdPct = 15.0
