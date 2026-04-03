@@ -85,6 +85,12 @@ class MultiWavePumpRider(
         currentPrice: Double,
         shortReturn: Double,
     ): WavePhase {
+        // FIX: Guard against division by zero - if waveHigh is 0 or negative, use currentPrice
+        // This prevents NaN/Infinity which can corrupt trade decisions and cause financial loss
+        if (state.waveHigh <= 0.0) {
+            state.waveHigh = currentPrice
+        }
+        
         // Calculate pullback from recent high
         val pullbackPct = if (state.waveHigh > 0) {
             ((state.waveHigh - currentPrice) / state.waveHigh) * 100.0

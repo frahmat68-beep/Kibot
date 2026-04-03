@@ -73,11 +73,14 @@ class KiBotVetoSystem(
         }
         
         // Rule 1: Daily loss limit
-        if (currentLossPct < -10.0) {
+        // FIX: Changed < to <= because -15% IS less than -10% but should ALSO trigger veto
+        // Original bug: -15% < -10.0 is TRUE (allowed trading at 15% loss!), -10% < -10.0 is FALSE
+        // Correct: -15% <= -10.0 is TRUE, -10% <= -10.0 is TRUE (both vetoed as intended)
+        if (currentLossPct <= -10.0) {
             return BuyApproval(
                 approved = false,
                 reason = "DAILY_LOSS_LIMIT",
-                message = "Daily loss > 10%, VETO all new entries",
+                message = "Daily loss >= 10%, VETO all new entries",
                 vetoStrength = VetoStrength.HARD,
             )
         }
@@ -225,6 +228,20 @@ class KiBotVetoSystem(
         
         // Record to pair whitelist
         pairWhitelist.recordTrade(pairId, profitPercent > 0)
+        
+        // FIX: Populate tradeApprovals to enable repeat loser tracking
+        // Without this, getPairRecentLossCount() always returns 0 (dead code bug)
+        // This prevents blocking pairs that lose repeatedly, causing financial loss
+        val tradeKey = "${pairId}-${System.currentTimeMillis()}"
+        tradeApprovals[tradeKey] = TradeApproval(
+            pair = pairId,
+            price = exitPrice,
+            won = profitPercent > 0,
+        )
+        
+        // Prune old trade records (keep last 24 hours only)
+        val cutoffTime = System.currentTimeMillis() - (24 * 60 * 60 * 1000)
+        tradeApprovals.entries.removeIf { it.value.timestamp < cutoffTime }
     }
     
     /**

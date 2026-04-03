@@ -3,164 +3,273 @@ package com.kibot.android
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.viewModels
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import com.google.gson.Gson
-import com.kibot.android.data.BotStatus
-import com.kibot.android.ui.DashboardScreen
-import com.kibot.android.ui.DarkBackground
-import com.kibot.android.ui.SettingsScreen
-import com.kibot.android.util.PreferencesManager
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.kibot.android.data.*
+import com.kibot.android.ui.*
+import com.kibot.android.ui.theme.*
 import com.kibot.android.websocket.KiBotWebSocketClient
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.*
 
-class DashboardViewModel(private val prefManager: PreferencesManager) : ViewModel() {
-    private val _botStatus = MutableStateFlow<BotStatus?>(null)
-    val botStatus: StateFlow<BotStatus?> = _botStatus
+// Navigation destinations
+sealed class Screen(
+    val route: String,
+    val title: String,
+    val selectedIcon: ImageVector,
+    val unselectedIcon: ImageVector
+) {
+    object Dashboard : Screen("dashboard", "Dashboard", Icons.Filled.Dashboard, Icons.Outlined.Dashboard)
+    object Portfolio : Screen("portfolio", "Portfolio", Icons.Filled.PieChart, Icons.Outlined.PieChart)
+    object Ledger : Screen("ledger", "History", Icons.Filled.Receipt, Icons.Outlined.Receipt)
+}
 
-    private val _isConnected = MutableStateFlow(false)
-    val isConnected: StateFlow<Boolean> = _isConnected
-
-    private val _isLoading = MutableStateFlow(false)
-    val isLoading: StateFlow<Boolean> = _isLoading
-
-    private val _errorMessage = MutableStateFlow("")
-    val errorMessage: StateFlow<String> = _errorMessage
-
-    private var wsClient: KiBotWebSocketClient? = null
-
+class KiBotViewModel : ViewModel() {
+    private val wsClient = KiBotWebSocketClient()
+    
+    val botState: StateFlow<BotState> = wsClient.botState
+    val connectionStatus: StateFlow<ConnectionStatus> = wsClient.connectionStatus
+    val errors: SharedFlow<String> = wsClient.errors
+    
+    private val _currentScreen = MutableStateFlow<Screen>(Screen.Dashboard)
+    val currentScreen: StateFlow<Screen> = _currentScreen
+    
+    init {
+        connect()
+    }
+    
     fun connect() {
-        val config = prefManager.getServerConfig()
-        val wsUrl = config.getUrl()
-        
-        wsClient?.disconnect()
-        
-        wsClient = KiBotWebSocketClient(
-            wsUrl = wsUrl,
-            onStatusUpdate = { status ->
-                _botStatus.value = status
-                _isLoading.value = false
-                val gson = Gson()
-                prefManager.saveLastKnownStatus(gson.toJson(status))
-            },
-            onConnectionChange = { connected ->
-                _isConnected.value = connected
-                if (!connected) {
-                    _isLoading.value = false
-                }
-            },
-            onError = { error ->
-                _errorMessage.value = error
-            }
-        )
-        
-        wsClient?.connect()
+        wsClient.connect()
     }
-
+    
     fun disconnect() {
-        wsClient?.disconnect()
+        wsClient.disconnect()
     }
-
-    fun requestStatus() {
-        _isLoading.value = true
-        wsClient?.requestStatus()
+    
+    fun toggleBot(botName: String, enable: Boolean) {
+        wsClient.toggleBot(botName, enable)
     }
-
-    fun sendCommand(command: String) {
-        wsClient?.sendCommand(command)
+    
+    fun refresh() {
+        wsClient.requestFullState()
     }
-
+    
+    fun navigateTo(screen: Screen) {
+        _currentScreen.value = screen
+    }
+    
     override fun onCleared() {
         disconnect()
         super.onCleared()
     }
 }
 
-class DashboardViewModelFactory(private val prefManager: PreferencesManager) : ViewModelProvider.Factory {
-    @Suppress("UNCHECKED_CAST")
-    override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        return DashboardViewModel(prefManager) as T
+class MainActivity : ComponentActivity() {
+    
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        
+        setContent {
+            KiBotTheme {
+                KiBotApp()
+            }
+        }
     }
 }
 
-class MainActivity : ComponentActivity() {
-    private val viewModel: DashboardViewModel by viewModels {
-        DashboardViewModelFactory(PreferencesManager(this))
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun KiBotApp(
+    viewModel: KiBotViewModel = viewModel()
+) {
+    val botState by viewModel.botState.collectAsState()
+    val connectionStatus by viewModel.connectionStatus.collectAsState()
+    val currentScreen by viewModel.currentScreen.collectAsState()
+    
+    val snackbarHostState = remember { SnackbarHostState() }
+    
+    // Error handling
+    LaunchedEffect(Unit) {
+        viewModel.errors.collect { error ->
+            snackbarHostState.showSnackbar(
+                message = error,
+                duration = SnackbarDuration.Short
+            )
+        }
     }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContent {
-            MaterialTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = DarkBackground
-                ) {
-                    MainApp(viewModel = viewModel)
+    
+    Scaffold(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkBackground),
+        containerColor = DarkBackground,
+        snackbarHost = {
+            SnackbarHost(snackbarHostState) { data ->
+                Snackbar(
+                    snackbarData = data,
+                    containerColor = DarkSurfaceVariant,
+                    contentColor = TextPrimary,
+                    actionColor = KiBotBlue
+                )
+            }
+        },
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "KiBot",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        
+                        // Connection indicator
+                        ConnectionIndicator(
+                            status = connectionStatus,
+                            ping = botState.heartbeat.kidax.ping
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { viewModel.refresh() }) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh",
+                            tint = KiBotBlue
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = DarkBackground,
+                    titleContentColor = TextPrimary
+                )
+            )
+        },
+        bottomBar = {
+            NavigationBar(
+                containerColor = DarkSurface,
+                contentColor = TextPrimary
+            ) {
+                val screens = listOf(Screen.Dashboard, Screen.Portfolio, Screen.Ledger)
+                
+                screens.forEach { screen ->
+                    val selected = currentScreen == screen
+                    
+                    NavigationBarItem(
+                        selected = selected,
+                        onClick = { viewModel.navigateTo(screen) },
+                        icon = {
+                            Icon(
+                                imageVector = if (selected) screen.selectedIcon else screen.unselectedIcon,
+                                contentDescription = screen.title
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = screen.title,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = KiBotBlue,
+                            selectedTextColor = KiBotBlue,
+                            unselectedIconColor = TextSecondary,
+                            unselectedTextColor = TextSecondary,
+                            indicatorColor = KiBotBlue.copy(alpha = 0.15f)
+                        )
+                    )
                 }
             }
         }
-
-        viewModel.connect()
-    }
-
-    override fun onDestroy() {
-        viewModel.disconnect()
-        super.onDestroy()
+    ) { paddingValues ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+        ) {
+            AnimatedContent(
+                targetState = currentScreen,
+                transitionSpec = {
+                    fadeIn(animationSpec = tween(200)) togetherWith
+                            fadeOut(animationSpec = tween(200))
+                },
+                label = "screenTransition"
+            ) { screen ->
+                when (screen) {
+                    Screen.Dashboard -> {
+                        DashboardScreen(
+                            botState = botState,
+                            isConnected = connectionStatus == ConnectionStatus.CONNECTED,
+                            onToggleBot = { botName, enable ->
+                                viewModel.toggleBot(botName, enable)
+                            },
+                            onRefresh = { viewModel.refresh() }
+                        )
+                    }
+                    Screen.Portfolio -> {
+                        PortfolioScreen(
+                            botState = botState
+                        )
+                    }
+                    Screen.Ledger -> {
+                        LedgerScreen(
+                            trades = botState.trades
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
 @Composable
-fun MainApp(viewModel: DashboardViewModel) {
-    var currentScreen by remember { mutableStateOf("dashboard") }
+private fun ConnectionIndicator(
+    status: ConnectionStatus,
+    ping: Long
+) {
+    val (color, text) = when (status) {
+        ConnectionStatus.CONNECTED -> StatusOnline to "Online"
+        ConnectionStatus.CONNECTING -> StatusDegraded to "Connecting..."
+        ConnectionStatus.DISCONNECTED -> StatusOffline to "Offline"
+        ConnectionStatus.ERROR -> StatusOffline to "Error"
+    }
     
-    val botStatus by viewModel.botStatus.collectAsState()
-    val isConnected by viewModel.isConnected.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
-    val context = LocalContext.current
-
-    when (currentScreen) {
-        "dashboard" -> {
-            DashboardScreen(
-                status = botStatus,
-                isConnected = isConnected,
-                isLoading = isLoading,
-                onRefresh = { viewModel.requestStatus() },
-                onStartTrading = {
-                    viewModel.sendCommand("start")
-                },
-                onStopTrading = {
-                    viewModel.sendCommand("stop")
-                },
-                onSettingsClick = {
-                    currentScreen = "settings"
-                }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .background(
+                color = color.copy(alpha = 0.15f),
+                shape = MaterialTheme.shapes.small
             )
-        }
-
-        "settings" -> {
-            val prefManager = remember { PreferencesManager(context) }
-            val currentConfig = remember { prefManager.getServerConfig() }
-
-            SettingsScreen(
-                currentConfig = currentConfig,
-                onSave = { newConfig ->
-                    prefManager.saveServerConfig(newConfig)
-                    viewModel.connect()
-                    currentScreen = "dashboard"
-                },
-                onBack = {
-                    currentScreen = "dashboard"
-                }
-            )
-        }
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .background(color = color, shape = MaterialTheme.shapes.small)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = if (status == ConnectionStatus.CONNECTED && ping > 0) "${ping}ms" else text,
+            style = MaterialTheme.typography.labelSmall,
+            color = color
+        )
     }
 }

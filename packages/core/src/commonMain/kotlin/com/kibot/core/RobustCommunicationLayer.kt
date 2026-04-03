@@ -4,6 +4,7 @@ import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.coroutines.sync.Mutex
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * RobustCommunicationLayer - UDP with fallback, retry, queue
@@ -18,8 +19,11 @@ import java.util.concurrent.ConcurrentLinkedQueue
  */
 class RobustCommunicationLayer {
     private val messageQueue = ConcurrentLinkedQueue<QueuedMessage>()
-    private val deliveredMessages = mutableMapOf<String, Instant>()
-    private val failedAttempts = mutableMapOf<String, Int>()
+    // FIX: Changed from mutableMapOf to ConcurrentHashMap for thread safety
+    // These maps are accessed from multiple coroutines/threads (sendMessage, retryFailedMessages, getStatus)
+    // Non-thread-safe maps can cause ConcurrentModificationException, lost updates, or corrupted state
+    private val deliveredMessages = ConcurrentHashMap<String, Instant>()
+    private val failedAttempts = ConcurrentHashMap<String, Int>()
     private val udpMutex = Mutex()
     
     /**

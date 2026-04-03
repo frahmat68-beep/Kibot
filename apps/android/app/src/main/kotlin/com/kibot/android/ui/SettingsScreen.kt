@@ -14,7 +14,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kibot.android.data.ServerConfig
+import com.kibot.android.ui.theme.*
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     currentConfig: ServerConfig,
@@ -32,28 +34,21 @@ fun SettingsScreen(
             .background(DarkBackground)
     ) {
         // Header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(DarkSurfaceVariant)
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(
-                    Icons.Default.ArrowBack,
-                    contentDescription = "Back",
-                    tint = PrimaryBlue,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-            Text(
-                "Settings",
-                fontSize = 20.sp,
-                color = LightText,
-                modifier = Modifier.padding(start = 8.dp)
+        TopAppBar(
+            title = { Text("Settings", color = TextPrimary) },
+            navigationIcon = {
+                IconButton(onClick = onBack) {
+                    Icon(
+                        Icons.Default.ArrowBack,
+                        contentDescription = "Back",
+                        tint = KiBotBlue
+                    )
+                }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = DarkSurface
             )
-        }
+        )
 
         // Content
         Column(
@@ -63,8 +58,8 @@ fun SettingsScreen(
         ) {
             Text(
                 "Server Configuration",
-                fontSize = 16.sp,
-                color = LightText,
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
                 modifier = Modifier.padding(bottom = 16.dp)
             )
 
@@ -77,13 +72,13 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .padding(bottom = 12.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = LightText,
-                    unfocusedTextColor = LightText,
-                    focusedBorderColor = PrimaryBlue,
-                    unfocusedBorderColor = SecondaryText,
-                    focusedLabelColor = PrimaryBlue,
-                    unfocusedLabelColor = SecondaryText,
-                    cursorColor = PrimaryBlue
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary,
+                    focusedBorderColor = KiBotBlue,
+                    unfocusedBorderColor = TextSecondary,
+                    focusedLabelColor = KiBotBlue,
+                    unfocusedLabelColor = TextSecondary,
+                    cursorColor = KiBotBlue
                 ),
                 singleLine = true
             )
@@ -98,13 +93,13 @@ fun SettingsScreen(
                     .padding(bottom = 16.dp),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = LightText,
-                    unfocusedTextColor = LightText,
-                    focusedBorderColor = PrimaryBlue,
-                    unfocusedBorderColor = SecondaryText,
-                    focusedLabelColor = PrimaryBlue,
-                    unfocusedLabelColor = SecondaryText,
-                    cursorColor = PrimaryBlue
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary,
+                    focusedBorderColor = KiBotBlue,
+                    unfocusedBorderColor = TextSecondary,
+                    focusedLabelColor = KiBotBlue,
+                    unfocusedLabelColor = TextSecondary,
+                    cursorColor = KiBotBlue
                 ),
                 singleLine = true
             )
@@ -113,7 +108,7 @@ fun SettingsScreen(
             if (message.isNotEmpty()) {
                 Text(
                     message,
-                    fontSize = 12.sp,
+                    style = MaterialTheme.typography.bodySmall,
                     color = if (message.contains("saved", ignoreCase = true)) ProfitGreen else LossRed,
                     modifier = Modifier.padding(bottom = 12.dp)
                 )
@@ -140,7 +135,7 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                colors = ButtonDefaults.buttonColors(containerColor = KiBotBlue),
                 enabled = !isSaving
             ) {
                 if (isSaving) {
@@ -156,9 +151,9 @@ fun SettingsScreen(
 
             // Default Notice
             Text(
-                "Default: localhost:8787",
-                fontSize = 12.sp,
-                color = SecondaryText,
+                "Default: 213.35.118.26:8787",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextTertiary,
                 modifier = Modifier.padding(top = 16.dp)
             )
         }

@@ -4142,7 +4142,13 @@ class MacEngineDaemon(
         if (leadLagListenerReady.get()) return
         runCatching {
             val socket = DatagramSocket(config.leadLagUdpListenPort)
-            socket.soTimeout = 5
+            // FIX: Increased timeout from 5ms to 50ms to prevent packet drops
+            // 5ms was too tight - under load or network jitter, valid packets were being dropped
+            // causing missed trading signals and potential financial loss
+            socket.soTimeout = 50
+            // FIX: Set receive buffer to 8MB to handle burst traffic from KiNance
+            // Default buffer (~64KB-256KB) can overflow during high-frequency signal bursts
+            socket.receiveBufferSize = 8 * 1024 * 1024
             leadLagListenerSocket = socket
             leadLagListenerReady.set(true)
             // suppressed

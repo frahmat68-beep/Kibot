@@ -77,6 +77,12 @@ class LatePumpEntryStrategy(
             history.peakPrice = currentPrice
         }
         
+        // FIX: Guard against division by zero - peakPrice could be 0 if initialized with bad data
+        // This prevents NaN/Infinity which can corrupt trade decisions and cause financial loss
+        if (history.peakPrice <= 0.0) {
+            history.peakPrice = currentPrice
+        }
+        
         // Calculate pullback from peak
         val pullbackPct = ((history.peakPrice - currentPrice) / history.peakPrice) * 100.0
         
