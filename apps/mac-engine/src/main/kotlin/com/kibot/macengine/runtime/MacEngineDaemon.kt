@@ -66,6 +66,7 @@ import com.kibot.shared.models.SyncHealth
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -622,70 +623,71 @@ class MacEngineDaemon(
     private var pnlResetAnchor = loadPnlResetAnchor()
     private var lastPnlResetAnchorSignature: String? = null
     private var activeLeadLagCallout: ActiveLeadLagCallout? = null
-    private val pendingKinanceSignalsByTrace = mutableMapOf<String, TrinityPendingSignal>()
-    private val pendingKibotVetosByTrace = mutableMapOf<String, TrinityPendingSignal>()
-    private val forcedSellTraceByPair = mutableMapOf<String, ForcedSellSignal>()
-    private val sellWallFirstSeenAtByPair = mutableMapOf<String, Instant>()
-    private val leadLagSentAtByPair = linkedMapOf<String, Instant>()
+    // Use ConcurrentHashMap for thread-safe access from UDP listener and main loop
+    private val pendingKinanceSignalsByTrace = java.util.concurrent.ConcurrentHashMap<String, TrinityPendingSignal>()
+    private val pendingKibotVetosByTrace = java.util.concurrent.ConcurrentHashMap<String, TrinityPendingSignal>()
+    private val forcedSellTraceByPair = java.util.concurrent.ConcurrentHashMap<String, ForcedSellSignal>()
+    private val sellWallFirstSeenAtByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    private val leadLagSentAtByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
     private enum class CoinClass { NAGA, MID, MICIN }
-    private val leadLagOriginSentAtByPair = linkedMapOf<String, Long>()
-    private val leadLagReceivedAtByPair = linkedMapOf<String, Instant>()
-    private val leadLagEntrySubmittedAtByPair = linkedMapOf<String, Instant>()
-    private val leadLagTraceByPair = linkedMapOf<String, String>()
-    private val leadLagDetectedAtByPair = linkedMapOf<String, Long>()
-    private val leadLagStatsByClass = mutableMapOf<CoinClass, LeadLagClassStats>()
+    private val leadLagOriginSentAtByPair = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val leadLagReceivedAtByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    private val leadLagEntrySubmittedAtByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    private val leadLagTraceByPair = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val leadLagDetectedAtByPair = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val leadLagStatsByClass = java.util.concurrent.ConcurrentHashMap<CoinClass, LeadLagClassStats>()
     private var lastLeadLagAlarmAt: Instant? = null
-    private val leadLagMicroPulseByPair = mutableMapOf<String, ArrayDeque<PairMicroPulseSample>>()
-    private val leadLagGradualPulseByPair = mutableMapOf<String, ArrayDeque<PairMicroPulseSample>>()
-    private val leadLagTrailingPeakBidByPair = mutableMapOf<String, Double>()
-    private val hyperAggressivePulseByPair = mutableMapOf<String, ArrayDeque<PairMicroPulseSample>>()
-    private val hyperAggressiveTrackedEntryAtByPair = mutableMapOf<String, Instant>()
-    private val hyperAggressivePeakBidByPair = mutableMapOf<String, Double>()
-    private val localAutonomyPeakBidByPair = mutableMapOf<String, Double>()
-    private val localAutonomyTrailingFloorByPair = mutableMapOf<String, LocalTrailingSnapshot>()
-    private val localAutonomyTrailingFloorLogByPair = mutableMapOf<String, Double>()
-    private val historicalPeakCacheByPair = mutableMapOf<String, HistoricalPeakCacheEntry>()
-    private val candleHistoryGuardCacheByPair = mutableMapOf<String, CandleHistoryGuardCacheEntry>()
-    private val multiTimeframeQuoteCacheByPair = mutableMapOf<String, MultiTimeframeQuoteCacheEntry>()
-    private val spoofPulseByPair = mutableMapOf<String, ArrayDeque<OrderBookPulseSample>>()
-    private val spoofSuspiciousUntilByPair = mutableMapOf<String, Instant>()
+    private val leadLagMicroPulseByPair = java.util.concurrent.ConcurrentHashMap<String, ArrayDeque<PairMicroPulseSample>>()
+    private val leadLagGradualPulseByPair = java.util.concurrent.ConcurrentHashMap<String, ArrayDeque<PairMicroPulseSample>>()
+    private val leadLagTrailingPeakBidByPair = java.util.concurrent.ConcurrentHashMap<String, Double>()
+    private val hyperAggressivePulseByPair = java.util.concurrent.ConcurrentHashMap<String, ArrayDeque<PairMicroPulseSample>>()
+    private val hyperAggressiveTrackedEntryAtByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    private val hyperAggressivePeakBidByPair = java.util.concurrent.ConcurrentHashMap<String, Double>()
+    private val localAutonomyPeakBidByPair = java.util.concurrent.ConcurrentHashMap<String, Double>()
+    private val localAutonomyTrailingFloorByPair = java.util.concurrent.ConcurrentHashMap<String, LocalTrailingSnapshot>()
+    private val localAutonomyTrailingFloorLogByPair = java.util.concurrent.ConcurrentHashMap<String, Double>()
+    private val historicalPeakCacheByPair = java.util.concurrent.ConcurrentHashMap<String, HistoricalPeakCacheEntry>()
+    private val candleHistoryGuardCacheByPair = java.util.concurrent.ConcurrentHashMap<String, CandleHistoryGuardCacheEntry>()
+    private val multiTimeframeQuoteCacheByPair = java.util.concurrent.ConcurrentHashMap<String, MultiTimeframeQuoteCacheEntry>()
+    private val spoofPulseByPair = java.util.concurrent.ConcurrentHashMap<String, ArrayDeque<OrderBookPulseSample>>()
+    private val spoofSuspiciousUntilByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
     private val indodaxHistoryHttpClient: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(3))
         .build()
-    private val hyperAggressiveEntryReasonByPair = mutableMapOf<String, HyperTargetKind>()
-    private val partialTakeProfitExecutedByPair = mutableMapOf<String, Boolean>()
+    private val hyperAggressiveEntryReasonByPair = java.util.concurrent.ConcurrentHashMap<String, HyperTargetKind>()
+    private val partialTakeProfitExecutedByPair = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
     private var lastSuperSexyTarget: com.kibot.shared.models.PairId? = null
     private val hyperConfig = config.hyperAggressiveConfig
-    private var dynamicSectorCorrelationBook: Map<String, Set<String>> = emptyMap()
-    private var aListTunnelPairs: Set<String> = emptySet()
-    private var indodaxFocusBases: Set<String> = emptySet()
-    private var indodaxFocusFetchedAt: Instant? = null
-    private val dynamicVipUntilByPair = mutableMapOf<String, Instant>()
-    private var lastWhyNotBuyAt: Instant? = null
-    private var lastWhyNotBuySignature: String? = null
-    private val sinBinUntilByPair = mutableMapOf<String, Instant>()
+    @Volatile private var dynamicSectorCorrelationBook: Map<String, Set<String>> = emptyMap()
+    @Volatile private var aListTunnelPairs: Set<String> = emptySet()
+    @Volatile private var indodaxFocusBases: Set<String> = emptySet()
+    @Volatile private var indodaxFocusFetchedAt: Instant? = null
+    private val dynamicVipUntilByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    @Volatile private var lastWhyNotBuyAt: Instant? = null
+    @Volatile private var lastWhyNotBuySignature: String? = null
+    private val sinBinUntilByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
     private val crashGuardTriggerTimeline = ArrayDeque<Instant>()
-    private var globalCooldownUntil: Instant? = null
-    private val dustQuarantinePairs = mutableSetOf<String>()
-    private val kidaxActivePositionsByPair = mutableMapOf<String, ActivePositionWire>()
-    private val emergencyWarningCooldownByPair = mutableMapOf<String, Instant>()
-    private var aiRuntimeProviderStatusLabel: String? = null
-    private var aiRuntimeProviderStatusAt: Instant? = null
-    private var holdingsFocusToggle = false
-    private var lastActivePositionsBroadcastAt: Instant? = null
-    private var lastLeaseLockdownAttemptAt: Instant? = null
+    @Volatile private var globalCooldownUntil: Instant? = null
+    private val dustQuarantinePairs = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val kidaxActivePositionsByPair = java.util.concurrent.ConcurrentHashMap<String, ActivePositionWire>()
+    private val emergencyWarningCooldownByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    @Volatile private var aiRuntimeProviderStatusLabel: String? = null
+    @Volatile private var aiRuntimeProviderStatusAt: Instant? = null
+    @Volatile private var holdingsFocusToggle = false
+    @Volatile private var lastActivePositionsBroadcastAt: Instant? = null
+    @Volatile private var lastLeaseLockdownAttemptAt: Instant? = null
     private val daemonStartedAt: Instant = Clock.System.now()
-    private val lastTrinityHeartbeatByBotId = mutableMapOf<String, Instant>()
-    private var lastTrinityHeartbeatSentAt: Instant? = null
+    private val lastTrinityHeartbeatByBotId = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    @Volatile private var lastTrinityHeartbeatSentAt: Instant? = null
     private val udpSequenceCounter = AtomicInteger(1)
-    private val udpLastSequenceBySender = mutableMapOf<String, Int>()
-    private val udpRecentDedupKeys = linkedMapOf<String, Instant>()
-    private val udpExecutionPrewarmByPair = mutableMapOf<String, UdpExecutionPrewarm>()
-    private var trinityHeartbeatSafeModeReason: String? = null
-    private var startupRecoveryAudited = false
-    private var lastLocalPositionStateSignature: String? = null
-    private var lastToxicFlowStateSignature: String? = null
-    private var localRecoveryFallbackAnnounced = false
+    private val udpLastSequenceBySender = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val udpRecentDedupKeys = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    private val udpExecutionPrewarmByPair = java.util.concurrent.ConcurrentHashMap<String, UdpExecutionPrewarm>()
+    @Volatile private var trinityHeartbeatSafeModeReason: String? = null
+    @Volatile private var startupRecoveryAudited = false
+    @Volatile private var lastLocalPositionStateSignature: String? = null
+    @Volatile private var lastToxicFlowStateSignature: String? = null
+    @Volatile private var localRecoveryFallbackAnnounced = false
     private val toxicFlowStateByPair = loadToxicFlowState().entries.associateBy { it.pairId.lowercase() }.toMutableMap()
     private val hiveExtraUdpPeers: List<Pair<String, Int>> = run {
         val raw = System.getenv("KIBOT_HIVE_UDP_PEERS")
@@ -2877,6 +2879,13 @@ class MacEngineDaemon(
         }
     }
 
+    private fun <T> trimToMaxSize(map: java.util.concurrent.ConcurrentHashMap<String, T>, maxSize: Int) {
+        while (map.size > maxSize) {
+            val oldest = map.keys().asIterator().let { if (it.hasNext()) it.next() else null } ?: return
+            map.remove(oldest)
+        }
+    }
+
     private fun dynamicTrailingStopPct(gainPct: Double, currentPrice: Double? = null): Double {
         val base = when {
             gainPct >= 20.0 -> 4.2
@@ -3152,9 +3161,17 @@ class MacEngineDaemon(
         } else {
             null
         }
-        val resolvedBalances = balancesDeferred?.await() ?: cachedBalances
-        val resolvedOpenOrders = openOrdersDeferred?.await() ?: cachedOpenOrders
-        val rawMarketQuotes = marketQuotesDeferred?.await().orEmpty()
+        // Use withTimeoutOrNull to prevent indefinite blocking if exchange hangs
+        val awaitTimeoutMs = 15000L  // 15 second timeout for exchange requests
+        val resolvedBalances = balancesDeferred?.let { 
+            withTimeoutOrNull(awaitTimeoutMs) { it.await() } 
+        } ?: cachedBalances
+        val resolvedOpenOrders = openOrdersDeferred?.let { 
+            withTimeoutOrNull(awaitTimeoutMs) { it.await() } 
+        } ?: cachedOpenOrders
+        val rawMarketQuotes = marketQuotesDeferred?.let { 
+            withTimeoutOrNull(awaitTimeoutMs) { it.await() } 
+        }.orEmpty()
         val resolvedMarketQuotes = enrichRuntimeMarketQuotes(
             now = now,
             marketQuotes = rawMarketQuotes,
@@ -4137,7 +4154,8 @@ class MacEngineDaemon(
     private suspend fun pollLeadLagUdpCommands(now: Instant) {
         val socket = leadLagListenerSocket ?: return
         trimUdpCommandCaches(now)
-        repeat(4) {
+        // Process up to 200 packets per poll to drain buffer (heartbeat at 100ms = ~80 packets per 8s poll)
+        repeat(200) {
             val buffer = ByteArray(4096)
             val packet = DatagramPacket(buffer, buffer.size)
             try {

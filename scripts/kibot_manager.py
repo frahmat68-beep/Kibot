@@ -4,15 +4,28 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import socket
+import sys
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
-from xml.etree import ElementTree as ET
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+
+# Use defusedxml to prevent XXE attacks
+try:
+    import defusedxml.ElementTree as ET
+except ImportError:
+    from xml.etree import ElementTree as ET
+    print("[KIBOT][WARN] defusedxml not installed, using stdlib xml (XXE risk)", flush=True)
+
+# Global lock for thread-safe access to shared state
+_state_lock = threading.RLock()
+_shutdown_event = threading.Event()
+_main_socket: Optional[socket.socket] = None
 
 
 def _load_dotenv_if_exists() -> None:
@@ -145,7 +158,10 @@ INDODAX_SUMMARIES_URL = os.getenv("INDODAX_SUMMARIES_URL", "https://indodax.com/
 INDODAX_TICKER_CACHE_TTL_SEC = int(os.getenv("KIBOT_INDODAX_TICKER_CACHE_TTL_SEC", "600"))
 EMERGENCY_SELL_NEGATIVE_PNL_PCT = float(os.getenv("KIBOT_EMERGENCY_SELL_NEGATIVE_PNL_PCT", "-2.2"))
 EMERGENCY_SELL_COOLDOWN_SEC = int(os.getenv("KIBOT_EMERGENCY_SELL_COOLDOWN_SEC", "20"))
+# Maximum size for unbounded caches
+_SEEN_NEWS_IDS_MAX_SIZE = int(os.getenv("KIBOT_SEEN_NEWS_IDS_MAX_SIZE", "5000"))
 _seen_news_ids: set[str] = set()
+_seen_news_ids_timestamps: Dict[str, float] = {}  # Track when IDs were added for TTL cleanup
 _indodax_ticker_cache: set[str] = set()
 _indodax_ticker_cache_at: float = 0.0
 _coingecko_trending_cache: Dict[str, Any] = {"coins": [], "fetched_at_epoch_ms": 0}
@@ -285,13 +301,14 @@ def _append_runtime_event(kind: str, detail: Dict[str, Any]) -> None:
 
 def _heartbeat_loop() -> None:
     interval = max(0.05, MANAGER_HEARTBEAT_INTERVAL_SEC)
-    while True:
+    while not _shutdown_event.is_set():
         try:
             _emit_trinity_heartbeat()
             _append_runtime_event("trinity_heartbeat_emit", {"sender": "kibot"})
         except Exception as error:
             print(f"[KIBOT][HEARTBEAT][WARN] emit failed reason={error}", flush=True)
-        time.sleep(interval)
+        if _shutdown_event.wait(timeout=interval):
+            break
 
 
 def _write_runtime_note(*, force: bool = False) -> None:
@@ -497,7 +514,10 @@ def _call_openai_compatible(
         ],
         "temperature": 0.1,
     }
-    response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_sec)
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_sec)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        raise RuntimeError(f"{provider} network error: {type(e).__name__}")
     if response.status_code >= 300:
         raise RuntimeError(f"{provider} status={response.status_code} body={response.text[:240]}")
     return _extract_assistant_text(response.json() or {})
@@ -513,7 +533,12 @@ def _call_gemini(
     if not GEMINI_API_KEY:
         raise RuntimeError("gemini missing key")
     base = GEMINI_API_URL.rstrip("/")
-    url = f"{base}/models/{model}:generateContent?key={GEMINI_API_KEY}"
+    # Use API key in header instead of URL to avoid leaking in logs
+    url = f"{base}/models/{model}:generateContent"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
+    }
     payload = {
         "contents": [
             {
@@ -528,7 +553,10 @@ def _call_gemini(
             "responseMimeType": "text/plain",
         },
     }
-    response = requests.post(url, json=payload, timeout=timeout_sec)
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        raise RuntimeError(f"gemini network error: {type(e).__name__}")
     if response.status_code >= 300:
         raise RuntimeError(f"gemini status={response.status_code} body={response.text[:240]}")
     return _extract_assistant_text(response.json() or {})
@@ -555,7 +583,10 @@ def _call_cohere(
         ],
         "temperature": 0.1,
     }
-    response = requests.post(COHERE_API_URL, headers=headers, json=payload, timeout=timeout_sec)
+    try:
+        response = requests.post(COHERE_API_URL, headers=headers, json=payload, timeout=timeout_sec)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        raise RuntimeError(f"cohere network error: {type(e).__name__}")
     if response.status_code >= 300:
         raise RuntimeError(f"cohere status={response.status_code} body={response.text[:240]}")
     return _extract_assistant_text(response.json() or {})
@@ -1263,13 +1294,38 @@ def _extract_symbol_from_text(text: str) -> str:
     return ""
 
 
+def _cleanup_seen_news_ids() -> None:
+    """Remove old entries from _seen_news_ids to prevent unbounded memory growth."""
+    global _seen_news_ids, _seen_news_ids_timestamps
+    now = time.time()
+    ttl_sec = 3600 * 24  # 24 hours TTL
+    with _state_lock:
+        expired = [k for k, ts in _seen_news_ids_timestamps.items() if (now - ts) > ttl_sec]
+        for k in expired:
+            _seen_news_ids.discard(k)
+            _seen_news_ids_timestamps.pop(k, None)
+        # Also enforce max size limit
+        if len(_seen_news_ids) > _SEEN_NEWS_IDS_MAX_SIZE:
+            # Remove oldest entries
+            sorted_by_time = sorted(_seen_news_ids_timestamps.items(), key=lambda x: x[1])
+            to_remove = len(_seen_news_ids) - _SEEN_NEWS_IDS_MAX_SIZE + 100  # Remove extra buffer
+            for k, _ in sorted_by_time[:to_remove]:
+                _seen_news_ids.discard(k)
+                _seen_news_ids_timestamps.pop(k, None)
+
+
 def _scan_rss_and_initiate_detector(feed_url: str, source: str) -> None:
+    global _seen_news_ids, _seen_news_ids_timestamps
     try:
         response = requests.get(feed_url, timeout=TIMEOUT)
         if response.status_code != 200:
             return
         root = ET.fromstring(response.text)
-    except Exception:
+    except (requests.exceptions.RequestException, ET.ParseError) as e:
+        print(f"[KIBOT][WARN] RSS parse/fetch error source={source} reason={type(e).__name__}", flush=True)
+        return
+    except Exception as e:
+        print(f"[KIBOT][WARN] RSS unexpected error source={source} reason={e}", flush=True)
         return
     items = root.findall(".//item")[:12]
     for item in items:
@@ -1277,9 +1333,11 @@ def _scan_rss_and_initiate_detector(feed_url: str, source: str) -> None:
         link = (item.findtext("link") or "").strip()
         desc = (item.findtext("description") or "").strip()
         identity = f"{source}|{title}|{link}"
-        if identity in _seen_news_ids:
-            continue
-        _seen_news_ids.add(identity)
+        with _state_lock:
+            if identity in _seen_news_ids:
+                continue
+            _seen_news_ids.add(identity)
+            _seen_news_ids_timestamps[identity] = time.time()
         lower_text = f"{title} {desc}".lower()
         if "list" not in lower_text and "listing" not in lower_text and "new coin" not in lower_text:
             continue
@@ -1314,10 +1372,21 @@ def _scan_rss_and_initiate_detector(feed_url: str, source: str) -> None:
 
 
 def _news_scanner_loop() -> None:
-    while True:
-        _scan_rss_and_initiate_detector(BINANCE_ANNOUNCEMENT_RSS, "binance_rss")
-        _scan_rss_and_initiate_detector(COINGECKO_NEWS_FEED, "coingecko_rss")
-        time.sleep(max(30, NEWS_SCAN_INTERVAL_SEC))
+    cleanup_counter = 0
+    while not _shutdown_event.is_set():
+        try:
+            _scan_rss_and_initiate_detector(BINANCE_ANNOUNCEMENT_RSS, "binance_rss")
+            _scan_rss_and_initiate_detector(COINGECKO_NEWS_FEED, "coingecko_rss")
+            # Cleanup seen_news_ids periodically (every ~10 iterations)
+            cleanup_counter += 1
+            if cleanup_counter >= 10:
+                _cleanup_seen_news_ids()
+                cleanup_counter = 0
+        except Exception as e:
+            print(f"[KIBOT][WARN] news_scanner_loop error: {e}", flush=True)
+        # Use event.wait for graceful shutdown
+        if _shutdown_event.wait(timeout=max(30, NEWS_SCAN_INTERVAL_SEC)):
+            break
 
 
 def _normalize_sector_map(raw_obj: Any) -> Dict[str, list[str]]:
@@ -1450,15 +1519,23 @@ def _broadcast_dynamic_correlation_map() -> None:
 
 
 def _correlation_loop() -> None:
-    while True:
-        _broadcast_dynamic_correlation_map()
-        time.sleep(max(300, CORRELATION_INTERVAL_SEC))
+    while not _shutdown_event.is_set():
+        try:
+            _broadcast_dynamic_correlation_map()
+        except Exception as e:
+            print(f"[KIBOT][WARN] correlation_loop error: {e}", flush=True)
+        if _shutdown_event.wait(timeout=max(300, CORRELATION_INTERVAL_SEC)):
+            break
 
 
 def _coingecko_trending_loop() -> None:
-    while True:
-        _refresh_coingecko_trending_cache()
-        time.sleep(max(180, COINGECKO_TRENDING_INTERVAL_SEC))
+    while not _shutdown_event.is_set():
+        try:
+            _refresh_coingecko_trending_cache()
+        except Exception as e:
+            print(f"[KIBOT][WARN] coingecko_trending_loop error: {e}", flush=True)
+        if _shutdown_event.wait(timeout=max(180, COINGECKO_TRENDING_INTERVAL_SEC)):
+            break
 
 
 def _pair_symbol(pair: str) -> str:
@@ -1607,7 +1684,29 @@ def _process_active_positions(msg: Dict[str, Any]) -> None:
             )
 
 
+def _signal_handler(signum: int, frame: Any) -> None:
+    """Handle shutdown signals gracefully."""
+    global _main_socket
+    sig_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+    print(f"\n[KIBOT][SHUTDOWN] Received {sig_name}, initiating graceful shutdown...", flush=True)
+    _shutdown_event.set()
+    # Close main socket to unblock recvfrom
+    if _main_socket:
+        try:
+            _main_socket.close()
+        except Exception:
+            pass
+    _append_runtime_event("manager_shutdown", {"signal": sig_name})
+    _write_runtime_note(force=True)
+
+
 def main() -> None:
+    global _main_socket
+    
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+    
     _ensure_env()
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
     _write_json_file(PROVIDER_STATE_PATH, _provider_runtime_state)
@@ -1631,27 +1730,53 @@ def main() -> None:
     gecko_thread.start()
     heartbeat_thread = threading.Thread(target=_heartbeat_loop, name="kibot-heartbeat-loop", daemon=True)
     heartbeat_thread.start()
+    
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind((UDP_BIND_HOST, UDP_BIND_PORT))
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "service": "kibot_manager_udp_veto",
-                "bind": f"{UDP_BIND_HOST}:{UDP_BIND_PORT}",
-                "kidax_target": f"{KIDAX_UDP_HOST}:{KIDAX_UDP_PORT}",
-                "kinance_target": f"{KINANCE_UDP_HOST}:{KINANCE_UDP_PORT}" if KINANCE_UDP_HOST else None,
-            },
-            ensure_ascii=False,
+    # Allow socket reuse for quick restarts
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    _main_socket = sock
+    try:
+        sock.bind((UDP_BIND_HOST, UDP_BIND_PORT))
+        # Set socket timeout to allow periodic shutdown checks
+        sock.settimeout(5.0)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "service": "kibot_manager_udp_veto",
+                    "bind": f"{UDP_BIND_HOST}:{UDP_BIND_PORT}",
+                    "kidax_target": f"{KIDAX_UDP_HOST}:{KIDAX_UDP_PORT}",
+                    "kinance_target": f"{KINANCE_UDP_HOST}:{KINANCE_UDP_PORT}" if KINANCE_UDP_HOST else None,
+                },
+                ensure_ascii=False,
+            )
         )
-    )
-    while True:
-        raw, _ = sock.recvfrom(65535)
+        while not _shutdown_event.is_set():
+            try:
+                raw, _ = sock.recvfrom(65535)
+                msg = json.loads(raw.decode("utf-8"))
+                _process_signal(msg)
+            except socket.timeout:
+                # Normal timeout, check shutdown event
+                continue
+            except OSError as e:
+                if _shutdown_event.is_set():
+                    break
+                print(f"[KIBOT][UDP][ERROR] socket error: {e}", flush=True)
+            except json.JSONDecodeError as e:
+                print(f"[KIBOT][UDP][ERROR] JSON parse failed: {e}", flush=True)
+            except Exception as error:
+                print(f"[KIBOT][UDP][ERROR] process failed reason={error}", flush=True)
+    finally:
+        print("[KIBOT][SHUTDOWN] Closing UDP socket...", flush=True)
         try:
-            msg = json.loads(raw.decode("utf-8"))
-            _process_signal(msg)
-        except Exception as error:
-            print(f"[KIBOT][UDP][ERROR] parse/process failed reason={error}", flush=True)
+            sock.close()
+        except Exception:
+            pass
+        _main_socket = None
+    
+    print("[KIBOT][SHUTDOWN] KiBot Manager stopped gracefully.", flush=True)
+    sys.exit(0)
 
 
 if __name__ == "__main__":

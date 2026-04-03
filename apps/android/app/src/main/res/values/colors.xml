@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary_blue">#0066CC</color>
+    <color name="accent_orange">#FF9900</color>
+    <color name="profit_green">#00C851</color>
+    <color name="loss_red">#ff4444</color>
+    <color name="dark_background">#121212</color>
+    <color name="dark_surface">#1E1E1E</color>
+    <color name="dark_surface_variant">#2C2C2C</color>
+    <color name="light_text">#FFFFFF</color>
+    <color name="secondary_text">#B0B0B0</color>
+</resources>

@@ -1,0 +1,438 @@
+package com.kibot.core
+
+import kotlinx.datetime.Clock
+import kotlinx.datetime.Instant
+import kotlin.math.abs
+
+/**
+ * KiBotVetoSystem - KiBot adalah APPROVAL AUTHORITY untuk semua trades
+ * 
+ * Filosofi:
+ * - Kinance: "Ada pump signal coin ABC di Binance!"
+ * - KiDax: "Oke, gw mau beli ABC_IDR"
+ * - KiBot: "WAIT. Check risk dulu... OK APPROVE! BUY!"
+ * 
+ * Phase 1 Integration (70/30 Hybrid Strategy):
+ * 1. PairWhitelistManager for pair filtering
+ * 2. CapitalAllocationManager for 70/30 split
+ * 3. OrderExecutionStrategy for order type recommendations
+ * 4. FeeCalculator for profit target calculations
+ * 
+ * KiBot vetoers:
+ * 1. Entry from KiDax buy signals + whitelist check
+ * 2. Exit from KiDax sell signals  
+ * 3. Entry from Kinance pump signals
+ * 4. Risk limits (daily loss, leverage, concentration)
+ * 5. Capital allocation (70% stable / 30% aggressive)
+ * 6. Position quality (avoid losers)
+ */
+class KiBotVetoSystem(
+    private val pairWhitelist: PairWhitelistManager = PairWhitelistManager(),
+    private val capitalAllocator: CapitalAllocationManager = CapitalAllocationManager(),
+    private val orderStrategy: OrderExecutionStrategy = OrderExecutionStrategy(),
+) {
+    private val tradeApprovals = mutableMapOf<String, TradeApproval>()
+    private val recentVetoes = mutableListOf<VetoRecord>()
+    
+    /**
+     * KiDax reports: "I want to BUY pair X"
+     * KiBot APPROVES or VETOES
+     * 
+     * Phase 1: Now includes whitelist check + capital allocation
+     */
+    fun evaluateBuyOrder(
+        pairId: String,
+        price: Double,
+        quantity: Double,
+        costIdr: Double,
+        currentEquityIdr: Double,
+        currentLossPct: Double,
+        capitalAvailableIdr: Double,
+        positionStrategy: PositionStrategy,
+        spreadPercent: Double = 0.01,
+        volumeScore: Double = 0.5,
+        volatility: Double = 1.0,
+    ): BuyApproval {
+        // Rule 0: PHASE 1 - Whitelist check (soft filtering)
+        if (!pairWhitelist.isPairWhitelisted(pairId)) {
+            return BuyApproval(
+                approved = false,
+                reason = "PAIR_BLACKLISTED",
+                message = "$pairId failed whitelist check (proven loser)",
+                vetoStrength = VetoStrength.HARD,
+            )
+        }
+        
+        // Rule 1: Daily loss limit
+        if (currentLossPct < -10.0) {
+            return BuyApproval(
+                approved = false,
+                reason = "DAILY_LOSS_LIMIT",
+                message = "Daily loss > 10%, VETO all new entries",
+                vetoStrength = VetoStrength.HARD,
+            )
+        }
+        
+        // Rule 2: Capital allocation check (PHASE 1)
+        val isAnomalyCoin = positionStrategy == PositionStrategy.ANOMALY
+        val allocResult = capitalAllocator.allocate(isAnomalyCoin, costIdr)
+        
+        if (allocResult.allocatedIdr < costIdr) {
+            val message = buildString {
+                append("Insufficient capital in ")
+                append(allocResult.bucketType)
+                append(" bucket (")
+                append(allocResult.currentAvailable.toLong())
+                append(" IDR available)")
+            }
+            return BuyApproval(
+                approved = false,
+                reason = "INSUFFICIENT_CAPITAL_ALLOCATED",
+                message = message,
+                vetoStrength = VetoStrength.HARD,
+            )
+        }
+        
+        // Rule 3: Avoid repeat losers (if pair has 3+ losses recently)
+        val pairLossCount = getPairRecentLossCount(pairId)
+        if (pairLossCount >= 3) {
+            return BuyApproval(
+                approved = false,
+                reason = "REPEAT_LOSER",
+                message = "$pairId lost $pairLossCount times recently",
+                vetoStrength = VetoStrength.HARD,
+            )
+        }
+        
+        // Rule 4: Risk concentration (don't put > 15% in one coin)
+        val concentrationRatio = costIdr / currentEquityIdr
+        if (concentrationRatio > 0.15 && positionStrategy == PositionStrategy.STABLE) {
+            return BuyApproval(
+                approved = false,
+                reason = "CONCENTRATION_LIMIT",
+                message = "Would be ${(concentrationRatio * 100).toInt()}% of portfolio",
+                vetoStrength = VetoStrength.SOFT,
+            )
+        }
+        
+        // Rule 5: In recovery mode, be more conservative
+        if (currentLossPct < -5.0) {
+            return BuyApproval(
+                approved = true,
+                reason = "APPROVED_RECOVERY_MODE",
+                message = "Entry approved but reduced size (recovery mode, loss ${currentLossPct}%)",
+                vetoStrength = VetoStrength.NONE,
+                sizeAdjustmentMultiplier = 0.6,
+            )
+        }
+        
+        // Get recommended order type (PHASE 1)
+        val pumpConfidence = if (isAnomalyCoin) 0.8 else 0.3
+        val orderRec = orderStrategy.recommendEntryOrderType(
+            isAnomalyCoin = isAnomalyCoin,
+            pumpConfidence = pumpConfidence,
+            spreadPercent = spreadPercent,
+            volumeScore = volumeScore
+        )
+        
+        // Get recommended profit target (PHASE 1)
+        val profitTarget = orderStrategy.recommendProfitTarget(isAnomalyCoin, volumeScore, volatility)
+        
+        // APPROVED!
+        return BuyApproval(
+            approved = true,
+            reason = "APPROVED",
+            message = buildString {
+                append("Buy $pairId approved | ")
+                append(orderRec.orderType)
+                append(" order | Target: ${(profitTarget * 100).toInt()}%")
+            },
+            vetoStrength = VetoStrength.NONE,
+            recommendedOrderType = orderRec.orderType,
+            recommendedProfitTargetPercent = profitTarget,
+            allocatedCapitalIdr = allocResult.allocatedIdr,
+        )
+    }
+    
+    /**
+     * KiDax reports: "I want to SELL pair X"
+     * KiBot APPROVES or forces hold
+     */
+    fun evaluateSellOrder(
+        pairId: String,
+        currentPrice: Double,
+        entryPrice: Double,
+        profitPct: Double,
+        holdMinutes: Double,
+        reason: String,
+        currentEquityIdr: Double,
+        currentLossPct: Double,
+    ): SellApproval {
+        val profitIdr = (currentPrice - entryPrice) * 100.0  // Rough calc
+        
+        // Rule 1: Prevent panic sell on small loss
+        if (profitPct < -2.0 && holdMinutes < 30) {
+            // Let it stay, might recover
+            return SellApproval(
+                approved = false,
+                reason = "TOO_EARLY_EXIT",
+                message = "Exit too early, ${holdMinutes.toInt()}min held, ${profitPct}% loss. Hold longer.",
+                vetoStrength = VetoStrength.SOFT,
+                suggestedHoldMinutes = 60,
+            )
+        }
+        
+        // Rule 2: Allow exit if loss > 3% (cut losers)
+        if (profitPct < -3.0) {
+            // Record as loss for whitelist
+            pairWhitelist.recordTrade(pairId, won = false)
+            
+            return SellApproval(
+                approved = true,
+                reason = "APPROVED_CUT_LOSER",
+                message = "Loss > 3% (${profitPct}%), approved exit to preserve capital",
+                vetoStrength = VetoStrength.NONE,
+            )
+        }
+        
+        // Rule 3: Allow exit if stagnant > 2 hours
+        if (holdMinutes > 120 && abs(profitPct) < 1.0) {
+            return SellApproval(
+                approved = true,
+                reason = "APPROVED_STAGNANT",
+                message = "Held ${holdMinutes.toInt()}min with ${profitPct}% return, exit stagnant",
+                vetoStrength = VetoStrength.NONE,
+            )
+        }
+        
+        // Rule 4: Allow trailing stop exit
+        if (reason.contains("trailing_stop") && profitPct > -1.0) {
+            return SellApproval(
+                approved = true,
+                reason = "APPROVED_TRAILING_STOP",
+                message = "Trailing stop hit, exit approved",
+                vetoStrength = VetoStrength.NONE,
+            )
+        }
+        
+        // Rule 5: Allow profit taking (record as win for whitelist)
+        if (profitPct > 0.0) {
+            pairWhitelist.recordTrade(pairId, won = true)
+            
+            return SellApproval(
+                approved = true,
+                reason = "APPROVED_PROFIT_TAKING",
+                message = "Profit ${profitPct}%, approved",
+                vetoStrength = VetoStrength.NONE,
+            )
+        }
+        
+        // Default: Hold
+        return SellApproval(
+            approved = false,
+            reason = "HOLD",
+            message = "Hold for now, ${profitPct}% return",
+            vetoStrength = VetoStrength.SOFT,
+        )
+    }
+    
+    /**
+     * Kinance reports: "Pump signal detected!"
+     * KiBot APPROVES or says "meh, skip"
+     */
+    fun evaluatePumpSignal(
+        pairId: String,
+        binanceVolumeScore: Double,
+        priceVelocity: Double,
+        confidence: Double,
+        expectedReturnPct: Double,
+        currentLossPct: Double,
+        dailyVolume: Double,
+    ): PumpSignalApproval {
+        // Rule 1: Filter low confidence signals
+        if (confidence < 0.60) {
+            return PumpSignalApproval(
+                approved = false,
+                reason = "LOW_CONFIDENCE",
+                message = "Confidence ${confidence}, minimum 0.60 required",
+                vetoStrength = VetoStrength.SOFT,
+            )
+        }
+        
+        // Rule 2: Filter low volume coins
+        if (dailyVolume < 40_000_000) {  // 40M IDR
+            return PumpSignalApproval(
+                approved = false,
+                reason = "INSUFFICIENT_VOLUME",
+                message = "Daily volume Rp$dailyVolume < Rp40M minimum",
+                vetoStrength = VetoStrength.HARD,
+            )
+        }
+        
+        // Rule 3: During recovery, focus on high-confidence signals
+        if (currentLossPct < -5.0 && confidence < 0.80) {
+            return PumpSignalApproval(
+                approved = false,
+                reason = "RECOVERY_MODE_HIGH_CONFIDENCE_ONLY",
+                message = "In recovery mode (loss ${currentLossPct}%), need confidence > 0.80",
+                vetoStrength = VetoStrength.SOFT,
+            )
+        }
+        
+        // Rule 4: PHASE 1 - Check whitelist before trading
+        if (!pairWhitelist.isPairWhitelisted(pairId)) {
+            return PumpSignalApproval(
+                approved = false,
+                reason = "PAIR_BLACKLISTED",
+                message = "$pairId is blacklisted (low win rate on this pair)",
+                vetoStrength = VetoStrength.HARD,
+            )
+        }
+        
+        // APPROVED! This is a good signal
+        return PumpSignalApproval(
+            approved = true,
+            reason = "APPROVED_PUMP_SIGNAL",
+            message = "Pump signal approved: $pairId confidence ${confidence}, expected return ${expectedReturnPct}%",
+            vetoStrength = VetoStrength.NONE,
+            priorityScore = confidence * priceVelocity,
+        )
+    }
+    
+    /**
+     * Log veto for learning
+     */
+    fun recordVeto(
+        pairId: String,
+        vetoType: String,
+        reason: String,
+        timestamp: Instant = Clock.System.now(),
+    ) {
+        recentVetoes.add(VetoRecord(
+            pair = pairId,
+            type = vetoType,
+            reason = reason,
+            timestamp = timestamp,
+        ))
+        
+        // Keep only last 1000 vetoes
+        if (recentVetoes.size > 1000) {
+            recentVetoes.removeAt(0)
+        }
+    }
+    
+    /**
+     * Get veto statistics
+     */
+    fun getVetoStats(): VetoStatistics {
+        val totalVetoes = recentVetoes.size
+        val vetoByReason = recentVetoes.groupingBy { it.reason }.eachCount()
+        val vetoByPair = recentVetoes.groupingBy { it.pair }.eachCount()
+        
+        return VetoStatistics(
+            totalVetoes = totalVetoes,
+            vetoByReason = vetoByReason,
+            vetoByPair = vetoByPair,
+            topVetoReasons = vetoByReason.entries.sortedByDescending { it.value }.take(5).associate { it.key to it.value },
+            mostVetoesPair = vetoByPair.maxByOrNull { it.value }?.key ?: "N/A",
+        )
+    }
+    
+    /**
+     * Get pair whitelist manager (for integration)
+     */
+    fun getPairWhitelistManager(): PairWhitelistManager = pairWhitelist
+    
+    /**
+     * Get capital allocator (for integration)
+     */
+    fun getCapitalAllocator(): CapitalAllocationManager = capitalAllocator
+    
+    /**
+     * Get pair recent loss count
+     */
+    private fun getPairRecentLossCount(pairId: String): Int {
+        val stats = pairWhitelist.getPairStats(pairId)
+        return if (stats != null && stats.totalTrades > 0) {
+            stats.totalTrades - stats.wins
+        } else {
+            0
+        }
+    }
+    
+    /**
+     * Record trade approval for audit trail
+     */
+    fun recordApproval(
+        pairId: String,
+        side: String,  // BUY or SELL
+        price: Double,
+        quantity: Double,
+        approvalId: String,
+        timestamp: Instant = Clock.System.now(),
+    ) {
+        tradeApprovals[approvalId] = TradeApproval(
+            pair = pairId,
+            side = side,
+            price = price,
+            quantity = quantity,
+            timestamp = timestamp,
+        )
+    }
+}
+
+data class BuyApproval(
+    val approved: Boolean,
+    val reason: String,
+    val message: String,
+    val vetoStrength: VetoStrength,
+    val sizeAdjustmentMultiplier: Double = 1.0,
+    val recommendedOrderType: OrderExecutionStrategy.OrderType? = null,
+    val recommendedProfitTargetPercent: Double? = null,
+    val allocatedCapitalIdr: Double = 0.0,
+)
+
+data class SellApproval(
+    val approved: Boolean,
+    val reason: String,
+    val message: String,
+    val vetoStrength: VetoStrength,
+    val suggestedHoldMinutes: Int? = null,
+)
+
+data class PumpSignalApproval(
+    val approved: Boolean,
+    val reason: String,
+    val message: String,
+    val vetoStrength: VetoStrength,
+    val priorityScore: Double = 0.0,
+)
+
+enum class VetoStrength {
+    HARD,       // Cannot override
+    SOFT,       // Warning but can override
+    NONE,       // Approved
+}
+
+data class VetoRecord(
+    val pair: String,
+    val type: String,  // BUY_VETO, SELL_VETO, SIGNAL_VETO
+    val reason: String,
+    val timestamp: Instant,
+)
+
+data class TradeApproval(
+    val pair: String,
+    val side: String,
+    val price: Double,
+    val quantity: Double,
+    val timestamp: Instant,
+)
+
+data class VetoStatistics(
+    val totalVetoes: Int,
+    val vetoByReason: Map<String, Int>,
+    val vetoByPair: Map<String, Int>,
+    val topVetoReasons: Map<String, Int>,
+    val mostVetoesPair: String,
+)

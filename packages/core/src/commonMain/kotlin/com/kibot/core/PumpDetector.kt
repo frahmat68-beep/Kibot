@@ -128,6 +128,9 @@ class PumpDetector(
         val spread = quote.spreadPct
         val shortReturn = quote.shortTermReturnPct
         
+        // Note: This is early detection logic (pre-pump entry)
+        // LatePumpEntryStrategy handles late entries (already pumping)
+        
         return when {
             confidence >= 0.85 && shortReturn < 5.0 && spread <= 2.5 -> 
                 EntryRecommendation.AGGRESSIVE_BUY  // Early pump signal, go heavy
@@ -136,7 +139,7 @@ class PumpDetector(
             confidence >= 0.55 && shortReturn < 12.0 -> 
                 EntryRecommendation.SMALL_BUY       // Decent signal, small position
             shortReturn >= 15.0 -> 
-                EntryRecommendation.WAIT            // Already pumped, too late
+                EntryRecommendation.WAIT            // Hand off to LatePumpEntryStrategy
             else -> 
                 EntryRecommendation.SKIP            // Weak signal
         }
