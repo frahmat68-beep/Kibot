@@ -136,7 +136,18 @@ class LatePumpEntryStrategy(
             )
         }
         
-        // STRATEGY 3: Too late, pump exhausted (different limits per bucket)
+        // STRATEGY 3: Mega pump handoff to MultiWavePumpRider
+        // AGGRESSIVE bucket only - pumps >60% need wave riding strategy
+        if (bucketType == "AGGRESSIVE" && shortReturn >= 60.0 && volumeScore >= 0.35) {
+            return LatePumpEntry(
+                canEnter = false,  // Don't enter here
+                reason = "MEGA_PUMP_HANDOFF",
+                analysis = "Pump ${shortReturn.format(1)}% is mega pump territory - use MultiWavePumpRider for wave riding",
+                isMegaPump = true,  // Signal to use MultiWavePumpRider
+            )
+        }
+        
+        // STRATEGY 4: Too late, pump exhausted (different limits per bucket)
         if (shortReturn >= maxPumpChase || volumeScore < 0.3) {
             return LatePumpEntry(
                 canEnter = false,
@@ -268,6 +279,7 @@ data class LatePumpEntry(
     val takeProfitPct: Double = 0.0,
     val positionSizePct: Double = 1.0,  // 1.0 = full size, 0.5 = half, 0.25 = quarter
     val analysis: String = "",
+    val isMegaPump: Boolean = false,    // If true, handoff to MultiWavePumpRider
 )
 
 data class PumpHistory(
