@@ -91,6 +91,17 @@ class LocalDashboardServer(
         }
 
         routing {
+            // Modern full-screen dashboard
+            get("/dashboard") {
+                applyDashboardSecurityHeaders(call)
+                val dashboardHtml = this::class.java.classLoader.getResourceAsStream("dashboard.html")?.readBytes()?.decodeToString()
+                if (dashboardHtml != null) {
+                    call.respondText(dashboardHtml, ContentType.Text.Html)
+                } else {
+                    call.respondText("Dashboard not found", ContentType.Text.Plain, HttpStatusCode.NotFound)
+                }
+            }
+
             get("/") {
                 applyDashboardSecurityHeaders(call)
                 call.respondHtml {
@@ -470,6 +481,37 @@ class LocalDashboardServer(
             }
 
             webSocket("/api/live/ws") {
+                send(
+                    Json.encodeToString(
+                        CommandCenterWsEnvelope.Snapshot(repository.state.value.toLiveSnapshot(host, port)),
+                    ),
+                )
+                val job = launch {
+                    repository.state.collect { latest ->
+                        if (!isActive) return@collect
+                        send(
+                            Json.encodeToString(
+                                CommandCenterWsEnvelope.Snapshot(latest.toLiveSnapshot(host, port)),
+                            ),
+                        )
+                    }
+                }
+                try {
+                    for (frame in incoming) {
+                        val text = (frame as? Frame.Text)?.readText() ?: continue
+                        val request = runCatching {
+                            Json.decodeFromString<CommandCenterCommandRequest>(text)
+                        }.getOrNull() ?: continue
+                        val reply = handleCommandRequest(request)
+                        send(Json.encodeToString(CommandCenterWsEnvelope.Reply(reply)))
+                    }
+                } finally {
+                    job.cancel()
+                }
+            }
+
+            // WebSocket alias for Android app compatibility
+            webSocket("/ws") {
                 send(
                     Json.encodeToString(
                         CommandCenterWsEnvelope.Snapshot(repository.state.value.toLiveSnapshot(host, port)),

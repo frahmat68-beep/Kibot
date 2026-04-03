@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KiBot Trinity Dashboard</title>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-secondary: #111827;
+            --bg-card: #1a202c;
+            --bg-card-hover: #242b3d;
+            --text-primary: #f7fafc;
+            --text-secondary: #a0aec0;
+            --text-muted: #718096;
+            --accent-blue: #3b82f6;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --accent-yellow: #f59e0b;
+            --accent-purple: #8b5cf6;
+            --accent-cyan: #06b6d4;
+            --border-color: #2d3748;
+            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, var(--bg-primary) 0%, #0f1419 100%);
+            color: var(--text-primary);
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        .fullscreen {
+            height: 100vh;
+            width: 100vw;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            gap: 20px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 24px;
+            background: var(--bg-card);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border-color);
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-icon {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 900;
+            font-size: 20px;
+        }
+
+        .logo-text {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #60a5fa, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-badges {
+            display: flex;
+            gap: 12px;
+        }
+
+        .badge {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .badge-online {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--accent-green);
+            border: 1px solid var(--accent-green);
+        }
+
+        .badge-offline {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--accent-red);
+            border: 1px solid var(--accent-red);
+        }
+
+        .ping-badge {
+            background: rgba(59, 130, 246, 0.15);
+            color: var(--accent-blue);
+            border: 1px solid var(--accent-blue);
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .card-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 16px;
+        }
+
+        .balance-card {
+            grid-column: span 1;
+            background: linear-gradient(135deg, #1e3a8a 0%, #312e81 100%);
+            border: 1px solid rgba(96, 165, 250, 0.2);
+        }
+
+        .balance-amount {
+            font-size: 36px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .balance-label {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .pnl-positive {
+            color: var(--accent-green);
+        }
+
+        .pnl-negative {
+            color: var(--accent-red);
+        }
+
+        .bot-status-card {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .bot-item {
+            background: var(--bg-secondary);
+            padding: 12px 16px;
+            border-radius: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border: 1px solid var(--border-color);
+            transition: all 0.2s ease;
+        }
+
+        .bot-item:hover {
+            background: var(--bg-card-hover);
+            border-color: var(--accent-blue);
+        }
+
+        .bot-name {
+            font-weight: 600;
+            font-size: 15px;
+        }
+
+        .bot-ping {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .trades-card {
+            grid-column: span 2;
+            grid-row: span 2;
+        }
+
+        .trades-list {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .trade-item {
+            background: var(--bg-secondary);
+            padding: 12px 16px;
+            border-radius: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-left: 3px solid var(--accent-blue);
+        }
+
+        .trade-item.sell {
+            border-left-color: var(--accent-green);
+        }
+
+        .trade-item.buy {
+            border-left-color: var(--accent-purple);
+        }
+
+        .trade-pair {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .trade-time {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .trade-price {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .holdings-card {
+            grid-row: span 2;
+        }
+
+        .holdings-list {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .holding-item {
+            background: var(--bg-secondary);
+            padding: 12px 16px;
+            border-radius: 12px;
+        }
+
+        .holding-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+        }
+
+        .holding-coin {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .holding-amount {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--accent-blue);
+        }
+
+        .footer-hint {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 12px;
+            padding: 8px;
+        }
+
+        .ws-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--accent-green);
+            border: 1px solid var(--accent-green);
+            z-index: 1000;
+        }
+
+        .ws-status.disconnected {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--accent-red);
+            border: 1px solid var(--accent-red);
+        }
+    </style>
+</head>
+<body>
+    <div class="ws-status" id="wsStatus">● CONNECTING</div>
+    
+    <div class="fullscreen">
+        <div class="header">
+            <div class="logo">
+                <div class="logo-icon">K</div>
+                <div class="logo-text">KiBot Trinity</div>
+            </div>
+            <div class="status-badges">
+                <div class="badge ping-badge">
+                    <span class="dot"></span>
+                    <span id="pingDisplay">-- ms</span>
+                </div>
+                <div class="badge badge-online" id="statusBadge">
+                    <span class="dot"></span>
+                    <span>ONLINE</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <!-- Balance Card -->
+            <div class="card balance-card">
+                <div class="card-title">Total Balance</div>
+                <div class="balance-amount" id="balanceDisplay">Rp 0</div>
+                <div class="balance-label">
+                    PnL: <span id="pnlDisplay" class="pnl-positive">+0.00%</span>
+                </div>
+            </div>
+
+            <!-- Bot Status Card -->
+            <div class="card bot-status-card">
+                <div class="card-title">Bot Status</div>
+                <div class="bot-item">
+                    <div>
+                        <div class="bot-name">KiBot Manager</div>
+                        <div class="bot-ping" id="kibotPing">Ping: -- ms</div>
+                    </div>
+                    <div class="badge badge-online">●</div>
+                </div>
+                <div class="bot-item">
+                    <div>
+                        <div class="bot-name">Kinance</div>
+                        <div class="bot-ping" id="kinancePing">Ping: -- ms</div>
+                    </div>
+                    <div class="badge badge-online">●</div>
+                </div>
+                <div class="bot-item">
+                    <div>
+                        <div class="bot-name">KiDax</div>
+                        <div class="bot-ping" id="kidaxPing">Ping: -- ms</div>
+                    </div>
+                    <div class="badge badge-online">●</div>
+                </div>
+            </div>
+
+            <!-- Holdings Card -->
+            <div class="card holdings-card">
+                <div class="card-title">Current Holdings</div>
+                <div class="holdings-list" id="holdingsList">
+                    <div class="holding-item">
+                        <div class="holding-header">
+                            <div class="holding-coin">BTC_IDR</div>
+                            <div class="holding-amount pnl-positive">+5.2%</div>
+                        </div>
+                        <div class="trade-time">0.00125 BTC • Rp 850,000</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Trades Card -->
+            <div class="card trades-card">
+                <div class="card-title">Recent Trades</div>
+                <div class="trades-list" id="tradesList">
+                    <div class="trade-item buy">
+                        <div>
+                            <div class="trade-pair">BTC_IDR</div>
+                            <div class="trade-time">10:45 • BUY</div>
+                        </div>
+                        <div class="trade-price pnl-positive">Rp 850,000</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="footer-hint">
+            Press <strong>F</strong> for fullscreen • WebSocket Live Data
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let reconnectTimer = null;
+        const wsUrl = `ws://${window.location.host}/ws`;
+
+        // Fullscreen toggle
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'f' || e.key === 'F') {
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen();
+                } else {
+                    document.exitFullscreen();
+                }
+            }
+        });
+
+        // Format currency
+        function formatRupiah(num) {
+            return 'Rp ' + Math.round(num).toLocaleString('id-ID');
+        }
+
+        // Format percentage
+        function formatPercent(num) {
+            const sign = num >= 0 ? '+' : '';
+            return sign + num.toFixed(2) + '%';
+        }
+
+        // Update UI with WebSocket data
+        function updateUI(data) {
+            if (!data) return;
+
+            // Update balance
+            if (data.totalBalanceIdr !== undefined) {
+                document.getElementById('balanceDisplay').textContent = formatRupiah(data.totalBalanceIdr);
+            }
+
+            // Update PnL
+            if (data.returnPct !== undefined) {
+                const pnlEl = document.getElementById('pnlDisplay');
+                pnlEl.textContent = formatPercent(data.returnPct);
+                pnlEl.className = data.returnPct >= 0 ? 'pnl-positive' : 'pnl-negative';
+            }
+
+            // Update ping
+            if (data.exchangePingMs !== undefined) {
+                document.getElementById('pingDisplay').textContent = data.exchangePingMs + ' ms';
+            }
+
+            // Update holdings
+            if (data.holdings && Array.isArray(data.holdings)) {
+                const holdingsList = document.getElementById('holdingsList');
+                holdingsList.innerHTML = '';
+                
+                data.holdings.slice(0, 10).forEach(holding => {
+                    const pnl = holding.returnPct || 0;
+                    const item = document.createElement('div');
+                    item.className = 'holding-item';
+                    item.innerHTML = `
+                        <div class="holding-header">
+                            <div class="holding-coin">${holding.pairId || 'N/A'}</div>
+                            <div class="holding-amount ${pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">${formatPercent(pnl)}</div>
+                        </div>
+                        <div class="trade-time">${holding.amount || '0'} • ${formatRupiah(holding.valueIdr || 0)}</div>
+                    `;
+                    holdingsList.appendChild(item);
+                });
+
+                if (data.holdings.length === 0) {
+                    holdingsList.innerHTML = '<div class="trade-time" style="text-align:center;padding:20px;color:var(--text-muted)">No holdings</div>';
+                }
+            }
+
+            // Update trades
+            if (data.recentTrades && Array.isArray(data.recentTrades)) {
+                const tradesList = document.getElementById('tradesList');
+                tradesList.innerHTML = '';
+                
+                data.recentTrades.slice(0, 20).forEach(trade => {
+                    const time = trade.timestamp ? new Date(trade.timestamp).toLocaleTimeString('id-ID', {hour: '2-digit', minute: '2-digit'}) : '--:--';
+                    const side = trade.side || 'BUY';
+                    const item = document.createElement('div');
+                    item.className = `trade-item ${side.toLowerCase()}`;
+                    item.innerHTML = `
+                        <div>
+                            <div class="trade-pair">${trade.pairId || 'N/A'}</div>
+                            <div class="trade-time">${time} • ${side}</div>
+                        </div>
+                        <div class="trade-price ${side === 'SELL' ? 'pnl-positive' : ''}">${formatRupiah(trade.price || 0)}</div>
+                    `;
+                    tradesList.appendChild(item);
+                });
+
+                if (data.recentTrades.length === 0) {
+                    tradesList.innerHTML = '<div class="trade-time" style="text-align:center;padding:20px;color:var(--text-muted)">No trades yet</div>';
+                }
+            }
+        }
+
+        // WebSocket connection
+        function connect() {
+            if (ws) {
+                try { ws.close(); } catch (e) {}
+            }
+
+            const statusEl = document.getElementById('wsStatus');
+            statusEl.textContent = '● CONNECTING';
+            statusEl.className = 'ws-status disconnected';
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                statusEl.textContent = '● LIVE';
+                statusEl.className = 'ws-status';
+                if (reconnectTimer) {
+                    clearTimeout(reconnectTimer);
+                    reconnectTimer = null;
+                }
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const envelope = JSON.parse(event.data);
+                    if (envelope.type === 'snapshot' && envelope.data) {
+                        updateUI(envelope.data);
+                    }
+                } catch (e) {
+                    console.error('Parse error:', e);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket closed');
+                statusEl.textContent = '● DISCONNECTED';
+                statusEl.className = 'ws-status disconnected';
+                
+                // Reconnect after 3s
+                if (!reconnectTimer) {
+                    reconnectTimer = setTimeout(connect, 3000);
+                }
+            };
+        }
+
+        // Start connection
+        connect();
+
+        // Heartbeat every 30s
+        setInterval(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({type: 'ping'}));
+            }
+        }, 30000);
+    </script>
+</body>
+</html>
