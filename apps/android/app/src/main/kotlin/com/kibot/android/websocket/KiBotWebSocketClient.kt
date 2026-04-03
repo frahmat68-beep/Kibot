@@ -122,6 +122,14 @@ class KiBotWebSocketClient(
     private fun parseMessage(text: String) {
         try {
             val json = JsonParser.parseString(text).asJsonObject
+            
+            // Handle server's CommandCenterWsEnvelope format: {"snapshot": {...}}
+            if (json.has("snapshot")) {
+                parseCommandCenterSnapshot(json.getAsJsonObject("snapshot"))
+                return
+            }
+            
+            // Handle legacy format with "type" field
             val type = json.get("type")?.asString ?: return
             val dataElement = json.get("data")
             
@@ -189,6 +197,176 @@ class KiBotWebSocketClient(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse message: ${e.message}", e)
         }
+    }
+    
+    /**
+     * Parse CommandCenterLiveSnapshot from server WebSocket
+     * Server sends: {"snapshot": {totalValueIdr: "Rp110.486", holdingsDetailed: [...], ...}}
+     */
+    private fun parseCommandCenterSnapshot(snapshot: JsonObject) {
+        try {
+            // Parse balance from "totalValueIdr" (format: "Rp110.486" or "Rp1.234.567")
+            val totalValueIdr = snapshot.get("totalValueIdr")?.asString ?: "Rp0"
+            val balance = parseRupiahToDouble(totalValueIdr)
+            
+            // Parse PnL today from "pnlTodayIdr" (format: "-Rp55" or "+Rp1.234")
+            val pnlTodayIdr = snapshot.get("pnlTodayIdr")?.asString ?: "Rp0"
+            val pnlToday = parseRupiahToDouble(pnlTodayIdr)
+            
+            // Parse total return percentage from "pnlTodayPctLabel" (format: "-0.1%" or "+29.9%")
+            val pnlTodayPctLabel = snapshot.get("pnlTodayPctLabel")?.asString ?: "0%"
+            val totalReturn = parsePercentToDouble(pnlTodayPctLabel)
+            
+            // Parse holdings from "holdingsDetailed"
+            val positions = mutableListOf<Position>()
+            snapshot.getAsJsonArray("holdingsDetailed")?.forEach { holdingElement ->
+                val holding = holdingElement.asJsonObject
+                val assetCode = holding.get("assetCode")?.asString ?: ""
+                val quantityLabel = holding.get("quantityLabel")?.asString ?: "0"
+                val entryPriceLabel = holding.get("entryPriceLabel")?.asString ?: "Rp0"
+                val currentPriceLabel = holding.get("currentPriceLabel")?.asString ?: "Rp0"
+                val pnlIdrLabel = holding.get("pnlIdrLabel")?.asString ?: "Rp0"
+                val pnlPctLabel = holding.get("pnlPctLabel")?.asString ?: "0%"
+                
+                val amount = quantityLabel.split(" ").firstOrNull()?.replace(",", ".")?.toDoubleOrNull() ?: 0.0
+                val entryPrice = parseRupiahToDouble(entryPriceLabel)
+                val currentPrice = parseRupiahToDouble(currentPriceLabel)
+                val pnl = parseRupiahToDouble(pnlIdrLabel)
+                val pnlPercent = parsePercentToDouble(pnlPctLabel)
+                
+                if (assetCode.isNotEmpty() && amount > 0) {
+                    positions.add(Position(
+                        pair = "${assetCode.lowercase()}_idr",
+                        amount = amount,
+                        buyPrice = entryPrice,
+                        currentPrice = currentPrice,
+                        pnl = pnl,
+                        pnlPercent = pnlPercent
+                    ))
+                }
+            }
+            
+            // Parse recent trades from "recentOrders"
+            val trades = mutableListOf<TradeData>()
+            snapshot.getAsJsonArray("recentOrders")?.take(20)?.forEach { orderElement ->
+                val order = orderElement.asJsonObject
+                val pair = order.get("pair")?.asString ?: ""
+                val side = order.get("side")?.asString?.lowercase() ?: "buy"
+                val detail = order.get("detail")?.asString ?: ""
+                val timestampMs = order.get("timestampEpochMs")?.asLong ?: System.currentTimeMillis()
+                val pnlLabel = order.get("pnlIdrLabel")?.asString
+                val pnlPctLabel = order.get("pnlPctLabel")?.asString
+                
+                // Parse detail for price/amount (format: "203 @ Rp107")
+                val priceMatch = Regex("""(\d+(?:[.,]\d+)?)\s*@\s*Rp?([\d.,]+)""").find(detail)
+                val amount = priceMatch?.groupValues?.get(1)?.replace(",", ".")?.toDoubleOrNull() ?: 0.0
+                val price = priceMatch?.groupValues?.get(2)?.replace(".", "")?.replace(",", ".")?.toDoubleOrNull() ?: 0.0
+                
+                if (pair.isNotEmpty()) {
+                    trades.add(TradeData(
+                        id = "${pair}_${timestampMs}",
+                        pair = pair,
+                        side = side,
+                        price = price,
+                        amount = amount,
+                        total = price * amount,
+                        timestamp = timestampMs,
+                        profitLoss = pnlLabel?.let { parseRupiahToDouble(it) }
+                    ))
+                }
+            }
+            
+            // Parse heartbeat/bot status
+            val effectiveState = snapshot.get("effectiveState")?.asString ?: "STOPPED"
+            val syncHealth = snapshot.get("syncHealth")?.asString ?: "DEGRADED"
+            val exchangePingMs = snapshot.get("exchangePingValueMs")?.asLong ?: 0L
+            val liveExecutionEnabled = snapshot.get("liveExecutionEnabled")?.asBoolean ?: false
+            
+            val kidaxStatus = ServiceStatus(
+                status = if (effectiveState == "RUNNING" && liveExecutionEnabled) "online" else if (effectiveState == "RUNNING") "degraded" else "offline",
+                ping = exchangePingMs,
+                aiStatus = if (snapshot.get("aiProviderSummary")?.asString?.contains("LIMITED") == true) "limited" else "active",
+                enabled = liveExecutionEnabled,
+                holdings = positions.map { Holding(it.pair.split("_").first().uppercase(), it.amount, it.currentPrice, it.pnl) }
+            )
+            
+            val kinanceStatus = ServiceStatus(
+                status = if (syncHealth == "HEALTHY") "online" else "degraded",
+                ping = exchangePingMs,
+                aiStatus = "active",
+                enabled = true
+            )
+            
+            val kibotStatus = ServiceStatus(
+                status = if (effectiveState == "RUNNING") "online" else "offline",
+                ping = 0,
+                aiStatus = "active",
+                enabled = true
+            )
+            
+            // Parse return summaries
+            val return7dPct = parsePercentToDouble(snapshot.get("return7dPctLabel")?.asString ?: "0%")
+            val return30dPct = parsePercentToDouble(snapshot.get("return30dPctLabel")?.asString ?: "0%")
+            
+            // Update bot state with all parsed data
+            updateBotState { currentState ->
+                currentState.copy(
+                    balance = balance,
+                    totalReturn = totalReturn,
+                    pnlToday = pnlToday,
+                    positions = positions,
+                    trades = trades + currentState.trades.filter { existing -> 
+                        trades.none { it.id == existing.id } 
+                    }.take(80),
+                    heartbeat = HeartbeatData(
+                        kidax = kidaxStatus,
+                        kinance = kinanceStatus,
+                        kibot = kibotStatus
+                    ),
+                    returnSummary = ReturnSummary(
+                        day1 = totalReturn,
+                        day7 = return7dPct,
+                        day30 = return30dPct
+                    ),
+                    isConnected = true,
+                    lastUpdate = System.currentTimeMillis()
+                )
+            }
+            
+            Log.d(TAG, "Parsed snapshot: balance=$balance, positions=${positions.size}, trades=${trades.size}")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse CommandCenter snapshot: ${e.message}", e)
+        }
+    }
+    
+    /**
+     * Parse Indonesian Rupiah format to Double
+     * Examples: "Rp110.486" -> 110486.0, "-Rp55" -> -55.0, "+Rp1.234.567" -> 1234567.0
+     */
+    private fun parseRupiahToDouble(value: String): Double {
+        val isNegative = value.startsWith("-")
+        val cleaned = value
+            .replace("Rp", "")
+            .replace("+", "")
+            .replace("-", "")
+            .replace(".", "")  // Remove thousand separators
+            .replace(",", ".")  // Convert decimal separator
+            .trim()
+        val result = cleaned.toDoubleOrNull() ?: 0.0
+        return if (isNegative) -result else result
+    }
+    
+    /**
+     * Parse percentage format to Double
+     * Examples: "-0.1%" -> -0.1, "+29.9%" -> 29.9
+     */
+    private fun parsePercentToDouble(value: String): Double {
+        val cleaned = value
+            .replace("%", "")
+            .replace(",", ".")
+            .trim()
+        return cleaned.toDoubleOrNull() ?: 0.0
     }
 
     private inline fun updateBotState(update: (BotState) -> BotState) {

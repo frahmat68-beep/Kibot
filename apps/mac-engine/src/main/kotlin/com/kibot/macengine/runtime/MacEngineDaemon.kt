@@ -4593,11 +4593,10 @@ class MacEngineDaemon(
             recentOrdersFetchedAt = now
             return cachedRecentOrders
         }
-        cachedRecentOrders = if (fetchedOrders.isNotEmpty()) {
-            fetchedOrders
-        } else {
-            val localOrders = loadLocalPositionState().orders
-            if (localOrders.isNotEmpty() && !localRecoveryFallbackAnnounced) {
+        // ALWAYS merge local orders to preserve entry price history for holdings display
+        val localOrders = loadLocalPositionState().orders
+        cachedRecentOrders = if (fetchedOrders.isEmpty() && localOrders.isNotEmpty()) {
+            if (!localRecoveryFallbackAnnounced) {
                 localRecoveryFallbackAnnounced = true
                 val message = "Recovery audit: remote order snapshot kosong, fallback ke local position state."
                 repository.noteStatus(message)
@@ -4607,6 +4606,10 @@ class MacEngineDaemon(
                     message = message,
                 )
             }
+            localOrders
+        } else {
+            // Always merge local orders even if API returned some orders
+            // This ensures we have full entry price history for all held positions
             mergeRecentOrders(
                 base = fetchedOrders,
                 updates = localOrders,
