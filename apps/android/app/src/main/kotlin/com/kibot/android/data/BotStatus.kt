@@ -113,6 +113,12 @@ data class BotState(
     val assetAllocation: List<AssetAllocation> = emptyList(),
     val trades: List<TradeData> = emptyList(),
     val heartbeat: HeartbeatData = HeartbeatData(),
+    val effectiveState: String = "STOPPED",
+    val syncHealth: String = "DEGRADED",
+    val aiProviderSummary: String = "AI summary belum siap.",
+    val healthSummary: String = "Menunggu snapshot server.",
+    val statusMessage: String = "Server monitor sedang booting.",
+    val connectedBotId: String = "unknown",
     val isConnected: Boolean = false,
     val lastUpdate: Long = 0
 )

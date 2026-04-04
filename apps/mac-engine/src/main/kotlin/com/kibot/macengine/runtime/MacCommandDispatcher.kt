@@ -4,6 +4,7 @@ import com.kibot.core.ControlPlaneGateway
 import com.kibot.macengine.config.MacRuntimeConfig
 import com.kibot.macengine.state.MacCommand
 import com.kibot.macengine.state.MacStateRepository
+import com.kibot.shared.models.BotId
 import com.kibot.shared.models.BotDesiredState
 import com.kibot.shared.models.CommandType
 import kotlinx.serialization.json.buildJsonObject
@@ -14,18 +15,22 @@ class MacCommandDispatcher(
     private val controlPlane: ControlPlaneGateway,
     private val config: MacRuntimeConfig,
 ) {
-    suspend fun dispatch(command: MacCommand) {
+    suspend fun dispatch(
+        command: MacCommand,
+        targetBotId: BotId? = null,
+    ) {
+        val botId = targetBotId ?: config.controlPlane.botId
         repository.applyAndReturn(command)
 
         when (command) {
             MacCommand.START_BOT -> {
-                controlPlane.setDesiredState(config.controlPlane.botId, BotDesiredState.ON)
-                repository.noteStatus("Bot desired state updated to ON.")
+                controlPlane.setDesiredState(botId, BotDesiredState.ON)
+                repository.noteStatus("Bot desired state updated to ON for ${botId.value}.")
             }
 
             MacCommand.STOP_BOT -> {
-                controlPlane.setDesiredState(config.controlPlane.botId, BotDesiredState.OFF)
-                repository.noteStatus("Bot desired state updated to OFF.")
+                controlPlane.setDesiredState(botId, BotDesiredState.OFF)
+                repository.noteStatus("Bot desired state updated to OFF for ${botId.value}.")
             }
 
             MacCommand.REQUEST_TAKEOVER -> {
@@ -65,21 +70,21 @@ class MacCommandDispatcher(
 
             MacCommand.SYNC_NOW -> {
                 controlPlane.enqueueCommand(
-                    botId = config.controlPlane.botId,
+                    botId = botId,
                     createdBy = config.device.deviceId,
                     commandType = CommandType.SYNC_NOW,
-                    targetDeviceId = config.device.deviceId,
+                    targetDeviceId = null,
                 )
-                repository.noteStatus("Sync requested for Mac engine.")
+                repository.noteStatus("Sync requested for ${botId.value}.")
             }
             MacCommand.TOGGLE_LIVE_EXECUTION -> {
                 controlPlane.enqueueCommand(
-                    botId = config.controlPlane.botId,
+                    botId = botId,
                     createdBy = config.device.deviceId,
                     commandType = CommandType.TOGGLE_LIVE_EXECUTION,
-                    targetDeviceId = config.device.deviceId,
+                    targetDeviceId = null,
                 )
-                repository.noteStatus("Toggle live execution requested for Mac engine.")
+                repository.noteStatus("Toggle live execution requested for ${botId.value}.")
             }
         }
     }

@@ -108,7 +108,7 @@ private fun ReturnSummaryCard(
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 ReturnItem(
-                    label = "1D",
+                    label = "Today",
                     value = returnSummary.day1,
                     modifier = Modifier.weight(1f)
                 )

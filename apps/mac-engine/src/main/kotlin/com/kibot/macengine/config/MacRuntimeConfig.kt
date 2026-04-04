@@ -63,6 +63,9 @@ data class MacRuntimeConfig(
     val indodaxClientConfig: IndodaxClientConfig,
     val binanceCredentials: BinanceCredentials?,
     val binanceClientConfig: BinanceClientConfig,
+    val telegramAlertsEnabled: Boolean,
+    val telegramBotToken: String?,
+    val telegramChatId: String?,
     val leadLagSignalEnabled: Boolean,
     val leadLagTargetBotId: BotId?,
     val leadLagSignalTtlMillis: Long,
@@ -112,7 +115,13 @@ val antiKoinMahalUseBudgetCheck: Boolean = true,
 object MacRuntimeConfigLoader {
     fun load(cwd: Path = Paths.get("").toAbsolutePath()): MacRuntimeConfig {
         val fileValues = linkedMapOf<String, String>()
-        candidateEnvFiles(cwd).forEach { path ->
+        val explicitEnvFile = System.getenv("KIBOT_ENV_FILE")?.takeIf { it.isNotBlank() }?.let(Paths::get)
+        val hintedBotId = System.getenv("BOT_ID")?.takeIf { it.isNotBlank() }
+        candidateEnvFiles(
+            start = cwd,
+            explicitEnvFile = explicitEnvFile,
+            hintedBotId = hintedBotId,
+        ).forEach { path ->
             if (Files.exists(path)) {
                 parseEnvFile(path).forEach { (key, value) -> fileValues[key] = value }
             }
@@ -271,6 +280,9 @@ object MacRuntimeConfigLoader {
                 primaryQuoteAsset = optional("BINANCE_PRIMARY_QUOTE_ASSET")?.lowercase() ?: "usdt",
                 shadowMode = optional("SHADOW_MODE")?.equals("true", ignoreCase = true) ?: false,
             ),
+            telegramAlertsEnabled = optional("KIBOT_TELEGRAM_ALERTS_ENABLED")?.equals("true", ignoreCase = true) == true,
+            telegramBotToken = optional("KIBOT_TELEGRAM_BOT_TOKEN"),
+            telegramChatId = optional("KIBOT_TELEGRAM_CHAT_ID"),
             leadLagSignalEnabled = optional("KIBOT_LEAD_LAG_SIGNAL_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
@@ -436,7 +448,11 @@ object MacRuntimeConfigLoader {
         }
     }
 
-    private fun candidateEnvFiles(start: Path): List<Path> {
+    private fun candidateEnvFiles(
+        start: Path,
+        explicitEnvFile: Path? = null,
+        hintedBotId: String? = null,
+    ): List<Path> {
         val dirs = buildList {
             var current: Path? = start
             repeat(6) {
@@ -446,13 +462,28 @@ object MacRuntimeConfigLoader {
             }
         }.distinct()
 
-        return dirs
+        val hintedSuffix = hintedBotId
+            ?.trim()
+            ?.lowercase()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { ".env.$it" }
+
+        val discovered = dirs
             .flatMap { dir ->
-                listOf(
-                    dir.resolve(".env"),
-                    dir.resolve("apps/mac-engine/.env"),
-                )
+                buildList {
+                    add(dir.resolve(".env"))
+                    hintedSuffix?.let { add(dir.resolve(it)) }
+                    add(dir.resolve("apps/mac-engine/.env"))
+                    hintedSuffix?.let { add(dir.resolve("apps/mac-engine/$it")) }
+                }
             }
             .distinct()
+
+        return buildList {
+            addAll(discovered)
+            explicitEnvFile?.let { add(it) }
+        }
+            .distinct()
+            .filter { Files.exists(it) }
     }
 }

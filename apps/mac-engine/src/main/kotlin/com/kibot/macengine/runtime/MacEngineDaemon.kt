@@ -566,6 +566,32 @@ class MacEngineDaemon(
         val msgType: String = "CORRELATION_MATRIX",
         val sectors: Map<String, List<String>> = emptyMap(),
     )
+
+    @Serializable
+    private data class BufferedDailyRiskWrite(
+        val botId: String,
+        val date: String,
+        val snapshot: DailyRiskSnapshot,
+    )
+
+    @Serializable
+    private data class BufferedFastTelemetryWrite(
+        val totalBalanceIdr: Double,
+        val currentPingMs: Long? = null,
+        val activeLivePairs: List<String> = emptyList(),
+    )
+
+    @Serializable
+    private data class NonCriticalControlPlaneBufferSnapshot(
+        val botId: String,
+        val deviceId: String,
+        val observedAtEpochMs: Long = 0L,
+        val lastFlushEpochMs: Long = 0L,
+        val pendingHeartbeat: EngineHeartbeatSnapshot? = null,
+        val pendingDailyRisk: BufferedDailyRiskWrite? = null,
+        val pendingFastTelemetry: BufferedFastTelemetryWrite? = null,
+    )
+
     private data class ForcedSellSignal(
         val traceId: String,
         val expiresAtEpochMs: Long,
@@ -573,6 +599,8 @@ class MacEngineDaemon(
 
     private val logger = LoggerFactory.getLogger(javaClass)
     private val json = Json { ignoreUnknownKeys = true }
+    private val nonCriticalControlPlaneFlushIntervalMs = 60.minutes.inWholeMilliseconds
+    private var nonCriticalControlPlaneBuffer = loadNonCriticalControlPlaneBuffer()
     private val adaptiveAiPolicyLoader = AdaptiveAiPolicyLoader(config.adaptiveAiPolicyPath)
     private val aiProviderStatusLoader = AiProviderStatusLoader()
     private val dailyTargetPursuitBrain = DailyTargetPursuitBrain()
@@ -654,6 +682,11 @@ class MacEngineDaemon(
     private val indodaxHistoryHttpClient: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(3))
         .build()
+    private val telegramAlertNotifier = TelegramAlertNotifier(
+        enabled = config.telegramAlertsEnabled,
+        botToken = config.telegramBotToken,
+        chatId = config.telegramChatId,
+    )
     private val hyperAggressiveEntryReasonByPair = java.util.concurrent.ConcurrentHashMap<String, HyperTargetKind>()
     private val partialTakeProfitExecutedByPair = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
     private var lastSuperSexyTarget: com.kibot.shared.models.PairId? = null
@@ -688,6 +721,7 @@ class MacEngineDaemon(
     @Volatile private var lastLocalPositionStateSignature: String? = null
     @Volatile private var lastToxicFlowStateSignature: String? = null
     @Volatile private var localRecoveryFallbackAnnounced = false
+    @Volatile private var lastOperatorAlertStateKey: String? = null
     private val toxicFlowStateByPair = loadToxicFlowState().entries.associateBy { it.pairId.lowercase() }.toMutableMap()
     private val hiveExtraUdpPeers: List<Pair<String, Int>> = run {
         val raw = System.getenv("KIBOT_HIVE_UDP_PEERS")
@@ -913,6 +947,184 @@ class MacEngineDaemon(
         }
         attemptLeaseLockdownRecovery(now)
         return runCatching { controlPlane.fetchLease(config.controlPlane.botId) }.getOrNull() ?: existingLease
+    }
+
+    private suspend fun <T> readControlPlane(
+        fallback: T,
+        timeoutMs: Long? = null,
+        block: suspend () -> T,
+    ): T {
+        val effectiveTimeoutMs = timeoutMs ?: if (registered) 4_000L else 12_000L
+        return withTimeoutOrNull(effectiveTimeoutMs) {
+            runCatching { block() }.getOrNull()
+        } ?: fallback
+    }
+
+    private suspend fun writeControlPlane(
+        context: String,
+        timeoutMs: Long? = null,
+        block: suspend () -> Unit,
+    ): Boolean {
+        val effectiveTimeoutMs = timeoutMs ?: if (registered) 4_000L else 12_000L
+        val outcome = withTimeoutOrNull(effectiveTimeoutMs) {
+            runCatching {
+                block()
+                true
+            }.getOrElse { error ->
+                logger.warn("Control-plane write failed during {}: {}", context, error.message ?: "unknown")
+                false
+            }
+        } ?: false
+        if (!outcome) {
+            appendAuditLog(
+                level = LogLevel.WARN,
+                category = "CONTROL_PLANE",
+                message = "Control-plane write skipped/failed during $context.",
+            )
+        }
+        return outcome
+    }
+
+    private fun nonCriticalControlPlaneBufferPath(): java.nio.file.Path {
+        val basePath = if (config.localPositionStateEnabled) {
+            config.localPositionStatePath
+        } else {
+            config.targetEnforcementMemoryPath
+        }
+        val parent = basePath.parent ?: java.nio.file.Paths.get(".")
+        return parent.resolve("control-plane-noncritical-buffer.json")
+    }
+
+    private fun loadNonCriticalControlPlaneBuffer(): NonCriticalControlPlaneBufferSnapshot {
+        val path = nonCriticalControlPlaneBufferPath()
+        return runCatching {
+            if (!Files.exists(path)) {
+                return NonCriticalControlPlaneBufferSnapshot(
+                    botId = config.controlPlane.botId.value,
+                    deviceId = config.device.deviceId.value,
+                )
+            }
+            json.decodeFromString<NonCriticalControlPlaneBufferSnapshot>(Files.readString(path))
+        }.getOrElse {
+            logger.warn("Failed to load control-plane non-critical buffer: {}", it.message)
+            NonCriticalControlPlaneBufferSnapshot(
+                botId = config.controlPlane.botId.value,
+                deviceId = config.device.deviceId.value,
+            )
+        }
+    }
+
+    private fun persistNonCriticalControlPlaneBuffer() {
+        runCatching {
+            val path = nonCriticalControlPlaneBufferPath()
+            path.parent?.let { Files.createDirectories(it) }
+            Files.writeString(path, json.encodeToString(nonCriticalControlPlaneBuffer))
+        }.onFailure {
+            logger.warn("Failed to persist control-plane non-critical buffer: {}", it.message)
+        }
+    }
+
+    private fun queueNonCriticalHeartbeat(now: Instant, snapshot: EngineHeartbeatSnapshot) {
+        val existing = nonCriticalControlPlaneBuffer
+        nonCriticalControlPlaneBuffer = existing.copy(
+            botId = config.controlPlane.botId.value,
+            deviceId = config.device.deviceId.value,
+            observedAtEpochMs = now.toEpochMilliseconds(),
+            lastFlushEpochMs = existing.lastFlushEpochMs.takeIf { it > 0L } ?: now.toEpochMilliseconds(),
+            pendingHeartbeat = snapshot,
+        )
+        persistNonCriticalControlPlaneBuffer()
+    }
+
+    private fun queueNonCriticalDailyRisk(
+        now: Instant,
+        botId: BotId,
+        date: LocalDate,
+        snapshot: DailyRiskSnapshot,
+    ) {
+        val existing = nonCriticalControlPlaneBuffer
+        nonCriticalControlPlaneBuffer = existing.copy(
+            botId = config.controlPlane.botId.value,
+            deviceId = config.device.deviceId.value,
+            observedAtEpochMs = now.toEpochMilliseconds(),
+            lastFlushEpochMs = existing.lastFlushEpochMs.takeIf { it > 0L } ?: now.toEpochMilliseconds(),
+            pendingDailyRisk = BufferedDailyRiskWrite(
+                botId = botId.value,
+                date = date.toString(),
+                snapshot = snapshot,
+            ),
+        )
+        persistNonCriticalControlPlaneBuffer()
+    }
+
+    private fun queueNonCriticalFastTelemetry(
+        now: Instant,
+        totalBalanceIdr: Double,
+        currentPingMs: Long?,
+        activeLivePairs: List<String>,
+    ) {
+        val existing = nonCriticalControlPlaneBuffer
+        nonCriticalControlPlaneBuffer = existing.copy(
+            botId = config.controlPlane.botId.value,
+            deviceId = config.device.deviceId.value,
+            observedAtEpochMs = now.toEpochMilliseconds(),
+            lastFlushEpochMs = existing.lastFlushEpochMs.takeIf { it > 0L } ?: now.toEpochMilliseconds(),
+            pendingFastTelemetry = BufferedFastTelemetryWrite(
+                totalBalanceIdr = totalBalanceIdr,
+                currentPingMs = currentPingMs,
+                activeLivePairs = activeLivePairs.distinct(),
+            ),
+        )
+        persistNonCriticalControlPlaneBuffer()
+    }
+
+    suspend fun flushNonCriticalControlPlaneBufferNow() {
+        flushNonCriticalControlPlaneBuffer(now = Clock.System.now(), force = true)
+    }
+
+    private suspend fun flushNonCriticalControlPlaneBuffer(now: Instant, force: Boolean = false) {
+        val buffer = nonCriticalControlPlaneBuffer
+        val hasPending = buffer.pendingHeartbeat != null || buffer.pendingDailyRisk != null || buffer.pendingFastTelemetry != null
+        if (!hasPending) return
+        val lastFlushEpochMs = buffer.lastFlushEpochMs
+        if (!force && lastFlushEpochMs > 0L && now.toEpochMilliseconds() - lastFlushEpochMs < nonCriticalControlPlaneFlushIntervalMs) return
+
+        var flushedHeartbeat = false
+        var flushedDailyRisk = false
+        var flushedFastTelemetry = false
+
+        buffer.pendingHeartbeat?.let { snapshot ->
+            flushedHeartbeat = writeControlPlane("flush-buffered-heartbeat", timeoutMs = 12_000L) {
+                controlPlane.appendHeartbeat(snapshot)
+            }
+        }
+        buffer.pendingDailyRisk?.let { pending ->
+            flushedDailyRisk = writeControlPlane("flush-buffered-daily-risk", timeoutMs = 12_000L) {
+                controlPlane.upsertDailyRisk(
+                    botId = BotId(pending.botId),
+                    date = LocalDate.parse(pending.date),
+                    snapshot = pending.snapshot,
+                )
+            }
+        }
+        buffer.pendingFastTelemetry?.let { pending ->
+            flushedFastTelemetry = writeControlPlane("flush-buffered-fast-telemetry", timeoutMs = 12_000L) {
+                controlPlane.upsertKingDashboardFastTelemetry(
+                    totalBalanceIdr = pending.totalBalanceIdr,
+                    currentPingMs = pending.currentPingMs,
+                    activeLivePairs = pending.activeLivePairs,
+                )
+            }
+        }
+
+        nonCriticalControlPlaneBuffer = buffer.copy(
+            observedAtEpochMs = now.toEpochMilliseconds(),
+            lastFlushEpochMs = now.toEpochMilliseconds(),
+            pendingHeartbeat = if (flushedHeartbeat) null else buffer.pendingHeartbeat,
+            pendingDailyRisk = if (flushedDailyRisk) null else buffer.pendingDailyRisk,
+            pendingFastTelemetry = if (flushedFastTelemetry) null else buffer.pendingFastTelemetry,
+        )
+        persistNonCriticalControlPlaneBuffer()
     }
 
     private fun estimateQuoteVolumeIdr(
@@ -1350,15 +1562,12 @@ class MacEngineDaemon(
             ?.distinct()
             ?: marketQuotes.take(6).map { it.pairId.value }
 
-        runCatching {
-            controlPlane.upsertKingDashboardFastTelemetry(
-                totalBalanceIdr = totalBalanceIdr,
-                currentPingMs = displayPingMs,
-                activeLivePairs = activeLivePairs,
-            )
-        }.onFailure { error ->
-            logger.warn("Fast telemetry upsert failed: {}", error.message ?: "unknown")
-        }
+        queueNonCriticalFastTelemetry(
+            now = now,
+            totalBalanceIdr = totalBalanceIdr,
+            currentPingMs = displayPingMs,
+            activeLivePairs = activeLivePairs,
+        )
     }
 
     private fun isStagnantPair(
@@ -3024,6 +3233,7 @@ class MacEngineDaemon(
     private var lastKingDashboardFastTelemetryAt: Instant? = null
     private var lastControlPlaneHeartbeatAt: Instant? = null
     private var lastAutonomousResolverAt: Instant? = null
+    private var lastNonEmptyMarketQuotesAt: Instant? = null
 
     suspend fun run() {
         logger.info("Mac engine daemon loop started.")
@@ -3062,8 +3272,22 @@ class MacEngineDaemon(
 
         val now = Clock.System.now()
         val jakartaDate = jakartaNowDate(now)
-        val botState = controlPlane.fetchBotState(config.controlPlane.botId) ?: fallbackBotState(now)
-        var lease = runCatching { controlPlane.fetchLease(config.controlPlane.botId) }.getOrNull()
+        val peerBotStates = listOf("kidax", "kibot", "kinance")
+            .associateWith { peerId ->
+                if (peerId.equals(config.controlPlane.botId.value, ignoreCase = true)) {
+                    null
+                } else {
+                    readControlPlane<BotStateSnapshot?>(null) {
+                        controlPlane.fetchBotState(BotId(peerId))
+                    }
+                }
+            }
+        val botState = (readControlPlane<BotStateSnapshot?>(null) {
+            controlPlane.fetchBotState(config.controlPlane.botId)
+        } ?: fallbackBotState(now))
+        var lease = readControlPlane<EngineLeaseSnapshot?>(null) {
+            runCatching { controlPlane.fetchLease(config.controlPlane.botId) }.getOrNull()
+        }
         lease = ensureLeaseLockdownOwnership(now, lease)
         lastObservedLeaseTerm = lease?.term ?: botState.currentTerm
         val devices = refreshDevices(now)
@@ -3097,8 +3321,12 @@ class MacEngineDaemon(
         commands.forEach { command ->
             val result = handleCommand(command, leaseAfterCommands, botStateAfterCommands)
             if (result != null) {
-                leaseAfterCommands = controlPlane.fetchLease(config.controlPlane.botId)
-                botStateAfterCommands = controlPlane.fetchBotState(config.controlPlane.botId) ?: botStateAfterCommands
+                leaseAfterCommands = readControlPlane(leaseAfterCommands) {
+                    controlPlane.fetchLease(config.controlPlane.botId)
+                }
+                botStateAfterCommands = readControlPlane<BotStateSnapshot?>(null) {
+                    controlPlane.fetchBotState(config.controlPlane.botId)
+                } ?: botStateAfterCommands
                 if (result.isOperationalHealthWarning()) {
                     healthWarnings += result
                 }
@@ -3132,19 +3360,45 @@ class MacEngineDaemon(
                 localHealth = localHealth,
             )
         } else if (botStateAfterCommands.desiredState == BotDesiredState.OFF && masterBeforeTakeover) {
-            controlPlane.releaseLease(
-                botId = config.controlPlane.botId,
-                deviceId = config.device.deviceId,
-                term = leaseAfterCommands?.term?.value ?: 0L,
-                reason = "Bot desired state is OFF.",
-            )
+            writeControlPlane("release-lease-desired-off") {
+                controlPlane.releaseLease(
+                    botId = config.controlPlane.botId,
+                    deviceId = config.device.deviceId,
+                    term = leaseAfterCommands?.term?.value ?: 0L,
+                    reason = "Bot desired state is OFF.",
+                )
+            }
             appendAuditLog(LogLevel.INFO, "LEASE", "Mac released master lease because desired state is OFF.")
         }
 
-        val initialBotState = controlPlane.fetchBotState(config.controlPlane.botId) ?: botStateAfterCommands
-        var initialLease = controlPlane.fetchLease(config.controlPlane.botId)
+        val initialBotState = (readControlPlane<BotStateSnapshot?>(null) {
+            controlPlane.fetchBotState(config.controlPlane.botId)
+        } ?: botStateAfterCommands)
+        var initialLease = readControlPlane<EngineLeaseSnapshot?>(null) {
+            controlPlane.fetchLease(config.controlPlane.botId)
+        }
         initialLease = ensureLeaseLockdownOwnership(now, initialLease)
         lastObservedLeaseTerm = initialLease?.term ?: initialBotState.currentTerm
+        repository.applyRuntimeState(
+            buildDashboardState(
+                now = now,
+                jakartaDate = jakartaDate,
+                botState = initialBotState,
+                peerBotStates = peerBotStates + (config.controlPlane.botId.value.lowercase() to initialBotState),
+                lease = initialLease,
+                devices = devices,
+                localHealth = localHealth,
+                dailyRisk = dailyRisk,
+                equityHistory = equityHistory,
+                balances = cachedBalances,
+                marketQuotes = emptyList(),
+                strategyCycle = null,
+                weeklyReview = weeklyReview,
+                recentOrders = cachedRecentOrders,
+                supportEval = null,
+                healthDecisionSummary = "Warm-up sync in progress. Exchange and control-plane data are still settling.",
+            ),
+        )
         val isMaster = initialLease.isHeldBy(config.device.deviceId, now)
         val balancesDeferred: kotlinx.coroutines.Deferred<List<BalanceSnapshot>>? = if (exchangeReachable) {
             async { refreshBalances(now) }
@@ -3156,8 +3410,8 @@ class MacEngineDaemon(
         } else {
             null
         }
-        val marketQuotesDeferred: kotlinx.coroutines.Deferred<List<com.kibot.shared.models.MarketQuote>>? = if (exchangeReachable) {
-            async { runCatching { exchange.fetchMarketQuotes() }.getOrDefault(emptyList()) }
+        val marketQuotesDeferred: kotlinx.coroutines.Deferred<Result<List<com.kibot.shared.models.MarketQuote>>>? = if (exchangeReachable) {
+            async { runCatching { exchange.fetchMarketQuotes() } }
         } else {
             null
         }
@@ -3169,9 +3423,15 @@ class MacEngineDaemon(
         val resolvedOpenOrders = openOrdersDeferred?.let { 
             withTimeoutOrNull(awaitTimeoutMs) { it.await() } 
         } ?: cachedOpenOrders
-        val rawMarketQuotes = marketQuotesDeferred?.let { 
-            withTimeoutOrNull(awaitTimeoutMs) { it.await() } 
-        }.orEmpty()
+        val rawMarketQuotes = marketQuotesDeferred?.let {
+            withTimeoutOrNull(awaitTimeoutMs) { it.await() }
+        }?.fold(
+            onSuccess = { it },
+            onFailure = { error ->
+                healthWarnings += "Market quote feed fetch failed: ${error.message ?: "unknown"}"
+                emptyList()
+            },
+        ).orEmpty()
         val resolvedMarketQuotes = enrichRuntimeMarketQuotes(
             now = now,
             marketQuotes = rawMarketQuotes,
@@ -3179,12 +3439,16 @@ class MacEngineDaemon(
             openOrders = resolvedOpenOrders,
         )
         if (resolvedMarketQuotes.isNotEmpty()) {
+            lastNonEmptyMarketQuotesAt = now
             updateLeadLagMicroPulseSnapshots(now, resolvedMarketQuotes)
             updateOrderBookSpoofRadar(now, resolvedMarketQuotes)
         }
-        val marketFeedHealthy = resolvedMarketQuotes.isNotEmpty() || (
-            exchangeReachable && config.exchangeKind == ExchangeKind.BINANCE_SPOT
-        )
+        val recentQuoteFreshEnough = lastNonEmptyMarketQuotesAt?.let { lastHealthyAt ->
+            (now - lastHealthyAt).inWholeSeconds <= 90
+        } ?: false
+        val marketFeedHealthy = resolvedMarketQuotes.isNotEmpty() ||
+            recentQuoteFreshEnough ||
+            (exchangeReachable && config.exchangeKind == ExchangeKind.BINANCE_SPOT)
         if (exchangeReachable && resolvedMarketQuotes.isEmpty() && !marketFeedHealthy) {
             healthWarnings += "Market quote feed kosong."
         }
@@ -3290,12 +3554,14 @@ class MacEngineDaemon(
             emptyList()
         }
         reconciledOrderUpdates.forEach { order ->
-            controlPlane.upsertOrderSnapshot(
-                botId = config.controlPlane.botId,
-                term = initialLease?.term?.value ?: initialBotState.currentTerm.value,
-                deviceId = config.device.deviceId,
-                order = order,
-            )
+            writeControlPlane("upsert-order-snapshot-${order.orderId}") {
+                controlPlane.upsertOrderSnapshot(
+                    botId = config.controlPlane.botId,
+                    term = initialLease?.term?.value ?: initialBotState.currentTerm.value,
+                    deviceId = config.device.deviceId,
+                    order = order,
+                )
+            }
         }
         val effectiveRecentOrders = mergeRecentOrders(
             base = recentPersistedOrders,
@@ -3321,7 +3587,8 @@ class MacEngineDaemon(
             )
         } ?: derivedDailyRisk
         if (isMaster && effectiveDailyRisk != null) {
-            controlPlane.upsertDailyRisk(
+            queueNonCriticalDailyRisk(
+                now = now,
                 botId = config.controlPlane.botId,
                 date = jakartaDate,
                 snapshot = effectiveDailyRisk,
@@ -3331,44 +3598,57 @@ class MacEngineDaemon(
             dailyRiskFetchedAt = now
         }
         if (isMaster && runtimeLease != null && strategyCycle != null) {
-            maybeDispatchLeadLagCallout(
-                now = now,
-                lease = runtimeLease,
-                cycle = strategyCycle,
-                marketQuotes = resolvedMarketQuotes,
-            )
-            effectiveWeeklyReview = maybePublishWeeklyLearningSummary(
-                now = now,
-                cycle = strategyCycle,
-                marketQuotes = resolvedMarketQuotes,
-                currentWeeklyReview = weeklyReview,
-                recentOrders = effectiveRecentOrders,
-            )
-            publishAnalysisIfNeeded(
-                now = now,
-                lease = runtimeLease,
-                cycle = strategyCycle,
-            )
-            maybeManageLiveTrading(
-                now = now,
-                lease = runtimeLease,
-                cycle = strategyCycle,
-                weeklyReview = effectiveWeeklyReview,
-                health = finalHealth,
-                balances = resolvedBalances,
-                marketQuotes = resolvedMarketQuotes,
-                recentOrders = effectiveRecentOrders,
-                aiSoftAuditOnly = aiSupportEvaluation?.blockedReason != null,
-            )
-            publishLearningSignalsIfNeeded(
-                now = now,
-                cycle = strategyCycle,
-                weeklyReview = effectiveWeeklyReview,
-                aiBlockedReason = aiSupportEvaluation?.blockedReason,
-                aiUsedNetwork = aiSupportEvaluation?.usedNetwork == true,
-            )
-            runtimeBotState = controlPlane.fetchBotState(config.controlPlane.botId) ?: runtimeBotState
-            runtimeLease = controlPlane.fetchLease(config.controlPlane.botId)
+            runCatching {
+                maybeDispatchLeadLagCallout(
+                    now = now,
+                    lease = runtimeLease,
+                    cycle = strategyCycle,
+                    marketQuotes = resolvedMarketQuotes,
+                )
+                effectiveWeeklyReview = maybePublishWeeklyLearningSummary(
+                    now = now,
+                    cycle = strategyCycle,
+                    marketQuotes = resolvedMarketQuotes,
+                    currentWeeklyReview = weeklyReview,
+                    recentOrders = effectiveRecentOrders,
+                )
+                publishAnalysisIfNeeded(
+                    now = now,
+                    lease = runtimeLease,
+                    cycle = strategyCycle,
+                )
+                maybeManageLiveTrading(
+                    now = now,
+                    lease = runtimeLease,
+                    cycle = strategyCycle,
+                    weeklyReview = effectiveWeeklyReview,
+                    health = finalHealth,
+                    balances = resolvedBalances,
+                    marketQuotes = resolvedMarketQuotes,
+                    recentOrders = effectiveRecentOrders,
+                    aiSoftAuditOnly = aiSupportEvaluation?.blockedReason != null,
+                )
+                publishLearningSignalsIfNeeded(
+                    now = now,
+                    cycle = strategyCycle,
+                    weeklyReview = effectiveWeeklyReview,
+                    aiBlockedReason = aiSupportEvaluation?.blockedReason,
+                    aiUsedNetwork = aiSupportEvaluation?.usedNetwork == true,
+                )
+            }.onFailure { error ->
+                healthWarnings += "Master execution degraded: ${error.message ?: "unknown"}"
+                appendAuditLog(
+                    level = LogLevel.WARN,
+                    category = "CONTROL_PLANE",
+                    message = "Master side-effects degraded: ${error.message ?: "unknown"}",
+                )
+            }
+            runtimeBotState = readControlPlane<BotStateSnapshot?>(null) {
+                controlPlane.fetchBotState(config.controlPlane.botId)
+            } ?: runtimeBotState
+            runtimeLease = readControlPlane(runtimeLease) {
+                controlPlane.fetchLease(config.controlPlane.botId)
+            }
             runtimeLease = ensureLeaseLockdownOwnership(now, runtimeLease)
             lastObservedLeaseTerm = runtimeLease?.term ?: runtimeBotState.currentTerm
         }
@@ -3385,27 +3665,12 @@ class MacEngineDaemon(
             syncHealth = derivedSyncHealth,
             safeModeReason = if (derivedEffectiveState == BotEffectiveState.SAFE_MODE) runtimeBotState.safeModeReason else null,
         )
-        if (lastHeartbeatAt == null || (now - lastHeartbeatAt).inWholeSeconds >= 10) {
-            controlPlane.appendHeartbeat(
-                EngineHeartbeatSnapshot(
-                    botId = config.controlPlane.botId,
-                    deviceId = config.device.deviceId,
-                    observedAt = now,
-                    term = runtimeLease?.term,
-                    isMaster = runtimeLease.isHeldBy(config.device.deviceId, now),
-                    desiredState = runtimeBotState.desiredState,
-                    effectiveState = derivedEffectiveState,
-                    health = finalHealth,
-                ),
-            )
-            lastControlPlaneHeartbeatAt = now
-        }
-
         repository.applyRuntimeState(
             buildDashboardState(
                 now = now,
                 jakartaDate = jakartaDate,
                 botState = displayBotState,
+                peerBotStates = peerBotStates + (config.controlPlane.botId.value.lowercase() to displayBotState),
                 lease = runtimeLease,
                 devices = devices,
                 localHealth = finalHealth,
@@ -3429,14 +3694,50 @@ class MacEngineDaemon(
                 },
             ),
         )
+        maybeNotifyOperatorAlert(
+            now = now,
+            botState = displayBotState,
+            localHealth = finalHealth,
+            topCandidate = strategyCycle?.topCandidate?.value ?: strategyCycle?.selectedSignal?.pairId?.value,
+        )
+
+        if (lastHeartbeatAt == null || (now - lastHeartbeatAt).inWholeSeconds >= 10) {
+            queueNonCriticalHeartbeat(
+                now = now,
+                snapshot = EngineHeartbeatSnapshot(
+                    botId = config.controlPlane.botId,
+                    deviceId = config.device.deviceId,
+                    observedAt = now,
+                    term = runtimeLease?.term,
+                    isMaster = runtimeLease.isHeldBy(config.device.deviceId, now),
+                    desiredState = runtimeBotState.desiredState,
+                    effectiveState = derivedEffectiveState,
+                    health = finalHealth,
+                ),
+            )
+            lastControlPlaneHeartbeatAt = now
+        }
+        flushNonCriticalControlPlaneBuffer(now = now)
     }
 
     private suspend fun ensureRegistered() {
         if (registered) return
-        controlPlane.registerDevice(config.device)
-        registered = true
-        repository.noteStatus("Server monitor connected to live feed.")
-        appendAuditLog(LogLevel.INFO, "AUTH", "Server monitor connected to live feed.")
+        if (writeControlPlane(context = "register-device", timeoutMs = 12_000L) {
+                controlPlane.registerDevice(config.device)
+            }
+        ) {
+            registered = true
+            repository.noteBootstrapProgress(
+                message = "Server monitor connected to live feed.",
+                liveExecutionEnabled = config.enableLiveExecution,
+            )
+            appendAuditLog(LogLevel.INFO, "AUTH", "Server monitor connected to live feed.")
+        } else {
+            repository.noteBootstrapProgress(
+                message = "Server monitor waiting for control-plane registration.",
+                liveExecutionEnabled = config.enableLiveExecution,
+            )
+        }
     }
 
     private suspend fun handleCommand(
@@ -4384,8 +4685,14 @@ class MacEngineDaemon(
     ): EngineHealthSnapshot {
         val exchangeHardDown = !exchangeReachable && consecutiveExchangeProbeFailures >= 2 && !reportOnlyMode
         val severeWarnings = warnings.filter { it.isSevereHealthWarning() }
+        val controlPlaneFailOpen =
+            !supabaseReachable &&
+                exchangeReachable &&
+                !reportOnlyMode &&
+                config.device.role == DeviceRole.PRIMARY
         val status = when {
-            exchangeHardDown || !supabaseReachable -> HealthStatus.CRITICAL
+            exchangeHardDown || (!supabaseReachable && !controlPlaneFailOpen) -> HealthStatus.CRITICAL
+            controlPlaneFailOpen -> HealthStatus.WARNING
             reportOnlyMode && supabaseReachable -> HealthStatus.HEALTHY
             !marketFeedHealthy || severeWarnings.isNotEmpty() -> HealthStatus.WARNING
             else -> HealthStatus.HEALTHY
@@ -4399,7 +4706,9 @@ class MacEngineDaemon(
             severeWarnings.filterNot { it.contains("Exchange unreachable or credentials not configured.", ignoreCase = true) }
         } else {
             severeWarnings
-        }
+        } + listOfNotNull(
+            "Control plane unreachable; fail-open local trading mode active.".takeIf { controlPlaneFailOpen },
+        )
         return EngineHealthSnapshot(
             status = status,
             syncHealth = syncHealth,
@@ -4422,7 +4731,6 @@ class MacEngineDaemon(
             "heartbeat timeout",
             "reconciliation",
             "blocked",
-            "failed",
             "error",
             "critical",
             "broken",
@@ -4450,11 +4758,24 @@ class MacEngineDaemon(
         if (!shouldRefresh(now, lastExchangeProbeAt, config.exchangePingRefreshIntervalMillis, force = lastExchangeProbeAt == null)) {
             return lastExchangeReachable to lastExchangePingMs
         }
-        val pingStartedAtNs = System.nanoTime()
-        var exchangeReachable = runCatching { exchange.ping() }.getOrElse { false }
-        var exchangePingMs = ((System.nanoTime() - pingStartedAtNs) / 1_000_000L)
+        val publicPingUrl = when (config.exchangeKind) {
+            ExchangeKind.BINANCE_SPOT -> "${config.binanceClientConfig.publicBaseUrl}/api/v3/ping"
+            ExchangeKind.INDODAX -> "${config.indodaxClientConfig.publicBaseUrl}/ticker/btcidr"
+        }
+        val publicPingStartedAtNs = System.nanoTime()
+        var exchangeReachable = probePublicHttpUrl(publicPingUrl)
+        var exchangePingMs = ((System.nanoTime() - publicPingStartedAtNs) / 1_000_000L)
             .takeIf { exchangeReachable }
             ?.coerceAtLeast(1L)
+
+        if (!exchangeReachable) {
+            val pingStartedAtNs = System.nanoTime()
+            exchangeReachable = runCatching { exchange.ping() }.getOrElse { false }
+            exchangePingMs = ((System.nanoTime() - pingStartedAtNs) / 1_000_000L)
+                .takeIf { exchangeReachable }
+                ?.coerceAtLeast(1L)
+        }
+
         if (!exchangeReachable) {
             val fallbackStartedAtNs = System.nanoTime()
             val fallbackReachable = runCatching {
@@ -4464,21 +4785,6 @@ class MacEngineDaemon(
                 exchangeReachable = true
                 exchangePingMs = ((System.nanoTime() - fallbackStartedAtNs) / 1_000_000L).coerceAtLeast(1L)
                 logger.info("Exchange probe fallback succeeded via market quotes.")
-            } else if (config.exchangeKind == ExchangeKind.BINANCE_SPOT) {
-                val httpFallbackStartedAtNs = System.nanoTime()
-                val httpFallbackReachable = runCatching {
-                    val connection = URL("https://api.binance.com/api/v3/ping").openConnection() as HttpURLConnection
-                    connection.connectTimeout = 3000
-                    connection.readTimeout = 3000
-                    connection.requestMethod = "GET"
-                    connection.inputStream.use { it.readBytes() }
-                    connection.responseCode in 200..299
-                }.getOrDefault(false)
-                if (httpFallbackReachable) {
-                    exchangeReachable = true
-                    exchangePingMs = ((System.nanoTime() - httpFallbackStartedAtNs) / 1_000_000L).coerceAtLeast(1L)
-                    logger.info("Exchange probe fallback succeeded via Binance public ping.")
-                }
             }
         }
         lastExchangeProbeAt = now
@@ -4486,6 +4792,20 @@ class MacEngineDaemon(
         lastExchangePingMs = exchangePingMs
         consecutiveExchangeProbeFailures = if (exchangeReachable) 0 else (consecutiveExchangeProbeFailures + 1).coerceAtMost(10)
         return exchangeReachable to exchangePingMs
+    }
+
+    private fun probePublicHttpUrl(url: String): Boolean {
+        return runCatching {
+            val connection = URI.create(url).toURL().openConnection() as HttpURLConnection
+            connection.connectTimeout = 3000
+            connection.readTimeout = 3000
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("User-Agent", "KiBot/1.0 (+https://kibot.local)")
+            connection.setRequestProperty("Accept", "application/json,text/plain,*/*")
+            connection.instanceFollowRedirects = true
+            connection.connect()
+            connection.responseCode in 200..299
+        }.getOrDefault(false)
     }
 
     private fun activateConflictRecoveryHold(
@@ -4510,7 +4830,9 @@ class MacEngineDaemon(
         if (!shouldRefresh(now, devicesFetchedAt, config.devicesRefreshIntervalMillis, force = cachedDevices.isEmpty())) {
             return cachedDevices
         }
-        cachedDevices = runCatching { controlPlane.fetchDevices(config.controlPlane.botId) }.getOrElse { cachedDevices }
+        cachedDevices = withTimeoutOrNull(4_000L) {
+            runCatching { controlPlane.fetchDevices(config.controlPlane.botId) }.getOrElse { cachedDevices }
+        } ?: cachedDevices
         devicesFetchedAt = now
         return cachedDevices
     }
@@ -4523,7 +4845,9 @@ class MacEngineDaemon(
         if (!shouldRefresh(now, dailyRiskFetchedAt, config.dailyRiskRefreshIntervalMillis, force = force)) {
             return cachedDailyRisk
         }
-        cachedDailyRisk = runCatching { controlPlane.fetchDailyRisk(config.controlPlane.botId, date) }.getOrElse { cachedDailyRisk }
+        cachedDailyRisk = withTimeoutOrNull(4_000L) {
+            runCatching { controlPlane.fetchDailyRisk(config.controlPlane.botId, date) }.getOrElse { cachedDailyRisk }
+        } ?: cachedDailyRisk
         cachedDailyRiskDate = date
         dailyRiskFetchedAt = now
         return cachedDailyRisk
@@ -4534,18 +4858,22 @@ class MacEngineDaemon(
             return emptyList()
         }
         commandsFetchedAt = now
-        return runCatching {
-            controlPlane.fetchPendingCommands(config.controlPlane.botId, config.device.deviceId)
-        }.getOrDefault(emptyList())
+        return withTimeoutOrNull(4_000L) {
+            runCatching {
+                controlPlane.fetchPendingCommands(config.controlPlane.botId, config.device.deviceId)
+            }.getOrDefault(emptyList())
+        } ?: emptyList()
     }
 
     private suspend fun refreshWeeklyReview(now: Instant): com.kibot.shared.models.WeeklyLearningSummary? {
         if (!shouldRefresh(now, weeklyReviewFetchedAt, config.weeklySummaryRefreshIntervalMillis, force = weeklyReviewFetchedAt == null && cachedWeeklyReview == null)) {
             return cachedWeeklyReview
         }
-        cachedWeeklyReview = runCatching {
-            controlPlane.fetchLatestWeeklyLearningSummary(config.controlPlane.botId)
-        }.getOrElse { cachedWeeklyReview }
+        cachedWeeklyReview = withTimeoutOrNull(4_000L) {
+            runCatching {
+                controlPlane.fetchLatestWeeklyLearningSummary(config.controlPlane.botId)
+            }.getOrElse { cachedWeeklyReview }
+        } ?: cachedWeeklyReview
         weeklyReviewFetchedAt = now
         return cachedWeeklyReview
     }
@@ -4554,9 +4882,11 @@ class MacEngineDaemon(
         if (!shouldRefresh(now, equityHistoryFetchedAt, 60_000L, force = cachedEquityHistory.isEmpty())) {
             return cachedEquityHistory
         }
-        cachedEquityHistory = runCatching {
-            controlPlane.fetchDailyRiskHistory(config.controlPlane.botId, days = 40)
-        }.getOrElse { cachedEquityHistory }
+        cachedEquityHistory = withTimeoutOrNull(4_000L) {
+            runCatching {
+                controlPlane.fetchDailyRiskHistory(config.controlPlane.botId, days = 40)
+            }.getOrElse { cachedEquityHistory }
+        } ?: cachedEquityHistory
         equityHistoryFetchedAt = now
         return cachedEquityHistory
     }
@@ -4565,7 +4895,9 @@ class MacEngineDaemon(
         if (!shouldRefresh(now, balancesFetchedAt, config.balanceRefreshIntervalMillis, force = cachedBalances.isEmpty())) {
             return cachedBalances
         }
-        val fetched = runCatching { exchange.fetchBalances() }
+        val fetched = withTimeoutOrNull(8_000L) {
+            runCatching { exchange.fetchBalances() }
+        } ?: Result.failure(IllegalStateException("exchange balances timeout"))
         cachedBalances = fetched.getOrElse { cachedBalances }
         balancesFetchedAt = now
         return cachedBalances
@@ -4575,7 +4907,9 @@ class MacEngineDaemon(
         if (!shouldRefresh(now, openOrdersFetchedAt, config.openOrdersRefreshIntervalMillis, force = openOrdersFetchedAt == null)) {
             return cachedOpenOrders
         }
-        val fetched = runCatching { exchange.fetchOpenOrders() }
+        val fetched = withTimeoutOrNull(8_000L) {
+            runCatching { exchange.fetchOpenOrders() }
+        } ?: Result.failure(IllegalStateException("exchange open orders timeout"))
         cachedOpenOrders = fetched.getOrElse { cachedOpenOrders }
         openOrdersFetchedAt = now
         return cachedOpenOrders
@@ -4585,9 +4919,11 @@ class MacEngineDaemon(
         if (!shouldRefresh(now, recentOrdersFetchedAt, config.recentOrdersRefreshIntervalMillis, force = recentOrdersFetchedAt == null)) {
             return cachedRecentOrders
         }
-        val fetchedOrders = runCatching {
-            controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 200)
-        }.getOrElse { cachedRecentOrders }
+        val fetchedOrders = withTimeoutOrNull(4_000L) {
+            runCatching {
+                controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 200)
+            }.getOrElse { cachedRecentOrders }
+        } ?: cachedRecentOrders
         if (!config.localPositionStateEnabled) {
             cachedRecentOrders = fetchedOrders
             recentOrdersFetchedAt = now
@@ -4632,7 +4968,9 @@ class MacEngineDaemon(
         )
         if (!shouldRefresh) return cachedRecentFills
         cachedRecentFills = pairIds.flatMap { pairId ->
-            runCatching { exchange.fetchRecentFills(pairId, limit = 12) }.getOrDefault(emptyList())
+            withTimeoutOrNull(8_000L) {
+                runCatching { exchange.fetchRecentFills(pairId, limit = 12) }.getOrDefault(emptyList())
+            } ?: emptyList()
         }
         recentFillsFetchedAt = now
         cachedRecentFillsKey = pairKey
@@ -6985,10 +7323,64 @@ class MacEngineDaemon(
         }
     }
 
+    private suspend fun maybeNotifyOperatorAlert(
+        now: Instant,
+        botState: BotStateSnapshot,
+        localHealth: EngineHealthSnapshot,
+        topCandidate: String?,
+    ) {
+        if (!config.telegramAlertsEnabled) return
+        val alertState = when {
+            botState.effectiveState == BotEffectiveState.SAFE_MODE || botState.syncHealth == SyncHealth.BROKEN || localHealth.status == HealthStatus.CRITICAL -> "critical"
+            botState.effectiveState == BotEffectiveState.DEGRADED || botState.syncHealth == SyncHealth.DEGRADED || localHealth.status == HealthStatus.WARNING -> "degraded"
+            else -> "healthy"
+        }
+        val previous = lastOperatorAlertStateKey
+        if (previous == alertState) return
+        val candidateText = topCandidate?.takeIf { it.isNotBlank() && it != "-" } ?: "none"
+        val botName = config.controlPlane.botId.value.uppercase()
+        val issueText = repository.state.value.healthSummary
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .filterNot { it.startsWith("Regime ", ignoreCase = true) }
+            .firstOrNull()
+            ?.replace(Regex("\\s+"), " ")
+            ?.takeIf { it.isNotBlank() }
+            ?: "ada gangguan di engine"
+        val candidateLine = if (candidateText == "none") {
+            "Belum ada kandidat yang layak."
+        } else {
+            "Lagi mantau: $candidateText"
+        }
+        val message = when (alertState) {
+            "critical" -> """
+                🚨 $botName lagi bermasalah
+                $candidateLine
+                Intinya: $issueText
+            """.trimIndent()
+
+            "degraded" -> """
+                ⚠️ $botName lagi kurang fit
+                $candidateLine
+                Catatan: $issueText
+            """.trimIndent()
+
+            else -> """
+                ✅ $botName udah aman lagi
+                $candidateLine
+                Update: ${formatUpdatedLabel(now)}
+            """.trimIndent()
+        }
+        telegramAlertNotifier.send(message)
+        lastOperatorAlertStateKey = alertState
+    }
+
     private fun buildDashboardState(
         now: Instant,
         jakartaDate: LocalDate,
         botState: BotStateSnapshot,
+        peerBotStates: Map<String, BotStateSnapshot?>,
         lease: EngineLeaseSnapshot?,
         devices: List<DeviceDescriptor>,
         localHealth: EngineHealthSnapshot,
@@ -7147,12 +7539,38 @@ class MacEngineDaemon(
             }
             .take(24)
         val displayHeartbeatLabel = when {
-            localHealth.syncHealth == SyncHealth.HEALTHY && botState.effectiveState != BotEffectiveState.STOPPED -> "baru saja"
-            localHealth.syncHealth == SyncHealth.DEGRADED && botState.effectiveState != BotEffectiveState.STOPPED -> "beberapa saat lalu"
+            botState.syncHealth == SyncHealth.HEALTHY && botState.effectiveState != BotEffectiveState.STOPPED -> "baru saja"
+            botState.syncHealth == SyncHealth.DEGRADED && botState.effectiveState != BotEffectiveState.STOPPED -> "beberapa saat lalu"
             else -> heartbeatInstant?.let { formatAge(now, it) } ?: "Never"
         }
+        fun localNodeStatus(): String = when {
+            botState.desiredState == BotDesiredState.OFF || botState.effectiveState == BotEffectiveState.STOPPED -> "offline"
+            botState.syncHealth == SyncHealth.BROKEN || botState.effectiveState == BotEffectiveState.DEGRADED -> "degraded"
+            else -> "online"
+        }
+        fun peerNodeStatus(peerBotId: String): String {
+            if (config.controlPlane.botId.value.equals(peerBotId, ignoreCase = true)) return localNodeStatus()
+            val peerState = peerBotStates[peerBotId.lowercase()] ?: return "offline"
+            val udpSeenAt = lastTrinityHeartbeatByBotId[peerBotId.lowercase()]
+            val udpAgeMs = udpSeenAt?.let { (now - it).inWholeMilliseconds }
+            val heartbeatAt = peerState.lastHeartbeatAt ?: return when {
+                peerState.desiredState == BotDesiredState.OFF || peerState.effectiveState == BotEffectiveState.STOPPED -> "offline"
+                udpAgeMs != null && udpAgeMs <= config.leadLagUdpHeartbeatTimeoutMillis -> "online"
+                peerState.syncHealth == SyncHealth.BROKEN || peerState.effectiveState == BotEffectiveState.SAFE_MODE -> "degraded"
+                else -> "online"
+            }
+            val ageMs = (now - heartbeatAt).inWholeMilliseconds
+            return when {
+                peerState.desiredState == BotDesiredState.OFF || peerState.effectiveState == BotEffectiveState.STOPPED -> "offline"
+                udpAgeMs != null && udpAgeMs <= config.leadLagUdpHeartbeatTimeoutMillis -> "online"
+                peerState.syncHealth == SyncHealth.BROKEN || peerState.effectiveState == BotEffectiveState.SAFE_MODE -> "degraded"
+                ageMs <= 180_000L -> "online"
+                else -> "degraded"
+            }
+        }
+        val remoteLeaseConflict = lease?.conflictDetected == true && lease.currentHolder != config.device.deviceId
         val statusMessage = when {
-            botState.effectiveState == BotEffectiveState.SAFE_MODE || lease?.conflictDetected == true ->
+            botState.effectiveState == BotEffectiveState.SAFE_MODE ->
                 "Safe mode aktif. Tunggu status trade dan data exchange benar-benar bersih."
             localHealth.status == HealthStatus.CRITICAL ->
                 "Server Oracle lagi bermasalah: ${localHealth.warnings.firstOrNull().orEmpty()}".trim()
@@ -7250,19 +7668,36 @@ class MacEngineDaemon(
             rangeStart = LocalDate(jakartaDate.year, jakartaDate.month, 1),
             fallbackEquity = manualResetBaseline ?: portfolioValue,
         )
-        val return7dBaseline = manualResetBaseline ?: weeklyBaseline
+        val hasReliablePerformanceHistory =
+            holdingsDetailed.isNotEmpty() ||
+                recentOrders.any { it.status == com.kibot.shared.models.OrderStatus.FILLED } ||
+                equityHistory.size >= 3
+        val safeFallbackBaseline = manualResetBaseline ?: portfolioValue
+        val return7dBaseline = if (hasReliablePerformanceHistory) {
+            manualResetBaseline ?: weeklyBaseline
+        } else {
+            safeFallbackBaseline
+        }
         val return7d = portfolioValue - return7dBaseline
         val return7dPct = if (return7dBaseline > 0.0) return7d / return7dBaseline else 0.0
-        val monthlyResetBaseline = manualResetBaseline ?: resolveMonthlyReturnBaseline(
-            currentDate = jakartaDate,
-            currentEquity = portfolioValue,
-            fallbackEquity = monthlyBaseline,
-        )
+        val monthlyResetBaseline = if (hasReliablePerformanceHistory) {
+            manualResetBaseline ?: resolveMonthlyReturnBaseline(
+                currentDate = jakartaDate,
+                currentEquity = portfolioValue,
+                fallbackEquity = monthlyBaseline,
+            )
+        } else {
+            safeFallbackBaseline
+        }
         val return30d = portfolioValue - monthlyResetBaseline
         val return30dPct = if (monthlyResetBaseline > 0.0) return30d / monthlyResetBaseline else 0.0
         
         // Calculate cumulative return since bot started (using oldest equity history or manual reset baseline)
-        val cumulativeBaseline = manualResetBaseline ?: equityHistory.lastOrNull()?.currentEquityIdr?.toDoubleOrZero() ?: portfolioValue
+        val cumulativeBaseline = if (hasReliablePerformanceHistory) {
+            manualResetBaseline ?: equityHistory.lastOrNull()?.currentEquityIdr?.toDoubleOrZero() ?: portfolioValue
+        } else {
+            safeFallbackBaseline
+        }
         val cumulativeReturn = portfolioValue - cumulativeBaseline
         val cumulativeReturnPct = if (cumulativeBaseline > 0.0) cumulativeReturn / cumulativeBaseline else 0.0
         
@@ -7292,9 +7727,9 @@ class MacEngineDaemon(
             syncPathLabel = "Live Server",
             activeEngine = "Oracle Cloud Server",
             standbyEngine = "View Only",
-            syncHealth = localHealth.syncHealth.name,
+            syncHealth = botState.syncHealth.name,
             leaseTerm = lease?.term?.value ?: botState.currentTerm.value,
-            healthSummary = if (botState.effectiveState == BotEffectiveState.SAFE_MODE || lease?.conflictDetected == true) {
+            healthSummary = if (botState.effectiveState == BotEffectiveState.SAFE_MODE) {
                 botState.safeModeReason ?: "Safe mode active. Manual review is required."
             } else {
                 listOfNotNull(
@@ -7319,6 +7754,9 @@ class MacEngineDaemon(
             holdingsDetailed = holdingsDetailed,
             exchangePingMs = localHealth.feedLatencyMs?.let { "${it}ms" } ?: "--",
             exchangePingValueMs = localHealth.feedLatencyMs,
+            kidaxNodeStatus = peerNodeStatus("kidax"),
+            kibotNodeStatus = peerNodeStatus("kibot"),
+            kinanceNodeStatus = peerNodeStatus("kinance"),
             serverLocation = "Oracle Cloud (24/7)",
             serverUptime = repository.state.value.serverUptime,
             liveTimeline = liveTimeline,

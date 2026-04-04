@@ -45,6 +45,10 @@ class BinanceGateway internal constructor(
     private val client: HttpClient,
     private val json: Json,
 ) : ExchangeGateway {
+    private val privateApiEnabled =
+        credentials.apiKey.isNotBlank() &&
+            credentials.apiSecret.isNotBlank()
+
     override suspend fun ping(): Boolean {
         return runCatching {
             client.get("${config.publicBaseUrl}/api/v3/ping").status.isSuccess()
@@ -127,6 +131,7 @@ class BinanceGateway internal constructor(
     }
 
     override suspend fun fetchBalances(): List<BalanceSnapshot> {
+        if (!privateApiEnabled) return emptyList()
         val response = signedGet<AccountInfoResponse>("/api/v3/account")
         return response.balances.mapNotNull { balance ->
             val free = DecimalValue(balance.free)
@@ -146,12 +151,13 @@ class BinanceGateway internal constructor(
     }
 
     override suspend fun fetchOpenOrders(): List<OrderSnapshot> {
+        if (!privateApiEnabled) return emptyList()
         val response = signedGet<List<OrderRow>>("/api/v3/openOrders")
         return response.map { it.toOrderSnapshot() }
     }
 
     override suspend fun fetchRecentFills(pairId: PairId?, limit: Int): List<FillSnapshot> {
-        if (pairId == null) return emptyList()
+        if (!privateApiEnabled || pairId == null) return emptyList()
         val response = signedGet<List<MyTradeRow>>(
             path = "/api/v3/myTrades",
             params = linkedMapOf(
@@ -175,6 +181,7 @@ class BinanceGateway internal constructor(
     }
 
     override suspend fun placeOrder(plan: ExecutionPlan, clientOrderId: ClientOrderId): OrderSnapshot {
+        requirePrivateApi("place Binance order")
         if (config.shadowMode) {
             return buildShadowFilledOrder(plan, clientOrderId)
         }
@@ -254,6 +261,7 @@ class BinanceGateway internal constructor(
     }
 
     override suspend fun cancelOrder(clientOrderId: ClientOrderId): Boolean {
+        if (!privateApiEnabled) return false
         val openOrder = runCatching {
             fetchOpenOrders().firstOrNull { it.clientOrderId == clientOrderId }
         }.getOrNull() ?: return false
@@ -275,6 +283,7 @@ class BinanceGateway internal constructor(
     ): MarketBuyImpactEstimate? = null
 
     suspend fun fetchOrderByClientOrderId(clientOrderId: ClientOrderId, pairId: PairId): OrderSnapshot {
+        requirePrivateApi("fetch Binance order by client order id")
         val response = signedGet<OrderRow>(
             path = "/api/v3/order",
             params = linkedMapOf(
@@ -289,6 +298,7 @@ class BinanceGateway internal constructor(
         path: String,
         params: LinkedHashMap<String, String> = linkedMapOf(),
     ): T {
+        requirePrivateApi("perform Binance private GET")
         val query = signedQuery(params)
         val responseText = client.get("${config.privateBaseUrl}$path") {
             url {
@@ -304,6 +314,7 @@ class BinanceGateway internal constructor(
         path: String,
         params: LinkedHashMap<String, String>,
     ): T {
+        requirePrivateApi("perform Binance private POST")
         val query = signedQuery(params)
         val responseText = client.post("${config.privateBaseUrl}$path") {
             header("X-MBX-APIKEY", credentials.apiKey)
@@ -317,6 +328,7 @@ class BinanceGateway internal constructor(
         path: String,
         params: LinkedHashMap<String, String>,
     ): T {
+        requirePrivateApi("perform Binance private DELETE")
         val query = signedQuery(params)
         val responseText = client.delete("${config.privateBaseUrl}$path") {
             url {
@@ -343,6 +355,12 @@ class BinanceGateway internal constructor(
         }
         val queryString = payload.entries.joinToString("&") { (key, value) -> "${key.urlEncode()}=${value.urlEncode()}" }
         return SignedQuery(payload, HmacSha256Signer.sign(credentials.apiSecret, queryString))
+    }
+
+    private fun requirePrivateApi(action: String) {
+        if (!privateApiEnabled) {
+            throw ExchangeRejectedException("Binance private credentials not configured; cannot $action.")
+        }
     }
 
     companion object {

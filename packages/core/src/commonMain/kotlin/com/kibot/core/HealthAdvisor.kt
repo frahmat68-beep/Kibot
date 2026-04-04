@@ -25,7 +25,7 @@ class HealthAdvisor(
         if (!snapshot.exchangeReachable) {
             reasons += "Exchange is unreachable."
         }
-        if (!snapshot.websocketHealthy) {
+        if (!snapshot.websocketHealthy && !snapshot.exchangeReachable) {
             reasons += "Realtime market/trade stream is degraded."
         }
         snapshot.batteryPercent?.let { batteryPercent ->

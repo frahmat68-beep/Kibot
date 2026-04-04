@@ -174,9 +174,9 @@ class PairSelectorTest {
                 MarketQuote(
                     pairId = PairId("taxed_idr"),
                     bestBid = DecimalValue("100"),
-                    bestAsk = DecimalValue("100.9"),
-                    midPrice = DecimalValue("100.45"),
-                    spreadPct = 0.90,
+                    bestAsk = DecimalValue("101.6"),
+                    midPrice = DecimalValue("100.8"),
+                    spreadPct = 1.60,
                     quoteVolume24h = DecimalValue("95000000"),
                     baseVolume24h = DecimalValue("940000"),
                     estimatedSlippagePct = 0.20,

@@ -40,7 +40,10 @@ fun DashboardScreen(
             enter = expandVertically() + fadeIn(),
             exit = shrinkVertically() + fadeOut()
         ) {
-            ConnectionBanner(isConnected = isConnected)
+            ConnectionBanner(
+                isConnected = isConnected,
+                label = botState.connectedBotId.ifBlank { "server" }
+            )
         }
         
         LazyColumn(
@@ -63,7 +66,7 @@ fun DashboardScreen(
                     name = "KiBot Manager",
                     subtitle = "The Brain & Veto Manager",
                     status = botState.heartbeat.kibot.status,
-                    pingMs = botState.heartbeat.kibot.ping,
+                    pingMs = null,
                     aiStatus = botState.heartbeat.kibot.aiStatus,
                     isEnabled = botState.heartbeat.kibot.enabled,
                     onToggle = { enabled -> onToggleBot("kibot", enabled) }
@@ -76,7 +79,7 @@ fun DashboardScreen(
                     name = "Kinance",
                     subtitle = "Binance Predictive Radar",
                     status = botState.heartbeat.kinance.status,
-                    pingMs = botState.heartbeat.kinance.ping,
+                    pingMs = null,
                     aiStatus = botState.heartbeat.kinance.aiStatus,
                     isEnabled = botState.heartbeat.kinance.enabled,
                     onToggle = { enabled -> onToggleBot("kinance", enabled) }

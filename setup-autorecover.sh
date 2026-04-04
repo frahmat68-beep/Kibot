@@ -26,7 +26,7 @@ sudo pkill -f 'gradle.*:apps:mac-engine:run' || true
 sudo pkill -f '/home/ubuntu/KiBot/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar' || true
 sudo pkill -f '/home/ubuntu/mac-engine-0.1.0-all.jar' || true
 sudo pkill -f '/home/ubuntu/KiBot/server/mac-engine-all.jar' || true
-sudo fuser -k 8787/tcp || true
+sudo fuser -k "${KIBOT_PORT:-8789}"/tcp || true
 sudo systemctl daemon-reload
 sudo systemctl start kibot-engine
 

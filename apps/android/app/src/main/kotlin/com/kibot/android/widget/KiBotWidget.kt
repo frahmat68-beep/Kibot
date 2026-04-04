@@ -40,6 +40,8 @@ object KiBotWidgetKeys {
     val KINANCE_STATUS = stringPreferencesKey("widget_kinance_status")
     val KIBOT_STATUS = stringPreferencesKey("widget_kibot_status")
     val KIDAX_PING = longPreferencesKey("widget_kidax_ping")
+    val KINANCE_PING = longPreferencesKey("widget_kinance_ping")
+    val KIBOT_PING = longPreferencesKey("widget_kibot_ping")
     val LAST_UPDATE = longPreferencesKey("widget_last_update")
 }
 
@@ -64,25 +66,33 @@ class KiBotWidget : GlanceAppWidget() {
             val kinanceStatus = prefs[KiBotWidgetKeys.KINANCE_STATUS] ?: "offline"
             val kibotStatus = prefs[KiBotWidgetKeys.KIBOT_STATUS] ?: "offline"
             val kidaxPing = prefs[KiBotWidgetKeys.KIDAX_PING] ?: 0L
+            val kinancePing = prefs[KiBotWidgetKeys.KINANCE_PING] ?: 0L
+            val kibotPing = prefs[KiBotWidgetKeys.KIBOT_PING] ?: 0L
+            val lastUpdate = prefs[KiBotWidgetKeys.LAST_UPDATE] ?: 0L
             
             val size = LocalSize.current
             
             when {
                 size.width < 150.dp -> SmallWidget(balance, pnlToday, kidaxStatus)
                 size.width < 250.dp -> MediumWidget(balance, pnlToday, totalReturn, kidaxStatus)
-                else -> LargeWidget(balance, pnlToday, totalReturn, kidaxStatus, kinanceStatus, kibotStatus, kidaxPing)
+                else -> LargeWidget(balance, pnlToday, totalReturn, kidaxStatus, kinanceStatus, kibotStatus, kidaxPing, kinancePing, kibotPing, lastUpdate)
             }
         }
     }
 }
 
 @Composable
-private fun StatusDot(isOnline: Boolean) {
+private fun StatusDot(status: String) {
+    val color = when (status.lowercase()) {
+        "online" -> WidgetStatusOnline
+        "degraded" -> WidgetTextSecondary
+        else -> WidgetStatusOffline
+    }
     Box(
         modifier = GlanceModifier
             .size(8.dp)
             .cornerRadius(4.dp)
-            .background(if (isOnline) WidgetStatusOnline else WidgetStatusOffline)
+            .background(color)
     ) { }
 }
 
@@ -102,7 +112,7 @@ private fun SmallWidget(balance: Double, pnlToday: Double, status: String) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            StatusDot(status == "online")
+            StatusDot(status)
             Spacer(modifier = GlanceModifier.width(6.dp))
             Text(
                 text = "KiBot",
@@ -148,7 +158,7 @@ private fun MediumWidget(balance: Double, pnlToday: Double, totalReturn: Double,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(status == "online")
+            StatusDot(status)
             Spacer(modifier = GlanceModifier.width(6.dp))
             Text(
                 text = "KiBot",
@@ -215,7 +225,10 @@ private fun LargeWidget(
     kidaxStatus: String,
     kinanceStatus: String,
     kibotStatus: String,
-    kidaxPing: Long
+    kidaxPing: Long,
+    kinancePing: Long,
+    kibotPing: Long,
+    lastUpdate: Long
 ) {
     Column(
         modifier = GlanceModifier
@@ -240,10 +253,10 @@ private fun LargeWidget(
             Spacer(modifier = GlanceModifier.defaultWeight())
             
             Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusDot(kidaxStatus == "online")
+                StatusDot(kidaxStatus)
                 Spacer(modifier = GlanceModifier.width(4.dp))
                 Text(
-                    text = "${kidaxPing}ms",
+                    text = "Exchange ${kidaxPing}ms",
                     style = TextStyle(
                         color = ColorProvider(WidgetTextSecondary),
                         fontSize = 10.sp
@@ -303,7 +316,7 @@ private fun LargeWidget(
                 
                 Column {
                     Text(
-                        text = "Total Return",
+                        text = "Return Today",
                         style = TextStyle(
                             color = ColorProvider(WidgetTextSecondary),
                             fontSize = 10.sp
@@ -327,17 +340,27 @@ private fun LargeWidget(
             modifier = GlanceModifier.fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            BotStatusItem(name = "KiBot", isOnline = kibotStatus == "online")
+            BotStatusItem(name = "KiBot", status = kibotStatus, pingMs = kibotPing)
             Spacer(modifier = GlanceModifier.width(8.dp))
-            BotStatusItem(name = "Kinance", isOnline = kinanceStatus == "online")
+            BotStatusItem(name = "Kinance", status = kinanceStatus, pingMs = kinancePing)
             Spacer(modifier = GlanceModifier.width(8.dp))
-            BotStatusItem(name = "KiDax", isOnline = kidaxStatus == "online")
+            BotStatusItem(name = "KiDax", status = kidaxStatus, pingMs = kidaxPing)
         }
+
+        Spacer(modifier = GlanceModifier.height(8.dp))
+
+        Text(
+            text = formatWidgetFreshness(lastUpdate),
+            style = TextStyle(
+                color = ColorProvider(WidgetTextSecondary),
+                fontSize = 9.sp
+            )
+        )
     }
 }
 
 @Composable
-private fun BotStatusItem(name: String, isOnline: Boolean) {
+private fun BotStatusItem(name: String, status: String, pingMs: Long) {
     Row(
         modifier = GlanceModifier
             .background(WidgetSurface)
@@ -345,21 +368,25 @@ private fun BotStatusItem(name: String, isOnline: Boolean) {
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = GlanceModifier
-                .size(6.dp)
-                .cornerRadius(3.dp)
-                .background(if (isOnline) WidgetStatusOnline else WidgetStatusOffline)
-        ) { }
+        StatusDot(status)
         Spacer(modifier = GlanceModifier.width(6.dp))
-        Text(
-            text = name,
-            style = TextStyle(
-                color = ColorProvider(WidgetTextPrimary),
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Medium
+        Column {
+            Text(
+                text = name,
+                style = TextStyle(
+                    color = ColorProvider(WidgetTextPrimary),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
+                )
             )
-        )
+            Text(
+                text = if (pingMs > 0) "${pingMs}ms" else status.uppercase(),
+                style = TextStyle(
+                    color = ColorProvider(WidgetTextSecondary),
+                    fontSize = 9.sp
+                )
+            )
+        }
     }
 }
 
@@ -391,6 +418,29 @@ private fun formatPercentWidget(value: Double): String {
     return "${sign}${String.format("%.2f", value)}%"
 }
 
+private fun formatWidgetFreshness(lastUpdate: Long): String {
+    if (lastUpdate <= 0L) return "Widget menunggu sync"
+    val ageMs = (System.currentTimeMillis() - lastUpdate).coerceAtLeast(0L)
+    val ageSeconds = ageMs / 1000L
+    return when {
+        ageSeconds < 60L -> "Sync ${ageSeconds}s lalu"
+        ageSeconds < 3600L -> "Sync ${ageSeconds / 60L}m lalu"
+        else -> "Sync ${ageSeconds / 3600L}j lalu"
+    }
+}
+
 class KiBotWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = KiBotWidget()
+
+    override fun onEnabled(context: Context) {
+        super.onEnabled(context)
+        WidgetSyncScheduler.schedule(context)
+        WidgetSyncScheduler.scheduleImmediate(context)
+    }
+
+    override fun onUpdate(context: Context, appWidgetManager: android.appwidget.AppWidgetManager, appWidgetIds: IntArray) {
+        super.onUpdate(context, appWidgetManager, appWidgetIds)
+        WidgetSyncScheduler.schedule(context)
+        WidgetSyncScheduler.scheduleImmediate(context)
+    }
 }

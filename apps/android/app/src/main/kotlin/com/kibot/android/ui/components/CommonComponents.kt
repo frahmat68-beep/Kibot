@@ -85,7 +85,9 @@ fun StatusDot(
 @Composable
 fun PingIndicator(
     pingMs: Long,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showLabel: Boolean = true,
+    label: String = "Exchange"
 ) {
     val color = when {
         pingMs < 100 -> PingExcellent
@@ -100,12 +102,12 @@ fun PingIndicator(
     ) {
         Icon(
             imageVector = Icons.Default.NetworkCheck,
-            contentDescription = "Ping",
+            contentDescription = "$label Ping",
             tint = color,
             modifier = Modifier.size(16.dp)
         )
         Text(
-            text = "${pingMs}ms",
+            text = if (showLabel) "$label ${pingMs}ms" else "${pingMs}ms",
             style = MaterialTheme.typography.labelSmall,
             color = color
         )
@@ -154,7 +156,7 @@ fun BalanceCard(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "Total Return",
+                        text = "Return Today",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextTertiary
                     )
@@ -196,7 +198,7 @@ fun BotStatusCard(
     name: String,
     subtitle: String,
     status: String,
-    pingMs: Long,
+    pingMs: Long? = null,
     aiStatus: String,
     isEnabled: Boolean,
     onToggle: (Boolean) -> Unit,
@@ -263,7 +265,9 @@ fun BotStatusCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    PingIndicator(pingMs = pingMs)
+                    pingMs?.takeIf { it > 0L }?.let { livePing ->
+                        PingIndicator(pingMs = livePing)
+                    }
                     
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
@@ -462,6 +466,7 @@ fun LoadingOverlay(
 @Composable
 fun ConnectionBanner(
     isConnected: Boolean,
+    label: String = "server",
     modifier: Modifier = Modifier
 ) {
     val backgroundColor by animateColorAsState(
@@ -492,7 +497,7 @@ fun ConnectionBanner(
         )
         Spacer(modifier = Modifier.width(8.dp))
         Text(
-            text = if (isConnected) "Connected to KiDax" else "Disconnected - Reconnecting...",
+            text = if (isConnected) "Connected to ${label.uppercase()}" else "Disconnected - Reconnecting...",
             style = MaterialTheme.typography.labelSmall,
             color = textColor
         )

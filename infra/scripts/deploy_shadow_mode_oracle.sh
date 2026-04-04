@@ -53,15 +53,15 @@ touch "$ENV_FILE"
   fi
 
   if grep -q '^KIBOT_HIVE_UDP_PEERS=' "$ENV_FILE"; then
-    sed -i 's|^KIBOT_HIVE_UDP_PEERS=.*|KIBOT_HIVE_UDP_PEERS=127.0.0.1:9997,127.0.0.1:9998|' "$ENV_FILE"
+    sed -i 's|^KIBOT_HIVE_UDP_PEERS=.*|KIBOT_HIVE_UDP_PEERS=213.35.118.26:9997,213.35.118.26:9999|' "$ENV_FILE"
   else
-    printf '\nKIBOT_HIVE_UDP_PEERS=127.0.0.1:9997,127.0.0.1:9998\n' >> "$ENV_FILE"
+    printf '\nKIBOT_HIVE_UDP_PEERS=213.35.118.26:9997,213.35.118.26:9999\n' >> "$ENV_FILE"
   fi
 
   if grep -q '^KIBOT_HIVE_EXPECTED_BOT_IDS=' "$ENV_FILE"; then
-    sed -i 's/^KIBOT_HIVE_EXPECTED_BOT_IDS=.*/KIBOT_HIVE_EXPECTED_BOT_IDS=main,kibot/' "$ENV_FILE"
+    sed -i 's/^KIBOT_HIVE_EXPECTED_BOT_IDS=.*/KIBOT_HIVE_EXPECTED_BOT_IDS=kidax,kibot/' "$ENV_FILE"
   else
-    printf '\nKIBOT_HIVE_EXPECTED_BOT_IDS=main,kibot\n' >> "$ENV_FILE"
+    printf '\nKIBOT_HIVE_EXPECTED_BOT_IDS=kidax,kibot\n' >> "$ENV_FILE"
   fi
 
   if ! grep -q '^SHADOW_MODE=false$' "$ENV_FILE"; then
@@ -104,9 +104,9 @@ touch "$ENV_FILE"
   fi
 
   if grep -q '^KIBOT_HIVE_UDP_PEERS=' "$ENV_FILE"; then
-    sed -i 's|^KIBOT_HIVE_UDP_PEERS=.*|KIBOT_HIVE_UDP_PEERS=127.0.0.1:9998,127.0.0.1:9999|' "$ENV_FILE"
+    sed -i 's|^KIBOT_HIVE_UDP_PEERS=.*|KIBOT_HIVE_UDP_PEERS=213.35.118.26:9999|' "$ENV_FILE"
   else
-    printf '\nKIBOT_HIVE_UDP_PEERS=127.0.0.1:9998,127.0.0.1:9999\n' >> "$ENV_FILE"
+    printf '\nKIBOT_HIVE_UDP_PEERS=213.35.118.26:9999\n' >> "$ENV_FILE"
   fi
 
   if ! grep -q '^SHADOW_MODE=false$' "$ENV_FILE"; then

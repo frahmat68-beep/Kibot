@@ -241,22 +241,29 @@ class MacEngineDaemonTest {
 
         val exchange = FakeExchangeGateway(
             marketQuotes = mutableListOf(
-                marketQuote("eth_idr", 120_000_000.0, 0.74),
+                marketQuote("eth_usdt", 120_000_000.0, 0.74),
             ),
-            balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("500000"))),
+            balances = mutableListOf(BalanceSnapshot("usdt", DecimalValue("500000"))),
         )
         val daemon = MacEngineDaemon(
             repository = MacStateRepository(),
             controlPlane = controlPlane,
             exchange = exchange,
-            config = runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 1),
+            config = runtimeConfig(
+                enableLiveExecution = true,
+                deviceRole = DeviceRole.PRIMARY,
+                exchangeKind = ExchangeKind.BINANCE_SPOT,
+                chartGuardMinCandles = 1,
+                chartGuardMinActiveCandles = 1,
+                chartGuardMinDistinctCloseBuckets = 1,
+            ),
         )
 
         daemon.syncOnce()
 
         assertTrue(exchange.currentOrders().isNotEmpty())
         assertEquals(exchange.currentOrders().size, controlPlane.fetchRecentOrders(botId).size)
-        assertTrue(controlPlane.fetchRecentOrders(botId).any { it.pairId == PairId("eth_idr") })
+        assertTrue(controlPlane.fetchRecentOrders(botId).any { it.pairId == PairId("eth_usdt") })
         assertTrue(controlPlane.fetchRecentOrders(botId).all { it.side == OrderSide.BUY })
     }
 
@@ -462,6 +469,7 @@ class MacEngineDaemonTest {
             config = runtimeConfig(
                 enableLiveExecution = true,
                 deviceRole = DeviceRole.PRIMARY,
+                exchangeKind = ExchangeKind.BINANCE_SPOT,
                 chartGuardMinCandles = 1,
                 chartGuardMinActiveCandles = 1,
                 chartGuardMinDistinctCloseBuckets = 1,
@@ -621,8 +629,8 @@ class MacEngineDaemonTest {
         )
 
         val exchange = FakeExchangeGateway(
-            marketQuotes = mutableListOf(marketQuote("eth_idr", 120_000_000.0, 0.86)),
-            balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("500000"))),
+            marketQuotes = mutableListOf(marketQuote("eth_usdt", 120_000_000.0, 0.86)),
+            balances = mutableListOf(BalanceSnapshot("usdt", DecimalValue("500000"))),
             failOnPlaceOrder = true,
         )
         val repository = MacStateRepository()
@@ -630,7 +638,14 @@ class MacEngineDaemonTest {
             repository = repository,
             controlPlane = controlPlane,
             exchange = exchange,
-            config = runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 1),
+            config = runtimeConfig(
+                enableLiveExecution = true,
+                deviceRole = DeviceRole.PRIMARY,
+                exchangeKind = ExchangeKind.BINANCE_SPOT,
+                chartGuardMinCandles = 1,
+                chartGuardMinActiveCandles = 1,
+                chartGuardMinDistinctCloseBuckets = 1,
+            ),
         )
 
         daemon.syncOnce()
@@ -1000,7 +1015,7 @@ class MacEngineDaemonTest {
         val second = daemon.invokePrivateMethod<Boolean>("shouldRejectUdpDedup", dedupKey, Clock.System.now())
         daemon.invokePrivateMethod<Unit>("armUdpExecutionPrewarm", payload!!, Clock.System.now())
 
-        val dedup = daemon.readPrivateField<LinkedHashMap<String, Instant>>("udpRecentDedupKeys")
+        val dedup = daemon.readPrivateField<MutableMap<String, Instant>>("udpRecentDedupKeys")
         val prewarm = daemon.readPrivateField<MutableMap<String, Any>>("udpExecutionPrewarmByPair")
         assertTrue(!first)
         assertTrue(second)

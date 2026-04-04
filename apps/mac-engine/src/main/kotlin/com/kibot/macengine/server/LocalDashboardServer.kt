@@ -4,6 +4,7 @@ import com.kibot.macengine.runtime.MacCommandDispatcher
 import com.kibot.macengine.state.MacDashboardState
 import com.kibot.macengine.state.MacCommand
 import com.kibot.macengine.state.MacStateRepository
+import com.kibot.shared.models.BotId
 import com.kibot.shared.models.BotDesiredState
 import com.kibot.shared.models.CommandCenterCommandReply
 import com.kibot.shared.models.CommandCenterCommandRequest
@@ -69,6 +70,7 @@ import org.slf4j.LoggerFactory
 class LocalDashboardServer(
     private val repository: MacStateRepository,
     private val commandDispatcher: MacCommandDispatcher? = null,
+    private val botId: BotId = BotId("main"),
     private val host: String = "0.0.0.0",
     private val port: Int = 8787,
     private val androidReleaseDirectory: Path,
@@ -483,7 +485,7 @@ class LocalDashboardServer(
             webSocket("/api/live/ws") {
                 send(
                     Json.encodeToString(
-                        CommandCenterWsEnvelope.Snapshot(repository.state.value.toLiveSnapshot(host, port)),
+                        CommandCenterWsEnvelope.Snapshot(repository.state.value.toLiveSnapshot(host, port, botId)),
                     ),
                 )
                 val job = launch {
@@ -491,7 +493,7 @@ class LocalDashboardServer(
                         if (!isActive) return@collect
                         send(
                             Json.encodeToString(
-                                CommandCenterWsEnvelope.Snapshot(latest.toLiveSnapshot(host, port)),
+                                CommandCenterWsEnvelope.Snapshot(latest.toLiveSnapshot(host, port, botId)),
                             ),
                         )
                     }
@@ -514,7 +516,7 @@ class LocalDashboardServer(
             webSocket("/ws") {
                 send(
                     Json.encodeToString(
-                        CommandCenterWsEnvelope.Snapshot(repository.state.value.toLiveSnapshot(host, port)),
+                        CommandCenterWsEnvelope.Snapshot(repository.state.value.toLiveSnapshot(host, port, botId)),
                     ),
                 )
                 val job = launch {
@@ -522,7 +524,7 @@ class LocalDashboardServer(
                         if (!isActive) return@collect
                         send(
                             Json.encodeToString(
-                                CommandCenterWsEnvelope.Snapshot(latest.toLiveSnapshot(host, port)),
+                                CommandCenterWsEnvelope.Snapshot(latest.toLiveSnapshot(host, port, botId)),
                             ),
                         )
                     }
@@ -599,52 +601,59 @@ class LocalDashboardServer(
 
     private suspend fun handleCommandRequest(request: CommandCenterCommandRequest): CommandCenterCommandReply {
         val command = request.command.trim().lowercase()
-        val snapshot = repository.state.value.toLiveSnapshot(host, port)
+        val targetBotId = request.argument
+            ?.trim()
+            ?.lowercase()
+            ?.takeIf { it in setOf("kidax", "kibot", "kinance", "main") }
+            ?.let(::BotId)
+            ?: botId
+        val replySnapshotBotId = targetBotId
+        val snapshot = repository.state.value.toLiveSnapshot(host, port, replySnapshotBotId)
         return when (command) {
             "/status" -> CommandCenterCommandReply(
                 accepted = true,
-                message = "Status: ${snapshot.effectiveState.name} / ${snapshot.syncHealth.name}",
+                message = "Status ${targetBotId.value}: ${snapshot.effectiveState.name} / ${snapshot.syncHealth.name}",
                 echoCommand = request.command,
                 updatedSnapshot = snapshot,
                 issuedAtEpochMs = request.issuedAtEpochMs,
             )
             "/pause_kidax", "/veto_all" -> {
-                commandDispatcher?.dispatch(MacCommand.STOP_BOT)
+                commandDispatcher?.dispatch(MacCommand.STOP_BOT, targetBotId)
                 CommandCenterCommandReply(
                     accepted = true,
-                    message = "Emergency stop requested.",
+                    message = "Emergency stop requested for ${targetBotId.value}.",
                     echoCommand = request.command,
-                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port),
+                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port, replySnapshotBotId),
                     issuedAtEpochMs = request.issuedAtEpochMs,
                 )
             }
             "/sync" -> {
-                commandDispatcher?.dispatch(MacCommand.SYNC_NOW)
+                commandDispatcher?.dispatch(MacCommand.SYNC_NOW, targetBotId)
                 CommandCenterCommandReply(
                     accepted = true,
-                    message = "Sync requested.",
+                    message = "Sync requested for ${targetBotId.value}.",
                     echoCommand = request.command,
-                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port),
+                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port, replySnapshotBotId),
                     issuedAtEpochMs = request.issuedAtEpochMs,
                 )
             }
             "/start" -> {
-                commandDispatcher?.dispatch(MacCommand.START_BOT)
+                commandDispatcher?.dispatch(MacCommand.START_BOT, targetBotId)
                 CommandCenterCommandReply(
                     accepted = true,
-                    message = "Start requested.",
+                    message = "Start requested for ${targetBotId.value}.",
                     echoCommand = request.command,
-                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port),
+                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port, replySnapshotBotId),
                     issuedAtEpochMs = request.issuedAtEpochMs,
                 )
             }
             "/stop" -> {
-                commandDispatcher?.dispatch(MacCommand.STOP_BOT)
+                commandDispatcher?.dispatch(MacCommand.STOP_BOT, targetBotId)
                 CommandCenterCommandReply(
                     accepted = true,
-                    message = "Stop requested.",
+                    message = "Stop requested for ${targetBotId.value}.",
                     echoCommand = request.command,
-                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port),
+                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port, replySnapshotBotId),
                     issuedAtEpochMs = request.issuedAtEpochMs,
                 )
             }
@@ -659,11 +668,19 @@ class LocalDashboardServer(
 }
 
 private fun MacDashboardState.toLiveSnapshot(serverHost: String, serverPort: Int): CommandCenterLiveSnapshot {
+    return toLiveSnapshot(serverHost, serverPort, BotId("main"))
+}
+
+private fun MacDashboardState.toLiveSnapshot(
+    serverHost: String,
+    serverPort: Int,
+    botId: BotId,
+): CommandCenterLiveSnapshot {
     val serverId = "$serverHost:$serverPort"
         return CommandCenterLiveSnapshot(
         serverId = serverId,
         serverLabel = serverLocation.ifBlank { serverId },
-        botId = com.kibot.shared.models.BotId("main"),
+        botId = botId,
         effectiveState = effectiveState,
         syncHealth = runCatching { com.kibot.shared.models.SyncHealth.valueOf(syncHealth) }.getOrDefault(com.kibot.shared.models.SyncHealth.DEGRADED),
         liveExecutionEnabled = liveExecutionEnabled,
@@ -686,16 +703,19 @@ private fun MacDashboardState.toLiveSnapshot(serverHost: String, serverPort: Int
         referenceQuoteAssetPriceIdr = referenceQuoteAssetPriceIdr,
         pnlTodayIdr = pnlTodayIdr,
         pnlTodayPctLabel = pnlTodayPctLabel,
-        totalReturnIdr = pnlTodayIdr,  // Use PnL as cumulative for now, will improve with longer history
-        totalReturnPctLabel = pnlTodayPctLabel,  // Use daily PnL as total return proxy until historical tracking is ready
-        cumulativeReturnPctLabel = pnlTodayPctLabel,  // Same as totalReturnPctLabel
+        totalReturnIdr = pnlTodayIdr,
+        totalReturnPctLabel = pnlTodayPctLabel,
+        cumulativeReturnPctLabel = pnlTodayPctLabel,
         return7dIdr = return7dIdr,
         return7dPctLabel = return7dPctLabel,
         return30dIdr = return30dIdr,
         return30dPctLabel = return30dPctLabel,
         exchangePingMs = exchangePingMs,
         exchangePingValueMs = exchangePingValueMs,
-        kinancePingMs = exchangePingValueMs,  // Use exchange ping for Kinance as proxy
+        kinancePingMs = null,
+        kidaxNodeStatus = kidaxNodeStatus,
+        kibotNodeStatus = kibotNodeStatus,
+        kinanceNodeStatus = kinanceNodeStatus,
         serverUptime = serverUptime,
         releaseLabel = releaseLabel,
         targetPursuitLabel = targetPursuitLabel,

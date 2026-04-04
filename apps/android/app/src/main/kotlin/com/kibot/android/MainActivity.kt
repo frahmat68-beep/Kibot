@@ -1,5 +1,6 @@
 package com.kibot.android
 
+import android.app.Application
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -7,6 +8,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -15,14 +17,17 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kibot.android.data.*
 import com.kibot.android.ui.*
 import com.kibot.android.ui.theme.*
+import com.kibot.android.util.PreferencesManager
 import com.kibot.android.websocket.KiBotWebSocketClient
 import com.kibot.android.widget.KiBotWidgetHelper
 import kotlinx.coroutines.flow.*
@@ -37,10 +42,13 @@ sealed class Screen(
     object Dashboard : Screen("dashboard", "Dashboard", Icons.Filled.Dashboard, Icons.Outlined.Dashboard)
     object Portfolio : Screen("portfolio", "Portfolio", Icons.Filled.PieChart, Icons.Outlined.PieChart)
     object Ledger : Screen("ledger", "History", Icons.Filled.Receipt, Icons.Outlined.Receipt)
+    object Settings : Screen("settings", "Settings", Icons.Filled.Settings, Icons.Outlined.Settings)
 }
 
-class KiBotViewModel : ViewModel() {
-    private val wsClient = KiBotWebSocketClient()
+class KiBotViewModel(application: Application) : AndroidViewModel(application) {
+    private val preferencesManager = PreferencesManager(application)
+    private val primaryDashboardServer = ServerConfig(host = "213.35.118.26", port = 8787)
+    private val wsClient = KiBotWebSocketClient(primaryDashboardServer.getUrl())
     
     val botState: StateFlow<BotState> = wsClient.botState
     val connectionStatus: StateFlow<ConnectionStatus> = wsClient.connectionStatus
@@ -48,7 +56,9 @@ class KiBotViewModel : ViewModel() {
     
     private val _currentScreen = MutableStateFlow<Screen>(Screen.Dashboard)
     val currentScreen: StateFlow<Screen> = _currentScreen
-    
+    private val _serverConfig = MutableStateFlow(primaryDashboardServer)
+    val serverConfig: StateFlow<ServerConfig> = _serverConfig
+
     init {
         connect()
     }
@@ -71,6 +81,14 @@ class KiBotViewModel : ViewModel() {
     
     fun navigateTo(screen: Screen) {
         _currentScreen.value = screen
+    }
+
+    fun saveServerConfig(config: ServerConfig) {
+        preferencesManager.saveServerConfig(config)
+        // Live dashboard data is sourced from KiDax. Other bot statuses arrive via Trinity heartbeat.
+        _serverConfig.value = primaryDashboardServer
+        wsClient.reconnect(primaryDashboardServer.getUrl())
+        _currentScreen.value = Screen.Dashboard
     }
     
     override fun onCleared() {
@@ -95,13 +113,26 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun KiBotApp(
-    viewModel: KiBotViewModel = viewModel(),
-    context: android.content.Context = androidx.compose.ui.platform.LocalContext.current
-) {
+fun KiBotApp() {
+    // Get context INSIDE body, not as parameter default
+    val context = androidx.compose.ui.platform.LocalContext.current
+    
+    // Get ViewModel
+    val viewModel: KiBotViewModel = viewModel()
+    
     val botState by viewModel.botState.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
     val currentScreen by viewModel.currentScreen.collectAsState()
+    val serverConfig by viewModel.serverConfig.collectAsState()
+    val shouldShowBootFallback = remember(botState, connectionStatus) {
+        val bootLikeState =
+            botState.connectedBotId.equals("unknown", ignoreCase = true) &&
+                botState.balance == 0.0 &&
+                botState.positions.isEmpty() &&
+                botState.trades.isEmpty() &&
+                botState.assetAllocation.isEmpty()
+        bootLikeState || connectionStatus != ConnectionStatus.CONNECTED
+    }
     
     var showConfirmDialog by remember { mutableStateOf(false) }
     var pendingBotToggle by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
@@ -155,12 +186,18 @@ fun KiBotApp(
                         
                         // Connection indicator
                         ConnectionIndicator(
-                            status = connectionStatus,
-                            ping = botState.heartbeat.kidax.ping
+                            status = connectionStatus
                         )
                     }
                 },
                 actions = {
+                    IconButton(onClick = { viewModel.navigateTo(Screen.Settings) }) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            tint = KiBotBlue
+                        )
+                    }
                     IconButton(onClick = { viewModel.refresh() }) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
@@ -248,7 +285,24 @@ fun KiBotApp(
                             trades = botState.trades
                         )
                     }
+                    Screen.Settings -> {
+                        SettingsScreen(
+                            currentConfig = serverConfig,
+                            onSave = viewModel::saveServerConfig,
+                            onBack = { viewModel.navigateTo(Screen.Dashboard) }
+                        )
+                    }
                 }
+            }
+
+            if (shouldShowBootFallback) {
+                BootFallbackOverlay(
+                    connectionStatus = connectionStatus,
+                    statusMessage = botState.statusMessage,
+                    healthSummary = botState.healthSummary,
+                    onRefresh = { viewModel.refresh() },
+                    onOpenSettings = { viewModel.navigateTo(Screen.Settings) }
+                )
             }
         }
         
@@ -316,15 +370,101 @@ fun KiBotApp(
 }
 
 @Composable
+private fun BootFallbackOverlay(
+    connectionStatus: ConnectionStatus,
+    statusMessage: String,
+    healthSummary: String,
+    onRefresh: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkBackground.copy(alpha = 0.96f))
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, DarkSurfaceVariant, MaterialTheme.shapes.large)
+                .background(DarkSurface, MaterialTheme.shapes.large)
+                .padding(24.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Memory,
+                contentDescription = null,
+                tint = KiBotBlue,
+                modifier = Modifier.size(48.dp)
+            )
+            Text(
+                text = "KiBot sedang nyambung",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = when (connectionStatus) {
+                    ConnectionStatus.CONNECTED -> "Server sudah nyambung. Menunggu data pertama masuk."
+                    ConnectionStatus.CONNECTING -> "Lagi connect ke server KiDax."
+                    ConnectionStatus.DISCONNECTED -> "Koneksi ke server putus sebentar."
+                    ConnectionStatus.ERROR -> "App kena error koneksi. Coba refresh atau cek settings."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+                textAlign = TextAlign.Center
+            )
+            if (statusMessage.isNotBlank()) {
+                Text(
+                    text = statusMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    textAlign = TextAlign.Center
+                )
+            }
+            if (healthSummary.isNotBlank() && !healthSummary.equals("Menunggu snapshot server.", ignoreCase = true)) {
+                Text(
+                    text = healthSummary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextTertiary,
+                    textAlign = TextAlign.Center
+                )
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                OutlinedButton(
+                    onClick = onOpenSettings,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = KiBotBlue)
+                ) {
+                    Text("Settings")
+                }
+                Button(
+                    onClick = onRefresh,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = KiBotBlue, contentColor = Color.White)
+                ) {
+                    Text("Refresh")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ConnectionIndicator(
-    status: ConnectionStatus,
-    ping: Long
+    status: ConnectionStatus
 ) {
     val (color, text) = when (status) {
-        ConnectionStatus.CONNECTED -> StatusOnline to "Online"
-        ConnectionStatus.CONNECTING -> StatusDegraded to "Connecting..."
-        ConnectionStatus.DISCONNECTED -> StatusOffline to "Offline"
-        ConnectionStatus.ERROR -> StatusOffline to "Error"
+        ConnectionStatus.CONNECTED -> StatusOnline to "Server online"
+        ConnectionStatus.CONNECTING -> StatusDegraded to "Server connecting..."
+        ConnectionStatus.DISCONNECTED -> StatusOffline to "Server offline"
+        ConnectionStatus.ERROR -> StatusOffline to "Server error"
     }
     
     Row(
@@ -343,7 +483,7 @@ private fun ConnectionIndicator(
         )
         Spacer(modifier = Modifier.width(6.dp))
         Text(
-            text = if (status == ConnectionStatus.CONNECTED && ping > 0) "${ping}ms" else text,
+            text = text,
             style = MaterialTheme.typography.labelSmall,
             color = color
         )
