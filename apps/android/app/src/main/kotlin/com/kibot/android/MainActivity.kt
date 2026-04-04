@@ -101,6 +101,9 @@ fun KiBotApp(
     val connectionStatus by viewModel.connectionStatus.collectAsState()
     val currentScreen by viewModel.currentScreen.collectAsState()
     
+    var showConfirmDialog by remember { mutableStateOf(false) }
+    var pendingBotToggle by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+    
     val snackbarHostState = remember { SnackbarHostState() }
     
     // Error handling
@@ -218,7 +221,9 @@ fun KiBotApp(
                             botState = botState,
                             isConnected = connectionStatus == ConnectionStatus.CONNECTED,
                             onToggleBot = { botName, enable ->
-                                viewModel.toggleBot(botName, enable)
+                                // Show confirmation dialog before toggling
+                                pendingBotToggle = botName to enable
+                                showConfirmDialog = true
                             },
                             onRefresh = { viewModel.refresh() }
                         )
@@ -235,6 +240,67 @@ fun KiBotApp(
                     }
                 }
             }
+        }
+        
+        // Confirmation dialog for bot toggle
+        if (showConfirmDialog && pendingBotToggle != null) {
+            val (botName, enable) = pendingBotToggle!!
+            AlertDialog(
+                onDismissRequest = {
+                    showConfirmDialog = false
+                    pendingBotToggle = null
+                },
+                icon = {
+                    Icon(
+                        imageVector = if (enable) Icons.Default.PlayArrow else Icons.Default.Stop,
+                        contentDescription = null,
+                        tint = if (enable) ProfitGreen else LossRed
+                    )
+                },
+                title = {
+                    Text(
+                        text = if (enable) "Enable $botName?" else "Disable $botName?",
+                        color = TextPrimary
+                    )
+                },
+                text = {
+                    Text(
+                        text = if (enable) {
+                            "Bot akan mulai trading secara otomatis. Pastikan market dalam kondisi baik."
+                        } else {
+                            "⚠️ EMERGENCY STOP\n\nBot akan berhenti entry baru. Posisi yang sudah ada tetap dikelola trailing stop lokal.\n\nLanjutkan?"
+                        },
+                        color = TextSecondary
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            viewModel.toggleBot(botName, enable)
+                            showConfirmDialog = false
+                            pendingBotToggle = null
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (enable) ProfitGreen else LossRed
+                        )
+                    ) {
+                        Text(if (enable) "Enable" else "Stop Bot")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showConfirmDialog = false
+                            pendingBotToggle = null
+                        }
+                    ) {
+                        Text("Batal", color = TextSecondary)
+                    }
+                },
+                containerColor = DarkSurface,
+                titleContentColor = TextPrimary,
+                textContentColor = TextSecondary
+            )
         }
     }
 }

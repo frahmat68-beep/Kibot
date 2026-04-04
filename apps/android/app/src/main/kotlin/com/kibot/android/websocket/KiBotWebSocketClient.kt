@@ -91,12 +91,15 @@ class KiBotWebSocketClient(
     }
 
     fun toggleBot(botName: String, enable: Boolean) {
+        // Send command in server's expected format: CommandCenterCommandRequest
         val command = mapOf(
-            "type" to "command",
-            "action" to if (enable) "enable" else "disable",
-            "target" to botName
+            "command" to if (enable) "/resume" else "/pause_kidax",
+            "argument" to null,
+            "idempotencyKey" to "android_${System.currentTimeMillis()}",
+            "issuedAtEpochMs" to System.currentTimeMillis()
         )
         sendMessage(gson.toJson(command))
+        Log.d(TAG, "Toggle bot: $botName -> ${if (enable) "ENABLE" else "DISABLE"}")
     }
 
     fun requestFullState() {

@@ -239,13 +239,17 @@ fun BotStatusCard(
                 
                 Switch(
                     checked = isEnabled,
-                    onCheckedChange = onToggle,
+                    onCheckedChange = { newState ->
+                        // Request confirmation from parent before actually toggling
+                        onToggle(newState)
+                    },
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = ProfitGreen,
                         checkedTrackColor = ProfitGreen.copy(alpha = 0.3f),
                         uncheckedThumbColor = TextDisabled,
                         uncheckedTrackColor = DarkSurfaceVariant
-                    )
+                    ),
+                    modifier = Modifier.scale(1.1f)
                 )
             }
             

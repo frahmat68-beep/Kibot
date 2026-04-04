@@ -58,7 +58,8 @@ class IndodaxGateway internal constructor(
 
     override suspend fun ping(): Boolean {
         return runCatching {
-            client.get("${config.publicBaseUrl}/summaries").status.isSuccess()
+            // Use lightweight ticker endpoint instead of heavy /summaries
+            client.get("${config.publicBaseUrl}/ticker/btcidr").status.isSuccess()
         }.getOrDefault(false)
     }
 
