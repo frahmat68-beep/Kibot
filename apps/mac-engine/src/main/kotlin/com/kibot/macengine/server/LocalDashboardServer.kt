@@ -686,12 +686,16 @@ private fun MacDashboardState.toLiveSnapshot(serverHost: String, serverPort: Int
         referenceQuoteAssetPriceIdr = referenceQuoteAssetPriceIdr,
         pnlTodayIdr = pnlTodayIdr,
         pnlTodayPctLabel = pnlTodayPctLabel,
+        totalReturnIdr = pnlTodayIdr,  // Use PnL as cumulative for now, will improve with longer history
+        totalReturnPctLabel = "0.00%",  // Will be populated from app state tracking
+        cumulativeReturnPctLabel = "0.00%",  // Will be populated from app state tracking
         return7dIdr = return7dIdr,
         return7dPctLabel = return7dPctLabel,
         return30dIdr = return30dIdr,
         return30dPctLabel = return30dPctLabel,
         exchangePingMs = exchangePingMs,
         exchangePingValueMs = exchangePingValueMs,
+        kinancePingMs = exchangePingValueMs,  // Use exchange ping for Kinance as proxy
         serverUptime = serverUptime,
         releaseLabel = releaseLabel,
         targetPursuitLabel = targetPursuitLabel,
@@ -722,6 +726,8 @@ private fun MacDashboardState.toLiveSnapshot(serverHost: String, serverPort: Int
         liveTimeline = liveTimeline.map {
             CommandCenterTimelineEntry(it.timestampEpochMs, it.category, it.message)
         },
+        netWorthHistory = emptyList(),  // Will be populated by app tracking
+        assetAllocationDetailed = emptyList(),  // Will be derived from holdings on client
         updatedAtEpochMs = lastUpdatedEpochMs,
     )
 }

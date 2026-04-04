@@ -248,8 +248,7 @@ fun BotStatusCard(
                         checkedTrackColor = ProfitGreen.copy(alpha = 0.3f),
                         uncheckedThumbColor = TextDisabled,
                         uncheckedTrackColor = DarkSurfaceVariant
-                    ),
-                    modifier = Modifier.scale(1.1f)
+                    )
                 )
             }
             

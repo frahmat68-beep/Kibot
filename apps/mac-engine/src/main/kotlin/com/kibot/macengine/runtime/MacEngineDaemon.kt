@@ -7260,6 +7260,12 @@ class MacEngineDaemon(
         )
         val return30d = portfolioValue - monthlyResetBaseline
         val return30dPct = if (monthlyResetBaseline > 0.0) return30d / monthlyResetBaseline else 0.0
+        
+        // Calculate cumulative return since bot started (using oldest equity history or manual reset baseline)
+        val cumulativeBaseline = manualResetBaseline ?: equityHistory.lastOrNull()?.currentEquityIdr?.toDoubleOrZero() ?: portfolioValue
+        val cumulativeReturn = portfolioValue - cumulativeBaseline
+        val cumulativeReturnPct = if (cumulativeBaseline > 0.0) cumulativeReturn / cumulativeBaseline else 0.0
+        
         return com.kibot.macengine.state.MacDashboardState(
             isBotRunning = botState.effectiveState != BotEffectiveState.STOPPED,
             effectiveState = botState.effectiveState,

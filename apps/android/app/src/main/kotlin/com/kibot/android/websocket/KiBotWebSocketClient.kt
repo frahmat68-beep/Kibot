@@ -91,15 +91,20 @@ class KiBotWebSocketClient(
     }
 
     fun toggleBot(botName: String, enable: Boolean) {
-        // Send command in server's expected format: CommandCenterCommandRequest
-        val command = mapOf(
-            "command" to if (enable) "/resume" else "/pause_kidax",
-            "argument" to null,
-            "idempotencyKey" to "android_${System.currentTimeMillis()}",
-            "issuedAtEpochMs" to System.currentTimeMillis()
-        )
-        sendMessage(gson.toJson(command))
-        Log.d(TAG, "Toggle bot: $botName -> ${if (enable) "ENABLE" else "DISABLE"}")
+        try {
+            // Send command in server's expected format: CommandCenterCommandRequest
+            val command = mapOf(
+                "command" to if (enable) "RESUME_KIDAX" else "PAUSE_KIDAX",
+                "argument" to null,
+                "idempotencyKey" to "android_${System.currentTimeMillis()}",
+                "issuedAtEpochMs" to System.currentTimeMillis()
+            )
+            val jsonCommand = gson.toJson(command)
+            sendMessage(jsonCommand)
+            Log.d(TAG, "Toggle bot: $botName -> ${if (enable) "RESUME" else "PAUSE"}, Sent: $jsonCommand")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error sending toggle command: ${e.message}", e)
+        }
     }
 
     fun requestFullState() {
@@ -216,9 +221,15 @@ class KiBotWebSocketClient(
             val pnlTodayIdr = snapshot.get("pnlTodayIdr")?.asString ?: "Rp0"
             val pnlToday = parseRupiahToDouble(pnlTodayIdr)
             
-            // Parse total return percentage from "pnlTodayPctLabel" (format: "-0.1%" or "+29.9%")
+            // Parse daily return percentage from "pnlTodayPctLabel" (format: "-0.1%" or "+29.9%")
             val pnlTodayPctLabel = snapshot.get("pnlTodayPctLabel")?.asString ?: "0%"
-            val totalReturn = parsePercentToDouble(pnlTodayPctLabel)
+            val pnlTodayPercent = parsePercentToDouble(pnlTodayPctLabel)
+            
+            // Parse TOTAL/CUMULATIVE return percentage from "totalReturnPctLabel" or "cumulativeReturnPctLabel"
+            val totalReturnPctLabel = snapshot.get("totalReturnPctLabel")?.asString 
+                ?: snapshot.get("cumulativeReturnPctLabel")?.asString 
+                ?: "0%"
+            val totalReturn = parsePercentToDouble(totalReturnPctLabel)
             
             // Parse holdings from "holdingsDetailed"
             val positions = mutableListOf<Position>()
@@ -285,23 +296,45 @@ class KiBotWebSocketClient(
             val exchangePingMs = snapshot.get("exchangePingValueMs")?.asLong ?: 0L
             val liveExecutionEnabled = snapshot.get("liveExecutionEnabled")?.asBoolean ?: false
             
+            // If main bot state is RUNNING or DEGRADED and has recent data, consider it operational
+            // DEGRADED means some services are struggling but still responding
+            // They're tightly coupled and can't function if main bot stops completely
+            val isBotOperational = effectiveState in listOf("RUNNING", "DEGRADED")
+            val syncHealthStatus = syncHealth.uppercase()
+            
             val kidaxStatus = ServiceStatus(
-                status = if (effectiveState == "RUNNING" && liveExecutionEnabled) "online" else if (effectiveState == "RUNNING") "degraded" else "offline",
+                status = when {
+                    !isBotOperational -> "offline"
+                    liveExecutionEnabled && syncHealthStatus != "BROKEN" -> "online"
+                    isBotOperational -> "degraded"
+                    else -> "offline"
+                },
                 ping = exchangePingMs,
                 aiStatus = if (snapshot.get("aiProviderSummary")?.asString?.contains("LIMITED") == true) "limited" else "active",
                 enabled = liveExecutionEnabled,
                 holdings = positions.map { Holding(it.pair.split("_").first().uppercase(), it.amount, it.currentPrice, it.pnl) }
             )
             
+            // Kinance status: use syncHealth as the source of truth (main bot monitors Kinance)
+            val kinancePingMs = snapshot.get("kinancePingMs")?.asLong 
+                ?: snapshot.get("kinanceLatencyMs")?.asLong 
+                ?: exchangePingMs
+            
             val kinanceStatus = ServiceStatus(
-                status = if (syncHealth == "HEALTHY") "online" else "degraded",
-                ping = exchangePingMs,
+                status = when {
+                    !isBotOperational -> "offline"
+                    syncHealthStatus == "HEALTHY" -> "online"
+                    syncHealthStatus == "DEGRADED" -> "degraded"
+                    else -> "offline"
+                },
+                ping = kinancePingMs,
                 aiStatus = "active",
                 enabled = true
             )
             
+            // KiBot Manager status: consider it online if bot is operational
             val kibotStatus = ServiceStatus(
-                status = if (effectiveState == "RUNNING") "online" else "offline",
+                status = if (isBotOperational) "online" else "offline",
                 ping = 0,
                 aiStatus = "active",
                 enabled = true
@@ -310,6 +343,51 @@ class KiBotWebSocketClient(
             // Parse return summaries
             val return7dPct = parsePercentToDouble(snapshot.get("return7dPctLabel")?.asString ?: "0%")
             val return30dPct = parsePercentToDouble(snapshot.get("return30dPctLabel")?.asString ?: "0%")
+            
+            // Parse net worth history for charts
+            val netWorthHistory = mutableListOf<NetWorthPoint>()
+            snapshot.getAsJsonArray("netWorthHistory")?.forEach { point ->
+                val pointObj = point.asJsonObject
+                val timestamp = pointObj.get("timestamp")?.asLong ?: System.currentTimeMillis()
+                val value = parseRupiahToDouble(pointObj.get("value")?.asString ?: "Rp0")
+                netWorthHistory.add(NetWorthPoint(timestamp, value))
+            }
+            
+            // If no history provided, add current balance as baseline
+            if (netWorthHistory.isEmpty()) {
+                netWorthHistory.add(NetWorthPoint(System.currentTimeMillis(), balance))
+            }
+            
+            // Parse asset allocation details for pie chart
+            val assetAllocations = mutableListOf<AssetAllocation>()
+            snapshot.getAsJsonArray("assetAllocationDetailed")?.forEach { item ->
+                val obj = item.asJsonObject
+                val coin = obj.get("coin")?.asString ?: ""
+                val percentageLabel = obj.get("percentageLabel")?.asString ?: "0%"
+                val valueLabel = obj.get("valueLabel")?.asString ?: "Rp0"
+                
+                if (coin.isNotEmpty()) {
+                    assetAllocations.add(AssetAllocation(
+                        coin = coin,
+                        percentage = parsePercentToDouble(percentageLabel),
+                        value = parseRupiahToDouble(valueLabel)
+                    ))
+                }
+            }
+            
+            // If no allocations provided, derive from positions
+            if (assetAllocations.isEmpty() && positions.isNotEmpty()) {
+                val totalValue = positions.sumOf { it.currentPrice * it.amount }
+                positions.forEach { pos ->
+                    val value = pos.currentPrice * pos.amount
+                    val pct = if (totalValue > 0) (value / totalValue) * 100 else 0.0
+                    assetAllocations.add(AssetAllocation(
+                        coin = pos.pair.split("_").first().uppercase(),
+                        percentage = pct,
+                        value = value
+                    ))
+                }
+            }
             
             // Update bot state with all parsed data
             updateBotState { currentState ->
@@ -327,16 +405,19 @@ class KiBotWebSocketClient(
                         kibot = kibotStatus
                     ),
                     returnSummary = ReturnSummary(
-                        day1 = totalReturn,
+                        day1 = pnlTodayPercent,  // Fix: use daily percent here
                         day7 = return7dPct,
                         day30 = return30dPct
                     ),
+                    netWorthHistory = netWorthHistory,
+                    assetAllocation = assetAllocations,
                     isConnected = true,
                     lastUpdate = System.currentTimeMillis()
                 )
             }
             
-            Log.d(TAG, "Parsed snapshot: balance=$balance, positions=${positions.size}, trades=${trades.size}")
+            Log.d(TAG, "Parsed snapshot: balance=$balance, totalReturn=$totalReturn%, pnlToday=$pnlToday (${pnlTodayPercent}%), " +
+                "positions=${positions.size}, trades=${trades.size}, allocations=${assetAllocations.size}")
             
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse CommandCenter snapshot: ${e.message}", e)

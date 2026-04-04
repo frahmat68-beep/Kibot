@@ -24,6 +24,7 @@ import com.kibot.android.data.*
 import com.kibot.android.ui.*
 import com.kibot.android.ui.theme.*
 import com.kibot.android.websocket.KiBotWebSocketClient
+import com.kibot.android.widget.KiBotWidgetHelper
 import kotlinx.coroutines.flow.*
 
 // Navigation destinations
@@ -95,7 +96,8 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun KiBotApp(
-    viewModel: KiBotViewModel = viewModel()
+    viewModel: KiBotViewModel = viewModel(),
+    context: android.content.Context = androidx.compose.ui.platform.LocalContext.current
 ) {
     val botState by viewModel.botState.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
@@ -114,6 +116,14 @@ fun KiBotApp(
                 duration = SnackbarDuration.Short
             )
         }
+    }
+    
+    // Update widget with real-time data
+    LaunchedEffect(botState) {
+        KiBotWidgetHelper.updateWidgetData(
+            context = context,
+            botState = botState
+        )
     }
     
     Scaffold(

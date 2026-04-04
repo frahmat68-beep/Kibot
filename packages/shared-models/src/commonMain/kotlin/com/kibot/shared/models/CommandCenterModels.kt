@@ -30,12 +30,16 @@ data class CommandCenterLiveSnapshot(
     val referenceQuoteAssetPriceIdr: Double? = null,
     val pnlTodayIdr: String,
     val pnlTodayPctLabel: String,
+    val totalReturnIdr: String = "",
+    val totalReturnPctLabel: String = "",
+    val cumulativeReturnPctLabel: String = "",
     val return7dIdr: String,
     val return7dPctLabel: String,
     val return30dIdr: String,
     val return30dPctLabel: String,
     val exchangePingMs: String,
     val exchangePingValueMs: Long? = null,
+    val kinancePingMs: Long? = null,
     val serverUptime: String,
     val releaseLabel: String,
     val targetPursuitLabel: String,
@@ -43,6 +47,8 @@ data class CommandCenterLiveSnapshot(
     val holdingsDetailed: List<CommandCenterHolding> = emptyList(),
     val recentOrders: List<CommandCenterOrder> = emptyList(),
     val liveTimeline: List<CommandCenterTimelineEntry> = emptyList(),
+    val netWorthHistory: List<CommandCenterNetWorthPoint> = emptyList(),
+    val assetAllocationDetailed: List<CommandCenterAssetAllocation> = emptyList(),
     val updatedAtEpochMs: Long,
 )
 
@@ -74,6 +80,19 @@ data class CommandCenterTimelineEntry(
     val timestampEpochMs: Long,
     val category: String,
     val message: String,
+)
+
+@Serializable
+data class CommandCenterNetWorthPoint(
+    val timestamp: Long,
+    val value: String,
+)
+
+@Serializable
+data class CommandCenterAssetAllocation(
+    val coin: String,
+    val percentageLabel: String,
+    val valueLabel: String,
 )
 
 @Serializable
