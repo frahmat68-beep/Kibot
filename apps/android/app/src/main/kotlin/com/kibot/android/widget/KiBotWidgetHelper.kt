@@ -22,11 +22,14 @@ object KiBotWidgetHelper {
      * This synchronizes real-time data from the app to the widget
      */
     fun updateWidgetData(context: Context, botState: BotState) {
+        android.util.Log.i("KiBotWidget", "📊 updateWidgetData called - balance=${botState.balance}, pnl=${botState.pnlToday}, connected=${botState.isConnected}")
         scope.launch {
             try {
                 // Update app widget state with new data
                 val glanceAppWidgetManager = GlanceAppWidgetManager(context)
                 val glanceIds = glanceAppWidgetManager.getGlanceIds(KiBotWidget::class.java)
+                android.util.Log.i("KiBotWidget", "📊 Found ${glanceIds.size} widget instances")
+                
                 val kidaxPrimarySnapshot = botState.connectedBotId.equals("kidax", ignoreCase = true)
                 val hasAuthoritativePortfolio =
                     botState.balance > 0.0 ||
@@ -82,12 +85,16 @@ object KiBotWidgetHelper {
                             this[KiBotWidgetKeys.KINANCE_PING] = nextKinancePing
                             this[KiBotWidgetKeys.KIBOT_PING] = nextKiBotPing
                             this[KiBotWidgetKeys.LAST_UPDATE] = botState.lastUpdate.takeIf { it > 0L } ?: System.currentTimeMillis()
+                            
+                            android.util.Log.i("KiBotWidget", "📊 Updated widget state: balance=$nextBalance, pnl=$nextPnlToday, return=$nextTotalReturn")
                         }
                     }
                 }
                 KiBotWidget().updateAll(context)
+                android.util.Log.i("KiBotWidget", "📊 Widget updateAll() called")
                 
             } catch (e: Exception) {
+                android.util.Log.e("KiBotWidget", "❌ Error updating widget", e)
                 e.printStackTrace()
             }
         }
