@@ -687,8 +687,8 @@ private fun MacDashboardState.toLiveSnapshot(serverHost: String, serverPort: Int
         pnlTodayIdr = pnlTodayIdr,
         pnlTodayPctLabel = pnlTodayPctLabel,
         totalReturnIdr = pnlTodayIdr,  // Use PnL as cumulative for now, will improve with longer history
-        totalReturnPctLabel = "0.00%",  // Will be populated from app state tracking
-        cumulativeReturnPctLabel = "0.00%",  // Will be populated from app state tracking
+        totalReturnPctLabel = pnlTodayPctLabel,  // Use daily PnL as total return proxy until historical tracking is ready
+        cumulativeReturnPctLabel = pnlTodayPctLabel,  // Same as totalReturnPctLabel
         return7dIdr = return7dIdr,
         return7dPctLabel = return7dPctLabel,
         return30dIdr = return30dIdr,
