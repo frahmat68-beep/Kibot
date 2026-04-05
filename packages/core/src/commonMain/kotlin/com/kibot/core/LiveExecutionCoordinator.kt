@@ -29,6 +29,7 @@ class LiveExecutionCoordinator(
         existingPersistedOrders: List<OrderSnapshot>,
         exchange: ExchangeGateway,
         controlPlane: ControlPlaneGateway,
+        bypassLeaseValidation: Boolean = false,
     ): LiveExecutionResult {
         if (existingPersistedOrders.any { it.pairId == executionPlan.signal.pairId }) {
             return LiveExecutionResult(
@@ -54,6 +55,7 @@ class LiveExecutionCoordinator(
         existingPersistedOrders: List<OrderSnapshot>,
         exchange: ExchangeGateway,
         controlPlane: ControlPlaneGateway,
+        bypassLeaseValidation: Boolean = false,
     ): LiveExecutionResult {
         if (existingPersistedOrders.any { it.pairId == executionPlan.signal.pairId }) {
             return LiveExecutionResult(
@@ -68,6 +70,7 @@ class LiveExecutionCoordinator(
             executionPlan = executionPlan,
             exchange = exchange,
             controlPlane = controlPlane,
+            bypassLeaseValidation = bypassLeaseValidation,
         )
     }
 
@@ -78,19 +81,31 @@ class LiveExecutionCoordinator(
         executionPlan: ExecutionPlan,
         exchange: ExchangeGateway,
         controlPlane: ControlPlaneGateway,
+        bypassLeaseValidation: Boolean = false,
     ): LiveExecutionResult {
-        val reservation = reserveExecutionActionWithLeaseRecovery(
-            botId = botId,
-            deviceId = deviceId,
-            initialTerm = term,
-            executionPlan = executionPlan,
-            controlPlane = controlPlane,
-        ) ?: return LiveExecutionResult(
-            submitted = false,
-            message = "Lease tidak valid untuk submit ${executionPlan.signal.pairId.value}; menunggu holder aktif sinkron.",
-        )
-        val action = reservation.action
-        val effectiveTerm = reservation.term
+        val reservation = if (bypassLeaseValidation) {
+            // EMERGENCY: Skip lease validation - control plane may be unavailable
+            null
+        } else {
+            reserveExecutionActionWithLeaseRecovery(
+                botId = botId,
+                deviceId = deviceId,
+                initialTerm = term,
+                executionPlan = executionPlan,
+                controlPlane = controlPlane,
+            )
+        }
+        
+        if (!bypassLeaseValidation && reservation == null) {
+            return LiveExecutionResult(
+                submitted = false,
+                message = "Lease tidak valid untuk submit ${executionPlan.signal.pairId.value}; menunggu holder aktif sinkron.",
+            )
+        }
+        
+        // Use reservation if available, otherwise use initial term (bypass mode)
+        val action = reservation?.action
+        val effectiveTerm = reservation?.term ?: term
         val clientOrderId = clientOrderIdFactory.create(
             deviceId = deviceId,
             term = effectiveTerm,
@@ -98,22 +113,29 @@ class LiveExecutionCoordinator(
         )
         val draftOrder = draftSnapshot(clientOrderId, executionPlan)
 
-        controlPlane.upsertOrderSnapshot(
-            botId = botId,
-            term = effectiveTerm.value,
-            deviceId = deviceId,
-            order = draftOrder,
-        )
-
-        return try {
-            val order = exchange.placeOrder(executionPlan, clientOrderId)
+        // Only update control plane if not bypassing (control plane may be down)
+        if (!bypassLeaseValidation) {
             controlPlane.upsertOrderSnapshot(
                 botId = botId,
                 term = effectiveTerm.value,
                 deviceId = deviceId,
-                order = order,
+                order = draftOrder,
             )
-            controlPlane.completeExecutionAction(action.actionId, deviceId, "SUBMITTED")
+        }
+
+        return try {
+            val order = exchange.placeOrder(executionPlan, clientOrderId)
+            if (!bypassLeaseValidation) {
+                controlPlane.upsertOrderSnapshot(
+                    botId = botId,
+                    term = effectiveTerm.value,
+                    deviceId = deviceId,
+                    order = order,
+                )
+                action?.let {
+                    controlPlane.completeExecutionAction(it.actionId, deviceId, "SUBMITTED")
+                }
+            }
             LiveExecutionResult(
                 submitted = true,
                 clientOrderId = clientOrderId,
@@ -121,16 +143,20 @@ class LiveExecutionCoordinator(
                 message = "${executionPlan.side.name} ${executionPlan.orderType.name} ${executionPlan.signal.pairId.value} berhasil dikirim (${clientOrderId.value}).",
             )
         } catch (error: ExchangeRejectedException) {
-            controlPlane.upsertOrderSnapshot(
-                botId = botId,
-                term = effectiveTerm.value,
-                deviceId = deviceId,
-                order = draftOrder.copy(
-                    status = OrderStatus.REJECTED,
-                    updatedAt = Clock.System.now(),
-                ),
-            )
-            controlPlane.completeExecutionAction(action.actionId, deviceId, "FAILED")
+            if (!bypassLeaseValidation) {
+                controlPlane.upsertOrderSnapshot(
+                    botId = botId,
+                    term = effectiveTerm.value,
+                    deviceId = deviceId,
+                    order = draftOrder.copy(
+                        status = OrderStatus.REJECTED,
+                        updatedAt = Clock.System.now(),
+                    ),
+                )
+                action?.let {
+                    controlPlane.completeExecutionAction(it.actionId, deviceId, "FAILED")
+                }
+            }
             LiveExecutionResult(
                 submitted = false,
                 clientOrderId = clientOrderId,
@@ -142,13 +168,17 @@ class LiveExecutionCoordinator(
             }.getOrNull()
 
             if (reconciledOrder != null) {
-                controlPlane.upsertOrderSnapshot(
-                    botId = botId,
-                    term = effectiveTerm.value,
-                    deviceId = deviceId,
-                    order = reconciledOrder,
-                )
-                controlPlane.completeExecutionAction(action.actionId, deviceId, "SUBMITTED")
+                if (!bypassLeaseValidation) {
+                    controlPlane.upsertOrderSnapshot(
+                        botId = botId,
+                        term = effectiveTerm.value,
+                        deviceId = deviceId,
+                        order = reconciledOrder,
+                    )
+                    action?.let {
+                        controlPlane.completeExecutionAction(it.actionId, deviceId, "SUBMITTED")
+                    }
+                }
                 LiveExecutionResult(
                     submitted = true,
                     clientOrderId = clientOrderId,
@@ -156,25 +186,29 @@ class LiveExecutionCoordinator(
                     message = "${executionPlan.side.name} ${executionPlan.orderType.name} ${executionPlan.signal.pairId.value} sempat error, tapi berhasil direkonsiliasi dari exchange (${clientOrderId.value}).",
                 )
             } else {
-                controlPlane.upsertOrderSnapshot(
-                    botId = botId,
-                    term = effectiveTerm.value,
-                    deviceId = deviceId,
-                    order = draftOrder.copy(
-                        status = OrderStatus.UNKNOWN,
-                        updatedAt = Clock.System.now(),
-                    ),
-                )
-                controlPlane.completeExecutionAction(action.actionId, deviceId, "FAILED")
-                controlPlane.markConflictSafeMode(
-                    botId = botId,
-                    reason = "Status order ${clientOrderId.value} ambigu setelah submit gagal: ${error.message ?: "unknown error"}",
-                )
+                if (!bypassLeaseValidation) {
+                    controlPlane.upsertOrderSnapshot(
+                        botId = botId,
+                        term = effectiveTerm.value,
+                        deviceId = deviceId,
+                        order = draftOrder.copy(
+                            status = OrderStatus.UNKNOWN,
+                            updatedAt = Clock.System.now(),
+                        ),
+                    )
+                    action?.let {
+                        controlPlane.completeExecutionAction(it.actionId, deviceId, "FAILED")
+                    }
+                    controlPlane.markConflictSafeMode(
+                        botId = botId,
+                        reason = "Status order ${clientOrderId.value} ambigu setelah submit gagal: ${error.message ?: "unknown error"}",
+                    )
+                }
                 LiveExecutionResult(
                     submitted = false,
                     clientOrderId = clientOrderId,
-                    failSafeTriggered = true,
-                    message = "Submit ${executionPlan.side.name} ${executionPlan.signal.pairId.value} gagal dan statusnya ambigu, bot masuk SAFE_MODE.",
+                    failSafeTriggered = !bypassLeaseValidation,
+                    message = "Submit ${executionPlan.side.name} ${executionPlan.signal.pairId.value} gagal dan statusnya ambigu${if (bypassLeaseValidation) "" else ", bot masuk SAFE_MODE"}.",
                 )
             }
         }

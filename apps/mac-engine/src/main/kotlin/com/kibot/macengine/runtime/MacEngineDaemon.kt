@@ -5511,6 +5511,7 @@ class MacEngineDaemon(
                 existingPersistedOrders = preparedActiveOrders,
                 exchange = exchange,
                 controlPlane = controlPlane,
+                bypassLeaseValidation = false,
             )
             result.order?.let {
                 cachedRecentOrders = mergeRecentOrders(stabilizedOrders, listOf(it))
@@ -6012,6 +6013,7 @@ class MacEngineDaemon(
                 existingPersistedOrders = workingOrders,
                 exchange = exchange,
                 controlPlane = controlPlane,
+                bypassLeaseValidation = earlyEmergencyOverride,
             )
             result.order?.let {
                 workingOrders = mergeRecentOrders(workingOrders, listOf(it)).filter { snapshot ->
@@ -6413,6 +6415,7 @@ class MacEngineDaemon(
             existingPersistedOrders = activePersistedOrders,
             exchange = exchange,
             controlPlane = controlPlane,
+            bypassLeaseValidation = isEmergencyOverrideActive(now),
         )
         appendAuditLog(
             level = if (result.submitted) LogLevel.INFO else LogLevel.WARN,
@@ -6626,6 +6629,7 @@ class MacEngineDaemon(
             existingPersistedOrders = activePersistedOrders,
             exchange = exchange,
             controlPlane = controlPlane,
+            bypassLeaseValidation = isEmergencyOverrideActive(now),
         )
         if (!result.submitted) {
             logWhyNotBuy(now, targetQuote.pairId.value, result.message)
@@ -6841,6 +6845,7 @@ class MacEngineDaemon(
             existingPersistedOrders = activePersistedOrders,
             exchange = exchange,
             controlPlane = controlPlane,
+            bypassLeaseValidation = isEmergencyOverrideActive(now),
         )
         if (result.submitted) {
             result.order?.let {
@@ -7303,6 +7308,7 @@ class MacEngineDaemon(
                             existingPersistedOrders = recentOrders,
                             exchange = exchange,
                             controlPlane = controlPlane,
+                            bypassLeaseValidation = isEmergencyOverrideActive(now),
                         )
                         if (chaseResult.submitted) {
                             logger.info("[ORDER_CHASE] pair={} action=CANCELED_LIMIT_AND_FIRED_MARKET", order.pairId.value)
@@ -7410,6 +7416,7 @@ class MacEngineDaemon(
                             existingPersistedOrders = recentOrders,
                             exchange = exchange,
                             controlPlane = controlPlane,
+                            bypassLeaseValidation = isEmergencyOverrideActive(now),
                         )
                         if (dumpResult.submitted) {
                             appendAuditLog(
