@@ -458,6 +458,9 @@ class CommandHandler:
             ("/performance", "Performance metrics"),
             ("/health", "System health & latency"),
             ("/alerts", "Active alerts & conditions"),
+            ("/stop", "⚠️ Pause trading (allow exits only)"),
+            ("/emergency", "🚨 Force close ALL positions"),
+            ("/resume", "Resume trading after /stop"),
             ("/help", "Show this help"),
         ]
         
@@ -470,8 +473,114 @@ class CommandHandler:
         msg += "• All amounts in Indonesian Rupiah\n"
         msg += "• Status updates every 30 seconds\n"
         msg += "• Notifications sent for major events\n"
+        msg += "• Use /stop to pause, /emergency to close all\n"
         
         return msg
+    
+    # ========================================================================
+    # COMMAND: /stop
+    # ========================================================================
+    
+    async def cmd_stop(self) -> str:
+        """Pause bot trading - allow exits, block new entries."""
+        try:
+            # Load config
+            config_path = Path("state/config.json")
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config = _load_json(config_path, {})
+            config["trading_paused"] = True
+            
+            # Write config
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+            
+            msg = f"{ICONS['safe']} <b>BOT PAUSED</b>\n"
+            msg += make_separator() + "\n\n"
+            msg += "✅ Trading PAUSED\n\n"
+            msg += "Status:\n"
+            msg += "  🔴 New entries: BLOCKED\n"
+            msg += "  🟢 Exits: ALLOWED\n"
+            msg += "  🟢 Positions: HELD\n\n"
+            msg += "Next:\n"
+            msg += "  /resume    - Resume trading\n"
+            msg += "  /emergency - Force close all\n"
+            msg += "  /status    - Check status\n"
+            
+            return msg
+        except Exception as e:
+            return f"{ICONS['error']} <b>Error</b>\n\nFailed to pause: {e}"
+    
+    # ========================================================================
+    # COMMAND: /emergency
+    # ========================================================================
+    
+    async def cmd_emergency(self) -> str:
+        """Force close ALL positions immediately."""
+        try:
+            # Load config
+            config_path = Path("state/config.json")
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config = _load_json(config_path, {})
+            config["emergency_mode"] = True
+            config["halted"] = True
+            config["emergency_standby_mode"] = True
+            
+            # Write config
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+            
+            msg = f"{ICONS['error']} <b>🚨 EMERGENCY CLOSE 🚨</b>\n"
+            msg += make_separator() + "\n\n"
+            msg += "Actions being executed:\n"
+            msg += "  1️⃣ Cancel ALL open orders\n"
+            msg += "  2️⃣ Market sell ALL positions\n"
+            msg += "  3️⃣ Bot set to HALTED\n\n"
+            msg += "Status After Close:\n"
+            msg += "  🔴 Bot: HALTED (manual /resume required)\n"
+            msg += "  🔴 Trading: BLOCKED\n"
+            msg += "  🟢 All positions: CLOSED\n\n"
+            msg += "⚠️ <i>Only /resume can enable bot again</i>\n"
+            
+            return msg
+        except Exception as e:
+            return f"{ICONS['error']} <b>Error</b>\n\nFailed to emergency close: {e}"
+    
+    # ========================================================================
+    # COMMAND: /resume
+    # ========================================================================
+    
+    async def cmd_resume(self) -> str:
+        """Resume bot trading after /stop or /emergency."""
+        try:
+            # Load config
+            config_path = Path("state/config.json")
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config = _load_json(config_path, {})
+            config["trading_paused"] = False
+            config["emergency_mode"] = False
+            config["halted"] = False
+            config["emergency_standby_mode"] = False
+            config["api_failure_count"] = 0
+            
+            # Write config
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+            
+            msg = f"{ICONS['status']} <b>BOT RESUMED</b>\n"
+            msg += make_separator() + "\n\n"
+            msg += "✅ Trading RESUMED\n\n"
+            msg += "Status:\n"
+            msg += "  🟢 New entries: ENABLED\n"
+            msg += "  🟢 Exits: ENABLED\n"
+            msg += "  🟢 Normal operation: ACTIVE\n\n"
+            msg += "Next:\n"
+            msg += "  /status    - Check system status\n"
+            msg += "  /stop      - Pause if needed\n"
+            msg += "  /health    - Verify network\n"
+            
+            return msg
+        except Exception as e:
+            return f"{ICONS['error']} <b>Error</b>\n\nFailed to resume: {e}"
     
     # ========================================================================
     # COMMAND ROUTER
@@ -495,6 +604,12 @@ class CommandHandler:
             return await self.cmd_health()
         elif cmd == "/alerts":
             return await self.cmd_alerts()
+        elif cmd == "/stop":
+            return await self.cmd_stop()
+        elif cmd == "/emergency":
+            return await self.cmd_emergency()
+        elif cmd == "/resume":
+            return await self.cmd_resume()
         elif cmd == "/help" or cmd == "/start":
             return await self.cmd_help()
         else:
