@@ -61,13 +61,27 @@ fun LiveActivitySection(
                             color = TextSecondary,
                             fontSize = 11.sp
                         )
-                        Text(
-                            botState.effectiveState.name.replace("_", " "),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = TextPrimary,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 13.sp
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                botState.effectiveState.name.replace("_", " "),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = TextPrimary,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp
+                            )
+                            // AI status indicator in Live Activity
+                            val aiActive = botState.heartbeat.kibot.aiStatus.lowercase() in listOf("active", "online")
+                            Surface(
+                                modifier = Modifier
+                                    .size(4.dp),
+                                shape = CircleShape,
+                                color = if (aiActive) ProfitGreen else LossRed
+                            ) {}
+                        }
+                    }
                     }
                 }
                 

@@ -133,7 +133,7 @@ fun BalanceCard(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "Total Balance",
+                text = "Today's Balance",
                 style = MaterialTheme.typography.labelMedium,
                 color = TextSecondary
             )
@@ -270,17 +270,23 @@ fun BotStatusCard(
                     }
                     
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        val isAIActive = aiStatus.lowercase() in listOf("active", "online", "enabled")
                         Icon(
-                            imageVector = if (aiStatus == "active") Icons.Default.Psychology else Icons.Default.PsychologyAlt,
+                            imageVector = if (isAIActive) Icons.Default.Psychology else Icons.Default.PsychologyAlt,
                             contentDescription = "AI Status",
-                            tint = if (aiStatus == "active") NeutralBlue else TextDisabled,
+                            tint = if (isAIActive) NeutralBlue else TextDisabled,
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = aiStatus.replaceFirstChar { it.uppercase() },
+                            text = when {
+                                aiStatus.lowercase() == "active" || aiStatus.lowercase() == "online" -> "AI Online"
+                                aiStatus.lowercase() == "limited" -> "AI Limited"
+                                aiStatus.lowercase() == "offline" -> "AI Offline"
+                                else -> "AI ${aiStatus.replaceFirstChar { it.uppercase() }}"
+                            },
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (aiStatus == "active") NeutralBlue else TextDisabled
+                            color = if (isAIActive) NeutralBlue else TextDisabled
                         )
                     }
                 }
