@@ -51,7 +51,7 @@ fun LiveActivitySection(
                 ) {
                     // Pulsing indicator
                     PulseIndicator(
-                        isActive = botState.effectiveState.name != "STOPPED"
+                        isActive = botState.effectiveState != "STOPPED"
                     )
                     
                     Column {
@@ -66,7 +66,7 @@ fun LiveActivitySection(
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
-                                botState.effectiveState.name.replace("_", " "),
+                                botState.effectiveState,
                                 style = MaterialTheme.typography.labelMedium,
                                 color = TextPrimary,
                                 fontWeight = FontWeight.SemiBold,
@@ -81,7 +81,6 @@ fun LiveActivitySection(
                                 color = if (aiActive) ProfitGreen else LossRed
                             ) {}
                         }
-                    }
                     }
                 }
                 
@@ -196,7 +195,7 @@ fun BotActivityIndicator(
     botState: BotState,
     modifier: Modifier = Modifier
 ) {
-    val isActive = botState.effectiveState.name != "STOPPED"
+    val isActive = botState.effectiveState != "STOPPED"
     val indicatorColor by animateColorAsState(
         targetValue = if (isActive) ProfitGreen else LossRed,
         animationSpec = infiniteRepeatable(
