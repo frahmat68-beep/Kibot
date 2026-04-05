@@ -48,7 +48,14 @@ val decimalFormat: NumberFormat = NumberFormat.getNumberInstance().apply {
 fun formatRupiah(value: Double): String {
     val isNegative = value < 0
     val absValue = kotlin.math.abs(value)
-    val formatted = NumberFormat.getNumberInstance(Locale("id", "ID")).format(absValue.toLong())
+    
+    // Format with proper decimal handling
+    val numberFormat = NumberFormat.getNumberInstance(Locale("id", "ID")).apply {
+        minimumFractionDigits = 0
+        maximumFractionDigits = 0  // Round to nearest integer for display
+    }
+    
+    val formatted = numberFormat.format(absValue)
     return if (isNegative) "-Rp $formatted" else "Rp $formatted"
 }
 

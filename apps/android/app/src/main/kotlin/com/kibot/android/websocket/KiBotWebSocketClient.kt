@@ -305,7 +305,12 @@ class KiBotWebSocketClient(
                 val pnlIdrLabel = holding.get("pnlIdrLabel")?.asString ?: "Rp0"
                 val pnlPctLabel = holding.get("pnlPctLabel")?.asString ?: "0%"
                 
-                val amount = quantityLabel.split(" ").firstOrNull()?.replace(",", ".")?.toDoubleOrNull() ?: 0.0
+                val amount = quantityLabel.split(" ").firstOrNull()?.replace(",", ".")?.toDoubleOrNull() ?: run {
+                    if (quantityLabel != "0") {
+                        android.util.Log.w("KiBotWebSocketClient", "⚠️ Failed to parse quantity from '$quantityLabel' for $assetCode")
+                    }
+                    0.0
+                }
                 val entryPrice = parseRupiahToDouble(entryPriceLabel)
                 val currentPrice = parseRupiahToDouble(currentPriceLabel)
                 val pnl = parseRupiahToDouble(pnlIdrLabel)
@@ -336,8 +341,14 @@ class KiBotWebSocketClient(
                 
                 // Parse detail for price/amount (format: "203 @ Rp107")
                 val priceMatch = Regex("""(\d+(?:[.,]\d+)?)\s*@\s*Rp?([\d.,]+)""").find(detail)
-                val amount = priceMatch?.groupValues?.get(1)?.replace(",", ".")?.toDoubleOrNull() ?: 0.0
-                val price = priceMatch?.groupValues?.get(2)?.replace(".", "")?.replace(",", ".")?.toDoubleOrNull() ?: 0.0
+                val amount = priceMatch?.groupValues?.get(1)?.replace(",", ".")?.toDoubleOrNull() ?: run {
+                    android.util.Log.w("KiBotWebSocketClient", "⚠️ Failed to parse amount from trade detail: '$detail'")
+                    0.0
+                }
+                val price = priceMatch?.groupValues?.get(2)?.replace(".", "")?.replace(",", ".")?.toDoubleOrNull() ?: run {
+                    android.util.Log.w("KiBotWebSocketClient", "⚠️ Failed to parse price from trade detail: '$detail'")
+                    0.0
+                }
                 
                 if (pair.isNotEmpty()) {
                     trades.add(TradeData(
@@ -562,6 +573,11 @@ class KiBotWebSocketClient(
      * Examples: "Rp110.486" -> 110486.0, "-Rp55" -> -55.0, "+Rp1.234.567" -> 1234567.0
      */
     private fun parseRupiahToDouble(value: String): Double {
+        if (value.isBlank()) {
+            android.util.Log.w("KiBotWebSocketClient", "⚠️ parseRupiahToDouble: Empty input")
+            return 0.0
+        }
+        
         val isNegative = value.startsWith("-")
         val cleaned = value
             .replace("Rp", "")
@@ -570,7 +586,13 @@ class KiBotWebSocketClient(
             .replace(".", "")  // Remove thousand separators
             .replace(",", ".")  // Convert decimal separator
             .trim()
-        val result = cleaned.toDoubleOrNull() ?: 0.0
+        
+        val result = cleaned.toDoubleOrNull()
+        if (result == null) {
+            android.util.Log.w("KiBotWebSocketClient", "⚠️ parseRupiahToDouble: Failed to parse '$value' -> '$cleaned'")
+            return 0.0
+        }
+        
         return if (isNegative) -result else result
     }
     
@@ -579,11 +601,22 @@ class KiBotWebSocketClient(
      * Examples: "-0.1%" -> -0.1, "+29.9%" -> 29.9
      */
     private fun parsePercentToDouble(value: String): Double {
+        if (value.isBlank() || value == "0%" || value == "0.00%") {
+            return 0.0
+        }
+        
         val cleaned = value
             .replace("%", "")
             .replace(",", ".")
             .trim()
-        return cleaned.toDoubleOrNull() ?: 0.0
+        
+        val result = cleaned.toDoubleOrNull()
+        if (result == null) {
+            android.util.Log.w("KiBotWebSocketClient", "⚠️ parsePercentToDouble: Failed to parse '$value' -> '$cleaned'")
+            return 0.0
+        }
+        
+        return result
     }
 
     private inline fun updateBotState(update: (BotState) -> BotState) {
