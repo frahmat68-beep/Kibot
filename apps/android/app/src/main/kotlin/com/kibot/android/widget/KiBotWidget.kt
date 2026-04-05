@@ -229,15 +229,19 @@ private fun LargeWidget(
     Column(
         modifier = GlanceModifier
             .fillMaxSize()
-            .background(borderColor)  // Border color
+            .background(borderColor)
             .cornerRadius(16.dp)
-            .padding(3.dp)  // Border thickness
-            .background(WidgetBackground)
-            .cornerRadius(15.dp)
-            .clickable(actionStartActivity<MainActivity>())
-            .padding(16.dp)
+            .padding(3.dp)
     ) {
-        Row(
+        Column(
+            modifier = GlanceModifier
+                .fillMaxSize()
+                .background(WidgetBackground)
+                .cornerRadius(14.dp)
+                .clickable(actionStartActivity<MainActivity>())
+                .padding(16.dp)
+        ) {
+            Row(
             modifier = GlanceModifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -355,6 +359,7 @@ private fun LargeWidget(
                 fontSize = 9.sp
             )
         )
+        }
     }
 }
 
