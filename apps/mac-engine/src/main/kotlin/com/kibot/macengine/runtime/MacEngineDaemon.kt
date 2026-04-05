@@ -7633,18 +7633,35 @@ class MacEngineDaemon(
         val remoteLeaseConflict = lease?.conflictDetected == true && lease.currentHolder != config.device.deviceId
         val statusMessage = when {
             botState.effectiveState == BotEffectiveState.SAFE_MODE ->
-                "Safe mode aktif. Tunggu status trade dan data exchange benar-benar bersih."
+                "🛡️ Safe mode - waiting for clean conditions"
             localHealth.status == HealthStatus.CRITICAL ->
-                "Server Oracle lagi bermasalah: ${localHealth.warnings.firstOrNull().orEmpty()}".trim()
-            targetPursuit != null && targetPursuit.active && topCandidate != "-" ->
-                "${targetPursuit.phase} • PnL 1D $pnlTodayPctLabel • urgency ${formatDecimal(targetPursuit.urgency * 100.0, 0)}% • fokus entry cepat $topCandidate."
-            holdingsDetailed.isNotEmpty() && topCandidate != "-" ->
-                "Server pegang ${holdingsDetailed.size} aset dan fokus cari entry baru di $topCandidate."
+                "⚠️ Server problem: ${localHealth.warnings.firstOrNull().orEmpty()}".trim()
+            // Recently bought or selling
+            recentOrders.isNotEmpty() -> {
+                val lastOrder = recentOrders.last()
+                val pair = lastOrder.pairId.value.uppercase()
+                val qty = formatDecimal(max(lastOrder.executedQuantity.toDoubleOrZero(), lastOrder.originalQuantity.toDoubleOrZero()), 4)
+                val price = formatMonetary(lastOrder.price.toDoubleOrZero())
+                when (lastOrder.side.name.uppercase()) {
+                    "BUY" -> "📥 Bought $qty $pair @ $price"
+                    "SELL" -> "📤 Sold $qty $pair @ $price"
+                    else -> "📋 Order: $qty $pair @ $price"
+                }
+            }
+            // Holding positions
+            holdingsDetailed.isNotEmpty() -> {
+                val topHolding = holdingsDetailed.first()
+                val pnlPctLabel = topHolding.pnlPctLabel
+                val pnlEmoji = if (pnlPctLabel.startsWith("-")) "📉" else "📈"
+                "$pnlEmoji Holding ${topHolding.assetCode} $pnlPctLabel PnL"
+            }
+            // Looking for entry
             topCandidate != "-" && scanUniverseCount > 0 ->
-                "Server scan $scanUniverseCount pair dan fokus entry breakout $topCandidate."
+                "🔍 Analyzing $topCandidate (scanning $scanUniverseCount pairs)"
             scanUniverseCount > 0 ->
-                "Server scan $scanUniverseCount pair dan cari momentum yang layak."
-            else -> "Server Oracle lagi sinkron dan pantau market."
+                "👀 Watching market (scanning $scanUniverseCount pairs)"
+            // Idle/syncing
+            else -> "⏱️ Waiting for good entry opportunity"
         }
         val avgBuyByPair = mutableMapOf<String, Pair<Double, Double>>() // pair -> held qty, avg buy
         val recentOrderCards = recentOrders

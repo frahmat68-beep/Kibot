@@ -121,7 +121,8 @@ fun LiveActivitySectionV2(
             )
             
             // ===== MAIN STATUS MESSAGE =====
-            if (botState.statusMessage.isNotBlank()) {
+            val displayMessage = generateCleanStatusMessage(botState)
+            if (displayMessage.isNotBlank()) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -134,7 +135,7 @@ fun LiveActivitySectionV2(
                 ) {
                     // Status action text (humanized)
                     Text(
-                        parseHumanReadableStatus(botState.statusMessage),
+                        displayMessage,
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextPrimary,
                         fontWeight = FontWeight.SemiBold,
@@ -216,69 +217,46 @@ fun LiveActivitySectionV2(
 }
 
 /**
- * Parse status message into human-readable format
- * Examples:
- * - "FULL_CHASE • PnL..." → "🚀 Chasing PEPE_IDR momentum"
- * - "Server pegang 2 aset..." → "💼 Holding 2 coins, looking for new entries"
+ * Status message is already human-readable from server
+ * Just display as-is since it's already formatted
  */
 private fun parseHumanReadableStatus(statusMessage: String): String {
-    val msg = statusMessage.lowercase()
-    
-    return when {
-        // Actively trading
-        msg.contains("full_chase") -> {
-            val urgency = extractNumber(statusMessage, "urgency")
-            val pair = extractPair(statusMessage)
-            "🚀 Aggressively chasing $pair (urgency ${urgency}%)"
-        }
-        
-        // Trading with holdings
-        msg.contains("pegang") && msg.contains("aset") -> {
-            val count = extractNumber(statusMessage, "pegang")
-            val pair = extractPair(statusMessage)
-            "💼 Holding $count coins, hunting for exits in $pair"
-        }
-        
-        // Scanning
-        msg.contains("scan") -> {
-            val pairCount = extractNumber(statusMessage, "scan")
-            val pair = extractPair(statusMessage)
-            "🔍 Scanning $pairCount pairs, eyeing $pair entry"
-        }
-        
-        // Safe mode
-        msg.contains("safe") -> "🛡️ Safe mode active - waiting for clean conditions"
-        
-        // Server issues
-        msg.contains("bermasalah") || msg.contains("error") -> "⚠️ Server having issues - monitoring situation"
-        
-        // Syncing
-        msg.contains("sinkron") || msg.contains("boot") -> "🔄 Booting up and syncing market data..."
-        
-        // Default fallback
-        else -> "⏳ ${statusMessage.take(50)}..."
+    return statusMessage.trim()
+}
+
+/**
+ * Generate clean, simple status message based on bot state
+ * Priority: Recent action > Holdings > Waiting
+ */
+private fun generateCleanStatusMessage(botState: BotState): String {
+    // If server message already has emoji + clean format, use it
+    if (botState.statusMessage.contains("📥") || 
+        botState.statusMessage.contains("📤") ||
+        botState.statusMessage.contains("📈") ||
+        botState.statusMessage.contains("📉") ||
+        botState.statusMessage.contains("🔍") ||
+        botState.statusMessage.contains("🛡️") ||
+        botState.statusMessage.contains("⏱️")) {
+        return botState.statusMessage.trim()
     }
-}
-
-/**
- * Extract number from text
- * e.g., "urgency 95%" → 95
- */
-private fun extractNumber(text: String, keyword: String): String {
-    val pattern = "$keyword\\s+([\\d.]+)".toRegex(RegexOption.IGNORE_CASE)
-    val match = pattern.find(text)
-    return match?.groupValues?.getOrNull(1)?.toDoubleOrNull()?.toInt().toString() ?: "0"
-}
-
-/**
- * Extract pair name from status message
- * e.g., "entry baru di $topCandidate" → PEPE_IDR
- */
-private fun extractPair(text: String): String {
-    // Look for uppercase words with underscore (typical pair format)
-    val pairPattern = "([A-Z]+_[A-Z]+)".toRegex()
-    val match = pairPattern.find(text)
-    return match?.value ?: "market"
+    
+    // Otherwise, generate from state
+    return when {
+        // Has active holdings
+        botState.positions.isNotEmpty() -> {
+            val top = botState.positions.first()
+            val pnlSign = if (top.pnl >= 0) "+" else ""
+            val pnlPct = String.format("%.2f", top.pnlPercent)
+            "📊 Holding ${top.pair}: $pnlSign$pnlPct% (${botState.positions.size} coins)"
+        }
+        
+        // No holdings - waiting for entry
+        botState.heartbeat.kidax.enabled && botState.effectiveState.contains("RUNNING", ignoreCase = true) ->
+            "👀 Watching market for entry"
+        
+        // Idle
+        else -> "⏳ Waiting..."
+    }
 }
 
 /**
