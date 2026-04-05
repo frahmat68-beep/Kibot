@@ -2931,6 +2931,62 @@ class MacEngineDaemon(
         }
     }
 
+    private fun planHardTimeoutExit(
+        managedPositions: List<com.kibot.core.ManagedPosition>,
+        activeOrders: List<com.kibot.shared.models.OrderSnapshot>,
+        cycle: com.kibot.core.StrategyCycleResult,
+        now: Instant,
+    ): com.kibot.core.ExitDecision? {
+        if (managedPositions.isEmpty()) return null
+        
+        val hardTimeoutHours = 12.0
+        val activeByPair = activeOrders.filter { it.status in activeOrderStatuses }.groupBy { it.pairId }
+        
+        return managedPositions.firstOrNull { position ->
+            val noSellOrder = activeByPair[position.pairId].orEmpty().none { it.side == com.kibot.shared.models.OrderSide.SELL }
+            val heldHours = ((now.toEpochMilliseconds() - position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 3_600_000.0)
+            noSellOrder && heldHours >= hardTimeoutHours
+        }?.let { position ->
+            val score = cycle.rankedPairs.firstOrNull { it.pairId == position.pairId }?.rankingScore ?: 0.72
+            val signal = com.kibot.shared.models.StrategySignal(
+                pairId = position.pairId,
+                signalType = com.kibot.shared.models.StrategySignalType.EXIT,
+                confidence = score.coerceIn(0.60, 0.99),
+                rationale = listOf("Hard timeout: posisi ditahan >12 jam HARUS ditutup untuk mencegah capital lock."),
+                entryPrice = position.currentBidPrice,
+                takeProfitPrice = position.takeProfitPrice,
+                stopPrice = position.stopPrice,
+                setupType = position.setupType,
+                horizon = position.horizon,
+                pairTier = position.pairTier,
+                speculativePocket = true,
+                marketRegime = cycle.marketSnapshot.regime,
+                edgeConfidence = cycle.modeSnapshot.edgeConfidence,
+                expectedHoldingHours = position.expectedHoldingHours,
+                expectedNetProfitabilityPct = kotlin.math.abs(position.unrealizedPnlPct),
+            )
+            com.kibot.core.ExitDecision(
+                position = position,
+                reason = com.kibot.core.ExitReason.TIME_EXIT,
+                message = "HARD_TIMEOUT forced sell ${position.pairId.value} setelah ${String.format("%.1f", ((now.toEpochMilliseconds() - position.openedAt.toEpochMilliseconds()) / 3_600_000.0))}h untuk mencegah capital lock.",
+                executionPlan = com.kibot.shared.models.ExecutionPlan(
+                    signal = signal,
+                    side = com.kibot.shared.models.OrderSide.SELL,
+                    orderType = com.kibot.shared.models.OrderType.MARKET,
+                    quantity = position.quantity,
+                    limitPrice = null,
+                    quoteBudget = null,
+                    postOnlyPreferred = false,
+                    expectedNetEdgePct = kotlin.math.abs(position.unrealizedPnlPct),
+                    botMode = cycle.modeSnapshot.mode,
+                    riskLadderLevel = cycle.modeSnapshot.riskLadderLevel,
+                    pairRankingScore = score,
+                    speculativePocket = true,
+                ),
+            )
+        }
+    }
+
     private fun planEmergencyLiquidityRebalanceExit(
         managedPositions: List<com.kibot.core.ManagedPosition>,
         activeOrders: List<com.kibot.shared.models.OrderSnapshot>,
@@ -5193,6 +5249,12 @@ class MacEngineDaemon(
             cycle = cycle,
             marketQuotes = marketQuotes,
         )
+        val hardTimeoutExit = planHardTimeoutExit(
+            managedPositions = managedPositions,
+            activeOrders = activePersistedOrders,
+            cycle = cycle,
+            now = now,
+        )
         val cleanupRotationExit = planPreRotationCleanupExit(
             now = now,
             managedPositions = managedPositions,
@@ -5201,7 +5263,7 @@ class MacEngineDaemon(
             hungry = hyperAggressiveTracker.hungry,
             marketQuotes = marketQuotes,
         )
-        val exitDecision = emergencyGarbageExit ?: opportunityCostExit ?: emergencyLiquidityExit ?: crashHardStopExit ?: localAutonomyTrailingExit ?: forcedSellExit ?: hyperAggressiveTrailingExit ?: hyperAggressiveRotationExit ?: leadLagTrailingExit ?: adaptiveCoordinator.planExit(
+        val exitDecision = emergencyGarbageExit ?: hardTimeoutExit ?: opportunityCostExit ?: emergencyLiquidityExit ?: crashHardStopExit ?: localAutonomyTrailingExit ?: forcedSellExit ?: hyperAggressiveTrailingExit ?: hyperAggressiveRotationExit ?: leadLagTrailingExit ?: adaptiveCoordinator.planExit(
             now = now,
             cycle = cycle,
             managedPositions = managedPositions,
