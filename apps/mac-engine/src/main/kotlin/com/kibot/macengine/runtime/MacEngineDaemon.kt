@@ -1691,12 +1691,16 @@ class MacEngineDaemon(
             val qty = position.quantity.toDoubleOrZero()
             val bid = position.currentBidPrice.toDoubleOrZero()
             val notional = qty * bid
-            if (!partialTaken && gainPct >= 10.0 && noSellOrder && qty > 0.0 && notional >= 10_000.0) {
+            // [PARTIAL TP] Lock profit early: 30-50% when profit >0.8%
+            // Brief: "30-50% saat profit >0.5%" - we use 0.8% to cover fees
+            val partialTpThreshold = 0.8  // Minimum % gain to trigger partial TP
+            val partialTpPercent = if (gainPct >= 3.0) 0.50 else 0.35  // 50% at >3%, 35% at <3%
+            if (!partialTaken && gainPct >= partialTpThreshold && noSellOrder && qty > 0.0 && notional >= 7_000.0) {
                 val signal = com.kibot.shared.models.StrategySignal(
                     pairId = position.pairId,
                     signalType = com.kibot.shared.models.StrategySignalType.EXIT,
                     confidence = (pairScore?.rankingScore ?: 0.80).coerceIn(0.55, 0.99),
-                    rationale = listOf("Scale out 50% untuk amankan modal/profit, sisanya let it ride."),
+                    rationale = listOf("Partial TP ${(partialTpPercent*100).toInt()}% at +${String.format("%.2f", gainPct)}% to lock profit early."),
                     entryPrice = position.currentBidPrice,
                     takeProfitPrice = position.takeProfitPrice,
                     stopPrice = position.stopPrice,
@@ -1712,12 +1716,12 @@ class MacEngineDaemon(
                 return com.kibot.core.ExitDecision(
                     position = position,
                     reason = com.kibot.core.ExitReason.PROFIT_EXIT,
-                    message = "Partial take profit ${position.pairId.value}: lock 50% di >10%.",
+                    message = "Partial TP ${position.pairId.value}: lock ${(partialTpPercent*100).toInt()}% at +${String.format("%.2f", gainPct)}%.",
                     executionPlan = com.kibot.shared.models.ExecutionPlan(
                         signal = signal,
                         side = com.kibot.shared.models.OrderSide.SELL,
                         orderType = com.kibot.shared.models.OrderType.MARKET,
-                        quantity = DecimalValue.fromDouble(qty * 0.5),
+                        quantity = DecimalValue.fromDouble(qty * partialTpPercent),
                         limitPrice = null,
                         quoteBudget = null,
                         postOnlyPreferred = false,
