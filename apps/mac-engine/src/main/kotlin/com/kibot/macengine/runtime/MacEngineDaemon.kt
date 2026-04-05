@@ -260,8 +260,9 @@ class MacEngineDaemon(
     private val tradeLedger = TradeLedger()  // Track every trade for learning
     private val heartbeatMonitor = TrinityHeartbeatMonitor()  // Monitor bot health
     private val latePumpEntry = LatePumpEntryStrategy()  // Enter pumps that already started
+    private val tradingStallDetector = TradingStallDetector(stallTimeoutMinutes = 60)  // Stall detection: 1 hour
     
-    private val onlyRuntimeLogPrefixes = setOf("EXECUTION_BUY", "EXECUTION_SELL", "WHY_NOT_BUY")
+    private val onlyRuntimeLogPrefixes = setOf("EXECUTION_BUY", "EXECUTION_SELL", "WHY_NOT_BUY", "STALL_RECOVERY")
     private data class CapitalAwareness(
         val totalEquityIdr: Double,
         val lowCapital: Boolean,
@@ -3182,6 +3183,51 @@ class MacEngineDaemon(
         logger.info("[WHY_NOT_BUY] pair={} reason={}", pair, reason)
     }
 
+    private fun checkTradingStall(now: Instant) {
+        if (tradingStallDetector.isStalled(now)) {
+            val state = tradingStallDetector.getState()
+            logger.warn(
+                "[STALL_RECOVERY] Trading stalled for ${state.stallMinutes} minutes! " +
+                "Attempt #${state.escapeAttemptCount + 1} to recover..."
+            )
+            
+            // Trigger recovery actions
+            val recoveryActions = mutableListOf<StallRecoveryAction>()
+            
+            // Action 1: Escalate bot mode
+            val currentMode = getCurrentBotMode()
+            val nextMode = tradingStallDetector.getEscalationMode(currentMode)
+            if (currentMode != nextMode) {
+                recoveryActions.add(StallRecoveryAction.EscalateBotMode(currentMode, nextMode))
+                logger.info("[STALL_RECOVERY] Escalating mode: $currentMode → $nextMode")
+            }
+            
+            // Action 2: Notify operator via logger
+            recoveryActions.add(
+                StallRecoveryAction.NotifyOperator(
+                    "No trades for ${state.stallMinutes}min - Bot may be stuck. " +
+                    "Mode escalation active to recover."
+                )
+            )
+            
+            val executor = StallRecoveryExecutor()
+            val recoveryLog = executor.executeRecovery(recoveryActions)
+            logger.info(recoveryLog)
+            
+            tradingStallDetector.recordEscapeAttempt(nextMode)
+        }
+    }
+
+    private fun recordTradeExecution(pairId: String) {
+        tradingStallDetector.recordTradeExecution()
+        logger.info("[STALL_RECOVERY] Trade executed: $pairId - Stall counter reset")
+    }
+
+    private fun getCurrentBotMode(): String {
+        // Get current bot mode - default SAFE if unknown
+        return "SAFE"  // TODO: Get from actual bot state
+    }
+
     private fun refreshProtectiveState(now: Instant) {
         sinBinUntilByPair.entries.removeIf { (_, until) -> now >= until }
         spoofSuspiciousUntilByPair.entries.removeIf { (_, until) -> now >= until }
@@ -3321,6 +3367,10 @@ class MacEngineDaemon(
 
     suspend fun syncOnce() = coroutineScope {
         val cycleStartedAt = Clock.System.now()
+        
+        // [STALL DETECTION] Check if no trades for >1 hour
+        checkTradingStall(cycleStartedAt)
+        
         pollLeadLagUdpCommands(cycleStartedAt)
         maybeEmitTrinityHeartbeat(cycleStartedAt)
         pruneLeadLagTelemetry(cycleStartedAt)
@@ -5779,6 +5829,8 @@ class MacEngineDaemon(
                     effectiveExecutionPlan.signal.pairId.value,
                     result.message,
                 )
+                // [STALL RECOVERY] Record successful trade execution
+                recordTradeExecution(effectiveExecutionPlan.signal.pairId.value)
             }
 
             if (result.submitted) {
