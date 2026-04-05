@@ -238,8 +238,10 @@ class DailyTargetPursuitBrain(
         ).coerceIn(0.0, config.maxReserveReliefPct)
         val extraSlots = when {
             currentEquity < config.minEquityForExtraSlotIdr -> 0
-            checkpointMissed || forcedReplan || hourlyMissed -> 0
             targetSatisfied && topCandidateQuality >= 0.82 && aiConsensus >= 0.68 -> config.maxExtraSlots
+            checkpointMissed && strongBenchCount >= 2 -> 1.coerceAtMost(config.maxExtraSlots)
+            forcedReplan && strongBenchCount >= 2 -> 1.coerceAtMost(config.maxExtraSlots)
+            hourlyMissed && strongBenchCount >= 2 -> 1.coerceAtMost(config.maxExtraSlots)
             strongBenchCount >= 3 &&
                 profitWindowOpen &&
                 currentEquity >= (config.minEquityForExtraSlotIdr * 1.10) -> 1.coerceAtMost(config.maxExtraSlots)

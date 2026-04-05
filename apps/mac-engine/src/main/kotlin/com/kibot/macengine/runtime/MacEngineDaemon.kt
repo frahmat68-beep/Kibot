@@ -8978,9 +8978,23 @@ class MacEngineDaemon(
             riskHeadroomCeiling,
             minOf(requestedSlotHeadroom, opportunityQualifiedHeadroom),
         ).coerceAtLeast(0)
+        
+        // EMERGENCY OVERRIDE: Jika EMERGENCY_PURSUIT dan punya free capital, paksa minimal 1 slot
+        val emergencySlotBoost = if (
+            actionProfile == "EMERGENCY_PURSUIT" &&
+            openPositions < 6 &&
+            effectiveHeadroom == 0 &&
+            candidates.isNotEmpty() &&
+            candidates.first().rankingScore >= 0.58
+        ) {
+            1
+        } else {
+            0
+        }
+        
         val boostedActivePositions = maxOf(
             cycle.deploymentPlan.maxActivePositions,
-            openPositions + effectiveHeadroom,
+            openPositions + effectiveHeadroom + emergencySlotBoost,
         ).coerceAtMost(6)
         val existingCapitalTarget = cycle.deploymentPlan.capitalUtilizationTargetPct
             .coerceIn(0.02, 0.98)

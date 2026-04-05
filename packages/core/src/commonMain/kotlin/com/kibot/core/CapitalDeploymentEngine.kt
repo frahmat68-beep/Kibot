@@ -119,6 +119,13 @@ class CapitalDeploymentEngine(
                 it.rankingScore >= (config.minSecondSlotRankingScore - 0.05) &&
                     it.marketOpportunityScore >= (config.minSecondSlotOpportunityScore - 0.04)
             }
+        val decentCandidatesCount = candidates
+            .take(baseTotalCap.coerceAtLeast(1))
+            .count {
+                it.rankingScore >= 0.60 &&
+                    it.marketOpportunityScore >= 0.52 &&
+                    it.expectedNetProfitabilityPct >= 0.80
+            }
         val effectiveReservePct = if (dominantTierAReady) {
             (reservePct - config.dominantTierAReserveReliefPct)
                 .coerceAtLeast(config.dominantTierAMinCashReservePct)
@@ -126,10 +133,14 @@ class CapitalDeploymentEngine(
             reservePct
         }
         val capitalUtilizationTargetPct = (1.0 - effectiveReservePct).coerceIn(0.0, 1.0)
+        val hasUndeployedCapital = deployableEquity > (currentEquity * 0.25)
         val breadthDrivenCap = when {
             dominantAllInReady || speculativePocketReady -> 1
             multiSlotReadyCount >= 3 -> 3
             multiSlotReadyCount >= 2 || secondSlotReady -> 2
+            hasUndeployedCapital && decentCandidatesCount >= 3 -> 3
+            hasUndeployedCapital && decentCandidatesCount >= 2 -> 2
+            hasUndeployedCapital && decentCandidatesCount >= 1 -> baseTotalCap.coerceAtLeast(2)
             else -> 1
         }.coerceAtMost(baseTotalCap.coerceAtLeast(1))
         val maxActivePositions = when {
