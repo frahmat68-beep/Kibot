@@ -3,6 +3,7 @@
 KiBot Trinity - Telegram Command Handler
 ========================================
 Handles user commands for querying bot status, trades, positions, and performance.
+Integrates with AlertManager for real-time alerts.
 """
 
 import asyncio
@@ -14,6 +15,15 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from enum import Enum
 from dataclasses import dataclass
+
+# Import AlertManager
+try:
+    from kibot_alert_manager import AlertManager, AlertType, AlertSeverity, create_alert_manager
+except ImportError:
+    # Fallback if import fails
+    AlertManager = None
+    AlertType = None
+    AlertSeverity = None
 
 # ============================================================================
 # CONFIGURATION
@@ -154,10 +164,11 @@ def _get_daily_summary() -> Dict[str, Any]:
 # ============================================================================
 
 class CommandHandler:
-    """Handles Telegram commands."""
+    """Handles Telegram commands with alert integration."""
     
-    def __init__(self):
+    def __init__(self, alert_manager: Optional[AlertManager] = None):
         self.session: Optional[aiohttp.ClientSession] = None
+        self.alert_manager = alert_manager
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create HTTP session."""
@@ -494,6 +505,19 @@ class CommandHandler:
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=2)
             
+            # Send alert
+            if self.alert_manager and AlertType:
+                try:
+                    await self.alert_manager.alert(
+                        alert_type=AlertType.EMERGENCY_STOP,
+                        severity=AlertSeverity.WARNING,
+                        title="🛑 Bot Paused",
+                        message="Trading paused - new entries blocked, exits allowed",
+                        force_immediate=True,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send stop alert: {e}")
+            
             msg = f"{ICONS['safe']} <b>BOT PAUSED</b>\n"
             msg += make_separator() + "\n\n"
             msg += "✅ Trading PAUSED\n\n"
@@ -528,6 +552,19 @@ class CommandHandler:
             # Write config
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=2)
+            
+            # Send CRITICAL alert immediately
+            if self.alert_manager and AlertType:
+                try:
+                    await self.alert_manager.alert(
+                        alert_type=AlertType.EMERGENCY_CLOSE,
+                        severity=AlertSeverity.CRITICAL,
+                        title="🚨 EMERGENCY CLOSE EXECUTED",
+                        message="All positions force closed, bot halted. Manual /resume required.",
+                        force_immediate=True,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send emergency alert: {e}")
             
             msg = f"{ICONS['error']} <b>🚨 EMERGENCY CLOSE 🚨</b>\n"
             msg += make_separator() + "\n\n"
@@ -565,6 +602,19 @@ class CommandHandler:
             # Write config
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=2)
+            
+            # Send alert
+            if self.alert_manager and AlertType:
+                try:
+                    await self.alert_manager.alert(
+                        alert_type=AlertType.BOT_RESUMED,
+                        severity=AlertSeverity.SUCCESS,
+                        title="✅ Bot Resumed",
+                        message="Trading resumed, all systems active",
+                        force_immediate=True,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send resume alert: {e}")
             
             msg = f"{ICONS['status']} <b>BOT RESUMED</b>\n"
             msg += make_separator() + "\n\n"
