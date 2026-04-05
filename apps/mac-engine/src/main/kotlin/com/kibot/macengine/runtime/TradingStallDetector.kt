@@ -17,8 +17,8 @@ data class TradingStallState(
     // EMERGENCY FIX: Init to 2 hours ago so stall detector triggers IMMEDIATELY on startup!
     // Old bug: defaulted to Clock.System.now() → bot thinks it just traded → waits 60 min
     val lastTradeTimestamp: Instant = Clock.System.now().minus(2.hours),
-    val stallDetectedAt: Instant? = null,
-    val stallMinutes: Long = 0,
+    val stallDetectedAt: Instant? = Clock.System.now().minus(2.hours),  // Init to now so stallMinutes is immediately populated
+    val stallMinutes: Long = 120,  // 2 hours - triggers emergency immediately after restart
     val escapeAttemptCount: Int = 0,
     val lastEscapeAttemptMode: String = "SAFE"
 )
