@@ -11,9 +11,12 @@ package com.kibot.macengine.runtime
 
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
+import kotlin.time.Duration.Companion.hours
 
 data class TradingStallState(
-    val lastTradeTimestamp: Instant = Clock.System.now(),
+    // EMERGENCY FIX: Init to 2 hours ago so stall detector triggers IMMEDIATELY on startup!
+    // Old bug: defaulted to Clock.System.now() → bot thinks it just traded → waits 60 min
+    val lastTradeTimestamp: Instant = Clock.System.now().minus(2.hours),
     val stallDetectedAt: Instant? = null,
     val stallMinutes: Long = 0,
     val escapeAttemptCount: Int = 0,

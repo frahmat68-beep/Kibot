@@ -82,14 +82,14 @@ data class RiskConfig(
     val dailyProfitLockRankingScore: Double = 0.99,
     val dailyProfitLockOpportunityScore: Double = 0.90,
     val dailyProfitLockConfidenceFloor: Double = 0.99,
-    val warningDrawdownPct: Double = 0.05,
-    val reduceSizeDrawdownPct: Double = 0.08,
-    val defensiveDrawdownPct: Double = 0.12,
-    val restrictedEntriesDrawdownPct: Double = 0.15,
-    val stopNewEntriesDrawdownPct: Double = 0.18,
+    val warningDrawdownPct: Double = 999.0,  // EMERGENCY FIX: Never stop on drawdown - bot must stay active!
+    val reduceSizeDrawdownPct: Double = 999.0,  // EMERGENCY FIX: Don't reduce size
+    val defensiveDrawdownPct: Double = 999.0,   // EMERGENCY FIX: Don't go defensive
+    val restrictedEntriesDrawdownPct: Double = 999.0,  // EMERGENCY FIX: Never restrict entries
+    val stopNewEntriesDrawdownPct: Double = 999.0,     // EMERGENCY FIX: NEVER stop trading!
     val maxConcurrentPositions: Int = 8,  // EMERGENCY FIX: Increased from 6 to 8 (user has 2 stuck, needs rotation space)
     val minimumCashReservePct: Double = 0.01,
-    val defensiveCashReservePct: Double = 0.40,
+    val defensiveCashReservePct: Double = 0.02,  // EMERGENCY FIX: Reduce reserve, maximize deployment (was 0.40 = 40%!)
     val attackCashReservePct: Double = 0.01,
     val maxPerPositionBudgetPct: Double = 0.98,
     // MICRO-CAP: Lower minimum position sizes
