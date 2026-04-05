@@ -4,6 +4,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,6 +23,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kibot.android.ui.theme.*
@@ -130,8 +132,17 @@ fun BalanceCard(
     pnlToday: Double,
     modifier: Modifier = Modifier
 ) {
+    val isPositive = pnlToday >= 0
+    val borderColor = if (isPositive) ProfitGreen else LossRed
+    
     Card(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .border(
+                width = 2.dp,
+                color = borderColor.copy(alpha = 0.4f),
+                shape = RoundedCornerShape(16.dp)
+            ),
         colors = CardDefaults.cardColors(containerColor = DarkSurface),
         shape = RoundedCornerShape(16.dp)
     ) {
@@ -214,8 +225,18 @@ fun BotStatusCard(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit = {}
 ) {
+    val isOnline = status.lowercase() == "online"
+    val borderColor = if (isOnline) ProfitGreen else LossRed
+    val borderOpacity = if (isOnline) 0.6f else 0.4f
+    
     Card(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .border(
+                width = 2.dp,
+                color = borderColor.copy(alpha = borderOpacity),
+                shape = RoundedCornerShape(16.dp)
+            ),
         colors = CardDefaults.cardColors(containerColor = DarkSurface),
         shape = RoundedCornerShape(16.dp)
     ) {
@@ -224,15 +245,27 @@ fun BotStatusCard(
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            // Header row
+            // Header row with status indicator
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    StatusDot(status = status)
-                    Spacer(modifier = Modifier.width(12.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    // Pulsing online indicator
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .background(
+                                color = borderColor,
+                                shape = CircleShape
+                            )
+                    )
+                    
                     Column {
                         Text(
                             text = name,
@@ -251,7 +284,6 @@ fun BotStatusCard(
                 Switch(
                     checked = isEnabled,
                     onCheckedChange = { newState ->
-                        // Request confirmation from parent before actually toggling
                         onToggle(newState)
                     },
                     colors = SwitchDefaults.colors(
@@ -259,60 +291,89 @@ fun BotStatusCard(
                         checkedTrackColor = ProfitGreen.copy(alpha = 0.3f),
                         uncheckedThumbColor = TextDisabled,
                         uncheckedTrackColor = DarkSurfaceVariant
-                    )
+                    ),
+                    modifier = Modifier.scale(0.8f)
                 )
             }
             
             Spacer(modifier = Modifier.height(12.dp))
             
-            // Status row
+            // Status details row
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        color = DarkSurfaceVariant.copy(alpha = 0.3f),
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    pingMs?.takeIf { it > 0L }?.let { livePing ->
-                        PingIndicator(pingMs = livePing)
-                    }
-                    
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        val isAIActive = aiStatus.lowercase() in listOf("active", "online", "enabled")
+                // Ping indicator
+                pingMs?.takeIf { it > 0L }?.let { livePing ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
                         Icon(
-                            imageVector = if (isAIActive) Icons.Default.Psychology else Icons.Default.PsychologyAlt,
-                            contentDescription = "AI Status",
-                            tint = if (isAIActive) NeutralBlue else TextDisabled,
-                            modifier = Modifier.size(16.dp)
+                            imageVector = Icons.Default.Bolt,
+                            contentDescription = "Ping",
+                            tint = StatusOnline,
+                            modifier = Modifier.size(14.dp)
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = when {
-                                aiStatus.lowercase() == "active" || aiStatus.lowercase() == "online" -> "AI Online"
-                                aiStatus.lowercase() == "limited" -> "AI Limited"
-                                aiStatus.lowercase() == "offline" -> "AI Offline"
-                                else -> "AI ${aiStatus.replaceFirstChar { it.uppercase() }}"
-                            },
+                            text = "${livePing}ms",
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (isAIActive) NeutralBlue else TextDisabled
+                            color = TextSecondary,
+                            fontSize = 10.sp
                         )
                     }
                 }
                 
-                Text(
-                    text = status.replaceFirstChar { it.uppercase() },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = when (status.lowercase()) {
-                        "online" -> StatusOnline
-                        "degraded" -> StatusDegraded
-                        else -> StatusOffline
-                    },
-                    fontWeight = FontWeight.Medium
-                )
+                // AI Status
+                val isAIActive = aiStatus.lowercase() in listOf("active", "online", "enabled")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isAIActive) Icons.Default.Psychology else Icons.Default.PsychologyAlt,
+                        contentDescription = "AI Status",
+                        tint = if (isAIActive) NeutralBlue else TextDisabled,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = when {
+                            aiStatus.lowercase() == "active" || aiStatus.lowercase() == "online" -> "AI Online"
+                            aiStatus.lowercase() == "limited" -> "AI Limited"
+                            else -> "AI Offline"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isAIActive) NeutralBlue else TextDisabled,
+                        fontSize = 10.sp
+                    )
+                }
+                
+                Spacer(modifier = Modifier.weight(1f))
+                
+                // Status badge
+                Surface(
+                    color = borderColor.copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Text(
+                        text = status.replaceFirstChar { it.uppercase() },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = borderColor,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
             }
             
-            // Additional content (holdings, etc.)
+            // Additional content (holdings, positions, etc.)
             content()
         }
     }
