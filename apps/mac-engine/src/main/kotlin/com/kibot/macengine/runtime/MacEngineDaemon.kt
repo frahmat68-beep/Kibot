@@ -9544,7 +9544,7 @@ class MacEngineDaemon(
             ?: 0.0
         if (refPrice <= 0.0) return null
 
-        val minNotionalIdr = 10_250.0
+        val minNotionalIdr = 25_000.0  // Increase from 10,250 to 25,000 IDR (Indodax actual minimum)
         val currentBudgetIdr = executionPlan.quoteBudget?.toDoubleOrZero()
             ?: (executionPlan.quantity.toDoubleOrZero() * refPrice)
         if (currentBudgetIdr < minNotionalIdr) return null
@@ -9644,10 +9644,10 @@ class MacEngineDaemon(
         return when (config.exchangeKind) {
             ExchangeKind.INDODAX -> {
                 val budgetCapIdr = when {
-                    totalEquityIdr < 90_000.0 -> 11_500.0
-                    totalEquityIdr < 180_000.0 -> 18_000.0
+                    totalEquityIdr < 90_000.0 -> 25_000.0  // Increase from 11,500 → 25k for emergency
+                    totalEquityIdr < 180_000.0 -> 27_000.0  // Increase from 18,000 → 27k for emergency
                     else -> totalEquityIdr * 0.22
-                }.coerceAtLeast(10_250.0)
+                }.coerceAtLeast(25_000.0)  // Increase floor from 10,250 → 25k to ensure min order met
                 val current = executionPlan.quoteBudget?.toDoubleOrZero() ?: budgetCapIdr
                 val prelimBudget = minOf(current, budgetCapIdr)
                 
