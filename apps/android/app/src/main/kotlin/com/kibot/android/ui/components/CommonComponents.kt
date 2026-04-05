@@ -44,12 +44,21 @@ val decimalFormat: NumberFormat = NumberFormat.getNumberInstance().apply {
 }
 
 fun formatRupiah(value: Double): String {
-    return "Rp ${NumberFormat.getNumberInstance(Locale("id", "ID")).format(value.toLong())}"
+    val isNegative = value < 0
+    val absValue = kotlin.math.abs(value)
+    val formatted = NumberFormat.getNumberInstance(Locale("id", "ID")).format(absValue.toLong())
+    return if (isNegative) "-Rp $formatted" else "Rp $formatted"
 }
 
 fun formatPercent(value: Double, showSign: Boolean = true): String {
-    val sign = if (showSign && value >= 0) "+" else ""
-    return "$sign${String.format("%.2f", value)}%"
+    val isNegative = value < 0
+    val absValue = kotlin.math.abs(value)
+    val sign = when {
+        isNegative -> "-"
+        showSign && value > 0 -> "+"
+        else -> ""
+    }
+    return "$sign${String.format("%.2f", absValue)}%"
 }
 
 @Composable
