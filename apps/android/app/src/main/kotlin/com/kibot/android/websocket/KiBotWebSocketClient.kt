@@ -474,6 +474,22 @@ class KiBotWebSocketClient(
                         value = value
                     ))
                 }
+            } else if (assetAllocations.isNotEmpty()) {
+                // Allocations exist from server, but ensure cash/IDR is included
+                val hasCash = assetAllocations.any { it.coin.uppercase() == "IDR" || it.coin.uppercase() == "CASH" }
+                if (!hasCash && balance > 0) {
+                    val cryptoValue = positions.sumOf { it.currentPrice * it.amount }
+                    val freeIdrValue = balance - cryptoValue
+                    if (freeIdrValue > 0) {
+                        val totalPortfolio = balance
+                        val cashPct = (freeIdrValue / totalPortfolio) * 100
+                        assetAllocations.add(0, AssetAllocation(
+                            coin = "IDR",
+                            percentage = cashPct,
+                            value = freeIdrValue
+                        ))
+                    }
+                }
             }
             
             val authoritativeBundle =
