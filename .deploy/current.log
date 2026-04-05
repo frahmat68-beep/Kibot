@@ -1,0 +1,8 @@
+03:04:25.374 INFO  com.kibot.macengine.runtime.MacEngineDaemon - Mac engine daemon loop started.
+03:04:25.403 INFO  io.ktor.server.Application - Autoreload is disabled because the development mode is off.
+03:04:25.525 INFO  io.ktor.server.Application - Application started in 0.173 seconds.
+03:04:25.564 INFO  io.ktor.server.Application - Responding at http://0.0.0.0:8787
+03:04:43.487 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [WHY_NOT_BUY] pair=srm_idr reason=order_chase_failed:BUY srm_idr ditunda karena masih ada order aktif tersimpan.
+03:04:44.038 INFO  com.kibot.macengine.runtime.MacEngineDaemon - TRAILING_FLOOR_UPDATED pair=trx_idr entry=5423.00000000 peak=5446.00000000 floor=5364.31000000 current=5423.00000000 armed=false trailDropPct=1.50
+03:04:44.114 INFO  com.kibot.macengine.runtime.MacEngineDaemon - TRAILING_FLOOR_UPDATED pair=xlm_idr entry=2699.00000000 peak=2699.00000000 floor=2658.51500000 current=2699.00000000 armed=false trailDropPct=1.50
+03:04:47.602 INFO  KiBotMac - Shutting down KiBot mac engine.

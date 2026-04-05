@@ -3244,7 +3244,13 @@ class MacEngineDaemon(
      */
     private fun isEmergencyOverrideActive(now: Instant): Boolean {
         val state = tradingStallDetector.getState()
-        return tradingStallDetector.isStalled(now) && state.stallMinutes >= 30
+        val stalled = tradingStallDetector.isStalled(now)
+        val result = stalled && state.stallMinutes >= 30
+        // DEBUG: Log emergency override state
+        if (result || state.stallMinutes > 0) {
+            logger.info("[EMERGENCY_DEBUG] stalled={} stallMinutes={} result={}", stalled, state.stallMinutes, result)
+        }
+        return result
     }
 
     private fun recordTradeExecution(pairId: String) {
