@@ -5586,6 +5586,18 @@ class MacEngineDaemon(
                         finalPnlIdr = pnlIdr,
                     )
                 }
+                
+                // [70/30 CAPITAL ALLOCATION] Return capital to appropriate bucket after exit
+                if (pnlIdr != null && !isPartialExit) {
+                    val wasAggressive = filteredExitDecision.executionPlan.speculativePocket == true ||
+                        filteredExitDecision.executionPlan.botMode in listOf(BotMode.ATTACK, BotMode.ATTACK)
+                    returnCapitalAfterExit(
+                        profitIdr = pnlIdr,
+                        wasAggressiveTrade = wasAggressive,
+                        pairId = filteredExitDecision.executionPlan.signal.pairId.value
+                    )
+                }
+                
                 val exitedHyperPair = hyperAggressiveEntryReasonByPair[pairKey] != null
                 val allowFastReEntry =
                     filteredExitDecision.position.unrealizedPnlPct > 0.0 ||
@@ -9541,6 +9553,12 @@ class MacEngineDaemon(
     ): com.kibot.shared.models.ExecutionPlan {
         if (executionPlan.side != com.kibot.shared.models.OrderSide.BUY) return executionPlan
         if (totalEquityIdr <= 0.0) return executionPlan
+        
+        // [70/30 CAPITAL ALLOCATION] Determine if this is anomaly/pump or stable trade
+        val isAnomalyCoin = executionPlan.speculativePocket == true || 
+            executionPlan.botMode in listOf(BotMode.ATTACK, BotMode.ATTACK) ||
+            (executionPlan.expectedNetEdgePct ?: 0.0) >= 3.0
+        
         return when (config.exchangeKind) {
             ExchangeKind.INDODAX -> {
                 val budgetCapIdr = when {
@@ -9549,8 +9567,17 @@ class MacEngineDaemon(
                     else -> totalEquityIdr * 0.22
                 }.coerceAtLeast(10_250.0)
                 val current = executionPlan.quoteBudget?.toDoubleOrZero() ?: budgetCapIdr
+                val prelimBudget = minOf(current, budgetCapIdr)
+                
+                // [70/30] Apply capital allocation from bucket
+                val allocatedBudget = allocateCapitalForEntry(
+                    requestedAmountIdr = prelimBudget,
+                    isAnomalyCoin = isAnomalyCoin,
+                    pairId = executionPlan.signal.pairId.value
+                )
+                
                 executionPlan.copy(
-                    quoteBudget = DecimalValue.fromDouble(minOf(current, budgetCapIdr)),
+                    quoteBudget = DecimalValue.fromDouble(allocatedBudget),
                 )
             }
             ExchangeKind.BINANCE_SPOT -> {
@@ -9559,8 +9586,17 @@ class MacEngineDaemon(
                     else -> totalEquityIdr * 0.22
                 }.coerceAtLeast(12_000.0)
                 val current = executionPlan.quoteBudget?.toDoubleOrZero() ?: budgetCapIdr
+                val prelimBudget = minOf(current, budgetCapIdr)
+                
+                // [70/30] Apply capital allocation from bucket
+                val allocatedBudget = allocateCapitalForEntry(
+                    requestedAmountIdr = prelimBudget,
+                    isAnomalyCoin = isAnomalyCoin,
+                    pairId = executionPlan.signal.pairId.value
+                )
+                
                 executionPlan.copy(
-                    quoteBudget = DecimalValue.fromDouble(minOf(current, budgetCapIdr)),
+                    quoteBudget = DecimalValue.fromDouble(allocatedBudget),
                 )
             }
         }
