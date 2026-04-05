@@ -161,9 +161,9 @@ fun BalanceCard(
                         color = TextTertiary
                     )
                     Text(
-                        text = formatPercent(totalReturn),
+                        text = formatRupiah(pnlToday),
                         style = MaterialTheme.typography.titleMedium,
-                        color = if (totalReturn >= 0) ProfitGreen else LossRed,
+                        color = if (pnlToday >= 0) ProfitGreen else LossRed,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -177,14 +177,14 @@ fun BalanceCard(
                 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "PnL Today",
+                        text = "Total Return",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextTertiary
                     )
                     Text(
-                        text = formatRupiah(pnlToday),
+                        text = formatPercent(totalReturn),
                         style = MaterialTheme.typography.titleMedium,
-                        color = if (pnlToday >= 0) ProfitGreen else LossRed,
+                        color = if (totalReturn >= 0) ProfitGreen else LossRed,
                         fontWeight = FontWeight.SemiBold
                     )
                 }

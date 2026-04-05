@@ -56,26 +56,20 @@ class KiBotWidget : GlanceAppWidget() {
     )
     
     override suspend fun provideGlance(context: Context, id: GlanceId) {
+        android.util.Log.i("KiBotWidget", "🎨 provideGlance called for id=$id")
+        
+        // Read data from SharedPreferences (reliable)
+        val data = KiBotWidgetHelper.getWidgetData(context)
+        android.util.Log.i("KiBotWidget", "🎨 Widget data from SharedPrefs: balance=${data.balance}, pnl=${data.pnlToday}, status=${data.kidaxStatus}")
+        
         provideContent {
-            val prefs = currentState<Preferences>()
-            
-            val balance = prefs[KiBotWidgetKeys.BALANCE] ?: 0.0
-            val pnlToday = prefs[KiBotWidgetKeys.PNL_TODAY] ?: 0.0
-            val totalReturn = prefs[KiBotWidgetKeys.TOTAL_RETURN] ?: 0.0
-            val kidaxStatus = prefs[KiBotWidgetKeys.KIDAX_STATUS] ?: "offline"
-            val kinanceStatus = prefs[KiBotWidgetKeys.KINANCE_STATUS] ?: "offline"
-            val kibotStatus = prefs[KiBotWidgetKeys.KIBOT_STATUS] ?: "offline"
-            val kidaxPing = prefs[KiBotWidgetKeys.KIDAX_PING] ?: 0L
-            val kinancePing = prefs[KiBotWidgetKeys.KINANCE_PING] ?: 0L
-            val kibotPing = prefs[KiBotWidgetKeys.KIBOT_PING] ?: 0L
-            val lastUpdate = prefs[KiBotWidgetKeys.LAST_UPDATE] ?: 0L
-            
             val size = LocalSize.current
+            android.util.Log.i("KiBotWidget", "🎨 Widget size: ${size.width} x ${size.height}")
             
             when {
-                size.width < 150.dp -> SmallWidget(balance, pnlToday, kidaxStatus)
-                size.width < 250.dp -> MediumWidget(balance, pnlToday, totalReturn, kidaxStatus)
-                else -> LargeWidget(balance, pnlToday, totalReturn, kidaxStatus, kinanceStatus, kibotStatus, kidaxPing, kinancePing, kibotPing, lastUpdate)
+                size.width < 150.dp -> SmallWidget(data.balance, data.pnlToday, data.kidaxStatus)
+                size.width < 250.dp -> MediumWidget(data.balance, data.pnlToday, data.totalReturn, data.kidaxStatus)
+                else -> LargeWidget(data.balance, data.pnlToday, data.totalReturn, data.kidaxStatus, data.kinanceStatus, data.kibotStatus, data.kidaxPing, 0L, 0L, data.lastUpdate)
             }
         }
     }
