@@ -224,11 +224,16 @@ private fun LargeWidget(
     kibotPing: Long,
     lastUpdate: Long
 ) {
+    val borderColor = if (pnlToday >= 0) WidgetProfitGreen else WidgetLossRed
+    
     Column(
         modifier = GlanceModifier
             .fillMaxSize()
-            .background(WidgetBackground)
+            .background(borderColor)  // Border color
             .cornerRadius(16.dp)
+            .padding(3.dp)  // Border thickness
+            .background(WidgetBackground)
+            .cornerRadius(15.dp)
             .clickable(actionStartActivity<MainActivity>())
             .padding(16.dp)
     ) {
