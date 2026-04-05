@@ -198,4 +198,16 @@ class CapitalAllocationManager(
         totalDeployedAggressiveIdr = 0.0
         rebalanceCount = 0
     }
+    
+    /**
+     * Update available capital based on actual FREE IDR balance
+     * This should be called every sync cycle to reflect true available capital
+     * 
+     * @param freeIdrBalance Current free IDR balance from exchange
+     */
+    fun updateFreeCapital(freeIdrBalance: Double) {
+        // Redistribute free capital to buckets based on 70/30 split
+        currentStableCapitalIdr = freeIdrBalance * stableRotationPercent
+        currentAggressiveCapitalIdr = freeIdrBalance * aggressivePercent
+    }
 }

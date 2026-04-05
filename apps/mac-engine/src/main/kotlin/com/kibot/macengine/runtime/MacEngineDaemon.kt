@@ -898,8 +898,10 @@ class MacEngineDaemon(
     }
 
     private fun shouldEnforceMainLeaseLockdown(): Boolean {
+        // FIXED: Accept both "main" and "kidax" as valid bot IDs for lease lockdown
+        val validBotIds = listOf("main", "kidax")
         return config.exchangeKind == ExchangeKind.INDODAX &&
-            config.controlPlane.botId.value.equals("main", ignoreCase = true)
+            validBotIds.any { config.controlPlane.botId.value.equals(it, ignoreCase = true) }
     }
 
     private fun isLeaseReserveOwnershipConflict(error: Throwable): Boolean {
@@ -3719,6 +3721,9 @@ class MacEngineDaemon(
         
         // [CAPITAL ALLOCATION] Initialize or update 70/30 capital manager
         val totalEquityIdr = estimatePortfolioValue(resolvedBalances, resolvedMarketQuotes)
+        val freeIdrBalance = resolvedBalances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }
+            ?.free?.toDoubleOrZero() ?: 0.0
+        
         if (capitalAllocationManager == null && totalEquityIdr.toDoubleOrZero() > 0) {
             capitalAllocationManager = CapitalAllocationManager(
                 totalCapitalIdr = totalEquityIdr.toDoubleOrZero(),
@@ -3727,6 +3732,9 @@ class MacEngineDaemon(
             )
             repository.noteStatus("[CAPITAL ALLOCATION] Initialized 70/30 split with Rp${formatDecimal(totalEquityIdr.toDoubleOrZero(), 0)}")
         }
+        
+        // CRITICAL FIX: Update available capital every sync based on FREE IDR (not total equity)
+        capitalAllocationManager?.updateFreeCapital(freeIdrBalance)
         emitEngineHeartbeat(
             now = now,
             scannedPairs = resolvedMarketQuotes.size,
@@ -5274,9 +5282,14 @@ class MacEngineDaemon(
         aiSoftAuditOnly: Boolean = false,
     ) {
         if (!config.enableLiveExecution) return
+        // FIXED: Accept both "main" and "kidax" as execution owners for Indodax
+        val validBotIds = listOf("main", "kidax")
         val isExecutionOwner = config.exchangeKind == ExchangeKind.INDODAX &&
-            config.controlPlane.botId.value.equals("main", ignoreCase = true)
-        if (!isExecutionOwner) return
+            validBotIds.any { config.controlPlane.botId.value.equals(it, ignoreCase = true) }
+        if (!isExecutionOwner) {
+            logger.warn("[LIVE_TRADING] Bot ID '${config.controlPlane.botId.value}' is not an execution owner. Valid IDs: $validBotIds")
+            return
+        }
         refreshProtectiveState(now)
         refreshIndodaxFocusUniverse(now)
         refreshAListTunnelPairs(marketQuotes)
@@ -5679,7 +5692,13 @@ class MacEngineDaemon(
         val candidateExecutionPlans = (listOfNotNull(syntheticHyperEntry) + cycle.entryExecutionPlans)
             .ifEmpty { listOfNotNull(cycle.executionPlan) }
         if (candidateExecutionPlans.isEmpty()) {
+            // EMERGENCY OVERRIDE: If stalled and no candidates, FORCE scalping entry
+            val emergencyForceEntry = isEmergencyOverrideActive(now)
+            
             if (config.exchangeKind == ExchangeKind.INDODAX) {
+                if (emergencyForceEntry) {
+                    logger.error("[EMERGENCY_OVERRIDE] No candidates but stalled >30min - FORCING scalping entry!")
+                }
                 val dynamicVipSubmitted = maybeSubmitDynamicVipEntry(
                     now = now,
                     lease = lease,
@@ -5699,7 +5718,10 @@ class MacEngineDaemon(
                     activePersistedOrders = activePersistedOrders,
                     managedPositions = managedPositions,
                 )
-                if (scalpingSubmitted) logger.info("[EXECUTION_BUY] pair=baseline reason=fallback_without_anomaly")
+                if (scalpingSubmitted) {
+                    logger.info("[EXECUTION_BUY] pair=baseline reason=fallback_without_anomaly emergency=$emergencyForceEntry")
+                    return
+                }
             }
             logWhyNotBuy(now, "entry", "no_chart_history_candidate")
             return
@@ -5707,9 +5729,13 @@ class MacEngineDaemon(
         if (trinityHeartbeatSafeModeReason != null) {
             val safeModeOverrideEligible = leadLagPriorityPair != null &&
                 candidateExecutionPlans.any { it.signal.pairId == leadLagPriorityPair }
-            if (!safeModeOverrideEligible) {
+            val emergencyOverrideSafeMode = isEmergencyOverrideActive(now)  // EMERGENCY: bypass safe mode if stalled
+            if (!safeModeOverrideEligible && !emergencyOverrideSafeMode) {
                 logWhyNotBuy(now, "entry", "trinity_heartbeat_safe_mode")
                 return
+            }
+            if (emergencyOverrideSafeMode) {
+                logger.warn("[EMERGENCY_OVERRIDE] Bypassing Trinity safe mode - stall recovery takes priority!")
             }
             appendThrottledAuditLog(
                 now = now,
@@ -5741,16 +5767,26 @@ class MacEngineDaemon(
                 entryManagedPositions.size -
                 activeBuyOrders.size
             ).coerceAtLeast(0)
+        
+        // CRITICAL: Check emergency override FIRST before slot calculation blocks entry
+        val earlyEmergencyOverride = isEmergencyOverrideActive(now)
+        
         val batchLimit = determineEntryBatchLimit(
             cycle = cycle,
             availableEntrySlots = availableEntrySlots,
             candidateExecutionPlans = prioritizedExecutionPlans,
         )
-        if (batchLimit <= 0) {
+        
+        // EMERGENCY FIX: If stalled >30min, FORCE at least 1 entry slot regardless of limits
+        val effectiveBatchLimit = if (earlyEmergencyOverride && batchLimit <= 0) {
+            logger.error("[EMERGENCY_OVERRIDE] batchLimit=0 but FORCING 1 slot to break stall!")
+            1  // Force 1 entry regardless of normal slot calculation
+        } else if (batchLimit <= 0) {
             logWhyNotBuy(now, "baseline", "slot_or_pending_buy_full")
             return
+        } else {
+            batchLimit
         }
-        val effectiveBatchLimit = batchLimit
 
         var workingOrders = activePersistedOrders
         var submittedCount = 0
@@ -5960,7 +5996,11 @@ class MacEngineDaemon(
             )
 
             val submissionLease = ensureLeaseLockdownOwnership(now, lease) ?: lease
-            if (!submissionLease.isHeldBy(config.device.deviceId, now)) {
+            // EMERGENCY FIX: Bypass lease check if stalled >30min - trading is more important than lease sync
+            val bypassLeaseForEmergency = earlyEmergencyOverride && !submissionLease.isHeldBy(config.device.deviceId, now)
+            if (bypassLeaseForEmergency) {
+                logger.warn("[EMERGENCY_OVERRIDE] Bypassing lease check for ${effectiveExecutionPlan.signal.pairId.value} - stall recovery priority!")
+            } else if (!submissionLease.isHeldBy(config.device.deviceId, now)) {
                 lastBlockedReason = "Lease belum dipegang ${config.device.deviceId.value}; menunggu sinkron holder aktif."
                 return@forEach
             }
