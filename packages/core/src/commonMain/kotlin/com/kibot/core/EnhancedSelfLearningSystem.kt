@@ -300,7 +300,7 @@ class EnhancedSelfLearningSystem(
             .coerceIn(0.5, 3.0)  // Keep in [0.5%, 3.0%]
         
         val adaptiveMaxHolding = (baseMaxHolding + holdingAdjustment)
-            .coerceIn(30, 180)  // Keep in [30min, 180min]
+            .coerceIn(30.0, 180.0)  // Keep in [30min, 180min]
         
         return AdaptiveThresholds(adaptiveMinProfit, adaptiveMaxHolding.toInt())
     }

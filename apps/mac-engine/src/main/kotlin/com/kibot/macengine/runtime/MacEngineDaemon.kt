@@ -7784,6 +7784,8 @@ class MacEngineDaemon(
             return7dPctLabel = formatSignedPercent(return7dPct),
             return30dIdr = formatSignedMonetary(return30d),
             return30dPctLabel = formatSignedPercent(return30dPct),
+            cumulativeReturnIdr = formatSignedMonetary(cumulativeReturn),
+            cumulativeReturnPctLabel = formatSignedPercent(cumulativeReturnPct),
             targetPursuitLabel = targetPursuit?.phase ?: "TRACKING",
             aiProviderSummary = aiSummaryLabel,
             syncPathLabel = "Live Server",
