@@ -401,7 +401,8 @@ class KiBotWebSocketClient(
                 else -> currentState.heartbeat.kinance.copy(
                     ping = kinancePingMs,
                     status = kinanceNodeStatus,
-                    holdings = emptyList()
+                    holdings = emptyList(),
+                    aiStatus = "active"
                 )
             }
             val kibotStatus = when (connectedBotId) {
@@ -409,7 +410,8 @@ class KiBotWebSocketClient(
                 else -> currentState.heartbeat.kibot.copy(
                     ping = 0L,
                     status = kibotNodeStatus,
-                    holdings = emptyList()
+                    holdings = emptyList(),
+                    aiStatus = aiStatus
                 )
             }
             
@@ -595,9 +597,10 @@ class KiBotWebSocketClient(
     }
 
     private fun deriveAiStatus(aiProviderSummary: String): String = when {
-        aiProviderSummary.contains("OFFLINE", ignoreCase = true) -> "idle"
+        aiProviderSummary.contains("OFFLINE", ignoreCase = true) -> "offline"
         aiProviderSummary.contains("LIMITED", ignoreCase = true) -> "limited"
-        else -> "active"
+        aiProviderSummary.contains("ONLINE", ignoreCase = true) -> "active"
+        else -> "offline"  // Default to offline for unknown/default states
     }
 
     private inner class KiBotWebSocketListener : WebSocketListener() {
