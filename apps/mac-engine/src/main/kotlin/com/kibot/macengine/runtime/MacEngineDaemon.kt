@@ -7709,9 +7709,9 @@ class MacEngineDaemon(
             }
             // Looking for entry
             topCandidate != "-" && scanUniverseCount > 0 ->
-                "🔍 Analyzing $topCandidate (scanning $scanUniverseCount pairs)"
+                "🔍 Scanning $topCandidate (analyzing $scanUniverseCount pairs)"
             scanUniverseCount > 0 ->
-                "👀 Watching market (scanning $scanUniverseCount pairs)"
+                "👀 Scanning market ($scanUniverseCount pairs in queue)"
             // Idle/syncing
             else -> "⏱️ Waiting for good entry opportunity"
         }
