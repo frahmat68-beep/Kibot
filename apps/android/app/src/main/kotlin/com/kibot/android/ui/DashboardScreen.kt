@@ -62,7 +62,7 @@ fun DashboardScreen(
             
             // Live Activity Section
             item {
-                LiveActivitySection(botState = botState)
+                LiveActivitySectionV2(botState = botState)
             }
             
             // KiBot Manager Status Card

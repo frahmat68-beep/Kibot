@@ -157,10 +157,11 @@ while true; do
     --display-name "${INSTANCE_NAME}" \
     --shape "${SHAPE}" \
     --shape-config "${SHAPE_CONFIG}" \
+    --image-id "${ARM_IMAGE_ID}" \
+    --boot-volume-size-in-gbs "${BOOT_VOLUME_SIZE_GB}" \
     --subnet-id "${SUBNET_ID}" \
     --assign-public-ip true \
     --metadata "{\"ssh_authorized_keys\":\"$(cat "${SSH_KEY_FILE}")\"}" \
-    --source-details "{\"sourceType\":\"image\",\"imageId\":\"${ARM_IMAGE_ID}\",\"bootVolumeSizeInGBs\":${BOOT_VOLUME_SIZE_GB}}" \
     2>&1)"
   LAUNCH_EXIT=$?
   set -e

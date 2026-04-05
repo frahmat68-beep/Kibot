@@ -542,6 +542,7 @@ class KiBotWebSocketClient(
                     aiProviderSummary = aiProviderSummary,
                     healthSummary = healthSummary,
                     statusMessage = statusMessage,
+                    lastActivityUpdate = System.currentTimeMillis(),
                     connectedBotId = connectedBotId,
                     isConnected = true,
                     lastUpdate = System.currentTimeMillis()

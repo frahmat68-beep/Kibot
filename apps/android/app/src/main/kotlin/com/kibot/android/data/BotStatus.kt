@@ -118,6 +118,7 @@ data class BotState(
     val aiProviderSummary: String = "AI summary belum siap.",
     val healthSummary: String = "Menunggu snapshot server.",
     val statusMessage: String = "Server monitor sedang booting.",
+    val lastActivityUpdate: Long = 0,  // Timestamp for last activity update
     val connectedBotId: String = "unknown",
     val isConnected: Boolean = false,
     val lastUpdate: Long = 0
