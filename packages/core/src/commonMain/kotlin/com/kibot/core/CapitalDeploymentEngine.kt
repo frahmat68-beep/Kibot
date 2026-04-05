@@ -134,6 +134,8 @@ class CapitalDeploymentEngine(
         }
         val capitalUtilizationTargetPct = (1.0 - effectiveReservePct).coerceIn(0.0, 1.0)
         val hasUndeployedCapital = deployableEquity > (currentEquity * 0.25)
+        
+        // EMERGENCY FIX: MINIMUM 4 SLOTS ALWAYS for rotation (user has 2 stuck positions)
         val breadthDrivenCap = when {
             dominantAllInReady || speculativePocketReady -> 1
             multiSlotReadyCount >= 3 -> 3
@@ -142,13 +144,14 @@ class CapitalDeploymentEngine(
             hasUndeployedCapital && decentCandidatesCount >= 2 -> 2
             hasUndeployedCapital && decentCandidatesCount >= 1 -> baseTotalCap.coerceAtLeast(2)
             else -> 1
-        }.coerceAtMost(baseTotalCap.coerceAtLeast(1))
+        }.coerceAtMost(baseTotalCap.coerceAtLeast(4))  // CHANGED: min 4 slots (was 1)
+        
         val maxActivePositions = when {
             !risk.allowNewEntries || !mode.tradingAllowed -> openPositions
             dominantAllInReady -> maxOf(openPositions, 1).coerceAtMost(1)
             speculativePocketReady -> maxOf(openPositions, 1)
-            else -> maxOf(openPositions, breadthDrivenCap)
-                .coerceAtMost(baseTotalCap.coerceAtLeast(1))
+            else -> maxOf(openPositions, breadthDrivenCap, 4)  // EMERGENCY FIX: MINIMUM 4 slots
+                .coerceAtMost(baseTotalCap.coerceAtLeast(4))   // CHANGED: min base 4 (was 1)
         }
         val hasNewSlotCapacity = maxActivePositions > openPositions
         val dominanceBoost = topCandidateGap.coerceIn(0.0, 0.10) * 0.35

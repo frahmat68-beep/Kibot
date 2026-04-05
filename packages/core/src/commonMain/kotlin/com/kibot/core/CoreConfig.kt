@@ -76,9 +76,9 @@ data class RiskConfig(
     // MICRO-CAP: Tighter loss limits for protection
     val hardDailyLossLimitPct: Double = 0.03,
     val hardRealizedLossLimitIdr: Double = 10_000.0,
-    val maxDailyTradeActions: Int = 24,
-    val maxDailyRoundTrips: Int = 12,
-    val dailyProfitLockPct: Double = 0.010,
+    val maxDailyTradeActions: Int = 999,  // EMERGENCY FIX: Unlimited trades (was 24) - if profitable, keep trading!
+    val maxDailyRoundTrips: Int = 999,    // EMERGENCY FIX: Unlimited round-trips (was 12)
+    val dailyProfitLockPct: Double = 999.0,  // EMERGENCY FIX: NEVER stop on profit (was 0.010 = 1%)
     val dailyProfitLockRankingScore: Double = 0.99,
     val dailyProfitLockOpportunityScore: Double = 0.90,
     val dailyProfitLockConfidenceFloor: Double = 0.99,
@@ -87,7 +87,7 @@ data class RiskConfig(
     val defensiveDrawdownPct: Double = 0.12,
     val restrictedEntriesDrawdownPct: Double = 0.15,
     val stopNewEntriesDrawdownPct: Double = 0.18,
-    val maxConcurrentPositions: Int = 6,
+    val maxConcurrentPositions: Int = 8,  // EMERGENCY FIX: Increased from 6 to 8 (user has 2 stuck, needs rotation space)
     val minimumCashReservePct: Double = 0.01,
     val defensiveCashReservePct: Double = 0.40,
     val attackCashReservePct: Double = 0.01,

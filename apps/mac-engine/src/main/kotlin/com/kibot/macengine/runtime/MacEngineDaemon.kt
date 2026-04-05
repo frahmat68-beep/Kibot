@@ -3198,6 +3198,18 @@ class MacEngineDaemon(
                 "Attempt #${state.escapeAttemptCount + 1} to recover..."
             )
             
+            // EMERGENCY OVERRIDE: After 30 min stall, BYPASS ALL FILTERS
+            val emergencyOverrideActive = state.stallMinutes >= 30
+            if (emergencyOverrideActive) {
+                logger.error(
+                    "[EMERGENCY_OVERRIDE] ${state.stallMinutes} min without trade! " +
+                    "BYPASSING entry filters and risk limits to FORCE entry!"
+                )
+                repository.noteStatus(
+                    "[EMERGENCY] Bot stalled ${state.stallMinutes}min - FORCING trade entry"
+                )
+            }
+            
             // Trigger recovery actions
             val recoveryActions = mutableListOf<StallRecoveryAction>()
             
@@ -3223,6 +3235,14 @@ class MacEngineDaemon(
             
             tradingStallDetector.recordEscapeAttempt(nextMode)
         }
+    }
+
+    /**
+     * Check if emergency override is active (30+ min stall = bypass all filters)
+     */
+    private fun isEmergencyOverrideActive(now: Instant): Boolean {
+        val state = tradingStallDetector.getState()
+        return tradingStallDetector.isStalled(now) && state.stallMinutes >= 30
     }
 
     private fun recordTradeExecution(pairId: String) {
@@ -5737,24 +5757,39 @@ class MacEngineDaemon(
         var lastBlockedReason: String? = null
         prioritizedExecutionPlans.forEach { candidatePlan ->
             if (submittedCount >= effectiveBatchLimit) return@forEach
-            entryBlockedByProtectiveBrake(now, candidatePlan.signal.pairId)?.let { blockedReason ->
-                lastBlockedReason = blockedReason
-                return@forEach
+            
+            // EMERGENCY OVERRIDE: Bypass all filters if stalled >30min
+            val emergencyBypass = isEmergencyOverrideActive(now)
+            
+            if (!emergencyBypass) {
+                entryBlockedByProtectiveBrake(now, candidatePlan.signal.pairId)?.let { blockedReason ->
+                    lastBlockedReason = blockedReason
+                    return@forEach
+                }
+            } else {
+                logger.warn("[EMERGENCY_OVERRIDE] Bypassing protective brake for ${candidatePlan.signal.pairId.value}")
             }
+            
             if (workingOrders.any { it.pairId == candidatePlan.signal.pairId }) {
-                lastBlockedReason = "Entry ${candidatePlan.signal.pairId.value} ditunda karena pair yang sama masih punya order aktif."
-                return@forEach
+                if (!emergencyBypass) {
+                    lastBlockedReason = "Entry ${candidatePlan.signal.pairId.value} ditunda karena pair yang sama masih punya order aktif."
+                    return@forEach
+                }
             }
 
-            entryBlockedByPortfolioState(
-                cycle = cycle,
-                executionPlan = candidatePlan,
-                managedPositions = managedPositions,
-                activeOrders = workingOrders,
-                leadLagPriorityPair = leadLagPriorityPair,
-            )?.let { blockedReason ->
-                lastBlockedReason = blockedReason
-                return@forEach
+            if (!emergencyBypass) {
+                entryBlockedByPortfolioState(
+                    cycle = cycle,
+                    executionPlan = candidatePlan,
+                    managedPositions = managedPositions,
+                    activeOrders = workingOrders,
+                    leadLagPriorityPair = leadLagPriorityPair,
+                )?.let { blockedReason ->
+                    lastBlockedReason = blockedReason
+                    return@forEach
+                }
+            } else {
+                logger.warn("[EMERGENCY_OVERRIDE] Bypassing portfolio state check for ${candidatePlan.signal.pairId.value}")
             }
 
             val routedEntry = routeEntryPlanByLatency(
