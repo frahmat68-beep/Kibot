@@ -1,0 +1,47 @@
+03:26:22.707 INFO  com.kibot.macengine.runtime.MacEngineDaemon - Mac engine daemon loop started.
+03:26:22.751 INFO  io.ktor.server.Application - Autoreload is disabled because the development mode is off.
+03:26:22.767 WARN  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Trading stalled for 120 minutes! Attempt #1 to recover...
+03:26:22.768 ERROR com.kibot.macengine.runtime.MacEngineDaemon - [EMERGENCY_OVERRIDE] 120 min without trade! BYPASSING entry filters and risk limits to FORCE entry!
+03:26:22.769 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating mode: SAFE → DEFENSIVE
+03:26:22.771 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating bot mode: SAFE → DEFENSIVE
+[STALL_RECOVERY] ⚠️ No trades for 120min - Bot may be stuck. Mode escalation active to recover.
+
+03:26:22.857 INFO  io.ktor.server.Application - Application started in 0.175 seconds.
+03:26:22.886 INFO  io.ktor.server.Application - Responding at http://0.0.0.0:8787
+03:26:31.592 WARN  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Trading stalled for 120 minutes! Attempt #2 to recover...
+03:26:31.593 ERROR com.kibot.macengine.runtime.MacEngineDaemon - [EMERGENCY_OVERRIDE] 120 min without trade! BYPASSING entry filters and risk limits to FORCE entry!
+03:26:31.593 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating mode: SAFE → DEFENSIVE
+03:26:31.593 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating bot mode: SAFE → DEFENSIVE
+[STALL_RECOVERY] ⚠️ No trades for 120min - Bot may be stuck. Mode escalation active to recover.
+
+03:26:38.119 WARN  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Trading stalled for 120 minutes! Attempt #3 to recover...
+03:26:38.119 ERROR com.kibot.macengine.runtime.MacEngineDaemon - [EMERGENCY_OVERRIDE] 120 min without trade! BYPASSING entry filters and risk limits to FORCE entry!
+03:26:38.120 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating mode: SAFE → DEFENSIVE
+03:26:38.120 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating bot mode: SAFE → DEFENSIVE
+[STALL_RECOVERY] ⚠️ No trades for 120min - Bot may be stuck. Mode escalation active to recover.
+
+03:26:44.575 WARN  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Trading stalled for 120 minutes! Attempt #4 to recover...
+03:26:44.576 ERROR com.kibot.macengine.runtime.MacEngineDaemon - [EMERGENCY_OVERRIDE] 120 min without trade! BYPASSING entry filters and risk limits to FORCE entry!
+03:26:44.577 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating mode: SAFE → DEFENSIVE
+03:26:44.578 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating bot mode: SAFE → DEFENSIVE
+[STALL_RECOVERY] ⚠️ No trades for 120min - Bot may be stuck. Mode escalation active to recover.
+
+03:26:51.478 WARN  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Trading stalled for 120 minutes! Attempt #5 to recover...
+03:26:51.478 ERROR com.kibot.macengine.runtime.MacEngineDaemon - [EMERGENCY_OVERRIDE] 120 min without trade! BYPASSING entry filters and risk limits to FORCE entry!
+03:26:51.478 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating mode: SAFE → DEFENSIVE
+03:26:51.478 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating bot mode: SAFE → DEFENSIVE
+[STALL_RECOVERY] ⚠️ No trades for 120min - Bot may be stuck. Mode escalation active to recover.
+
+03:26:57.990 WARN  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Trading stalled for 120 minutes! Attempt #6 to recover...
+03:26:57.990 ERROR com.kibot.macengine.runtime.MacEngineDaemon - [EMERGENCY_OVERRIDE] 120 min without trade! BYPASSING entry filters and risk limits to FORCE entry!
+03:26:57.990 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating mode: SAFE → DEFENSIVE
+03:26:57.991 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating bot mode: SAFE → DEFENSIVE
+[STALL_RECOVERY] ⚠️ No trades for 120min - Bot may be stuck. Mode escalation active to recover.
+
+03:27:04.555 WARN  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Trading stalled for 120 minutes! Attempt #7 to recover...
+03:27:04.556 ERROR com.kibot.macengine.runtime.MacEngineDaemon - [EMERGENCY_OVERRIDE] 120 min without trade! BYPASSING entry filters and risk limits to FORCE entry!
+03:27:04.556 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating mode: SAFE → DEFENSIVE
+03:27:04.556 INFO  com.kibot.macengine.runtime.MacEngineDaemon - [STALL_RECOVERY] Escalating bot mode: SAFE → DEFENSIVE
+[STALL_RECOVERY] ⚠️ No trades for 120min - Bot may be stuck. Mode escalation active to recover.
+
+03:27:06.680 INFO  KiBotMac - Shutting down KiBot mac engine.

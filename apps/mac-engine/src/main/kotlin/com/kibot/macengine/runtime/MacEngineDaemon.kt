@@ -5701,6 +5701,7 @@ class MacEngineDaemon(
         if (candidateExecutionPlans.isEmpty()) {
             // EMERGENCY OVERRIDE: If stalled and no candidates, FORCE scalping entry
             val emergencyForceEntry = isEmergencyOverrideActive(now)
+            logger.warn("[ENTRY_DEBUG] No candidates, emergencyForce=$emergencyForceEntry, config.exchangeKind=${config.exchangeKind}")
             
             if (config.exchangeKind == ExchangeKind.INDODAX) {
                 if (emergencyForceEntry) {
@@ -5786,9 +5787,10 @@ class MacEngineDaemon(
         
         // EMERGENCY FIX: If stalled >30min, FORCE at least 1 entry slot regardless of limits
         val effectiveBatchLimit = if (earlyEmergencyOverride && batchLimit <= 0) {
-            logger.error("[EMERGENCY_OVERRIDE] batchLimit=0 but FORCING 1 slot to break stall!")
+            logger.error("[EMERGENCY_OVERRIDE] batchLimit=0 but FORCING 1 slot to break stall! availableSlots=$availableEntrySlots")
             1  // Force 1 entry regardless of normal slot calculation
         } else if (batchLimit <= 0) {
+            logger.info("[WHY_NOT_BUY_BATCH] availableSlots=$availableEntrySlots batchLimit=$batchLimit managed=${entryManagedPositions.size} buyOrders=${activeBuyOrders.size}")
             logWhyNotBuy(now, "baseline", "slot_or_pending_buy_full")
             return
         } else {
