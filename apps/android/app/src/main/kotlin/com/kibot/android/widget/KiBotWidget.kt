@@ -355,10 +355,16 @@ private fun LargeWidget(
 
 @Composable
 private fun BotStatusItem(name: String, status: String, pingMs: Long) {
+    val isOnline = status.lowercase() == "online"
+    val borderColor = if (isOnline) WidgetProfitGreen else WidgetLossRed
+    
     Row(
         modifier = GlanceModifier
-            .background(WidgetSurface)
+            .background(borderColor.copy(alpha = 0.5f))  // Border color background
             .cornerRadius(8.dp)
+            .padding(2.dp)  // Border width
+            .background(WidgetSurface)  // Inner background
+            .cornerRadius(7.dp)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
