@@ -47,7 +47,7 @@ class PairSelector(
                 passesPriceBandGate(quote, context) &&
                 quote.spreadPct <= context.maxSpreadPct.coerceAtLeast(0.0) &&
                 (
-                    quote.quoteVolume24h.toDoubleOrZero() >= policy.minDailyQuoteVolumeIdr * 0.25 ||
+                    quote.quoteVolume24h.toDoubleOrZero() >= policy.minDailyQuoteVolumeIdr * 0.50 ||
                         isSmallCapitalOverrideEligible(
                             quote = quote,
                             stabilityScore = quote.orderBookStabilityScore.coerceIn(0.0, 1.0),
@@ -55,9 +55,9 @@ class PairSelector(
                             fillQualityScore = quote.fillQualityScore.coerceIn(0.0, 1.0),
                         )
                     ) &&
-                    quote.spreadPct <= policy.maxSpreadPct * 1.6 &&
-                    quote.estimatedSlippagePct <= policy.maxEstimatedSlippagePct * 1.6 &&
-                    quote.orderBookStabilityScore >= policy.minOrderBookStabilityScore * 0.6
+                    quote.spreadPct <= policy.maxSpreadPct * 1.2 &&
+                    quote.estimatedSlippagePct <= policy.maxEstimatedSlippagePct * 1.2 &&
+                    quote.orderBookStabilityScore >= policy.minOrderBookStabilityScore * 0.7
             }
             .sortedByDescending(::prefilterScore)
             .take(poolSize)

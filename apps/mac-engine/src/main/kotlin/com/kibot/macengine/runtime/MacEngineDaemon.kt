@@ -9,6 +9,7 @@ import com.kibot.core.LossPreventionSystem
 import com.kibot.core.SharedPositionTracker
 import com.kibot.core.TradeLedger
 import com.kibot.core.TrinityHeartbeatMonitor
+import com.kibot.core.CapitalAllocationManager
 import com.kibot.core.LatePumpEntryStrategy
 import com.kibot.core.PositionStrategy
 import com.kibot.core.ControlPlaneGateway
@@ -261,6 +262,7 @@ class MacEngineDaemon(
     private val heartbeatMonitor = TrinityHeartbeatMonitor()  // Monitor bot health
     private val latePumpEntry = LatePumpEntryStrategy()  // Enter pumps that already started
     private val tradingStallDetector = TradingStallDetector(stallTimeoutMinutes = 60)  // Stall detection: 1 hour
+    private var capitalAllocationManager: CapitalAllocationManager? = null  // 70/30 capital split (initialized in syncOnce)
     
     private val onlyRuntimeLogPrefixes = setOf("EXECUTION_BUY", "EXECUTION_SELL", "WHY_NOT_BUY", "STALL_RECOVERY")
     private data class CapitalAwareness(
@@ -713,6 +715,7 @@ class MacEngineDaemon(
     private val daemonStartedAt: Instant = Clock.System.now()
     private val lastTrinityHeartbeatByBotId = java.util.concurrent.ConcurrentHashMap<String, Instant>()
     @Volatile private var lastTrinityHeartbeatSentAt: Instant? = null
+    @Volatile private var lastDeadBotCheckAt: Instant? = null
     private val udpSequenceCounter = AtomicInteger(1)
     private val udpLastSequenceBySender = java.util.concurrent.ConcurrentHashMap<String, Int>()
     private val udpRecentDedupKeys = java.util.concurrent.ConcurrentHashMap<String, Instant>()
@@ -3223,6 +3226,62 @@ class MacEngineDaemon(
         logger.info("[STALL_RECOVERY] Trade executed: $pairId - Stall counter reset")
     }
 
+    /**
+     * [CAPITAL ALLOCATION] Allocate capital for a new position
+     * Returns allocated amount based on 70/30 bucket rules
+     */
+    private fun allocateCapitalForEntry(
+        requestedAmountIdr: Double,
+        isAnomalyCoin: Boolean,
+        pairId: String
+    ): Double {
+        val manager = capitalAllocationManager ?: return requestedAmountIdr
+        val result = manager.allocate(isAnomalyCoin, requestedAmountIdr)
+        
+        val bucketLabel = if (isAnomalyCoin) "AGGRESSIVE(30%)" else "STABLE(70%)"
+        logger.info(
+            "[CAPITAL_ALLOCATION] {} - bucket={} requested=Rp{} allocated=Rp{} remaining=Rp{}",
+            pairId, bucketLabel,
+            formatDecimal(requestedAmountIdr, 0),
+            formatDecimal(result.allocatedIdr, 0),
+            formatDecimal(result.currentAvailable, 0)
+        )
+        
+        if (result.requiresRebalance) {
+            logger.warn("[CAPITAL_ALLOCATION] Rebalance recommended: {}", result.rebalanceMessage)
+        }
+        
+        return result.allocatedIdr
+    }
+
+    /**
+     * [CAPITAL ALLOCATION] Return capital after position exit (profit or loss)
+     */
+    private fun returnCapitalAfterExit(
+        profitIdr: Double,
+        wasAggressiveTrade: Boolean,
+        pairId: String
+    ) {
+        val manager = capitalAllocationManager ?: return
+        manager.depositProfit(profitIdr, wasAggressiveTrade)
+        
+        val bucketLabel = if (wasAggressiveTrade) "AGGRESSIVE(30%)" else "STABLE(70%)"
+        val profitLabel = if (profitIdr >= 0) "+Rp${formatDecimal(profitIdr, 0)}" else "Rp${formatDecimal(profitIdr, 0)}"
+        logger.info(
+            "[CAPITAL_ALLOCATION] EXIT {} - bucket={} profit={}",
+            pairId, bucketLabel, profitLabel
+        )
+        
+        val status = manager.getStatus()
+        if (status.requiresRebalance) {
+            logger.warn(
+                "[CAPITAL_ALLOCATION] Auto-rebalancing triggered: drift={:.1f}%",
+                status.driftPercent * 100
+            )
+            manager.rebalance()
+        }
+    }
+
     private fun getCurrentBotMode(): String {
         // Get current bot mode - default SAFE if unknown
         return "SAFE"  // TODO: Get from actual bot state
@@ -3367,6 +3426,15 @@ class MacEngineDaemon(
 
     suspend fun syncOnce() = coroutineScope {
         val cycleStartedAt = Clock.System.now()
+        
+        // [TRINITY HEARTBEAT] Record this bot's heartbeat
+        heartbeatMonitor.recordHeartbeat(
+            botName = config.controlPlane.botId.value.lowercase(),
+            timestamp = cycleStartedAt
+        )
+        
+        // [TRINITY HEALTH CHECK] Check for dead bots every 30 seconds
+        checkDeadBots(cycleStartedAt)
         
         // [STALL DETECTION] Check if no trades for >1 hour
         checkTradingStall(cycleStartedAt)
@@ -3623,6 +3691,17 @@ class MacEngineDaemon(
             )
         } else {
             null
+        }
+        
+        // [CAPITAL ALLOCATION] Initialize or update 70/30 capital manager
+        val totalEquityIdr = estimatePortfolioValue(resolvedBalances, resolvedMarketQuotes)
+        if (capitalAllocationManager == null && totalEquityIdr.toDoubleOrZero() > 0) {
+            capitalAllocationManager = CapitalAllocationManager(
+                totalCapitalIdr = totalEquityIdr.toDoubleOrZero(),
+                stableRotationPercent = 0.70,
+                aggressivePercent = 0.30
+            )
+            repository.noteStatus("[CAPITAL ALLOCATION] Initialized 70/30 split with Rp${formatDecimal(totalEquityIdr.toDoubleOrZero(), 0)}")
         }
         emitEngineHeartbeat(
             now = now,
@@ -4619,6 +4698,34 @@ class MacEngineDaemon(
         )
         if (sendLeadLagUdp(json.encodeToString(payload))) {
             lastTrinityHeartbeatSentAt = now
+        }
+    }
+
+    private suspend fun checkDeadBots(now: Instant) {
+        val lastCheck = lastDeadBotCheckAt
+        if (lastCheck != null && (now - lastCheck).inWholeSeconds < 30) return
+        
+        val alerts = heartbeatMonitor.checkDeadBots(now)
+        lastDeadBotCheckAt = now
+        
+        if (alerts.isNotEmpty()) {
+            for (alert in alerts) {
+                val logLevel = when (alert.action) {
+                    com.kibot.core.RestartAction.IMMEDIATE_RESTART -> LogLevel.ERROR
+                    com.kibot.core.RestartAction.WARN_ONLY -> LogLevel.WARN
+                    else -> LogLevel.INFO
+                }
+                
+                appendAuditLog(
+                    level = logLevel,
+                    category = "TRINITY_HEALTH",
+                    message = "[${alert.botName.uppercase()}] ${alert.message ?: alert.reason} (${alert.lastSeenSecondsAgo}s ago)",
+                )
+                
+                repository.noteStatus(
+                    "[TRINITY ALERT] ${alert.botName} - ${alert.reason} - Action: ${alert.action}"
+                )
+            }
         }
     }
 

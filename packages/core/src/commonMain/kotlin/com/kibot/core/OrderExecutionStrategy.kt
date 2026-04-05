@@ -111,7 +111,8 @@ class OrderExecutionStrategy {
         priceVelocity: Double,           // Rate of price change (-1.0 to +1.0)
         timeSinceEntry: Long,           // Milliseconds
         spreadPercent: Double,
-        volumeScore: Double
+        volumeScore: Double,
+        isAnomalyCoin: Boolean = false   // True for aggressive bucket
     ): ExecutionRecommendation {
         
         val timeHeldMinutes = timeSinceEntry / 60_000L
@@ -143,13 +144,24 @@ class OrderExecutionStrategy {
             }
 
             // 🔴 HELD TOO LONG: Momentum lost, close dengan Market
-            timeHeldMinutes > 120 && currentProfit > 0 -> {
+            timeHeldMinutes > 30 && !isAnomalyCoin && currentProfit > 0 -> {
                 ExecutionRecommendation(
                     orderType = OrderType.MARKET,
-                    rationale = "Position held >2 hours ($timeHeldMinutes min). Momentum likely fading, close with Market.",
+                    rationale = "Stable position held >30 min ($timeHeldMinutes min). Momentum likely fading, close with Market.",
                     estimatedFee = FeeCalculator.TAKER_FEE_PER_TX,
                     expectedFillPercent = 0.98,
                     urgency = 6
+                )
+            }
+            
+            // 🔴 AGGRESSIVE HELD TOO LONG: Close aggressive positions faster
+            timeHeldMinutes > 45 && isAnomalyCoin && currentProfit > 0 -> {
+                ExecutionRecommendation(
+                    orderType = OrderType.MARKET,
+                    rationale = "Aggressive position held >45 min ($timeHeldMinutes min). Close with Market to rotate capital.",
+                    estimatedFee = FeeCalculator.TAKER_FEE_PER_TX,
+                    expectedFillPercent = 0.98,
+                    urgency = 7
                 )
             }
 
@@ -161,6 +173,17 @@ class OrderExecutionStrategy {
                     estimatedFee = FeeCalculator.TAKER_FEE_PER_TX,
                     expectedFillPercent = 0.98,
                     urgency = 10  // Emergency!
+                )
+            }
+            
+            // 🟠 BREAKEVEN PROTECTION: In profit but momentum turning down
+            currentProfit > 0 && currentProfit < targetProfit * 0.5 && isMomentumDown -> {
+                ExecutionRecommendation(
+                    orderType = OrderType.MARKET,
+                    rationale = "Breakeven protection: profit ${currentProfit}% but momentum down. Exit NOW before losing gains.",
+                    estimatedFee = FeeCalculator.TAKER_FEE_PER_TX,
+                    expectedFillPercent = 0.98,
+                    urgency = 8
                 )
             }
 
