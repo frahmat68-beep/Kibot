@@ -1,0 +1,10 @@
+{
+  "trading_paused": false,
+  "emergency_mode": false,
+  "halted": false,
+  "emergency_standby_mode": false,
+  "last_api_check": "2026-04-05T01:12:00Z",
+  "api_failure_count": 0,
+  "backoff_delay_seconds": 0,
+  "config_version": "1.0"
+}

@@ -1,0 +1,21 @@
+{
+  "trading_paused": false,
+  "emergency_mode": false,
+  "halted": false,
+  "emergency_standby_mode": false,
+  "api_failure_count": 0,
+  "backoff_delay_seconds": 0,
+  "last_api_failure_timestamp": null,
+  "managed_positions": [],
+  "open_orders": [],
+  "total_capital_idr": 0.0,
+  "free_capital_idr": 0.0,
+  "deployed_capital_idr": 0.0,
+  "daily_pnl_idr": 1500.0,
+  "total_return_pct": 0.0,
+  "win_rate_pct": 0.0,
+  "total_trades": 12,
+  "winning_trades": 0,
+  "last_updated": null,
+  "version": "1.0"
+}

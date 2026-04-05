@@ -164,6 +164,7 @@ class DailyTargetPursuitTest {
                 riskLadderLevel = RiskLadderLevel.NORMAL,
                 suggestedModeFloor = BotMode.ATTACK,
                 profitProtectionStatus = ProfitProtectionStatus.INACTIVE,
+                dailyProfitLockActive = false,
                 sizeMultiplier = 1.0,
                 deploymentMultiplier = 1.0,
                 reasons = emptyList(),

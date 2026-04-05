@@ -4,6 +4,7 @@ import com.kibot.shared.models.BalanceSnapshot
 import com.kibot.shared.models.BotId
 import com.kibot.shared.models.DecimalValue
 import com.kibot.shared.models.DeviceId
+import com.kibot.shared.models.ExecutionAnomalySignature
 import com.kibot.shared.models.EngineHealthSnapshot
 import com.kibot.shared.models.HealthStatus
 import com.kibot.shared.models.MarketQuote
@@ -24,6 +25,9 @@ class SituationalLearningEngineTest {
 
     @Test
     fun `creates bounded update recommendations when weekly review degrades`() {
+        val engine = SituationalLearningEngine(
+            SituationalLearningConfig(maxRecommendationsPerCycle = 2),
+        )
         val cycle = healthyCycle()
         val summary = WeeklyLearningSummary(
             botId = BotId("main"),
@@ -41,7 +45,7 @@ class SituationalLearningEngineTest {
             adaptationPlan = WeeklyAdaptationPlan(),
         )
 
-        val decision = learningEngine.evaluate(
+        val decision = engine.evaluate(
             botId = BotId("main"),
             deviceId = DeviceId("android-main"),
             now = Clock.System.now(),
@@ -71,6 +75,54 @@ class SituationalLearningEngineTest {
         val codes = decision.learningHints.map { it.hintCode }
         assertTrue("learning_sample_thin" in codes)
         assertTrue("ai_budget_guard" in codes)
+    }
+
+    @Test
+    fun `turns a grade anomaly signature into blueprint hint`() {
+        val summary = WeeklyLearningSummary(
+            botId = BotId("main"),
+            periodStart = LocalDate(2026, 3, 9),
+            periodEnd = LocalDate(2026, 3, 15),
+            tradeCount = 12,
+            falseEntryRate = 0.12,
+            noTradeQualityScore = 0.68,
+            avoidedBadTradesIndicator = 0.52,
+            capitalUtilizationPct = 0.41,
+            productiveUtilizationPct = 0.34,
+            missedOpportunityRate = 0.10,
+            tacticalExpectancy = 0.24,
+            swingExpectancy = 0.18,
+            adaptationPlan = WeeklyAdaptationPlan(),
+            executionSignatures = listOf(
+                ExecutionAnomalySignature(
+                    observedAt = Clock.System.now(),
+                    pairId = PairId("ont_idr"),
+                    setupType = SetupType.HEALTHY_SHORT_TERM_PULLBACK,
+                    anomalyGrade = "A-GRADE_ANOMALY",
+                    vwapDistancePct = 0.38,
+                    orderBookImbalance = 0.82,
+                    cvdDivergenceScore = 0.76,
+                    tickFrequencyPerMinute = 14.0,
+                    realizedPnlPct = 18.4,
+                    expectedNetEdgePct = 0.62,
+                    confidenceScore = 0.91,
+                ),
+            ),
+        )
+
+        val decision = learningEngine.evaluate(
+            botId = BotId("main"),
+            deviceId = DeviceId("android-main"),
+            now = Clock.System.now(),
+            cycle = healthyCycle(),
+            weeklySummary = summary,
+            aiBlockedReason = null,
+            aiUsedNetwork = false,
+        )
+
+        val codes = decision.learningHints.map { it.hintCode }
+        assertTrue("ont_a_grade_anomaly" in codes)
+        assertTrue(decision.updateRecommendations.any { it.reasonCode == "ont_a_grade_blueprint" })
     }
 
     private fun healthyCycle() = orchestrator.analyze(

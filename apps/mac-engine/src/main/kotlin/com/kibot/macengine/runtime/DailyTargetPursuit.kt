@@ -14,17 +14,17 @@ data class DailyTargetPursuitConfig(
     val threeHourCheckpointPct: Double = 10.0,
     val checkpointCadenceHours: Double = 3.0,
     val warmupHours: Double = 1.5,
-    val hourlyUnrealizedCreditWeight: Double = 0.08,
-    val checkpointUnrealizedCreditWeight: Double = 0.06,
-    val targetSatisfiedUnrealizedCreditWeight: Double = 0.04,
-    val minUnrealizedCreditWeight: Double = 0.18,
-    val maxUnrealizedCreditWeight: Double = 0.45,
-    val maxBudgetBoostMultiplier: Double = 1.95,
-    val maxReserveReliefPct: Double = 0.12,
-    val maxExtraSlots: Int = 2,
-    val maxExecutionBoostMultiplier: Double = 1.72,
-    val maxConcentrationBoostPct: Double = 0.24,
-    val minEquityForExtraSlotIdr: Double = 105_000.0,
+    val hourlyUnrealizedCreditWeight: Double = 0.06,
+    val checkpointUnrealizedCreditWeight: Double = 0.05,
+    val targetSatisfiedUnrealizedCreditWeight: Double = 0.03,
+    val minUnrealizedCreditWeight: Double = 0.14,
+    val maxUnrealizedCreditWeight: Double = 0.36,
+    val maxBudgetBoostMultiplier: Double = 1.60,
+    val maxReserveReliefPct: Double = 0.08,
+    val maxExtraSlots: Int = 1,
+    val maxExecutionBoostMultiplier: Double = 1.42,
+    val maxConcentrationBoostPct: Double = 0.16,
+    val minEquityForExtraSlotIdr: Double = 125_000.0,
 )
 
 data class DailyTargetPursuit(
@@ -143,7 +143,7 @@ class DailyTargetPursuitBrain(
         }
         val forcedReplan = checkpointMissed ||
             hourlyMissCount >= 2 ||
-            (hourlyMissed && elapsedHours >= 2.0 && hourlyShortfallPct >= 1.20)
+            (hourlyMissed && elapsedHours >= 1.5 && hourlyShortfallPct >= 0.90)
         val topCandidateQuality = cycle.deploymentPlan.candidates.firstOrNull()?.let {
             (it.rankingScore * 0.58) + (it.marketOpportunityScore * 0.42)
         } ?: 0.0
@@ -207,49 +207,54 @@ class DailyTargetPursuitBrain(
         val urgency = max(baseUrgency, urgencyFloor).coerceIn(0.0, 1.0)
 
         val budgetBoostMultiplier = max(
-            (1.0 + (urgency * 0.52) + (aiConsensus * 0.18)).coerceIn(1.0, config.maxBudgetBoostMultiplier),
+            (1.0 + (urgency * 0.32) + (aiConsensus * 0.08)).coerceIn(1.0, config.maxBudgetBoostMultiplier),
             when {
-                checkpointMissed -> 1.68
-                forcedReplan -> 1.48
-                profitWindowOpen -> 1.24
-                hourlyMissed -> 1.24
+                checkpointMissed -> 1.12
+                forcedReplan -> 1.08
+                profitWindowOpen -> 1.04
+                hourlyMissed -> 1.04
                 else -> 1.0
             },
         ).coerceIn(1.0, config.maxBudgetBoostMultiplier)
         val executionBoostMultiplier = max(
-            (1.0 + (urgency * 0.38) + (aiConsensus * 0.14)).coerceIn(1.0, config.maxExecutionBoostMultiplier),
+            (1.0 + (urgency * 0.22) + (aiConsensus * 0.05)).coerceIn(1.0, config.maxExecutionBoostMultiplier),
             when {
-                checkpointMissed -> 1.50
-                forcedReplan -> 1.34
-                profitWindowOpen -> 1.12
-                hourlyMissed -> 1.16
+                checkpointMissed -> 1.08
+                forcedReplan -> 1.04
+                profitWindowOpen -> 1.02
+                hourlyMissed -> 1.02
                 else -> 1.0
             },
         ).coerceIn(1.0, config.maxExecutionBoostMultiplier)
         val reserveReliefPct = max(
-            (0.03 + (urgency * 0.05) + (aiConsensus * 0.02)).coerceIn(0.0, config.maxReserveReliefPct),
+            (0.02 + (urgency * 0.02) + (aiConsensus * 0.01)).coerceIn(0.0, config.maxReserveReliefPct),
             when {
-                checkpointMissed -> 0.10
-                forcedReplan -> 0.08
-                profitWindowOpen -> 0.04
-                hourlyMissed -> 0.05
-                else -> 0.03
+                checkpointMissed -> 0.03
+                forcedReplan -> 0.02
+                profitWindowOpen -> 0.015
+                hourlyMissed -> 0.015
+                else -> 0.02
             },
         ).coerceIn(0.0, config.maxReserveReliefPct)
         val extraSlots = when {
             currentEquity < config.minEquityForExtraSlotIdr -> 0
-            explosiveBenchCount >= 2 && checkpointMissed && currentEquity >= (config.minEquityForExtraSlotIdr * 1.20) -> config.maxExtraSlots
-            strongBenchCount >= 3 && (forcedReplan || profitWindowOpen) && currentEquity >= (config.minEquityForExtraSlotIdr * 1.10) -> 1.coerceAtMost(config.maxExtraSlots)
+            targetSatisfied && topCandidateQuality >= 0.82 && aiConsensus >= 0.68 -> config.maxExtraSlots
+            checkpointMissed && strongBenchCount >= 2 -> 1.coerceAtMost(config.maxExtraSlots)
+            forcedReplan && strongBenchCount >= 2 -> 1.coerceAtMost(config.maxExtraSlots)
+            hourlyMissed && strongBenchCount >= 2 -> 1.coerceAtMost(config.maxExtraSlots)
+            strongBenchCount >= 3 &&
+                profitWindowOpen &&
+                currentEquity >= (config.minEquityForExtraSlotIdr * 1.10) -> 1.coerceAtMost(config.maxExtraSlots)
             else -> 0
         }
         val concentrationBoostPct = max(
-            ((urgency * 0.12) + (aiConsensus * 0.06)).coerceIn(0.0, config.maxConcentrationBoostPct),
+            ((urgency * 0.06) + (aiConsensus * 0.02)).coerceIn(0.0, config.maxConcentrationBoostPct),
             when {
-                checkpointMissed -> 0.20
-                forcedReplan -> 0.16
-                hourlyMissed -> 0.12
-                profitWindowOpen -> 0.10
-                else -> 0.04
+                checkpointMissed -> 0.06
+                forcedReplan -> 0.05
+                hourlyMissed -> 0.04
+                profitWindowOpen -> 0.04
+                else -> 0.03
             },
         ).coerceIn(0.0, config.maxConcentrationBoostPct)
 
@@ -309,8 +314,6 @@ class DailyTargetPursuitBrain(
             rationale = rationale,
         )
     }
-
-    private fun DecimalValue.toDoubleOrZero(): Double = value.toDoubleOrNull() ?: 0.0
 
     private fun expectedProfitAt(elapsedHours: Double): Double = when {
         elapsedHours <= 0.0 -> 0.0

@@ -9,15 +9,16 @@ import com.kibot.shared.models.WeeklyLearningSummary
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import kotlin.math.pow
 
 data class SituationalLearningConfig(
-    val falseEntryAlertPct: Double = 0.28,
-    val lowProductiveUtilizationPct: Double = 0.34,
-    val highMissedOpportunityPct: Double = 0.22,
-    val healthyMarketOpportunityScore: Double = 0.66,
-    val lowNoTradeQualityScore: Double = 0.40,
-    val strongExpectancyPct: Double = 0.14,
-    val maxRecommendationsPerCycle: Int = 2,
+    val falseEntryAlertPct: Double = 0.24,
+    val lowProductiveUtilizationPct: Double = 0.30,
+    val highMissedOpportunityPct: Double = 0.18,
+    val healthyMarketOpportunityScore: Double = 0.70,
+    val lowNoTradeQualityScore: Double = 0.36,
+    val strongExpectancyPct: Double = 0.18,
+    val maxRecommendationsPerCycle: Int = 1,
 )
 
 data class SituationalLearningDecision(
@@ -47,6 +48,50 @@ class SituationalLearningEngine(
         val recommendations = mutableListOf<BotUpdateRecommendation>()
 
         weeklySummary?.let { review ->
+            val aGradeSignatures = review.executionSignatures.filter { it.anomalyGrade == "A-GRADE_ANOMALY" }
+            if (aGradeSignatures.isNotEmpty()) {
+                val strongest = aGradeSignatures.maxBy { it.confidenceScore }
+                val rationale = listOf(
+                    "Signature ${strongest.pairId.value} sudah terbaca sebagai ${strongest.anomalyGrade}.",
+                    "VWAP=${strongest.vwapDistancePct.asPctString()} OBI=${strongest.orderBookImbalance.asRatioString()} CVD=${strongest.cvdDivergenceScore.asRatioString()} tick=${strongest.tickFrequencyPerMinute.asRateString()} /m.",
+                    "Blueprint ini bisa dipakai sebagai acuan ONT-style anomaly high-probability.",
+                )
+                hints += hint(
+                    code = "ont_a_grade_anomaly",
+                    severity = AdvisorySeverity.HIGH,
+                    source = "execution_signature",
+                    summary = "A-grade anomaly blueprint terdeteksi, jadikan ini acuan pola kualitas tinggi.",
+                    rationale = rationale,
+                    now = now,
+                )
+                recommendations.add(
+                    0,
+                    recommendation(
+                        botId = botId,
+                        deviceId = deviceId,
+                        reasonCode = "ont_a_grade_blueprint",
+                        severity = AdvisorySeverity.HIGH,
+                        title = "Codify A-grade anomaly",
+                        summary = "Blueprint anomali mirip ONT terdeteksi, gunakan sebagai acuan prioritas sebelum entry berikutnya.",
+                        source = "execution_signature",
+                        confidenceScore = strongest.confidenceScore.coerceIn(0.0, 1.0),
+                        evidence = mapOf(
+                            "confidence_score" to strongest.confidenceScore,
+                            "vwap_distance_pct" to strongest.vwapDistancePct,
+                            "order_book_imbalance" to strongest.orderBookImbalance,
+                            "cvd_divergence_score" to strongest.cvdDivergenceScore,
+                            "tick_frequency_per_minute" to strongest.tickFrequencyPerMinute,
+                        ),
+                        actions = listOf(
+                            "Prioritaskan pair dengan OBI bullish, CVD positif, dan VWAP compression yang serupa.",
+                            "Gunakan signature ini sebagai blueprint anomaly untuk rotasi berikutnya.",
+                            "Tetap hormati daily profit lock dan quarantine bila posisi sudah aman.",
+                        ),
+                        now = now,
+                    ),
+                )
+            }
+
             if (review.falseEntryRate >= config.falseEntryAlertPct) {
                 val rationale = listOf(
                     "False entry rate ${review.falseEntryRate.asPctString()} sudah melewati batas sehat.",
@@ -254,3 +299,16 @@ class SituationalLearningEngine(
 }
 
 private fun Double.asPctString(): String = "${(this * 100.0).toInt()}%"
+private fun Double.asRatioString(): String = roundedTo(2).toString()
+private fun Double.asRateString(): String = roundedTo(1).toString()
+
+private fun Double.roundedTo(decimals: Int): Double {
+    val factor = when (decimals) {
+        0 -> 1.0
+        1 -> 10.0
+        2 -> 100.0
+        3 -> 1_000.0
+        else -> 10.0.pow(decimals)
+    }
+    return kotlin.math.round(this * factor) / factor
+}

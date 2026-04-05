@@ -1,6 +1,7 @@
 package com.kibot.core
 
 import com.kibot.shared.models.BotId
+import com.kibot.shared.models.ExecutionAnomalySignature
 import com.kibot.shared.models.LearningObservation
 import com.kibot.shared.models.PairId
 import com.kibot.shared.models.SetupType
@@ -18,6 +19,7 @@ class WeeklyLearningLoop(
         periodStart: LocalDate,
         periodEnd: LocalDate,
         observations: List<LearningObservation>,
+        executionSignatures: List<ExecutionAnomalySignature> = emptyList(),
     ): WeeklyLearningSummary {
         val trades = observations.filter { it.tradeTaken }
         val noTrades = observations.filterNot { it.tradeTaken }
@@ -43,6 +45,8 @@ class WeeklyLearningLoop(
         val productiveUtilizationPct = observations.map { it.productiveUtilizationPct }.averageOr(0.0)
         val tacticalExpectancy = expectancy(tacticalTrades)
         val swingExpectancy = expectancy(swingTrades)
+        val profitFactor = profitFactor(trades)
+        val maximumDrawdownPct = maximumDrawdownPct(trades)
 
         val bestPairs = pairStats.entries
             .filter { it.value.sampleCount >= config.minimumPairSamples }
@@ -100,6 +104,8 @@ class WeeklyLearningLoop(
             periodStart = periodStart,
             periodEnd = periodEnd,
             tradeCount = trades.size,
+            profitFactor = profitFactor,
+            maximumDrawdownPct = maximumDrawdownPct,
             bestPairs = bestPairs,
             worstPairs = worstPairs,
             bestSetups = bestSetups,
@@ -116,6 +122,7 @@ class WeeklyLearningLoop(
             swingExpectancy = swingExpectancy,
             adaptationPlan = adaptationPlan,
             notes = notes,
+            executionSignatures = executionSignatures,
         )
     }
 
@@ -133,27 +140,36 @@ class WeeklyLearningLoop(
         val enoughSample = tradeCount >= config.minimumTradeSamples
         val aggressionDelta = when {
             !enoughSample -> 0.0
-            tacticalExpectancy > 0.18 && swingExpectancy > 0.18 && falseEntryRate < 0.20 ->
-                config.maxAggressionDeltaPerReview
-            falseEntryRate > 0.32 ->
-                -config.maxAggressionDeltaPerReview
+            falseEntryRate > 0.28 -> -config.maxAggressionDeltaPerReview
+            tacticalExpectancy > 0.18 &&
+                swingExpectancy > 0.18 &&
+                falseEntryRate < 0.12 &&
+                noTradeQualityScore >= 0.65 ->
+                config.maxAggressionDeltaPerReview * 0.25
+            tacticalExpectancy > 0.12 &&
+                swingExpectancy > 0.12 &&
+                falseEntryRate < 0.18 &&
+                noTradeQualityScore >= 0.60 ->
+                config.maxAggressionDeltaPerReview * 0.10
             else -> 0.0
         }
         val sizeDelta = when {
             !enoughSample -> 0.0
-            falseEntryRate > 0.32 -> -config.maxSizeDeltaPerReview
-            noTradeQualityScore > 0.62 && tacticalExpectancy > 0.10 -> config.maxSizeDeltaPerReview / 2.0
+            falseEntryRate > 0.28 -> -config.maxSizeDeltaPerReview
+            noTradeQualityScore > 0.70 &&
+                tacticalExpectancy > 0.12 &&
+                falseEntryRate < 0.12 -> config.maxSizeDeltaPerReview * 0.25
             else -> 0.0
         }
         val tacticalBiasDelta = when {
-            tacticalExpectancy > swingExpectancy + 0.15 -> config.maxBiasDeltaPerReview
-            swingExpectancy > tacticalExpectancy + 0.15 -> -config.maxBiasDeltaPerReview
+            tacticalExpectancy > swingExpectancy + 0.20 && falseEntryRate < 0.15 -> config.maxBiasDeltaPerReview * 0.50
+            swingExpectancy > tacticalExpectancy + 0.20 && falseEntryRate < 0.15 -> -config.maxBiasDeltaPerReview * 0.50
             else -> 0.0
         }
         val swingBiasDelta = -tacticalBiasDelta
 
         val setupBias = setupStats.entries.associate { entry ->
-            entry.key.name to entry.value.expectancyScore.coerceIn(-0.15, 0.15)
+            entry.key.name to entry.value.expectancyScore.coerceIn(-0.10, 0.10)
         }
 
         val notes = buildList {
@@ -181,6 +197,33 @@ class WeeklyLearningLoop(
         val avgPnl = entries.map { it.realizedPnlPct }.averageOr(0.0)
         val avgSlippagePenalty = entries.map { it.slippagePct }.averageOr(0.0) * 0.25
         return ((avgPnl * 0.7) + (winRate * 0.3) - avgSlippagePenalty).coerceIn(-1.0, 1.0)
+    }
+
+    private fun profitFactor(entries: List<LearningObservation>): Double {
+        if (entries.isEmpty()) return 0.0
+        val grossProfit = entries.sumOf { entry -> entry.realizedPnlPct.takeIf { it > 0.0 } ?: 0.0 }
+        val grossLoss = entries.sumOf { entry -> (-entry.realizedPnlPct).takeIf { entry.realizedPnlPct < 0.0 } ?: 0.0 }
+        if (grossLoss <= 0.0) {
+            return if (grossProfit > 0.0) 9.99 else 0.0
+        }
+        return (grossProfit / grossLoss).coerceAtMost(9.99)
+    }
+
+    private fun maximumDrawdownPct(entries: List<LearningObservation>): Double {
+        if (entries.isEmpty()) return 0.0
+        var equity = 1.0
+        var peak = 1.0
+        var maxDrawdown = 0.0
+        entries
+            .sortedBy { it.observedAt }
+            .forEach { entry ->
+                equity *= (1.0 + (entry.realizedPnlPct / 100.0))
+                peak = maxOf(peak, equity)
+                if (peak > 0.0) {
+                    maxDrawdown = minOf(maxDrawdown, (equity - peak) / peak)
+                }
+            }
+        return maxDrawdown.coerceIn(-1.0, 0.0)
     }
 
     private fun expectancySummary(entries: List<LearningObservation>) = ExpectancySummary(

@@ -2,8 +2,11 @@ package com.kibot.macengine
 
 import com.kibot.aisupport.GeminiSupportClient
 import com.kibot.aisupport.GeminiSupportCoordinator
+import com.kibot.binance.BinanceCredentials
+import com.kibot.binance.BinanceGateway
 import com.kibot.controlplane.SupabaseControlPlaneClient
 import com.kibot.indodax.IndodaxGateway
+import com.kibot.macengine.config.ExchangeKind
 import com.kibot.macengine.config.MacRuntimeConfigLoader
 import com.kibot.macengine.runtime.MacEngineDaemon
 import com.kibot.macengine.runtime.MacCommandDispatcher
@@ -12,6 +15,7 @@ import com.kibot.macengine.server.LocalDashboardServer
 import com.kibot.macengine.state.MacCommand
 import com.kibot.macengine.state.MacStateRepository
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -25,8 +29,14 @@ fun main(args: Array<String>) {
     val config = MacRuntimeConfigLoader.load()
     val repository = MacStateRepository()
     val controlPlane = SupabaseControlPlaneClient(config.controlPlane)
-    val exchange = config.indodaxCredentials?.let {
-        IndodaxGateway(config.indodaxClientConfig, it)
+    val exchange = when (config.exchangeKind) {
+        ExchangeKind.INDODAX -> config.indodaxCredentials?.let {
+            IndodaxGateway(config.indodaxClientConfig, it)
+        }
+        ExchangeKind.BINANCE_SPOT -> BinanceGateway(
+            config.binanceClientConfig,
+            config.binanceCredentials ?: BinanceCredentials(apiKey = "", apiSecret = ""),
+        )
     } ?: PassiveExchangeGateway()
     val dispatcher = MacCommandDispatcher(
         repository = repository,
@@ -46,9 +56,14 @@ fun main(args: Array<String>) {
         return
     }
 
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        logger.error("Mac engine daemon coroutine crashed.", throwable)
+    }
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + exceptionHandler)
     val server = LocalDashboardServer(
         repository = repository,
+        commandDispatcher = dispatcher,
+        botId = config.controlPlane.botId,
         host = config.bindHost,
         port = config.port,
         androidReleaseDirectory = Paths.get("").toAbsolutePath().resolve(".dist/android/stable"),
@@ -60,7 +75,10 @@ fun main(args: Array<String>) {
     Runtime.getRuntime().addShutdownHook(
         Thread {
             logger.info("Shutting down KiBot mac engine.")
-            server.stop()
+            runBlocking {
+                runCatching { daemon.flushNonCriticalControlPlaneBufferNow() }
+                    .onFailure { logger.warn("Failed to flush buffered non-critical control-plane writes on shutdown: {}", it.message) }
+            }
             scope.cancel()
         },
     )

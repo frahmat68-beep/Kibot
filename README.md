@@ -1,56 +1,146 @@
-# KiBot
+# KiBot Trinity
 
-Private dual-engine spot trading bot for Indodax with Android as the default primary engine, MacBook as standby/backup, and Supabase as the shared control plane.
+**High-Frequency Trading (HFT) system** berbasis microservices untuk market **Indodax** dengan sinyal prediktif **Lead-Lag** dari market global **Binance**. Sistem berjalan di **Oracle Cloud** (Singapore) dengan arsitektur 3-bot (Trinity).
 
-## Status
+## Architecture
 
-This repository currently contains the expanded Phase 2 foundation plus the first Phase 3 runtime wiring:
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    ORACLE CLOUD (Singapore)                     │
+│                                                                 │
+│  ┌─────────────────┐  UDP   ┌─────────────────┐                │
+│  │  KIBOT MANAGER  │◄──────►│     KIDAX       │                │
+│  │  (Python 🐍)    │        │ (Kotlin/JVM ☕)  │                │
+│  │  Port: 9998     │        │ Port: 8787      │                │
+│  │  AI Veto Gate   │        │ Indodax Exec    │                │
+│  └────────┬────────┘        └─────────────────┘                │
+│           │ UDP                                                 │
+│           ▼                                                     │
+│  ┌─────────────────┐                                           │
+│  │    KINANCE      │                                           │
+│  │ (Kotlin/JVM ☕)  │                                           │
+│  │ Port: 8788      │                                           │
+│  │ Binance Radar   │                                           │
+│  └─────────────────┘                                           │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-- Android app skeleton with Compose UI, foreground service, Room cache, and security hooks.
-- Mac engine daemon with local web dashboard, command dispatch, lease polling, and safe takeover loop.
-- Shared Kotlin modules for trading domain models, pair scoring, market regime analysis, bot modes, risk ladder, profit protection, weekly learning, reconciliation, and lease handling.
-- Shared Supabase control-plane client for auth, RPC lease flow, command queue, and snapshot polling.
-- Supabase migrations, RPC-oriented control-plane schema, strategy intelligence tables, and strict RLS baseline.
-- Initial failover tests, setup docs, and failure-mode notes.
+### The Three Bots
+
+| Bot | Language | Function | Port |
+|-----|----------|----------|------|
+| **KINANCE** | Kotlin/JVM | Binance market radar — volume anomaly, order book imbalance, sector lead-lag | 8788 |
+| **KIDAX** | Kotlin/JVM | Indodax executor — slippage calc, fee optimization, trailing stop | 8787 |
+| **KIBOT Manager** | Python | Brain & veto gate — AI consensus, capital rotation, health monitoring | 9998 |
+
+## Core Trading Logic
+
+### Trading Mindset
+- **Zero-Cash Mindset** — modal tidak boleh diam, rotasi agresif
+- **Predictive, Not Reactive** — beli sebelum terbang (based on Binance signals), bukan setelah
+- **Micro-Cap Priority** — fokus koin receh dengan persentase gain tinggi
+
+### Entry Flow
+```
+PairSelector (11-point scoring) → VetoService (lead-lag check) → 
+BotModeDecider (aggression level) → CapitalDeployment (max 25%/coin) → 
+LiveExecution (order submit)
+```
+
+### Exit Flow (Multi-layer)
+- Partial take-profit (30-50% saat profit >0.5%)
+- Trailing stop (dynamic % based on volatility)
+- Hard stop-loss (2-3% below entry)
+- Time-based exit (force close if held >12 hours)
+- Emergency sell (AI-triggered on momentum loss)
 
 ## Modules
 
-- `apps/android`: Android control app and primary runtime engine.
-- `apps/mac-engine`: macOS JVM daemon and local web dashboard.
-- `packages/shared-models`: Shared DTOs, enums, and serializable payloads.
-- `packages/core`: Shared business logic for lease, risk, strategy, health, and reconciliation.
-- `packages/control-plane`: Shared Supabase auth, polling, RPC, and control-plane gateway implementation.
-- `packages/indodax-client`: Indodax REST adapter, signed private requests, and fill/order reconciliation inputs.
-- `packages/test-kit`: Fake exchange and test helpers for scenario testing.
-- `infra/supabase`: SQL migrations, RLS, seeds, and cleanup jobs.
-- `docs`: Architecture, setup, safety, and rollout notes.
+| Module | Description |
+|--------|-------------|
+| `apps/mac-engine` | KiDax/Kinance JVM daemon — the actual trading engine |
+| `packages/core` | Shared business logic — RiskEngine, PairSelector, TradeAutomation |
+| `packages/shared-models` | DTOs, enums, serializable payloads |
+| `packages/control-plane` | Supabase integration — auth, lease, commands |
+| `packages/indodax-client` | Indodax REST adapter |
+| `packages/binance-client` | Binance REST adapter |
+| `packages/ai-support` | AI integration — GeminiClient, MultiAIClient |
+| `packages/test-kit` | Test helpers |
+| `scripts/kibot_manager.py` | Python veto daemon (1600+ lines) |
+| `infra/supabase` | SQL migrations, RLS |
+| `infra/systemd` | Service files for Oracle server |
 
-## Design Priorities
+## AI Integration
 
-- Single active trading engine at any given time.
-- Fencing-token lease protocol to block split-brain and stale writers.
-- Safe automatic failover with mandatory reconciliation before new entries.
-- Conservative, rule-based spot trading only.
-- Hard daily loss stop, strong security, and rolling 90-day retention.
+Multi-provider AI veto system dengan fallback order:
 
-## Quick Start
+1. **Groq** — llama-3.1-8b-instant
+2. **OpenRouter** — meta-llama/llama-3.1-8b-instruct
+3. **Cohere** — command-r
+4. **Gemini** — gemini-2.0-flash-lite
 
-1. Install JDK 21 and Android SDK.
-2. Run `scripts/bootstrap_local.sh` to create local ignored secrets scaffolding.
-3. Run `scripts/setup_android_sdk.sh` to install Android CLI tools and create `local.properties`.
-4. Run `scripts/generate_release_keystore.sh` to create the private Android signing key.
-5. If needed, create the Supabase owner account with `scripts/setup_supabase_owner.py your-email@example.com`.
-6. Run `scripts/check_local_setup.sh` to verify the local machine is ready.
-7. If Supabase owner is still pending, run `python3 scripts/check_supabase_auth.py` for the exact auth state.
-8. Run `python3 scripts/check_supabase_control_plane.py` to see whether the required tables already exist.
-9. If you already have the Supabase DB password locally, run `scripts/apply_supabase_migrations.sh`.
-10. Run `./gradlew :packages:control-plane:jvmTest :packages:indodax-client:jvmTest :packages:test-kit:test :apps:mac-engine:test`.
-11. Open the project in Android Studio / IntelliJ.
-12. Run the mac engine from the repo root with `scripts/run_mac_engine.sh`.
-13. Run Android app separately.
+Approval thresholds:
+- Standard: score ≥ 0.62, expected net ≥ 0.18%
+- Instant: score ≥ 0.48, expected net ≥ -0.02%
 
-For a private signed APK artifact, run `scripts/build_android_release.sh` after the setup above.
-To install the latest APK to a connected phone, run `scripts/install_android_release.sh`.
-For ADB over Wi-Fi after one USB pairing, run `scripts/connect_android_wifi.sh <IP-HP>`.
+## Strict Guardrails
 
-See [setup.md](/Users/kiki/Documents/Web%20Develop/KiBot/docs/setup.md), [access-and-secrets.md](/Users/kiki/Documents/Web%20Develop/KiBot/docs/access-and-secrets.md), [update-channel.md](/Users/kiki/Documents/Web%20Develop/KiBot/docs/update-channel.md), and [trading-intelligence.md](/Users/kiki/Documents/Web%20Develop/KiBot/docs/trading-intelligence.md) for the current design and setup flow.
+**Aturan yang TIDAK BOLEH diubah tanpa instruksi eksplisit:**
+
+1. **NO PANIC SELL ON TIMEOUT** — UDP putus = suspend entry saja, BUKAN market sell
+2. **ADAPTIVE TRAILING STOP** — koin <Rp500 diperlebar (3-5%) untuk hindari noise
+3. **RATIONAL QUARANTINE** — stop-loss = max 15 menit cooldown, bukan berjam-jam
+4. **STRICT TTL** — sinyal UDP >500ms = stale, wajib di-drop
+5. **SOFT AI-AUDIT** — AI degraded = warning only, bukan hard veto
+
+## Infrastructure
+
+### Oracle Free Tier (Singapore)
+- RAM: 1GB
+- CPU: 1/8 OCPU
+- JVM tuning: hemat memori, minimal GC pause
+
+### Systemd Services
+```bash
+sudo systemctl status kidax-engine      # Indodax executor
+sudo systemctl status kinance-engine    # Binance radar
+sudo systemctl status kibot-manager     # Python veto daemon
+```
+
+## Quick Start (Local Development)
+
+1. Install JDK 21
+2. Run `scripts/bootstrap_local.sh` to create local secrets scaffolding
+3. Run `scripts/check_local_setup.sh` to verify setup
+4. Run tests:
+   ```bash
+   ./gradlew :packages:core:jvmTest :packages:indodax-client:jvmTest :apps:mac-engine:test
+   ```
+5. Open project in IntelliJ IDEA
+
+## Deployment
+
+### Deploy to Oracle Server
+```bash
+# Build fat JAR
+./gradlew :apps:mac-engine:shadowJar
+
+# Copy to server
+scp apps/mac-engine/build/libs/mac-engine-all.jar ubuntu@<server>:/home/ubuntu/KiDax/server/
+
+# Restart services
+ssh ubuntu@<server> 'sudo systemctl restart kidax-engine kinance-engine kibot-manager'
+```
+
+### Health Check
+```bash
+curl localhost:8787    # KiDax dashboard
+curl localhost:8788    # Kinance dashboard
+```
+
+## Documentation
+
+- [setup.md](docs/setup.md) — Local setup guide
+- [access-and-secrets.md](docs/access-and-secrets.md) — API keys & secrets management
+- [trading-intelligence.md](docs/trading-intelligence.md) — Strategy & scoring logic
+- [.github/copilot-instructions.md](.github/copilot-instructions.md) — AI agent guidelines

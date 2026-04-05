@@ -5,9 +5,9 @@
 set -euo pipefail
 
 LOG_FILE="/home/ubuntu/KiBot/kibot-recovery.log"
-HEALTH_URL="http://127.0.0.1:8787/api/state"
-ROOT_URL="http://127.0.0.1:8787/"
-LOGS_URL="http://127.0.0.1:8787/api/logs"
+HEALTH_URL="${KIBOT_HEALTH_URL:-http://127.0.0.1:8789/api/state}"
+ROOT_URL="${KIBOT_ROOT_URL:-http://127.0.0.1:8789/}"
+LOGS_URL="${KIBOT_LOGS_URL:-http://127.0.0.1:8789/api/logs}"
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
@@ -33,7 +33,7 @@ start_engine() {
     sudo pkill -f '/home/ubuntu/KiBot/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar' || true
     sudo pkill -f '/home/ubuntu/mac-engine-0.1.0-all.jar' || true
     sudo pkill -f '/home/ubuntu/KiBot/server/mac-engine-all.jar' || true
-    sudo fuser -k 8787/tcp || true
+    sudo fuser -k "${KIBOT_PORT:-8789}"/tcp || true
     sudo systemctl daemon-reload
     sudo systemctl restart kibot-engine
     sleep 8

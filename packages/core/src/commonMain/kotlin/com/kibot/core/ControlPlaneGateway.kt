@@ -25,6 +25,32 @@ import com.kibot.shared.models.PositionSnapshot
 import com.kibot.shared.models.RuntimeIntelligenceUpdate
 import com.kibot.shared.models.WeeklyLearningSummary
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.Instant
+
+data class KingDashboardSnapshot(
+    val totalBalanceIdr: Double,
+    val currentPingMs: Long?,
+    val activeLivePairs: List<String>,
+    val latestManagerLog: String?,
+    val udpPingMs: Long? = null,
+    val kidaxPingMs: Long? = null,
+    val kinancePingMs: Long? = null,
+    val targetProgressPct: Double? = null,
+    val kidaxBalanceIdr: Double? = null,
+    val kinanceBalanceIdr: Double? = null,
+    val kidaxPnlTodayPct: Double? = null,
+    val kinancePnlTodayPct: Double? = null,
+    val kidaxPairActive: String? = null,
+    val kinancePairActive: String? = null,
+)
+
+data class TradeHistoryRecord(
+    val pair: String,
+    val side: String,
+    val status: String,
+    val detail: String,
+    val createdAt: Instant? = null,
+)
 
 data class DeviceRegistration(
     val deviceId: DeviceId,
@@ -106,6 +132,16 @@ interface ControlPlaneGateway {
     suspend fun markConflictSafeMode(botId: BotId, reason: String)
 
     suspend fun appendLog(botId: BotId, record: AuditLogRecord)
+
+    suspend fun upsertKingDashboardFastTelemetry(
+        totalBalanceIdr: Double,
+        currentPingMs: Long?,
+        activeLivePairs: List<String>,
+    )
+
+    suspend fun fetchKingDashboardSnapshot(): KingDashboardSnapshot?
+
+    suspend fun fetchTradeHistory(limit: Int = 50, offset: Int = 0): List<TradeHistoryRecord>
 
     suspend fun fetchRecentLogs(botId: BotId, limit: Int = 50): List<AuditLogRecord>
 

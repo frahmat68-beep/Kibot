@@ -50,6 +50,10 @@ data class MacRuntimeConfig(
     val aiSupportConfig: GeminiSupportConfig?,
     val adaptiveAiPolicyPath: Path,
     val targetEnforcementMemoryPath: Path,
+    val pnlResetAnchorPath: Path,
+    val monthlyPnlAnchorPath: Path,
+    val localPositionStateEnabled: Boolean,
+    val localPositionStatePath: Path,
     val analysisPublishIntervalMillis: Long,
     val strategyMetricsPublishIntervalMillis: Long,
     val supabaseLogUploadEnabled: Boolean,
@@ -59,6 +63,9 @@ data class MacRuntimeConfig(
     val indodaxClientConfig: IndodaxClientConfig,
     val binanceCredentials: BinanceCredentials?,
     val binanceClientConfig: BinanceClientConfig,
+    val telegramAlertsEnabled: Boolean,
+    val telegramBotToken: String?,
+    val telegramChatId: String?,
     val leadLagSignalEnabled: Boolean,
     val leadLagTargetBotId: BotId?,
     val leadLagSignalTtlMillis: Long,
@@ -84,15 +91,37 @@ data class MacRuntimeConfig(
     val leadLagUdpListenPort: Int,
     val leadLagUdpTargetHost: String?,
     val leadLagUdpTargetPort: Int,
+    val leadLagUdpBinaryProtocolEnabled: Boolean = false,
+    val leadLagUdpBinaryDualStackEnabled: Boolean = true,
+    val leadLagUdpSequenceWindowSize: Int = 64,
+    val leadLagUdpDedupTtlMillis: Long = 4_000L,
+    val leadLagUdpPrewarmTtlMillis: Long = 1_500L,
+    val leadLagUdpHeartbeatEnabled: Boolean,
+    val leadLagUdpHeartbeatIntervalMillis: Long,
+    val leadLagUdpHeartbeatTimeoutMillis: Long,
+    val leadLagUdpHeartbeatRequiredBotIds: Set<String>,
     val indodaxHyperGuardrailEnabled: Boolean,
     val indodaxHyperGuardrailTakerFeePct: Double,
     val hyperAggressiveConfig: HyperAggressiveConfig,
+    val blueChipMinDailyVolumeIdr: Double = 500_000.0,
+    val aListMinVolumeIdr: Double = 80_000_000.0,
+    val chartGuardMinCandles: Int = 18,
+    val chartGuardMinActiveCandles: Int = 6,
+    val chartGuardMinDistinctCloseBuckets: Int = 4,
+val antiKoinMahalUseBudgetCheck: Boolean = true,
+    val blockedBaseAssets: Set<String> = setOf("usdt", "usdc", "indr", "fdusd", "tusd", "busd", "toko"),
 )
 
 object MacRuntimeConfigLoader {
     fun load(cwd: Path = Paths.get("").toAbsolutePath()): MacRuntimeConfig {
         val fileValues = linkedMapOf<String, String>()
-        candidateEnvFiles(cwd).forEach { path ->
+        val explicitEnvFile = System.getenv("KIBOT_ENV_FILE")?.takeIf { it.isNotBlank() }?.let(Paths::get)
+        val hintedBotId = System.getenv("BOT_ID")?.takeIf { it.isNotBlank() }
+        candidateEnvFiles(
+            start = cwd,
+            explicitEnvFile = explicitEnvFile,
+            hintedBotId = hintedBotId,
+        ).forEach { path ->
             if (Files.exists(path)) {
                 parseEnvFile(path).forEach { (key, value) -> fileValues[key] = value }
             }
@@ -195,6 +224,24 @@ object MacRuntimeConfigLoader {
                 scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/target_enforcement_memory.json"),
                 legacyDefault = cwd.resolve(".tmp/runtime/target_enforcement_memory.json"),
             ),
+            pnlResetAnchorPath = resolveScopedRuntimePath(
+                explicit = optional("KIBOT_PNL_RESET_ANCHOR_PATH"),
+                scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/pnl_reset_anchor.json"),
+                legacyDefault = cwd.resolve(".tmp/runtime/pnl_reset_anchor.json"),
+            ),
+            monthlyPnlAnchorPath = resolveScopedRuntimePath(
+                explicit = optional("KIBOT_MONTHLY_PNL_ANCHOR_PATH"),
+                scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/monthly_pnl_anchor.json"),
+                legacyDefault = cwd.resolve(".tmp/runtime/monthly_pnl_anchor.json"),
+            ),
+            localPositionStatePath = resolveScopedRuntimePath(
+                explicit = optional("KIBOT_LOCAL_POSITION_STATE_PATH"),
+                scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/local_position_state.json"),
+                legacyDefault = cwd.resolve(".tmp/runtime/local_position_state.json"),
+            ),
+            localPositionStateEnabled = optional("KIBOT_LOCAL_POSITION_STATE_ENABLED")
+                ?.equals("true", ignoreCase = true)
+                ?: true,
             analysisPublishIntervalMillis = optional("BOT_ANALYSIS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 30_000L,
             strategyMetricsPublishIntervalMillis = optional("BOT_STRATEGY_METRICS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 300_000L,
             supabaseLogUploadEnabled = optional("BOT_SUPABASE_LOG_UPLOAD_ENABLED")
@@ -233,6 +280,9 @@ object MacRuntimeConfigLoader {
                 primaryQuoteAsset = optional("BINANCE_PRIMARY_QUOTE_ASSET")?.lowercase() ?: "usdt",
                 shadowMode = optional("SHADOW_MODE")?.equals("true", ignoreCase = true) ?: false,
             ),
+            telegramAlertsEnabled = optional("KIBOT_TELEGRAM_ALERTS_ENABLED")?.equals("true", ignoreCase = true) == true,
+            telegramBotToken = optional("KIBOT_TELEGRAM_BOT_TOKEN"),
+            telegramChatId = optional("KIBOT_TELEGRAM_CHAT_ID"),
             leadLagSignalEnabled = optional("KIBOT_LEAD_LAG_SIGNAL_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
@@ -266,6 +316,42 @@ object MacRuntimeConfigLoader {
             leadLagUdpListenPort = optional("KIBOT_LEAD_LAG_UDP_LISTEN_PORT")?.toIntOrNull() ?: 9999,
             leadLagUdpTargetHost = optional("KIBOT_LEAD_LAG_UDP_TARGET_HOST"),
             leadLagUdpTargetPort = optional("KIBOT_LEAD_LAG_UDP_TARGET_PORT")?.toIntOrNull() ?: 9999,
+            leadLagUdpBinaryProtocolEnabled = optional("KIBOT_LEAD_LAG_UDP_BINARY_ENABLED")
+                ?.equals("true", ignoreCase = true)
+                ?: false,
+            leadLagUdpBinaryDualStackEnabled = optional("KIBOT_LEAD_LAG_UDP_BINARY_DUAL_STACK")
+                ?.equals("true", ignoreCase = true)
+                ?: true,
+            leadLagUdpSequenceWindowSize = optional("KIBOT_LEAD_LAG_UDP_SEQUENCE_WINDOW")
+                ?.toIntOrNull()
+                ?.coerceAtLeast(1)
+                ?: 64,
+            leadLagUdpDedupTtlMillis = optional("KIBOT_LEAD_LAG_UDP_DEDUP_TTL_MS")
+                ?.toLongOrNull()
+                ?.coerceAtLeast(500L)
+                ?: 4_000L,
+            leadLagUdpPrewarmTtlMillis = optional("KIBOT_LEAD_LAG_UDP_PREWARM_TTL_MS")
+                ?.toLongOrNull()
+                ?.coerceAtLeast(250L)
+                ?: 1_500L,
+            leadLagUdpHeartbeatEnabled = optional("KIBOT_LEAD_LAG_UDP_HEARTBEAT_ENABLED")
+                ?.equals("true", ignoreCase = true)
+                ?: true,
+            leadLagUdpHeartbeatIntervalMillis = optional("KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS")
+                ?.toLongOrNull()
+                ?: 100L,
+            leadLagUdpHeartbeatTimeoutMillis = optional("KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS")
+                ?.toLongOrNull()
+                ?: 500L,
+            leadLagUdpHeartbeatRequiredBotIds = optional("KIBOT_HIVE_EXPECTED_BOT_IDS")
+                ?.split(",")
+                ?.mapNotNull { token ->
+                    token.trim()
+                        .takeIf { it.isNotBlank() }
+                        ?.lowercase()
+                }
+                ?.toSet()
+                ?: defaultHeartbeatPeers(botId.value),
             indodaxHyperGuardrailEnabled = optional("KIBOT_INDODAX_HYPER_GUARDRAIL_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
@@ -296,6 +382,12 @@ object MacRuntimeConfigLoader {
                 microPulseMaxPairs = optional("KIBOT_HYPER_MICRO_PULSE_MAX_PAIRS")?.toIntOrNull() ?: 1400,
                 allInLiquidationMaxPnlPct = optional("KIBOT_HYPER_ALL_IN_LIQUIDATION_MAX_PNL_PCT")?.toDoubleOrNull() ?: 1.0,
             ),
+            blueChipMinDailyVolumeIdr = optional("KIBOT_BLUECHIP_MIN_VOLUME_IDR")?.toDoubleOrNull() ?: 500_000.0,
+            aListMinVolumeIdr = optional("KIBOT_ALIST_MIN_VOLUME_IDR")?.toDoubleOrNull() ?: 80_000_000.0,
+            chartGuardMinCandles = optional("KIBOT_CHART_GUARD_MIN_CANDLES")?.toIntOrNull() ?: 18,
+            chartGuardMinActiveCandles = optional("KIBOT_CHART_GUARD_MIN_ACTIVE_CANDLES")?.toIntOrNull() ?: 6,
+            chartGuardMinDistinctCloseBuckets = optional("KIBOT_CHART_GUARD_MIN_DISTINCT_CLOSE_BUCKETS")?.toIntOrNull() ?: 4,
+            antiKoinMahalUseBudgetCheck = optional("KIBOT_ANTI_KOIN_MAHAL_USE_BUDGET_CHECK")?.equals("true", ignoreCase = true) ?: true,
         )
     }
 
@@ -326,6 +418,15 @@ object MacRuntimeConfigLoader {
             .ifBlank { "bot" }
     }
 
+    private fun defaultHeartbeatPeers(botId: String): Set<String> {
+        return when (botId.trim().lowercase()) {
+            "kinance" -> setOf("kidax", "kibot")
+            "kibot" -> setOf("kinance", "kidax")
+            "kidax", "main" -> setOf("kinance", "kibot")
+            else -> emptySet()
+        }
+    }
+
     private fun resolveScopedRuntimePath(
         explicit: String?,
         scopedDefault: Path,
@@ -347,7 +448,11 @@ object MacRuntimeConfigLoader {
         }
     }
 
-    private fun candidateEnvFiles(start: Path): List<Path> {
+    private fun candidateEnvFiles(
+        start: Path,
+        explicitEnvFile: Path? = null,
+        hintedBotId: String? = null,
+    ): List<Path> {
         val dirs = buildList {
             var current: Path? = start
             repeat(6) {
@@ -357,13 +462,28 @@ object MacRuntimeConfigLoader {
             }
         }.distinct()
 
-        return dirs
+        val hintedSuffix = hintedBotId
+            ?.trim()
+            ?.lowercase()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { ".env.$it" }
+
+        val discovered = dirs
             .flatMap { dir ->
-                listOf(
-                    dir.resolve(".env"),
-                    dir.resolve("apps/mac-engine/.env"),
-                )
+                buildList {
+                    add(dir.resolve(".env"))
+                    hintedSuffix?.let { add(dir.resolve(it)) }
+                    add(dir.resolve("apps/mac-engine/.env"))
+                    hintedSuffix?.let { add(dir.resolve("apps/mac-engine/$it")) }
+                }
             }
             .distinct()
+
+        return buildList {
+            addAll(discovered)
+            explicitEnvFile?.let { add(it) }
+        }
+            .distinct()
+            .filter { Files.exists(it) }
     }
 }

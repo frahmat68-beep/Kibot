@@ -29,6 +29,7 @@ class MarketRegimeAnalyzer(
             candidates.map { it.recentHealthScore }.averageOr(0.5),
             candidates.map { it.stabilityScore }.averageOr(0.5),
             candidates.map { it.fillQualityScore }.averageOr(0.5),
+            candidates.map { it.microstructureScore }.averageOr(0.5),
         )
         val opportunityAvailabilityScore = if (candidates.isEmpty()) {
             0.0
@@ -36,6 +37,10 @@ class MarketRegimeAnalyzer(
             candidates.count { it.allowed && it.pairTier != PairTier.TIER_C }.toDouble() / candidates.size.toDouble()
         }
         val volatilityQualityScore = candidates.map { it.volatilityQualityScore }.averageOr(0.5)
+        val volatilityClusterScore = deriveVolatilityClusterScore(topQuotes, candidates)
+        val contextHealthScore = candidates.map { it.contextScore }.averageOr(0.5)
+        val toxicityPenaltyScore = candidates.map { 1.0 - it.toxicityScore.coerceIn(0.0, 1.0) }.averageOr(0.5)
+        val progressiveOpportunityScore = candidates.map { it.progressiveScore }.averageOr(0.5)
         val spreadHealthScore = topQuotes.map { inverseThresholdScore(it.spreadPct, pairPolicy.maxSpreadPct) }.averageOr(0.5)
         val slippageHealthScore = topQuotes.map { inverseThresholdScore(it.estimatedSlippagePct, pairPolicy.maxEstimatedSlippagePct) }.averageOr(0.5)
 
@@ -44,12 +49,17 @@ class MarketRegimeAnalyzer(
                 microstructureHealthScore <= policy.panicMicrostructureMax &&
                 opportunityAvailabilityScore < 0.25 ->
                 MarketRegime.BREAKDOWN_PANIC
+            volatilityClusterScore >= policy.elevatedVolatilityClusterMin &&
+                (toxicityPenaltyScore < 0.58 || spreadHealthScore < 0.60) ->
+                MarketRegime.HIGH_VOLATILITY_UNCLEAR
             microstructureHealthScore <= policy.unclearMicrostructureMax ||
                 volatilityQualityScore < 0.40 ||
-                spreadHealthScore < 0.45 ->
+                spreadHealthScore < 0.45 ||
+                toxicityPenaltyScore < 0.44 ->
                 MarketRegime.HIGH_VOLATILITY_UNCLEAR
             trendScore >= policy.healthyUptrendTrendScoreMin &&
-                opportunityAvailabilityScore >= policy.healthyUptrendOpportunityMin ->
+                opportunityAvailabilityScore >= policy.healthyUptrendOpportunityMin &&
+                progressiveOpportunityScore >= 0.56 ->
                 MarketRegime.HEALTHY_UPTREND
             else -> MarketRegime.HEALTHY_SIDEWAYS
         }
@@ -60,7 +70,11 @@ class MarketRegimeAnalyzer(
             volatilityQualityScore to 0.16,
             spreadHealthScore to 0.14,
             slippageHealthScore to 0.10,
-            trendScore to 0.16,
+            trendScore to 0.10,
+            contextHealthScore to 0.10,
+            toxicityPenaltyScore to 0.08,
+            (1.0 - volatilityClusterScore) to 0.08,
+            progressiveOpportunityScore to 0.08,
         )
         val botHealthScore = deriveBotHealthScore(health)
         val edgeConfidence = deriveEdgeConfidence(
@@ -88,6 +102,9 @@ class MarketRegimeAnalyzer(
             add("Bot health ${(botHealthScore * 100).toInt()} / 100.")
             if (opportunityAvailabilityScore < 0.30) add("Kandidat pair berkualitas masih sedikit.")
             if (microstructureHealthScore < 0.50) add("Kualitas microstructure belum stabil.")
+            if (toxicityPenaltyScore < 0.46) add("Terlalu banyak pair sedang toxic atau mudah menyapu stop.")
+            if (progressiveOpportunityScore < 0.46) add("Banyak chart belum benar-benar progresif, jadi rotasi harus lebih selektif.")
+            if (volatilityClusterScore >= policy.elevatedVolatilityClusterMin) add("Pasar sedang masuk klaster volatilitas tinggi; trailing dan stop harus lebih adaptif.")
             if (edgeConfidence == EdgeConfidence.LOW) add("Edge confidence turun, mode agresif harus ditahan.")
         }
 
@@ -101,8 +118,36 @@ class MarketRegimeAnalyzer(
             swingBiasScore = swingBiasScore,
             opportunityAvailabilityScore = opportunityAvailabilityScore,
             microstructureHealthScore = microstructureHealthScore,
+            volatilityClusterScore = volatilityClusterScore,
             rationale = rationale,
         )
+    }
+
+    private fun deriveVolatilityClusterScore(
+        quotes: List<MarketQuote>,
+        candidates: List<PairScore>,
+    ): Double {
+        if (quotes.isEmpty() && candidates.isEmpty()) return 0.0
+        val quoteVolatility = quotes
+            .map { quote ->
+                weightedAverage(
+                    (quote.realizedVolatilityPct / 6.0).coerceIn(0.0, 1.0) to 0.34,
+                    (kotlin.math.abs(quote.shortTermReturnPct) / 4.0).coerceIn(0.0, 1.0) to 0.22,
+                    quote.keltnerExtensionScore.coerceIn(0.0, 1.0) to 0.24,
+                    quote.toxicFlowScore.coerceIn(0.0, 1.0) to 0.20,
+                )
+            }
+            .averageOr(0.0)
+        val candidateVolatility = candidates
+            .map {
+                weightedAverage(
+                    (1.0 - it.volatilityQualityScore.coerceIn(0.0, 1.0)) to 0.42,
+                    it.toxicityScore.coerceIn(0.0, 1.0) to 0.34,
+                    it.statisticalStretchScore.coerceIn(0.0, 1.0) to 0.24,
+                )
+            }
+            .averageOr(0.0)
+        return averageOf(quoteVolatility, candidateVolatility).coerceIn(0.0, 1.0)
     }
 
     private fun deriveBotHealthScore(health: EngineHealthSnapshot): Double {

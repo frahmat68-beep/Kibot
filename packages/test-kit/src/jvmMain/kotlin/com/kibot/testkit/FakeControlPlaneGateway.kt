@@ -2,6 +2,8 @@ package com.kibot.testkit
 
 import com.kibot.core.ControlPlaneGateway
 import com.kibot.core.DeviceRegistration
+import com.kibot.core.KingDashboardSnapshot
+import com.kibot.core.TradeHistoryRecord
 import com.kibot.shared.models.AuditLogRecord
 import com.kibot.shared.models.BotDesiredState
 import com.kibot.shared.models.BotEffectiveState
@@ -50,6 +52,7 @@ class FakeControlPlaneGateway(
     val updateRecommendations = mutableListOf<BotUpdateRecommendation>()
     var runtimeIntelligence: RuntimeIntelligenceUpdate? = null
     var latestWeeklyLearningSummary: WeeklyLearningSummary? = null
+    var lastKingDashboardTelemetry: Triple<Double, Long?, List<String>>? = null
 
     var botState: BotStateSnapshot = BotStateSnapshot(
         botId = botId,
@@ -309,6 +312,26 @@ class FakeControlPlaneGateway(
     override suspend fun appendLog(botId: BotId, record: AuditLogRecord) {
         logs += record
     }
+
+    override suspend fun upsertKingDashboardFastTelemetry(
+        totalBalanceIdr: Double,
+        currentPingMs: Long?,
+        activeLivePairs: List<String>,
+    ) {
+        lastKingDashboardTelemetry = Triple(totalBalanceIdr, currentPingMs, activeLivePairs)
+    }
+
+    override suspend fun fetchKingDashboardSnapshot(): KingDashboardSnapshot? {
+        val telemetry = lastKingDashboardTelemetry ?: return null
+        return KingDashboardSnapshot(
+            totalBalanceIdr = telemetry.first,
+            currentPingMs = telemetry.second,
+            activeLivePairs = telemetry.third,
+            latestManagerLog = "Bos, sistem monitor aktif. Ini snapshot dari fake control plane.",
+        )
+    }
+
+    override suspend fun fetchTradeHistory(limit: Int, offset: Int): List<TradeHistoryRecord> = emptyList()
 
     override suspend fun fetchRecentLogs(botId: BotId, limit: Int): List<AuditLogRecord> = logs.takeLast(limit).reversed()
 

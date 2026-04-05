@@ -236,7 +236,84 @@ class TradeAutomationCoordinatorTest {
     }
 
     @Test
-    fun `rotation exit can choose next best replacement candidate and use market sell for urgent rotation`() {
+    fun `managed position arms break even stop after fee-covered gain`() {
+        val now = Clock.System.now()
+        val quotes = listOf(
+            marketQuote("arc_idr", 1015.0, 1017.0, 80_000_000.0, 1.2, 0.8),
+        )
+        val recentOrders = listOf(
+            com.kibot.shared.models.OrderSnapshot(
+                orderId = OrderId("buy-arc-1"),
+                clientOrderId = ClientOrderId("buy-arc-1"),
+                pairId = PairId("arc_idr"),
+                side = OrderSide.BUY,
+                orderType = OrderType.MARKET,
+                status = OrderStatus.FILLED,
+                price = DecimalValue("1000"),
+                originalQuantity = DecimalValue("25"),
+                executedQuantity = DecimalValue("25"),
+                remainingQuantity = DecimalValue.Zero,
+                createdAt = now,
+                updatedAt = now,
+            ),
+        )
+
+        val positions = coordinator.deriveManagedPositions(
+            balances = listOf(BalanceSnapshot(asset = "arc", free = DecimalValue("25"))),
+            marketQuotes = quotes,
+            reconciledOrders = recentOrders,
+            rankedPairs = emptyList(),
+            now = now,
+        )
+
+        assertTrue(positions.first().unrealizedPnlPct >= 0.8, positions.first().toString())
+        assertTrue(
+            positions.first().stopPrice.toDoubleOrZero() >= positions.first().breakEvenPrice.toDoubleOrZero(),
+            positions.first().toString(),
+        )
+    }
+
+    @Test
+    fun `micro time stop exits flat position after fifteen minutes`() {
+        val now = Clock.System.now()
+        val cycle = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = listOf(BalanceSnapshot(asset = "flat", free = DecimalValue("50"))),
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = healthyEngine(),
+            marketQuotes = listOf(marketQuote("flat_idr", 100.1, 100.3, 30_000_000.0, 0.05, 0.10)),
+        )
+        val positions = listOf(
+            ManagedPosition(
+                pairId = PairId("flat_idr"),
+                quantity = DecimalValue("50"),
+                averageEntryPrice = DecimalValue("100"),
+                currentBidPrice = DecimalValue("100.1"),
+                currentValueIdr = DecimalValue("5005"),
+                unrealizedPnlIdr = DecimalValue("5"),
+                unrealizedPnlPct = 0.10,
+                breakEvenPrice = DecimalValue("100.6"),
+                takeProfitPrice = DecimalValue("103"),
+                stopPrice = DecimalValue("98"),
+                openedAt = Instant.fromEpochMilliseconds(now.toEpochMilliseconds() - (16 * 60 * 1000)),
+                updatedAt = now,
+                horizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
+                setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION,
+                pairTier = PairTier.TIER_B,
+                speculativePocket = false,
+                expectedHoldingHours = 6.0,
+            ),
+        )
+
+        val decision = coordinator.planExit(now, cycle, positions, emptyList())
+
+        assertNotNull(decision)
+        assertEquals(ExitReason.TIME_EXIT, decision.reason)
+    }
+
+    @Test
+    fun `hard loss exit can choose next best replacement candidate and use market sell`() {
         val now = Clock.System.now()
         val coordinator = TradeAutomationCoordinator()
         val cycle = StrategyCycleResult(
@@ -363,9 +440,129 @@ class TradeAutomationCoordinatorTest {
         )
 
         assertNotNull(decision)
-        assertEquals(ExitReason.ROTATION_EXIT, decision.reason)
+        assertEquals(ExitReason.STOP_LOSS_EXIT, decision.reason)
         assertEquals(OrderType.MARKET, decision.executionPlan.orderType)
         assertTrue(decision.message.contains("croak_idr", ignoreCase = true))
+    }
+
+    @Test
+    fun `one hour stagnant tactical position force rotates`() {
+        val now = Clock.System.now()
+        val cycle = StrategyCycleResult(
+            portfolio = PortfolioSnapshot(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("10000"))),
+                openOrders = emptyList(),
+                positions = emptyList(),
+                totalEquityIdr = DecimalValue("50000"),
+                lastSyncedAt = now,
+            ),
+            dailyRisk = orchestrator.analyze(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("10000"))),
+                openOrders = emptyList(),
+                dailyRisk = null,
+                health = healthyEngine(),
+                marketQuotes = listOf(marketQuote("flat_idr", 100.0, 100.2, 90_000_000.0, 0.1, 0.2)),
+            ).dailyRisk,
+            rankedPairs = listOf(
+                pairScore("flat_idr", ranking = 0.50, opportunity = 0.42),
+                pairScore("rocket_idr", ranking = 0.88, opportunity = 0.82),
+            ),
+            marketSnapshot = orchestrator.analyze(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("10000"))),
+                openOrders = emptyList(),
+                dailyRisk = null,
+                health = healthyEngine(),
+                marketQuotes = listOf(marketQuote("flat_idr", 100.0, 100.2, 90_000_000.0, 0.1, 0.2)),
+            ).marketSnapshot,
+            healthDecision = orchestrator.analyze(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("10000"))),
+                openOrders = emptyList(),
+                dailyRisk = null,
+                health = healthyEngine(),
+                marketQuotes = listOf(marketQuote("flat_idr", 100.0, 100.2, 90_000_000.0, 0.1, 0.2)),
+            ).healthDecision,
+            riskDecision = orchestrator.analyze(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("10000"))),
+                openOrders = emptyList(),
+                dailyRisk = null,
+                health = healthyEngine(),
+                marketQuotes = listOf(marketQuote("flat_idr", 100.0, 100.2, 90_000_000.0, 0.1, 0.2)),
+            ).riskDecision,
+            modeSnapshot = orchestrator.analyze(
+                botId = BotId("main"),
+                balances = listOf(BalanceSnapshot("idr", DecimalValue("10000"))),
+                openOrders = emptyList(),
+                dailyRisk = null,
+                health = healthyEngine(),
+                marketQuotes = listOf(marketQuote("flat_idr", 100.0, 100.2, 90_000_000.0, 0.1, 0.2)),
+            ).modeSnapshot,
+            deploymentPlan = com.kibot.shared.models.CapitalDeploymentPlan(
+                allowNewEntries = false,
+                allowRotation = true,
+                maxActivePositions = 2,
+                suggestedPerPositionBudgetIdr = 20_000.0,
+                targetCashReservePct = 0.01,
+                capitalUtilizationTargetPct = 0.95,
+                preferredHorizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
+                candidates = listOf(
+                    com.kibot.shared.models.CandidateOpportunity(
+                        pairId = PairId("rocket_idr"),
+                        tier = com.kibot.shared.models.PairTier.TIER_B,
+                        preferredHorizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
+                        rankingScore = 0.88,
+                        marketOpportunityScore = 0.82,
+                        expectedNetProfitabilityPct = 2.1,
+                        holdabilityScore = 0.54,
+                        speculativePocket = false,
+                    ),
+                ),
+            ),
+            selectedSignal = null,
+            executionPlan = null,
+            topCandidate = PairId("rocket_idr"),
+            distrustLabels = emptyList(),
+            summary = emptyList(),
+            entrySignals = emptyList(),
+            entryExecutionPlans = emptyList(),
+        )
+        val positions = listOf(
+            ManagedPosition(
+                pairId = PairId("flat_idr"),
+                quantity = DecimalValue("100"),
+                averageEntryPrice = DecimalValue("100"),
+                currentBidPrice = DecimalValue("100.12"),
+                currentValueIdr = DecimalValue("10012"),
+                unrealizedPnlIdr = DecimalValue("12"),
+                unrealizedPnlPct = 0.12,
+                breakEvenPrice = DecimalValue("100.7"),
+                takeProfitPrice = DecimalValue("103.0"),
+                stopPrice = DecimalValue("98.5"),
+                openedAt = Instant.fromEpochMilliseconds(now.toEpochMilliseconds() - (70 * 60 * 1000)),
+                updatedAt = now,
+                horizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
+                setupType = com.kibot.shared.models.SetupType.HEALTHY_SHORT_TERM_PULLBACK,
+                pairTier = com.kibot.shared.models.PairTier.TIER_B,
+                speculativePocket = false,
+                expectedHoldingHours = 8.0,
+                chartRotationUrgencyScore = 0.78,
+            ),
+        )
+
+        val decision = coordinator.planExit(
+            now = now,
+            cycle = cycle,
+            managedPositions = positions,
+            activeOrders = emptyList(),
+        )
+
+        assertNotNull(decision)
+        assertEquals(ExitReason.ROTATION_EXIT, decision.reason)
+        assertTrue(decision.message.contains("rocket_idr", ignoreCase = true))
     }
 
     @Test

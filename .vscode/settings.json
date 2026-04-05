@@ -1,3 +1,34 @@
 {
-    "java.configuration.updateBuildConfiguration": "interactive"
+    "java.configuration.updateBuildConfiguration": "automatic",
+    
+    "files.exclude": {
+        "**/bin/**": true,
+        "**/build/**": true,
+        "**/.gradle/**": true,
+        "**/.tooling/**": true,
+        "**/.venv*/**": true,
+        "**/.tmp-venv/**": true,
+        "**/.codex-venv/**": true,
+        "**/node_modules/**": true,
+        "**/*.class": true,
+        "**/.DS_Store": true
+    },
+    
+    "search.exclude": {
+        "**/bin/**": true,
+        "**/build/**": true,
+        "**/.gradle/**": true,
+        "**/.tooling/**": true,
+        "**/.venv*/**": true
+    },
+    
+    "files.watcherExclude": {
+        "**/bin/**": true,
+        "**/build/**": true,
+        "**/.gradle/**": true,
+        "**/.tooling/**": true
+    },
+    
+    "kotlin.languageServer.enabled": true,
+    "kotlin.diagnostics.enabled": false
 }

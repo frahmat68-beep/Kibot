@@ -1,7 +1,18 @@
 package com.kibot.macengine.server
 
+import com.kibot.macengine.runtime.MacCommandDispatcher
 import com.kibot.macengine.state.MacDashboardState
+import com.kibot.macengine.state.MacCommand
 import com.kibot.macengine.state.MacStateRepository
+import com.kibot.shared.models.BotId
+import com.kibot.shared.models.BotDesiredState
+import com.kibot.shared.models.CommandCenterCommandReply
+import com.kibot.shared.models.CommandCenterCommandRequest
+import com.kibot.shared.models.CommandCenterLiveSnapshot
+import com.kibot.shared.models.CommandCenterTimelineEntry
+import com.kibot.shared.models.CommandCenterHolding
+import com.kibot.shared.models.CommandCenterOrder
+import com.kibot.shared.models.CommandCenterWsEnvelope
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
@@ -16,12 +27,22 @@ import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
 import io.ktor.server.response.respondText
+import io.ktor.server.response.respondTextWriter
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import io.ktor.server.websocket.WebSockets
+import io.ktor.server.websocket.webSocket
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.websocket.Frame
+import io.ktor.websocket.close
+import io.ktor.websocket.readText
+import io.ktor.websocket.send
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.html.BODY
 import kotlinx.html.FlowContent
+import kotlinx.html.button
 import kotlinx.html.body
 import kotlinx.html.div
 import kotlinx.html.h1
@@ -36,14 +57,20 @@ import kotlinx.html.style
 import kotlinx.html.title
 import kotlinx.html.unsafe
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.decodeFromString
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Collections
 import java.net.NetworkInterface
+import org.slf4j.LoggerFactory
 
 class LocalDashboardServer(
     private val repository: MacStateRepository,
+    private val commandDispatcher: MacCommandDispatcher? = null,
+    private val botId: BotId = BotId("main"),
     private val host: String = "0.0.0.0",
     private val port: Int = 8787,
     private val androidReleaseDirectory: Path,
@@ -51,12 +78,14 @@ class LocalDashboardServer(
     private val statePollIntervalMillis: Long = 15_000L,
     private val logPollIntervalMillis: Long = 20_000L,
 ) {
+    private val logger = LoggerFactory.getLogger(LocalDashboardServer::class.java)
     private val lanProbeUrl = detectLanProbeUrl(host, port)
     private val lanServiceAdvertiser = if (enableLanAdvertising) LanServiceAdvertiser(host, port) else null
 
     private val server = embeddedServer(CIO, host = host, port = port) {
         install(CallLogging)
         install(ContentNegotiation) { json() }
+        install(WebSockets)
         install(StatusPages) {
             exception<Throwable> { call, cause ->
                 call.respond(HttpStatusCode.InternalServerError, mapOf("error" to (cause.message ?: "unknown")))
@@ -64,6 +93,17 @@ class LocalDashboardServer(
         }
 
         routing {
+            // Modern full-screen dashboard
+            get("/dashboard") {
+                applyDashboardSecurityHeaders(call)
+                val dashboardHtml = this::class.java.classLoader.getResourceAsStream("dashboard.html")?.readBytes()?.decodeToString()
+                if (dashboardHtml != null) {
+                    call.respondText(dashboardHtml, ContentType.Text.Html)
+                } else {
+                    call.respondText("Dashboard not found", ContentType.Text.Plain, HttpStatusCode.NotFound)
+                }
+            }
+
             get("/") {
                 applyDashboardSecurityHeaders(call)
                 call.respondHtml {
@@ -252,48 +292,85 @@ class LocalDashboardServer(
                                   });
                                 }
 
+                                function updateTickerValue(elementId, value) {
+                                  const el = document.getElementById(elementId);
+                                  if (!el) return;
+                                  if (el.textContent === String(value || '')) return;
+                                  el.classList.remove('ticker-up');
+                                  void el.offsetWidth;
+                                  el.textContent = value || '-';
+                                  el.classList.add('ticker-up');
+                                }
+
+                                function applyState(state) {
+                                  updateStatusBadge(state);
+                                  updateTickerValue('portfolio-value', state.portfolioValueIdr);
+                                  updateTickerValue('free-idr', state.freeIdrLabel || 'Rp0');
+                                  updateTickerValue('total-value', state.totalValueIdr || state.portfolioValueIdr || 'Rp0');
+                                  updateTickerValue('free-idr-kinance', state.freeIdrLabel || 'Rp0');
+                                  updateTickerValue('total-value-kinance', state.totalValueIdr || state.portfolioValueIdr || 'Rp0');
+                                  document.getElementById('hero-pnl').textContent = state.pnlTodayIdr;
+                                  document.getElementById('hero-pnl').className = 'hero-pnl ' + (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel) ? 'hero-pnl-loss' : 'hero-pnl-gain');
+                                  document.getElementById('hero-pnl-pct').textContent = state.pnlTodayPctLabel;
+                                  document.getElementById('hero-pnl-pct').className = 'hero-pnl-chip ' + (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel) ? 'hero-pnl-chip-loss' : 'hero-pnl-chip-gain');
+                                  document.getElementById('last-updated').textContent = state.lastUpdatedLabel;
+                                  const managerLog = document.getElementById('manager-log');
+                                  if (managerLog) {
+                                    const summary = state.statusMessage || 'Belum ada laporan manajer terbaru.';
+                                    managerLog.textContent = summary;
+                                  }
+                                  document.getElementById('release-label').textContent = 'Oracle Active ' + (state.releaseLabel || '#0');
+                                  document.getElementById('top-candidate').textContent = state.topCandidate;
+                                  renderRadarPairs(state.radarPairs || []);
+                                  document.getElementById('exchange-ping').textContent = state.exchangePingMs;
+                                  document.getElementById('ret-1d').textContent = state.pnlTodayIdr;
+                                  document.getElementById('ret-7d').textContent = state.return7dIdr;
+                                  document.getElementById('ret-7d-pct').textContent = state.return7dPctLabel;
+                                  document.getElementById('ret-30d').textContent = state.return30dIdr;
+                                  document.getElementById('ret-30d-pct').textContent = state.return30dPctLabel;
+                                  document.getElementById('ret-1d-pct').textContent = state.pnlTodayPctLabel;
+                                  applyMetricTone('ret-1d-card', state.pnlTodayIdr, state.pnlTodayPctLabel);
+                                  applyMetricTone('ret-7d-card', state.return7dIdr, state.return7dPctLabel);
+                                  applyMetricTone('ret-30d-card', state.return30dIdr, state.return30dPctLabel);
+                                  renderAssetAllocation(state.holdingsDetailed || [], state.portfolioValueIdr || 'Rp0');
+                                }
+
                                 function refreshState() {
                                   fetch('/api/state', { cache: 'no-store' })
                                     .then(r => r.json())
-                                    .then(state => {
-                                      updateStatusBadge(state);
-                                      document.getElementById('portfolio-value').textContent = state.portfolioValueIdr;
-                                      document.getElementById('hero-pnl').textContent = state.pnlTodayIdr;
-                                      document.getElementById('hero-pnl').className = 'hero-pnl ' + (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel) ? 'hero-pnl-loss' : 'hero-pnl-gain');
-                                      document.getElementById('hero-pnl-pct').textContent = state.pnlTodayPctLabel;
-                                      document.getElementById('hero-pnl-pct').className = 'hero-pnl-chip ' + (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel) ? 'hero-pnl-chip-loss' : 'hero-pnl-chip-gain');
-                                      document.getElementById('hero-update-time').textContent = state.lastUpdatedLabel;
-                                      document.getElementById('last-updated').textContent = state.lastUpdatedLabel;
-                                      const heroSummary = document.getElementById('hero-summary');
-                                      if (heroSummary) heroSummary.textContent = state.statusMessage;
-                                      document.getElementById('release-label').textContent = 'Oracle Active ' + (state.releaseLabel || '#0');
-                                      document.getElementById('ai-chip').textContent = compactAiStatusLabel(state.aiProviderSummary || '');
-                                      document.getElementById('ai-chip').className = 'pill ' + aiPillClass(state.aiProviderSummary || '');
-                                      document.getElementById('target-chip').textContent = state.targetPursuitLabel || 'TRACKING';
-                                      document.getElementById('target-chip').className = 'pill ' + targetPillClass(state.targetPursuitLabel || 'TRACKING');
-                                      document.getElementById('top-candidate').textContent = state.topCandidate;
-                                      document.getElementById('pair-temperature-label').textContent = pairHeatLabel(state.exchangePingMs || '--');
-                                      document.getElementById('pair-temperature').className = 'pill ' + pingPillClass(state.exchangePingMs || '--');
-                                      renderRadarPairs(state.radarPairs || []);
-                                      document.getElementById('exchange-ping').textContent = state.exchangePingMs;
-                                      document.getElementById('ret-1d').textContent = state.pnlTodayIdr;
-                                      document.getElementById('ret-7d').textContent = state.return7dIdr;
-                                      document.getElementById('ret-7d-pct').textContent = state.return7dPctLabel;
-                                      document.getElementById('ret-30d').textContent = state.return30dIdr;
-                                      document.getElementById('ret-30d-pct').textContent = state.return30dPctLabel;
-                                      document.getElementById('ret-1d-pct').textContent = state.pnlTodayPctLabel;
-                                      applyMetricTone('ret-1d-card', state.pnlTodayIdr, state.pnlTodayPctLabel);
-                                      applyMetricTone('ret-7d-card', state.return7dIdr, state.return7dPctLabel);
-                                      applyMetricTone('ret-30d-card', state.return30dIdr, state.return30dPctLabel);
-                                      renderAssetAllocation(state.holdingsDetailed || [], state.portfolioValueIdr || 'Rp0');
-                                      renderTradeHistory(state.recentOrders || []);
-                                      renderTimeline(state.liveTimeline || []);
-                                    })
+                                    .then(applyState)
                                     .catch(() => {});
                                 }
 
+                                function connectStateStream() {
+                                  const stream = new EventSource('/api/state/stream');
+                                  stream.addEventListener('state', (event) => {
+                                    try { applyState(JSON.parse(event.data)); } catch (_) {}
+                                  });
+                                  stream.onerror = () => {
+                                    stream.close();
+                                    setTimeout(connectStateStream, 2500);
+                                  };
+                                  return stream;
+                                }
+
                                 refreshState();
-                                setInterval(refreshState, ${minOf(statePollIntervalMillis, 5000L)});
+                                connectStateStream();
+
+                                function setViewMode(mode) {
+                                  document.body.dataset.view = mode;
+                                  document.querySelectorAll('.v2-switch-btn').forEach((btn) => {
+                                    btn.classList.toggle('is-active', btn.dataset.mode === mode);
+                                  });
+                                }
+
+                                function initViewSwitcher() {
+                                  document.querySelectorAll('.v2-switch-btn').forEach((btn) => {
+                                    btn.addEventListener('click', () => setViewMode(btn.dataset.mode || 'overview'));
+                                  });
+                                  setViewMode('overview');
+                                }
+                                initViewSwitcher();
 
                                 function toggleFullscreen() {
                                   const root = document.documentElement;
@@ -379,6 +456,22 @@ class LocalDashboardServer(
                 call.respond(repository.state.value)
             }
 
+            get("/api/state/stream") {
+                applyDashboardSecurityHeaders(call, cacheControl = "no-store, no-cache, must-revalidate, max-age=0")
+                call.response.header("Connection", "keep-alive")
+                call.respondTextWriter(ContentType.Text.EventStream) {
+                    write(": kibot-state-stream\n\n")
+                    flush()
+                    repository.state.collect { latest ->
+                        if (!isActive) return@collect
+                        val payload = Json.encodeToString(latest)
+                        write("event: state\n")
+                        write("data: $payload\n\n")
+                        flush()
+                    }
+                }
+            }
+
             get("/favicon.png") {
                 applyDashboardSecurityHeaders(call, cacheControl = "public, max-age=3600")
                 val icon = locateDashboardIcon()
@@ -386,6 +479,68 @@ class LocalDashboardServer(
                     call.respond(HttpStatusCode.NotFound, mapOf("available" to false))
                 } else {
                     call.respondFile(icon)
+                }
+            }
+
+            webSocket("/api/live/ws") {
+                val snapshot = repository.state.value.toLiveSnapshot(host, port, botId)
+                send(
+                    Json.encodeToString(
+                        CommandCenterWsEnvelope.Snapshot(snapshot),
+                    ),
+                )
+                val job = launch {
+                    repository.state.collect { latest ->
+                        if (!isActive) return@collect
+                        send(
+                            Json.encodeToString(
+                                CommandCenterWsEnvelope.Snapshot(latest.toLiveSnapshot(host, port, botId)),
+                            ),
+                        )
+                    }
+                }
+                try {
+                    for (frame in incoming) {
+                        val text = (frame as? Frame.Text)?.readText() ?: continue
+                        val request = runCatching {
+                            Json.decodeFromString<CommandCenterCommandRequest>(text)
+                        }.getOrNull() ?: continue
+                        val reply = handleCommandRequest(request)
+                        send(Json.encodeToString(CommandCenterWsEnvelope.Reply(reply)))
+                    }
+                } finally {
+                    job.cancel()
+                }
+            }
+
+            // WebSocket alias for Android app compatibility
+            webSocket("/ws") {
+                send(
+                    Json.encodeToString(
+                        CommandCenterWsEnvelope.Snapshot(repository.state.value.toLiveSnapshot(host, port, botId)),
+                    ),
+                )
+                val job = launch {
+                    repository.state.collect { latest ->
+                        if (!isActive) return@collect
+                        send(
+                            Json.encodeToString(
+                                CommandCenterWsEnvelope.Snapshot(latest.toLiveSnapshot(host, port, botId)),
+                            ),
+                        )
+                    }
+                }
+                try {
+                    for (frame in incoming) {
+                        val text = (frame as? Frame.Text)?.readText() ?: continue
+                        val request = runCatching {
+                            Json.decodeFromString<CommandCenterCommandRequest>(text)
+                        }.getOrNull() ?: continue
+                        val reply = handleCommandRequest(request)
+                        send(Json.encodeToString(CommandCenterWsEnvelope.Reply(reply)))
+                    }
+                } finally {
+                    job.cancel()
                 }
             }
 
@@ -438,8 +593,164 @@ class LocalDashboardServer(
 
     fun stop() {
         lanServiceAdvertiser?.stop()
-        server.stop(1_000, 2_000)
+        runCatching {
+            server.stop(1_000, 2_000)
+        }.onFailure { error ->
+            logger.warn("Dashboard stop encountered recoverable error: ${error.message}")
+        }
     }
+
+    private suspend fun handleCommandRequest(request: CommandCenterCommandRequest): CommandCenterCommandReply {
+        val command = request.command.trim().lowercase()
+        val targetBotId = request.argument
+            ?.trim()
+            ?.lowercase()
+            ?.takeIf { it in setOf("kidax", "kibot", "kinance", "main") }
+            ?.let(::BotId)
+            ?: botId
+        val replySnapshotBotId = targetBotId
+        val snapshot = repository.state.value.toLiveSnapshot(host, port, replySnapshotBotId)
+        return when (command) {
+            "/status" -> CommandCenterCommandReply(
+                accepted = true,
+                message = "Status ${targetBotId.value}: ${snapshot.effectiveState.name} / ${snapshot.syncHealth.name}",
+                echoCommand = request.command,
+                updatedSnapshot = snapshot,
+                issuedAtEpochMs = request.issuedAtEpochMs,
+            )
+            "/pause_kidax", "/veto_all" -> {
+                commandDispatcher?.dispatch(MacCommand.STOP_BOT, targetBotId)
+                CommandCenterCommandReply(
+                    accepted = true,
+                    message = "Emergency stop requested for ${targetBotId.value}.",
+                    echoCommand = request.command,
+                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port, replySnapshotBotId),
+                    issuedAtEpochMs = request.issuedAtEpochMs,
+                )
+            }
+            "/sync" -> {
+                commandDispatcher?.dispatch(MacCommand.SYNC_NOW, targetBotId)
+                CommandCenterCommandReply(
+                    accepted = true,
+                    message = "Sync requested for ${targetBotId.value}.",
+                    echoCommand = request.command,
+                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port, replySnapshotBotId),
+                    issuedAtEpochMs = request.issuedAtEpochMs,
+                )
+            }
+            "/start" -> {
+                commandDispatcher?.dispatch(MacCommand.START_BOT, targetBotId)
+                CommandCenterCommandReply(
+                    accepted = true,
+                    message = "Start requested for ${targetBotId.value}.",
+                    echoCommand = request.command,
+                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port, replySnapshotBotId),
+                    issuedAtEpochMs = request.issuedAtEpochMs,
+                )
+            }
+            "/stop" -> {
+                commandDispatcher?.dispatch(MacCommand.STOP_BOT, targetBotId)
+                CommandCenterCommandReply(
+                    accepted = true,
+                    message = "Stop requested for ${targetBotId.value}.",
+                    echoCommand = request.command,
+                    updatedSnapshot = repository.state.value.toLiveSnapshot(host, port, replySnapshotBotId),
+                    issuedAtEpochMs = request.issuedAtEpochMs,
+                )
+            }
+            else -> CommandCenterCommandReply(
+                accepted = false,
+                message = "Command not supported on server: ${request.command}",
+                echoCommand = request.command,
+                issuedAtEpochMs = request.issuedAtEpochMs,
+            )
+        }
+    }
+}
+
+private fun MacDashboardState.toLiveSnapshot(serverHost: String, serverPort: Int): CommandCenterLiveSnapshot {
+    return toLiveSnapshot(serverHost, serverPort, BotId("main"))
+}
+
+private fun MacDashboardState.toLiveSnapshot(
+    serverHost: String,
+    serverPort: Int,
+    botId: BotId,
+): CommandCenterLiveSnapshot {
+    val serverId = "$serverHost:$serverPort"
+        return CommandCenterLiveSnapshot(
+        serverId = serverId,
+        serverLabel = serverLocation.ifBlank { serverId },
+        botId = botId,
+        effectiveState = effectiveState,
+        syncHealth = runCatching { com.kibot.shared.models.SyncHealth.valueOf(syncHealth) }.getOrDefault(com.kibot.shared.models.SyncHealth.DEGRADED),
+        liveExecutionEnabled = liveExecutionEnabled,
+        operatingMode = runCatching { com.kibot.shared.models.BotMode.valueOf(operatingMode) }.getOrDefault(com.kibot.shared.models.BotMode.GROWTH),
+        edgeConfidence = runCatching { com.kibot.shared.models.EdgeConfidence.valueOf(edgeConfidence) }.getOrDefault(com.kibot.shared.models.EdgeConfidence.MEDIUM),
+        marketRegime = runCatching { com.kibot.shared.models.MarketRegime.valueOf(marketRegime) }.getOrDefault(com.kibot.shared.models.MarketRegime.HIGH_VOLATILITY_UNCLEAR),
+        aiProviderSummary = aiProviderSummary,
+        activeEngine = activeEngine,
+        standbyEngine = standbyEngine,
+        topCandidate = topCandidate,
+        scanUniverseCount = scanUniverseCount,
+        leaseTerm = leaseTerm,
+        healthSummary = healthSummary,
+        statusMessage = statusMessage,
+        lastHeartbeatLabel = lastHeartbeatLabel,
+        lastUpdatedLabel = lastUpdatedLabel,
+        totalValueIdr = totalValueIdr,
+        portfolioValueIdr = portfolioValueIdr,
+        freeIdrLabel = freeIdrLabel,
+        referenceQuoteAssetPriceIdr = referenceQuoteAssetPriceIdr,
+        pnlTodayIdr = pnlTodayIdr,
+        pnlTodayPctLabel = pnlTodayPctLabel,
+        totalReturnIdr = pnlTodayIdr,
+        totalReturnPctLabel = pnlTodayPctLabel,
+        cumulativeReturnPctLabel = cumulativeReturnPctLabel,
+        return7dIdr = return7dIdr,
+        return7dPctLabel = return7dPctLabel,
+        return30dIdr = return30dIdr,
+        return30dPctLabel = return30dPctLabel,
+        exchangePingMs = exchangePingMs,
+        exchangePingValueMs = exchangePingValueMs,
+        kinancePingMs = null,
+        kidaxNodeStatus = kidaxNodeStatus,
+        kibotNodeStatus = kibotNodeStatus,
+        kinanceNodeStatus = kinanceNodeStatus,
+        serverUptime = serverUptime,
+        releaseLabel = releaseLabel,
+        targetPursuitLabel = targetPursuitLabel,
+        radarPairs = radarPairs,
+        holdingsDetailed = holdingsDetailed.map {
+            CommandCenterHolding(
+                assetCode = it.assetCode,
+                assetLabel = it.assetLabel,
+                quantityLabel = it.quantityLabel,
+                valueIdrLabel = it.valueIdrLabel,
+                entryPriceLabel = it.entryPriceLabel,
+                currentPriceLabel = it.currentPriceLabel,
+                pnlIdrLabel = it.pnlIdrLabel,
+                pnlPctLabel = it.pnlPctLabel,
+            )
+        },
+        recentOrders = recentOrders.map {
+            CommandCenterOrder(
+                timestampEpochMs = it.timestampEpochMs,
+                pair = it.pair,
+                side = it.side,
+                status = it.status,
+                detail = it.detail,
+                pnlIdrLabel = it.pnlIdrLabel,
+                pnlPctLabel = it.pnlPctLabel,
+            )
+        },
+        liveTimeline = liveTimeline.map {
+            CommandCenterTimelineEntry(it.timestampEpochMs, it.category, it.message)
+        },
+        netWorthHistory = emptyList(),  // Will be populated by app tracking
+        assetAllocationDetailed = emptyList(),  // Will be derived from holdings on client
+        updatedAtEpochMs = lastUpdatedEpochMs,
+    )
 }
 
 private fun applyDashboardSecurityHeaders(
@@ -459,155 +770,145 @@ private fun applyDashboardSecurityHeaders(
 }
 
 private fun BODY.renderDashboard(state: MacDashboardState) {
-    div("page-shell") {
-        div("column column-left") {
-            div("hero-card") {
-                div("hero-topbar") {
-                    h1 { +"KiBot" }
-                    div("hero-topbar-right") {
-                        div("pill pill-neutral") {
-                            attributes["id"] = "status-badge"
-                            span("wifi-icon") { }
-                            span {
-                                attributes["id"] = "status-badge-label"
-                                +state.exchangePingMs
-                            }
-                        }
-                        p("hero-update") {
-                            +"Update "
-                            span {
-                                attributes["id"] = "hero-update-time"
-                                +state.lastUpdatedLabel
-                            }
-                        }
-                    }
-                }
-                div("hero-balance") {
+    div("page-shell v2-shell") {
+        div("card v2-header") {
+            div("v2-header-top") {
+                h1 { +"KiBot" }
+                div("pill pill-neutral") {
+                    attributes["id"] = "status-badge"
+                    span("wifi-icon") {}
                     span {
-                        attributes["id"] = "portfolio-value"
-                        +state.portfolioValueIdr
-                    }
-                }
-                div("hero-pnl-row") {
-                    span(if (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel)) "hero-pnl hero-pnl-loss" else "hero-pnl hero-pnl-gain") {
-                        attributes["id"] = "hero-pnl"
-                        +state.pnlTodayIdr
-                    }
-                    span(if (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel)) "hero-pnl-chip hero-pnl-chip-loss" else "hero-pnl-chip hero-pnl-chip-gain") {
-                        attributes["id"] = "hero-pnl-pct"
-                        +state.pnlTodayPctLabel
-                    }
-                }
-                div("hero-chip-strip") {
-                    span("pill pill-live") {
-                        attributes["id"] = "release-label"
-                        +"Oracle Active ${state.releaseLabel}"
-                    }
-                    span("pill ${aiPillClass(state.aiProviderSummary)}") {
-                        attributes["id"] = "ai-chip"
-                        +compactAiStatusLabel(state.aiProviderSummary)
-                    }
-                    span("pill ${targetPillClass(state.targetPursuitLabel)}") {
-                        attributes["id"] = "target-chip"
-                        +state.targetPursuitLabel
-                    }
-                    span("pill pill-blue hero-clock") {
-                        attributes["id"] = "last-updated"
-                        +state.lastUpdatedLabel
+                        attributes["id"] = "status-badge-label"
+                        +state.exchangePingMs
                     }
                 }
             }
-
-            div("card portfolio-card") {
-                div("card-header-row") {
-                    h2 { +"Portfolio" }
-                    p("portfolio-update") { +state.lastUpdatedLabel }
-                }
-                div("returns-grid") {
-                    metricCard("Return 1D", state.pnlTodayIdr, state.pnlTodayPctLabel, "ret-1d", "ret-1d-pct")
-                    metricCard("Return 7D", state.return7dIdr, state.return7dPctLabel, "ret-7d", "ret-7d-pct")
-                    metricCard("Return 30D", state.return30dIdr, state.return30dPctLabel, "ret-30d", "ret-30d-pct")
+            div("hero-balance") {
+                span {
+                    attributes["id"] = "portfolio-value"
+                    +state.portfolioValueIdr
                 }
             }
-
-            div("card activity-card logs-card") {
-                div("card-header-row") {
-                    h2 { +"Logs" }
-                    div("pill pill-purple") {
-                        attributes["id"] = "feed-chip"
-                        +state.syncPathLabel
-                    }
+            div("hero-pnl-row") {
+                span(if (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel)) "hero-pnl hero-pnl-loss" else "hero-pnl hero-pnl-gain") {
+                    attributes["id"] = "hero-pnl"
+                    +state.pnlTodayIdr
                 }
-                div("log-list") {
-                    attributes["id"] = "log-lines"
-                    p("muted-copy") { +"Loading timeline..." }
+                span(if (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel)) "hero-pnl-chip hero-pnl-chip-loss" else "hero-pnl-chip hero-pnl-chip-gain") {
+                    attributes["id"] = "hero-pnl-pct"
+                    +state.pnlTodayPctLabel
+                }
+            }
+            div("manager-card") {
+                div("manager-title") { +"🤖 Laporan Manajer" }
+                p("manager-log") {
+                    attributes["id"] = "manager-log"
+                    +(state.statusMessage.ifBlank { "Belum ada laporan manajer terbaru." })
                 }
             }
         }
 
-        div("column column-right") {
-            div("card live-pair-card") {
-                div("card-header-row") {
-                    h2 { +"Live Pair" }
-                    div("pill ${pingPillClass(state.exchangePingMs)}") {
-                        attributes["id"] = "pair-temperature"
-                        span {
-                            attributes["id"] = "pair-temperature-label"
-                            +pairHeatLabel(state.exchangePingMs)
+        div("card v2-switcher") {
+            button(classes = "v2-switch-btn is-active") {
+                attributes["type"] = "button"
+                attributes["data-mode"] = "overview"
+                +"Overview KiDax + Kinance"
+            }
+            button(classes = "v2-switch-btn") {
+                attributes["type"] = "button"
+                attributes["data-mode"] = "kidax"
+                +"KiDax Only"
+            }
+            button(classes = "v2-switch-btn") {
+                attributes["type"] = "button"
+                attributes["data-mode"] = "kinance"
+                +"Kinance Only"
+            }
+        }
+
+        div("card v2-overview") {
+            div("v2-overview-item") {
+                div("target-ring-mini")
+                strong { +"Target 25% / hari" }
+            }
+            div("v2-overview-item") { +"UDP ~0.7ms" }
+            div("v2-overview-item") { +"KiDax ${state.exchangePingMs}" }
+            div("v2-overview-item") { +"Kinance ${state.exchangePingMs}" }
+            div("v2-overview-item") {
+                +"Update "
+                span {
+                    attributes["id"] = "last-updated"
+                    +state.lastUpdatedLabel
+                }
+            }
+        }
+
+        div("card v2-pillar v2-kidax") {
+            div("card-header-row") {
+                h2 { +"INDODAX · KiDax" }
+                div("pill pill-blue") { +"IDR" }
+            }
+            div("returns-grid") {
+                metricCard("Free IDR", state.freeIdrLabel, "tersedia", "free-idr", "free-idr-note")
+                metricCard("Total Value", state.totalValueIdr, "free + holdings", "total-value", "total-value-note")
+                metricCard("Return 1D", state.pnlTodayIdr, state.pnlTodayPctLabel, "ret-1d", "ret-1d-pct")
+                metricCard("Return 7D", state.return7dIdr, state.return7dPctLabel, "ret-7d", "ret-7d-pct")
+                metricCard("Return 30D", state.return30dIdr, state.return30dPctLabel, "ret-30d", "ret-30d-pct")
+            }
+            div("v2-status-row") {
+                span("pill pill-live") {
+                    attributes["id"] = "release-label"
+                    +"Oracle Active ${state.releaseLabel}"
+                }
+                span("pill pill-blue") { +"Slippage Guard ON" }
+            }
+        }
+
+        div("card v2-pillar v2-kinance") {
+            div("card-header-row") {
+                h2 { +"BINANCE · Kinance" }
+                div("pill pill-warm") { +"USDT → IDR" }
+            }
+            div("allocation-shell") {
+                div("returns-grid") {
+                    metricCard("Free IDR", state.freeIdrLabel, "tersedia", "free-idr-kinance", "free-idr-kinance-note")
+                    metricCard("Total Value", state.totalValueIdr, "free + holdings", "total-value-kinance", "total-value-kinance-note")
+                }
+                div("allocation-chart-wrap") {
+                    div("allocation-chart") {
+                        attributes["id"] = "allocation-chart"
+                        div("allocation-center") {
+                            span { +"Alloc" }
+                            strong { +"0%" }
                         }
                     }
                 }
-                div("pair-focus-shell") {
-                    div("pair-avatar") { +state.topCandidate.take(2).uppercase() }
-                    div("pair-focus-copy") {
-                        div("pair-hero") {
-                            attributes["id"] = "top-candidate"
-                            +state.topCandidate
-                        }
-                    }
+                div("allocation-legend") {
+                    attributes["id"] = "allocation-legend"
+                    p("muted-copy") { +"Loading allocation..." }
                 }
-                div("radar-grid") {
+            }
+            div("v2-status-row") {
+                span("pill pill-warm") { +"Aggressive Mode" }
+                span("pill pill-live") { +"UDP Link Active" }
+                span("pill pill-neutral") {
+                    attributes["id"] = "exchange-ping"
+                    +state.exchangePingMs
+                }
+            }
+        }
+
+        div("card v2-ticker") {
+            div("pair-hero") {
+                attributes["id"] = "top-candidate"
+                +state.topCandidate
+            }
+            div("v2-ticker-tape") {
+                div("radar-grid radar-grid-tape") {
                     attributes["id"] = "radar-grid"
-                    filledRadarPairs(state.radarPairs)
-                        .forEach { pair ->
-                            div("radar-pill ${radarPillClass(pair)}") { +pair.lowercase() }
-                        }
-                }
-            }
-
-            div("card allocation-card") {
-                div("card-header-row") {
-                    h2 { +"Asset Allocation" }
-                    div("pill pill-neutral") {
-                        attributes["id"] = "exchange-ping"
-                        +state.exchangePingMs
+                    filledRadarPairs(state.radarPairs).forEach { pair ->
+                        div("radar-pill ${radarPillClass(pair)}") { +pair.lowercase() }
                     }
-                }
-                div("allocation-shell") {
-                    div("allocation-chart-wrap") {
-                        div("allocation-chart") {
-                            attributes["id"] = "allocation-chart"
-                            div("allocation-center") {
-                                span { +"Alloc" }
-                                strong { +"0%" }
-                            }
-                        }
-                    }
-                    div("allocation-legend") {
-                        attributes["id"] = "allocation-legend"
-                        p("muted-copy") { +"Loading allocation..." }
-                    }
-                }
-            }
-
-            div("card activity-card trade-card") {
-                div("card-header-row") {
-                    h2 { +"Trade History" }
-                    div("pill pill-neutral") { +"Live" }
-                }
-                div("log-list") {
-                    attributes["id"] = "trade-lines"
-                    p("muted-copy") { +"Loading trade history..." }
                 }
             }
         }
@@ -773,6 +1074,175 @@ private fun dashboardStyles(): String = """
       gap: 10px;
       align-items: stretch;
     }
+    .v2-shell {
+      width: 100%;
+      max-width: 100%;
+      margin: 0;
+      padding: 12px;
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-areas:
+        "header"
+        "overview"
+        "ticker";
+      gap: 12px;
+      min-height: 100vh;
+    }
+    .v2-header { grid-area: header; }
+    .v2-switcher {
+      grid-area: switcher;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      padding: 8px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+    }
+    .v2-switch-btn {
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(18, 28, 56, 0.82);
+      color: #dbe7ff;
+      border-radius: 12px;
+      min-height: 40px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all .2s ease;
+    }
+    .v2-switch-btn:hover { border-color: rgba(255,255,255,0.24); }
+    .v2-switch-btn.is-active {
+      background: linear-gradient(180deg, rgba(56,189,248,0.22), rgba(59,130,246,0.18));
+      border-color: rgba(56,189,248,0.48);
+      color: #e9f9ff;
+    }
+    .v2-overview { grid-area: overview; }
+    .v2-kidax { grid-area: kidax; border-color: rgba(34, 211, 238, 0.34); box-shadow: 0 24px 56px rgba(0,0,0,0.24), inset 0 0 0 1px rgba(34,211,238,0.12); display: none; }
+    .v2-kinance { grid-area: kinance; border-color: rgba(250, 204, 21, 0.34); box-shadow: 0 24px 56px rgba(0,0,0,0.24), inset 0 0 0 1px rgba(250,204,21,0.12); display: none; }
+    .v2-ticker { grid-area: ticker; }
+    .v2-switcher { display: none; }
+    .v2-header-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .v2-header-top h1 {
+      margin: 0;
+      font-size: 42px;
+      letter-spacing: -0.04em;
+    }
+    .v2-overview {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+      padding: 10px;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+      align-items: center;
+    }
+    .v2-overview-item {
+      min-height: 42px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.09);
+      background: rgba(16,24,45,0.9);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      color: #dbe7ff;
+      font-size: 13px;
+      font-weight: 700;
+      text-align: center;
+      padding: 6px 10px;
+    }
+    .target-ring-mini {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: linear-gradient(180deg, #32d583, #14b86a);
+      box-shadow: 0 0 12px rgba(50, 213, 131, 0.45);
+    }
+    .v2-status-row {
+      margin-top: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .v2-ticker {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 16px;
+      min-height: 78px;
+    }
+    .v2-ticker-tape {
+      overflow: hidden;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(9,15,30,0.78);
+      padding: 6px;
+    }
+    .radar-grid-tape {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .radar-grid-tape::-webkit-scrollbar { display: none; }
+    .radar-grid-tape .radar-pill {
+      min-height: 36px;
+      min-width: 120px;
+      border-radius: 12px;
+      font-size: 13px;
+      padding: 6px 10px;
+      flex: 0 0 auto;
+    }
+    body[data-view="kidax"] .v2-kinance { display: none; }
+    body[data-view="kidax"] .v2-overview { display: none; }
+    body[data-view="kidax"] .v2-shell {
+      grid-template-columns: 1fr;
+      grid-template-areas:
+        "header"
+        "switcher"
+        "kidax"
+        "ticker";
+    }
+    body[data-view="kinance"] .v2-kidax { display: none; }
+    body[data-view="kinance"] .v2-overview { display: none; }
+    body[data-view="kinance"] .v2-shell {
+      grid-template-columns: 1fr;
+      grid-template-areas:
+        "header"
+        "switcher"
+        "kinance"
+        "ticker";
+    }
+    .bento-shell {
+      width: min(100vw, 1800px);
+      max-width: 100vw;
+      min-height: 100vh;
+      margin: 0;
+      padding: 12px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.9fr);
+      grid-template-rows: auto auto auto auto;
+      grid-template-areas:
+        "master target"
+        "master heartbeat"
+        "kidax kinance"
+        "livepairs livepairs";
+      gap: 12px;
+    }
+    .bento-master { grid-area: master; min-height: 520px; }
+    .bento-target { grid-area: target; min-height: 240px; }
+    .bento-heartbeat { grid-area: heartbeat; min-height: 220px; }
+    .bento-kidax { grid-area: kidax; }
+    .bento-kinance { grid-area: kinance; }
+    .bento-livepairs { grid-area: livepairs; }
+    .visually-hidden { display: none !important; }
     .column {
       min-height: 0;
       height: 100%;
@@ -901,6 +1371,83 @@ private fun dashboardStyles(): String = """
       font-size: clamp(24px, 3.2vw, 34px);
       font-weight: 900;
       line-height: 1;
+    }
+    .ticker-up {
+      animation: tickerPulse 360ms ease-out;
+    }
+    @keyframes tickerPulse {
+      0% { transform: translateY(8px); opacity: 0.45; }
+      100% { transform: translateY(0); opacity: 1; }
+    }
+    .manager-card {
+      margin-top: 14px;
+      padding: 14px;
+      border-radius: 18px;
+      border: 1px solid rgba(99, 232, 170, 0.35);
+      background: linear-gradient(145deg, rgba(24,36,70,0.9), rgba(17,30,58,0.82));
+      box-shadow: 0 0 0 1px rgba(99,232,170,0.14), 0 0 28px rgba(99,232,170,0.08) inset;
+    }
+    .manager-title {
+      font-size: 14px;
+      font-weight: 800;
+      color: #95f1c2;
+      margin-bottom: 6px;
+      letter-spacing: 0.03em;
+    }
+    .manager-log {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.45;
+      color: #dbe7ff;
+    }
+    .ping-badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 6px 0 10px;
+    }
+    .target-ring-shell {
+      display: grid;
+      gap: 12px;
+      justify-items: center;
+      align-content: center;
+      min-height: 160px;
+      padding-top: 10px;
+    }
+    .target-ring {
+      width: 170px;
+      height: 170px;
+      border-radius: 50%;
+      background: conic-gradient(#32d583 0 25%, rgba(255,255,255,0.11) 25% 100%);
+      display: grid;
+      place-items: center;
+      animation: ringGlow 2.4s ease-in-out infinite;
+    }
+    .target-ring-core {
+      width: 108px;
+      height: 108px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(180deg, #141f3f, #0e1730);
+      border: 1px solid rgba(255,255,255,0.08);
+      text-align: center;
+    }
+    .target-ring-core span {
+      color: #9db2da;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .target-ring-core strong {
+      color: #f2f8ff;
+      font-size: 28px;
+      font-weight: 900;
+      line-height: 1;
+    }
+    @keyframes ringGlow {
+      0%, 100% { filter: saturate(1); box-shadow: 0 0 0 rgba(50,213,131,0); }
+      50% { filter: saturate(1.1); box-shadow: 0 0 26px rgba(50,213,131,0.18); }
     }
     .hero-pnl-gain { color: #2dd881; }
     .hero-pnl-loss { color: #ff6b7a; }
@@ -1227,11 +1774,41 @@ private fun dashboardStyles(): String = """
       font-size: 12px;
     }
     @media (max-width: 920px) {
+      .v2-shell {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "header"
+          "switcher"
+          "overview"
+          "kidax"
+          "kinance"
+          "ticker";
+      }
+      .v2-switcher {
+        grid-template-columns: 1fr;
+      }
+      .v2-overview {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .v2-ticker {
+        grid-template-columns: 1fr;
+      }
       .page-shell,
+      .bento-shell,
       .column,
       .returns-grid,
       .allocation-shell {
         grid-template-columns: 1fr;
+      }
+      .bento-shell {
+        grid-template-areas:
+          "master"
+          "target"
+          "heartbeat"
+          "kidax"
+          "kinance"
+          "livepairs";
+        grid-template-rows: auto;
       }
       .column-left,
       .column-right {
@@ -1296,7 +1873,8 @@ private fun dashboardStyles(): String = """
       }
     }
     @media (max-width: 1180px) {
-      .page-shell {
+      .page-shell,
+      .bento-shell {
         grid-template-columns: 1fr;
         min-height: auto;
       }

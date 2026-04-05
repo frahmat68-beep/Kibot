@@ -1,11 +1,13 @@
 package com.kibot.core
 
 import com.kibot.shared.models.BotId
+import com.kibot.shared.models.ExecutionAnomalySignature
 import com.kibot.shared.models.LearningObservation
 import com.kibot.shared.models.MarketQuote
 import com.kibot.shared.models.OrderSide
 import com.kibot.shared.models.OrderSnapshot
 import com.kibot.shared.models.OrderStatus
+import com.kibot.shared.models.PairScore
 import com.kibot.shared.models.SetupType
 import com.kibot.shared.models.TradingHorizon
 import com.kibot.shared.models.WeeklyLearningSummary
@@ -14,11 +16,12 @@ import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.minus
 import kotlinx.datetime.toLocalDateTime
+import kotlin.math.abs
 
 data class LiveLearningReviewConfig(
     val lookbackDays: Int = 7,
     val maxRecentOrders: Int = 80,
-    val publishIntervalHours: Int = 6,
+    val publishIntervalHours: Int = 1,
     val missedOpportunityThreshold: Double = 0.70,
     val minimumMeaningfulNetProfitIdr: Double = 180.0,
     val minimumMeaningfulNetProfitPct: Double = 1.20,
@@ -44,6 +47,7 @@ class LiveLearningReviewBuilder(
         val portfolioEquityIdr = cycle.portfolio.totalEquityIdr.toDoubleOrZero().coerceAtLeast(1.0)
         val cutoffEpochMs = now.toEpochMilliseconds() - config.lookbackWindowMs
         val realizedRoundTripBySellOrder = buildRealizedRoundTripBySellOrder(recentOrders)
+        val executionSignatures = mutableListOf<ExecutionAnomalySignature>()
 
         val observations = buildList {
             recentOrders
@@ -94,6 +98,15 @@ class LiveLearningReviewBuilder(
                         OrderSide.SELL -> realizedRoundTrip?.pnlIdr
                             ?: ((realizedPnlPct / 100.0) * notionalIdr)
                         OrderSide.BUY -> ((realizedPnlPct / 100.0) * notionalIdr)
+                    }
+                    quote?.let {
+                        buildExecutionSignature(
+                            order = order,
+                            quote = it,
+                            pairScore = pairScore,
+                            horizon = horizon,
+                            realizedPnlPct = realizedPnlPct,
+                        )?.let(executionSignatures::add)
                     }
                     val lowQualityRoundTrip = order.side == OrderSide.SELL &&
                         realizedPnlPct < config.minimumMeaningfulNetProfitPct &&
@@ -194,7 +207,71 @@ class LiveLearningReviewBuilder(
             periodStart = periodStart,
             periodEnd = jakartaDate,
             observations = observations,
+            executionSignatures = executionSignatures,
         )
+    }
+
+    private fun buildExecutionSignature(
+        order: OrderSnapshot,
+        quote: MarketQuote,
+        pairScore: PairScore?,
+        horizon: TradingHorizon,
+        realizedPnlPct: Double,
+    ): ExecutionAnomalySignature? {
+        val vwapCompression = (1.0 - (abs(quote.vwapDistancePct) / 1.25).coerceIn(0.0, 1.0)).coerceIn(0.0, 1.0)
+        val orderFlow = ((quote.orderBookImbalance + 1.0) / 2.0).coerceIn(0.0, 1.0)
+        val cvdStrength = quote.cvdDivergenceScore.coerceIn(0.0, 1.0)
+        val tickVelocity = (quote.tickFrequencyPerMinute / 10.0).coerceIn(0.0, 1.0)
+        val historicalEdge = quote.historicalExpectancyScore.coerceIn(0.0, 1.0)
+        val fillQuality = quote.fillQualityScore.coerceIn(0.0, 1.0)
+        val gradeScore = (
+            (vwapCompression * 0.24) +
+                (orderFlow * 0.24) +
+                (cvdStrength * 0.20) +
+                (tickVelocity * 0.14) +
+                (historicalEdge * 0.10) +
+                (fillQuality * 0.08)
+            ).coerceIn(0.0, 1.0)
+        val anomalyGrade = when {
+            gradeScore >= 0.76 &&
+                orderFlow >= 0.64 &&
+                cvdStrength >= 0.56 &&
+                tickVelocity >= 0.32 ->
+                "A-GRADE_ANOMALY"
+
+            gradeScore >= 0.60 ->
+                "B-GRADE_ANOMALY"
+
+            else -> "WATCHLIST"
+        }
+        if (anomalyGrade == "WATCHLIST") return null
+
+        return ExecutionAnomalySignature(
+            observedAt = order.updatedAt,
+            pairId = order.pairId,
+            setupType = setupFor(horizon, quote),
+            anomalyGrade = anomalyGrade,
+            preFillLookbackMinutes = 5,
+            vwapDistancePct = quote.vwapDistancePct,
+            orderBookImbalance = quote.orderBookImbalance,
+            cvdDivergenceScore = quote.cvdDivergenceScore,
+            tickFrequencyPerMinute = quote.tickFrequencyPerMinute,
+            realizedPnlPct = realizedPnlPct,
+            expectedNetEdgePct = pairScore?.feeAdjustedEdgeScore ?: 0.0,
+            confidenceScore = gradeScore,
+            rationale = buildList {
+                add("Blueprint pre-fill 5m untuk ${order.pairId.value}.")
+                add("VWAP=${formatDecimal(quote.vwapDistancePct, 2)}% OBI=${formatDecimal(quote.orderBookImbalance, 2)} CVD=${formatDecimal(quote.cvdDivergenceScore, 2)} tick=${formatDecimal(quote.tickFrequencyPerMinute, 1)}/m.")
+                add("fill=${formatDecimal(fillQuality, 2)} edge=${formatDecimal(historicalEdge, 2)} grade=$anomalyGrade.")
+            },
+        )
+    }
+
+    private fun formatDecimal(value: Double, decimals: Int): String = when (decimals) {
+        0 -> value.toInt().toString()
+        1 -> "${kotlin.math.round(value * 10.0) / 10.0}"
+        2 -> "${kotlin.math.round(value * 100.0) / 100.0}"
+        else -> value.toString()
     }
 
     private fun buildRealizedRoundTripBySellOrder(

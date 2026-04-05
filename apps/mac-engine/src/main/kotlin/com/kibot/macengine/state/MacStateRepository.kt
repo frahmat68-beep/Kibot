@@ -23,6 +23,10 @@ data class MacHoldingDetail(
     val assetLabel: String,
     val quantityLabel: String,
     val valueIdrLabel: String,
+    val entryPriceLabel: String,
+    val currentPriceLabel: String,
+    val pnlIdrLabel: String,
+    val pnlPctLabel: String,
 )
 
 @Serializable
@@ -39,6 +43,19 @@ data class MacRecentOrder(
     val side: String,
     val status: String,
     val detail: String,
+    val pnlIdrLabel: String = "",
+    val pnlPctLabel: String = "",
+)
+
+@Serializable
+data class MacTrailingFloorDetail(
+    val pair: String,
+    val entryPriceLabel: String,
+    val peakPriceLabel: String,
+    val trailingFloorLabel: String,
+    val currentBidLabel: String,
+    val dropFromPeakPctLabel: String,
+    val armed: Boolean,
 )
 
 @Serializable
@@ -54,12 +71,17 @@ data class MacDashboardState(
     val releaseLabel: String,
     val liveExecutionEnabled: Boolean,
     val portfolioValueIdr: String,
+    val freeIdrLabel: String,
+    val totalValueIdr: String,
+    val referenceQuoteAssetPriceIdr: Double? = null,
     val pnlTodayIdr: String,
     val pnlTodayPctLabel: String,
     val return7dIdr: String,
     val return7dPctLabel: String,
     val return30dIdr: String,
     val return30dPctLabel: String,
+    val cumulativeReturnIdr: String = "+Rp0",
+    val cumulativeReturnPctLabel: String = "+0.0%",
     val targetPursuitLabel: String,
     val aiProviderSummary: String,
     val syncPathLabel: String,
@@ -80,8 +102,12 @@ data class MacDashboardState(
     val holdingsDetailed: List<MacHoldingDetail>,
     val exchangePingMs: String,
     val exchangePingValueMs: Long? = null,
+    val kidaxNodeStatus: String,
+    val kibotNodeStatus: String,
+    val kinanceNodeStatus: String,
     val liveTimeline: List<MacTimelineEntry>,
     val recentOrders: List<MacRecentOrder>,
+    val trailingFloors: List<MacTrailingFloorDetail>,
 ) {
     companion object {
         fun preview(): MacDashboardState = MacDashboardState(
@@ -96,12 +122,17 @@ data class MacDashboardState(
             releaseLabel = "#0",
             liveExecutionEnabled = false,
             portfolioValueIdr = "Rp0",
+            freeIdrLabel = "Rp0",
+            totalValueIdr = "Rp0",
+            referenceQuoteAssetPriceIdr = null,
             pnlTodayIdr = "+Rp0",
             pnlTodayPctLabel = "+0.0%",
             return7dIdr = "+Rp0",
             return7dPctLabel = "+0.0%",
             return30dIdr = "+Rp0",
             return30dPctLabel = "+0.0%",
+            cumulativeReturnIdr = "+Rp0",
+            cumulativeReturnPctLabel = "+0.0%",
             targetPursuitLabel = "TRACKING",
             aiProviderSummary = "AI summary belum siap.",
             syncPathLabel = "Live Server",
@@ -122,8 +153,12 @@ data class MacDashboardState(
             holdingsDetailed = emptyList(),
             exchangePingMs = "--",
             exchangePingValueMs = null,
+            kidaxNodeStatus = "offline",
+            kibotNodeStatus = "offline",
+            kinanceNodeStatus = "offline",
             liveTimeline = emptyList(),
             recentOrders = emptyList(),
+            trailingFloors = emptyList(),
         )
     }
 }
@@ -136,7 +171,47 @@ class MacStateRepository {
     fun applyRuntimeState(next: MacDashboardState) {
         val uptimeMs = Clock.System.now().toEpochMilliseconds() - startedAtEpochMs
         val uptimeText = formatUptime(uptimeMs)
+        val prev = _state.value
+        val looksLikeBootSnapshot =
+            next.scanUniverseCount == 0 &&
+                next.topCandidate == "-" &&
+                next.heldAssets.isEmpty() &&
+                next.holdingsDetailed.isEmpty() &&
+                next.recentOrders.isEmpty() &&
+                (
+                    next.healthSummary.contains("Waiting for live server connection", ignoreCase = true) ||
+                        next.statusMessage.contains("boot", ignoreCase = true) ||
+                        next.statusMessage.contains("sinkron", ignoreCase = true)
+                    )
+        val keepPortfolioFallback =
+            next.portfolioValueIdr == "Rp0" &&
+                prev.portfolioValueIdr != "Rp0" &&
+                (next.statusMessage.contains("sync", ignoreCase = true) ||
+                    next.statusMessage.contains("lease", ignoreCase = true) ||
+                    next.statusMessage.contains("failed", ignoreCase = true))
         _state.value = next.copy(
+            isBotRunning = if (looksLikeBootSnapshot && prev.isBotRunning) prev.isBotRunning else next.isBotRunning,
+            effectiveState = if (looksLikeBootSnapshot && prev.isBotRunning) prev.effectiveState else next.effectiveState,
+            operatingMode = if (looksLikeBootSnapshot && prev.scanUniverseCount > 0) prev.operatingMode else next.operatingMode,
+            edgeConfidence = if (looksLikeBootSnapshot && prev.scanUniverseCount > 0) prev.edgeConfidence else next.edgeConfidence,
+            marketRegime = if (looksLikeBootSnapshot && prev.scanUniverseCount > 0) prev.marketRegime else next.marketRegime,
+            topCandidate = if (looksLikeBootSnapshot && prev.topCandidate != "-") prev.topCandidate else next.topCandidate,
+            radarPairs = if (looksLikeBootSnapshot && prev.radarPairs.isNotEmpty()) prev.radarPairs else next.radarPairs,
+            scanUniverseCount = if (looksLikeBootSnapshot && prev.scanUniverseCount > 0) prev.scanUniverseCount else next.scanUniverseCount,
+            liveExecutionEnabled = if (looksLikeBootSnapshot && prev.isBotRunning) prev.liveExecutionEnabled else next.liveExecutionEnabled,
+            portfolioValueIdr = if (keepPortfolioFallback) prev.portfolioValueIdr else next.portfolioValueIdr,
+            totalValueIdr = if (keepPortfolioFallback) prev.totalValueIdr else next.totalValueIdr,
+            freeIdrLabel = if (next.freeIdrLabel == "Rp0" && prev.freeIdrLabel != "Rp0") prev.freeIdrLabel else next.freeIdrLabel,
+            syncHealth = if (looksLikeBootSnapshot && prev.syncHealth != "BROKEN") prev.syncHealth else next.syncHealth,
+            healthSummary = if (looksLikeBootSnapshot && prev.healthSummary.isNotBlank()) prev.healthSummary else next.healthSummary,
+            statusMessage = if (looksLikeBootSnapshot && prev.statusMessage.isNotBlank()) prev.statusMessage else next.statusMessage,
+            exchangePingMs = if (looksLikeBootSnapshot && prev.exchangePingMs != "--") prev.exchangePingMs else next.exchangePingMs,
+            exchangePingValueMs = if (looksLikeBootSnapshot && prev.exchangePingValueMs != null) prev.exchangePingValueMs else next.exchangePingValueMs,
+            kidaxNodeStatus = if (looksLikeBootSnapshot && prev.kidaxNodeStatus != "offline") prev.kidaxNodeStatus else next.kidaxNodeStatus,
+            kibotNodeStatus = if (looksLikeBootSnapshot && prev.kibotNodeStatus != "offline") prev.kibotNodeStatus else next.kibotNodeStatus,
+            kinanceNodeStatus = if (looksLikeBootSnapshot && prev.kinanceNodeStatus != "offline") prev.kinanceNodeStatus else next.kinanceNodeStatus,
+            heldAssets = if (looksLikeBootSnapshot && prev.heldAssets.isNotEmpty()) prev.heldAssets else next.heldAssets,
+            holdingsDetailed = if (looksLikeBootSnapshot && prev.holdingsDetailed.isNotEmpty()) prev.holdingsDetailed else next.holdingsDetailed,
             lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
             serverUptime = uptimeText,
             liveTimeline = if (next.liveTimeline.isNotEmpty()) {
@@ -161,6 +236,30 @@ class MacStateRepository {
 
     fun noteStatus(message: String) {
         _state.value = _state.value.copy(
+            statusMessage = message,
+            lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
+        )
+    }
+
+    fun noteBootstrapProgress(
+        message: String,
+        liveExecutionEnabled: Boolean,
+    ) {
+        val current = _state.value
+        _state.value = current.copy(
+            isBotRunning = true,
+            effectiveState = if (current.effectiveState == BotEffectiveState.RUNNING) {
+                current.effectiveState
+            } else {
+                BotEffectiveState.DEGRADED
+            },
+            liveExecutionEnabled = liveExecutionEnabled,
+            syncHealth = if (current.syncHealth == "HEALTHY") current.syncHealth else "DEGRADED",
+            healthSummary = if (current.healthSummary.contains("Waiting for live server connection", ignoreCase = true)) {
+                message
+            } else {
+                current.healthSummary
+            },
             statusMessage = message,
             lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
         )
