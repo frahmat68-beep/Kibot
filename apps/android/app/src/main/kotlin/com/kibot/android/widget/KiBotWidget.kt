@@ -358,34 +358,40 @@ private fun BotStatusItem(name: String, status: String, pingMs: Long) {
     val isOnline = status.lowercase() == "online"
     val borderColor = if (isOnline) WidgetProfitGreen else WidgetLossRed
     
-    Row(
+    // Create border effect: colored background with padding + inner surface
+    Column(
         modifier = GlanceModifier
-            .background(borderColor.copy(alpha = 0.5f))  // Border color background
+            .background(borderColor)  // Border color
             .cornerRadius(8.dp)
-            .padding(2.dp)  // Border width
-            .background(WidgetSurface)  // Inner background
-            .cornerRadius(7.dp)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(2.dp)  // Border thickness
     ) {
-        StatusDot(status)
-        Spacer(modifier = GlanceModifier.width(6.dp))
-        Column {
-            Text(
-                text = name,
-                style = TextStyle(
-                    color = ColorProvider(WidgetTextPrimary),
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium
+        Row(
+            modifier = GlanceModifier
+                .background(WidgetSurface)
+                .cornerRadius(7.dp)
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            StatusDot(status)
+            Spacer(modifier = GlanceModifier.width(6.dp))
+            Column {
+                Text(
+                    text = name,
+                    style = TextStyle(
+                        color = ColorProvider(WidgetTextPrimary),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 )
-            )
-            Text(
-                text = if (pingMs > 0) "${pingMs}ms" else status.uppercase(),
-                style = TextStyle(
-                    color = ColorProvider(WidgetTextSecondary),
-                    fontSize = 9.sp
+                Text(
+                    text = if (pingMs > 0) "${pingMs}ms" else status.uppercase(),
+                    style = TextStyle(
+                        color = ColorProvider(WidgetTextSecondary),
+                        fontSize = 9.sp
+                    )
                 )
-            )
+            }
         }
     }
 }
