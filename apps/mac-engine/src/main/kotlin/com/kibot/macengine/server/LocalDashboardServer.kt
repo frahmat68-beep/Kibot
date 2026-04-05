@@ -483,9 +483,10 @@ class LocalDashboardServer(
             }
 
             webSocket("/api/live/ws") {
+                val snapshot = repository.state.value.toLiveSnapshot(host, port, botId)
                 send(
                     Json.encodeToString(
-                        CommandCenterWsEnvelope.Snapshot(repository.state.value.toLiveSnapshot(host, port, botId)),
+                        CommandCenterWsEnvelope.Snapshot(snapshot),
                     ),
                 )
                 val job = launch {

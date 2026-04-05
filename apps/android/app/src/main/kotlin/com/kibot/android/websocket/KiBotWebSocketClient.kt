@@ -511,8 +511,8 @@ class KiBotWebSocketClient(
             val kidaxPrimarySnapshot = connectedBotId == "kidax"
             val keepExistingFinancials = preserveBundle || !kidaxPrimarySnapshot
             val nextBalance = if (keepExistingFinancials) currentState.balance else balance
-            val nextPnlToday = if (keepExistingFinancials) currentState.pnlToday else pnlToday
-            val nextTotalReturn = if (keepExistingFinancials) currentState.totalReturn else totalReturn
+            val nextPnlToday = pnlToday  // Always update PnL from server
+            val nextTotalReturn = totalReturn  // Always update Total Return from server (now mirrors PnL)
             val nextPositions = if (keepExistingFinancials) currentState.positions else positions
             val nextTrades = if (keepExistingFinancials) currentState.trades else trades
             val nextHistory = if (keepExistingFinancials) currentState.netWorthHistory else netWorthHistory
