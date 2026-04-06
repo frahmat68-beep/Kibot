@@ -3618,7 +3618,16 @@ class MacEngineDaemon(
             null
         }
         val marketQuotesDeferred: kotlinx.coroutines.Deferred<Result<List<com.kibot.shared.models.MarketQuote>>>? = if (exchangeReachable) {
-            async { runCatching { exchange.fetchMarketQuotes() } }
+            async { 
+                logger.debug("[SYNC_ONCE] Starting market quotes fetch from {}", config.exchangeKind)
+                val result = runCatching { exchange.fetchMarketQuotes() }
+                result.onSuccess { quotes ->
+                    logger.debug("[SYNC_ONCE] Fetched {} market quotes from {}", quotes.size, config.exchangeKind)
+                }.onFailure { error ->
+                    logger.error("[SYNC_ONCE] Market quotes fetch failed: {}", error.message, error)
+                }
+                result
+            }
         } else {
             null
         }
@@ -4106,9 +4115,13 @@ class MacEngineDaemon(
             logger.info("[EXCHANGE_FETCH] Fetching market quotes from {} exchange...", config.exchangeKind)
             val q = exchange.fetchMarketQuotes()
             logger.info("[EXCHANGE_FETCH] Fetched {} market quotes from {}", q.size, config.exchangeKind)
+            if (q.isEmpty()) {
+                logger.warn("[EXCHANGE_FETCH] WARNING: Got empty market quotes list!")
+            }
             q
         }.onFailure { 
-            logger.error("[EXCHANGE_FETCH] Failed to fetch market quotes: {}", it.message, it)
+            logger.error("[EXCHANGE_FETCH] FAILED to fetch market quotes: {} | {}", it.javaClass.simpleName, it.message)
+            it.printStackTrace()
         }.getOrDefault(emptyList())
         val openOrders = runCatching { exchange.fetchOpenOrders() }.getOrDefault(emptyList())
         val recentPersistedOrders = controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 200)
