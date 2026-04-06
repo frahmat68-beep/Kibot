@@ -4,6 +4,11 @@ import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
 import kotlinx.serialization.Serializable
 
+enum class BucketType {
+    STABLE,      // 70% bucket — low volatility, steady growth
+    AGGRESSIVE,  // 30% bucket — anomaly/pump targets
+}
+
 @Serializable
 data class BalanceSnapshot(
     val asset: String,
@@ -87,6 +92,7 @@ data class PairScore(
     val statisticalStretchScore: Double = 0.0,
     val smartMoneyScore: Double = 0.0,
     val portfolioCorrelationPenalty: Double = 0.0,
+    val bucketType: BucketType = BucketType.STABLE,
 )
 
 @Serializable

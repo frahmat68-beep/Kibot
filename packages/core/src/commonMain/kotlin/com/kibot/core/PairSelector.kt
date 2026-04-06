@@ -5,6 +5,7 @@ import com.kibot.shared.models.PairId
 import com.kibot.shared.models.PairScore
 import com.kibot.shared.models.PairTier
 import com.kibot.shared.models.TradingHorizon
+import com.kibot.shared.models.BucketType
 import kotlin.math.abs
 
 class PairSelector(
@@ -186,7 +187,7 @@ class PairSelector(
             val band = capitalBandIdr
             val nominalPrice = quote.midPrice.toDoubleOrZero().coerceAtLeast(0.0)
             if (band > 0.0 && nominalPrice > 0.0) {
-                (1.0 - (nominalPrice / band).coerceIn(0.0, 1.0)) * if (context.urgentEntryMode) 0.14 else 0.10
+                (1.0 - (nominalPrice / band).coerceIn(0.0, 1.0)) * if (context.urgentEntryMode) 0.28 else 0.18
             } else {
                 0.0
             }
@@ -389,6 +390,7 @@ class PairSelector(
             profileLabel = profileAssessment.archetype.name.lowercase(),
             statisticalStretchScore = profileAssessment.statisticalStretchScore,
             smartMoneyScore = profileAssessment.smartMoneyScore,
+            bucketType = classifyBucket(quote, rankingScore),
         )
     }
 
@@ -511,6 +513,24 @@ class PairSelector(
         }
         return (baseOpportunityPct + expectancyAssistPct + qualityAssistPct + momentumAssistPct + explosiveBreakoutBonusPct)
             .coerceIn(0.0, policy.strongNetEdgePct * 2.0)
+    }
+    
+    private fun classifyBucket(
+        quote: MarketQuote,
+        finalScore: Double,
+    ): BucketType {
+        return when {
+            // Aggressive indicators
+            quote.shortTermReturnPct > 10.0 -> BucketType.AGGRESSIVE
+            quote.realizedVolatilityPct > 8.0 -> BucketType.AGGRESSIVE
+            quote.localAnomalyScore > 0.7 -> BucketType.AGGRESSIVE
+            
+            // Stable indicators
+            finalScore >= 0.65 && quote.realizedVolatilityPct < 5.0 -> BucketType.STABLE
+            
+            // Default to stable (safer)
+            else -> BucketType.STABLE
+        }
     }
 
     private fun estimateRoundTripCostPct(

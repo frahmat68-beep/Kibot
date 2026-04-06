@@ -70,7 +70,7 @@ KIDAX_UDP_HOST = os.getenv("KIDAX_UDP_HOST", "")
 KIDAX_UDP_PORT = int(os.getenv("KIDAX_UDP_PORT", "9999"))
 MANAGER_HEARTBEAT_INTERVAL_SEC = float(os.getenv("KIBOT_MANAGER_HEARTBEAT_INTERVAL_SEC", "0.10"))
 TAKER_FEE_PCT = float(os.getenv("KIDAX_TAKER_FEE_PCT", "0.51"))
-STALE_SIGNAL_ABORT_MS = int(os.getenv("KIBOT_STALE_SIGNAL_ABORT_MS", "1500"))
+STALE_SIGNAL_ABORT_MS = int(os.getenv("KIBOT_STALE_SIGNAL_ABORT_MS", "3500"))
 FOMO_GUARD_PCT = float(os.getenv("KIBOT_FOMO_GUARD_PCT", "15.0"))
 FOMO_LIMIT_CORRECTION_PCT = float(os.getenv("KIBOT_FOMO_LIMIT_CORRECTION_PCT", "4.0"))
 COINGECKO_BASE = os.getenv("COINGECKO_BASE_URL", "https://api.coingecko.com/api/v3")
@@ -88,14 +88,22 @@ POST_MORTEM_API_URL = os.getenv("KIBOT_POST_MORTEM_API_URL", "")
 POST_MORTEM_API_KEY = os.getenv("KIBOT_POST_MORTEM_API_KEY", "")
 POST_MORTEM_MODEL = os.getenv("KIBOT_POST_MORTEM_MODEL", "llama-3.1-8b-instant")
 POST_MORTEM_TIMEOUT_SEC = float(os.getenv("KIBOT_POST_MORTEM_TIMEOUT_SEC", "12"))
-AI_APPROVAL_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_MIN_SCORE", "0.62"))
-AI_APPROVAL_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_MIN_EXPECTED_NET_PCT", "0.18"))
+AI_APPROVAL_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_MIN_SCORE", "0.48"))
+AI_APPROVAL_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_MIN_EXPECTED_NET_PCT", "0.08"))
 AI_APPROVAL_INSTANT_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_SCORE", "0.48"))
 AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT", "-0.02"))
 POST_MORTEM_BLACKLIST_ENABLED = os.getenv("KIBOT_POST_MORTEM_BLACKLIST_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 POST_MORTEM_BLACKLIST_MINUTES = int(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_MINUTES", "30"))
 POST_MORTEM_BLACKLIST_NET_LOSS_IDR = float(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_NET_LOSS_IDR", "500"))
 POST_MORTEM_BLACKLIST_PNL_PCT = float(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_PNL_PCT", "-1.0"))
+
+
+# === KINANCE HEALTH MONITORING ===
+KINANCE_HEARTBEAT_TIMEOUT_SEC = 10.0
+_last_kinance_heartbeat_at: float = 0.0
+_kinance_healthy: bool = True
+
+
 DAILY_SUMMARY_ENABLED = os.getenv("KIBOT_DAILY_SUMMARY_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 CORRELATION_ENABLED = os.getenv("KIBOT_CORRELATION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 CORRELATION_INTERVAL_SEC = int(os.getenv("KIBOT_CORRELATION_INTERVAL_SEC", "1800"))
@@ -1078,8 +1086,59 @@ def force_evaluate_recent_loss() -> None:
         print(f"[KIBOT][POST_MORTEM][FORCE][ERROR] {error}", flush=True)
 
 
+def _get_dynamic_fomo_guard(price_idr: float) -> float:
+    """
+    Micro-cap (< Rp50): Boleh pump sampai 35% karena masih early
+    Mid-cap (Rp50-500): Standard 22%
+    Big-cap (> Rp500): Ketat 15%
+    """
+    if price_idr < 50.0:
+        return 35.0
+    elif price_idr < 500.0:
+        return 22.0
+    else:
+        return 15.0
+
+
+def _on_kinance_heartbeat_received():
+    """Called when heartbeat UDP packet received from Kinance"""
+    global _last_kinance_heartbeat_at, _kinance_healthy
+    _last_kinance_heartbeat_at = time.time()
+    if not _kinance_healthy:
+        print("[KIBOT][RECOVERY] KINANCE heartbeat restored!", flush=True)
+    _kinance_healthy = True
+
+
+def _check_kinance_health() -> bool:
+    """Returns True if Kinance is healthy (heartbeat within timeout)"""
+    global _kinance_healthy
+    now = time.time()
+    if _last_kinance_heartbeat_at == 0.0:
+        return True  # First run, assume healthy
+    
+    if (now - _last_kinance_heartbeat_at) > KINANCE_HEARTBEAT_TIMEOUT_SEC:
+        if _kinance_healthy:
+            print(f"[KIBOT][CRITICAL] KINANCE HEARTBEAT LOST! Last seen {now - _last_kinance_heartbeat_at:.1f}s ago", flush=True)
+            _kinance_healthy = False
+        return False
+    return True
+
+
 def _process_signal(msg: Dict[str, Any]) -> None:
     msg_type = str(msg.get("msgType") or "").upper()
+    
+    # === HANDLE KINANCE HEARTBEAT ===
+    if msg_type == "HEARTBEAT" and msg.get("source") == "kinance":
+        _on_kinance_heartbeat_received()
+        return
+    
+    # === EARLY RETURN IF KINANCE DEAD ===
+    if not _check_kinance_health():
+        # Only allow EXIT signals when Kinance unhealthy
+        if msg_type not in {"SELL_WALL_SURGE", "MOMENTUM_LOSS", "TRAILING_STOP_HIT"}:
+            print(f"[KIBOT][BLOCK] Blocking {msg_type} - KINANCE unhealthy", flush=True)
+            return
+    
     if msg_type == "ACTIVE_POSITIONS":
         _process_active_positions(msg)
         return
@@ -1173,9 +1232,14 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         or msg.get("shortTermReturnPct")
         or 0.0
     )
-    if msg_type == "DETECTOR_HIT" and short_term_return_pct >= FOMO_GUARD_PCT:
+    
+    # Dynamic FOMO guard based on price tier
+    current_price_idr = float(msg.get("lastPrice") or msg.get("currentPrice") or 0.0)
+    fomo_limit = _get_dynamic_fomo_guard(current_price_idr)
+    
+    if msg_type == "DETECTOR_HIT" and short_term_return_pct >= fomo_limit:
         print(
-            f"[KIBOT][VETO_REJECTED] pair={pair} reason=FOMO_GUARD rise_pct={short_term_return_pct:.2f}",
+            f"[KIBOT][VETO_REJECTED] pair={pair} reason=FOMO_GUARD rise_pct={short_term_return_pct:.2f} limit={fomo_limit:.1f}% price={current_price_idr:.0f}",
             flush=True,
         )
         veto = {
