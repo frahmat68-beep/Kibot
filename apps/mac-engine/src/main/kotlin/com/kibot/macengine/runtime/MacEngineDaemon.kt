@@ -5716,7 +5716,13 @@ class MacEngineDaemon(
                     activePersistedOrders = activePersistedOrders,
                     managedPositions = managedPositions,
                 )
-                if (dynamicVipSubmitted) return
+                if (dynamicVipSubmitted) {
+                    if (emergencyForceEntry) {
+                        logger.error("[EXECUTION_BUY] pair=dynamic_vip reason=EMERGENCY_FORCED_ENTRY")
+                        recordTradeExecution("emergency_dynamic_vip")
+                    }
+                    return
+                }
                 val scalpingSubmitted = maybeSubmitLightScalpingEntry(
                     now = now,
                     lease = lease,
@@ -5728,10 +5734,19 @@ class MacEngineDaemon(
                 )
                 if (scalpingSubmitted) {
                     logger.info("[EXECUTION_BUY] pair=baseline reason=fallback_without_anomaly emergency=$emergencyForceEntry")
+                    recordTradeExecution("emergency_scalping")
                     return
                 }
+                // CRITICAL FIX: If emergency and both failed, log it but continue to check for partial execution
+                if (emergencyForceEntry) {
+                    logger.error("[EMERGENCY_OVERRIDE] Both VIP and scalping failed - but trades may have executed partially")
+                }
             }
-            logWhyNotBuy(now, "entry", "no_chart_history_candidate")
+            
+            // Only return if NOT emergency - if emergency, keep trying
+            if (!emergencyForceEntry) {
+                logWhyNotBuy(now, "entry", "no_chart_history_candidate")
+            }
             return
         }
         if (trinityHeartbeatSafeModeReason != null) {

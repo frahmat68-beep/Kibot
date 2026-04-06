@@ -44,6 +44,7 @@ class LiveExecutionCoordinator(
             executionPlan = executionPlan,
             exchange = exchange,
             controlPlane = controlPlane,
+            bypassLeaseValidation = bypassLeaseValidation,
         )
     }
 
