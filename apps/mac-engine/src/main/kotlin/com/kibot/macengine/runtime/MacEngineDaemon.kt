@@ -8313,14 +8313,26 @@ class MacEngineDaemon(
         val total = balances.sumOf { balance ->
             val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
             val totalValueInIdr = balance.totalValueInIdr
-            when {
+            val value = when {
                 quantity <= 0.0 -> 0.0
                 balance.asset.equals(referenceQuoteAsset(), ignoreCase = true) -> quantity * referenceQuoteIdr
                 totalValueInIdr != null -> totalValueInIdr.toDoubleOrZero()
                 else -> (quoteAssetReferencePrice(balance.asset, marketQuotes) ?: 0.0) * quantity
             }
+            // [DEBUG] Log balance calculation for non-zero balances
+            if (quantity > 0.0 && !balance.asset.equals("idr", ignoreCase = true)) {
+                logger.debug("[PORTFOLIO_DEBUG] {} qty={} value={} (had_totalIdr={} quote_found={})", 
+                    balance.asset, formatDecimal(quantity, 8), formatDecimal(value, 0),
+                    totalValueInIdr != null, value > 0.0)
+            }
+            value
         }
-        return DecimalValue.fromDouble(total.coerceAtLeast(0.0))
+        val portfolioIdr = total.coerceAtLeast(0.0)
+        if (balances.any { it.free.toDoubleOrZero() + it.locked.toDoubleOrZero() > 0.0 }) {
+            logger.info("[PORTFOLIO_CALC] total_equity={} from {} balances, {} quotes", 
+                formatDecimal(portfolioIdr, 0), balances.count { (it.free.toDoubleOrZero() + it.locked.toDoubleOrZero()) > 0.0 }, marketQuotes.size)
+        }
+        return DecimalValue.fromDouble(portfolioIdr)
     }
 
     private fun deriveDailyRiskSnapshot(
