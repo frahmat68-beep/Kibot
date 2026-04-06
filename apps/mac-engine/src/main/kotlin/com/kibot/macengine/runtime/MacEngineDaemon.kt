@@ -6027,11 +6027,45 @@ class MacEngineDaemon(
                 lastBlockedReason = "Lease belum dipegang ${config.device.deviceId.value}; menunggu sinkron holder aktif."
                 return@forEach
             }
+            
+            // [CAPITAL ALLOCATION] CRITICAL CHECK - enforce 70/30 split + 25% per-coin limit
+            val pairCoin = effectiveExecutionPlan.signal.pairId.value.substringBefore("_").lowercase()
+            val isAnomalyCoin = pairCoin in (listOf("koma", "shib", "doge"))  // Example anomaly coins
+            val limitPriceVal = (effectiveExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0).let {
+                if (it > 0) it else effectiveExecutionPlan.signal.entryPrice?.toDoubleOrZero() ?: 1.0
+            }
+            val budgetNeeded = effectiveExecutionPlan.quantity.toDoubleOrZero() * limitPriceVal
+            
+            // Get allocation from capital manager
+            val allocResult = capitalAllocationManager?.allocate(isAnomalyCoin, budgetNeeded)
+            if (allocResult == null || allocResult.allocatedIdr <= 0.0) {
+                logger.error("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: allocation denied (allocated=${allocResult?.allocatedIdr ?: 0})")
+                lastBlockedReason = "Capital allocation REJECTED: bucket insufficient for $pairCoin"
+                return@forEach
+            }
+            
+            // Check per-coin limit (25% max)
+            val totalEquity = capitalAwareness.totalEquityIdr
+            val perCoinLimit = totalEquity * 0.25  // Hard 25% limit
+            if (budgetNeeded > perCoinLimit) {
+                logger.error("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: exceeds 25% limit (need=${formatDecimal(budgetNeeded, 0)} > limit=${formatDecimal(perCoinLimit, 0)})")
+                lastBlockedReason = "Position size ${formatDecimal(budgetNeeded, 0)} IDR exceeds 25% per-coin limit (${formatDecimal(perCoinLimit, 0)} IDR)"
+                return@forEach
+            }
+            
+            logger.info("[CAPITAL_OK] ${effectiveExecutionPlan.signal.pairId.value}: allocated=${formatDecimal(allocResult.allocatedIdr, 0)} IDR from ${if(isAnomalyCoin) "AGGRESSIVE(30%)" else "STABLE(70%)"} bucket")
+            
+            // Use allocated budget, not requested
+            val finalQuantity = (allocResult.allocatedIdr / limitPriceVal).coerceAtLeast(0.00000001)
+            val finalExecutionPlan = effectiveExecutionPlan.copy(
+                quantity = DecimalValue.fromDouble(finalQuantity)
+            )
+            
             val result = liveExecutionCoordinator.submitEntry(
                 botId = config.controlPlane.botId,
                 deviceId = config.device.deviceId,
                 term = submissionLease.term,
-                executionPlan = effectiveExecutionPlan,
+                executionPlan = finalExecutionPlan,
                 existingPersistedOrders = workingOrders,
                 exchange = exchange,
                 controlPlane = controlPlane,
