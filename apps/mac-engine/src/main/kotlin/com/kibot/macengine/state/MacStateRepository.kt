@@ -199,9 +199,9 @@ class MacStateRepository {
             radarPairs = if (looksLikeBootSnapshot && prev.radarPairs.isNotEmpty()) prev.radarPairs else next.radarPairs,
             scanUniverseCount = if (looksLikeBootSnapshot && prev.scanUniverseCount > 0) prev.scanUniverseCount else next.scanUniverseCount,
             liveExecutionEnabled = if (looksLikeBootSnapshot && prev.isBotRunning) prev.liveExecutionEnabled else next.liveExecutionEnabled,
-            portfolioValueIdr = if (keepPortfolioFallback) prev.portfolioValueIdr else next.portfolioValueIdr,
-            totalValueIdr = if (keepPortfolioFallback) prev.totalValueIdr else next.totalValueIdr,
-            freeIdrLabel = if (next.freeIdrLabel == "Rp0" && prev.freeIdrLabel != "Rp0") prev.freeIdrLabel else next.freeIdrLabel,
+            portfolioValueIdr = next.portfolioValueIdr,  // [FIX] Always use latest, don't fallback to stale value
+            totalValueIdr = next.totalValueIdr,  // [FIX] Always use latest balance from exchange, even if Rp0
+            freeIdrLabel = next.freeIdrLabel,  // [FIX] Always use latest free IDR, don't show stale cached value
             syncHealth = if (looksLikeBootSnapshot && prev.syncHealth != "BROKEN") prev.syncHealth else next.syncHealth,
             healthSummary = if (looksLikeBootSnapshot && prev.healthSummary.isNotBlank()) prev.healthSummary else next.healthSummary,
             statusMessage = if (looksLikeBootSnapshot && prev.statusMessage.isNotBlank()) prev.statusMessage else next.statusMessage,
