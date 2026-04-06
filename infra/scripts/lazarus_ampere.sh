@@ -36,6 +36,10 @@ log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
+log_err() {
+  log "$@" >&2
+}
+
 notify_telegram() {
   local text="$1"
   if [[ -z "${TELEGRAM_BOT_TOKEN}" || -z "${TELEGRAM_CHAT_ID}" ]]; then
@@ -116,15 +120,16 @@ load_cached_arm_image_id() {
 }
 
 refresh_arm_image_id() {
-  log "Menjemput OCID Ubuntu 24.04 ARM terbaru dari server Oracle..."
+  log_err "Menjemput OCID Ubuntu 24.04 ARM terbaru dari server Oracle..."
   local fetched_id
   fetched_id="$(fetch_arm_image_id)"
-  if [[ -z "${fetched_id}" || "${fetched_id}" == "null" ]]; then
+  fetched_id="$(printf '%s\n' "${fetched_id}" | tail -n 1 | tr -d '\r')"
+  if [[ -z "${fetched_id}" || "${fetched_id}" == "null" || ! "${fetched_id}" =~ ^ocid1\.image\. ]]; then
     IMAGE_ERR="$(cat /tmp/lazarus_ampere_image.err 2>/dev/null || true)"
     fatal "Gagal mengambil ARM image OCID. ${IMAGE_ERR}"
   fi
   printf '%s\n%s\n' "${fetched_id}" "$(date +%s)" > "${IMAGE_CACHE_FILE}"
-  log "Berhasil! ARM Image OCID: ${fetched_id}"
+  log_err "Berhasil! ARM Image OCID: ${fetched_id}"
   printf '%s\n' "${fetched_id}"
 }
 

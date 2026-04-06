@@ -5704,9 +5704,6 @@ class MacEngineDaemon(
             logger.warn("[ENTRY_DEBUG] No candidates, emergencyForce=$emergencyForceEntry, config.exchangeKind=${config.exchangeKind}")
             
             if (config.exchangeKind == ExchangeKind.INDODAX) {
-                if (emergencyForceEntry) {
-                    logger.error("[EMERGENCY_OVERRIDE] No candidates but stalled >30min - FORCING scalping entry!")
-                }
                 val dynamicVipSubmitted = maybeSubmitDynamicVipEntry(
                     now = now,
                     lease = lease,
@@ -5723,6 +5720,7 @@ class MacEngineDaemon(
                     }
                     return
                 }
+                
                 val scalpingSubmitted = maybeSubmitLightScalpingEntry(
                     now = now,
                     lease = lease,
@@ -5737,9 +5735,10 @@ class MacEngineDaemon(
                     recordTradeExecution("emergency_scalping")
                     return
                 }
-                // CRITICAL FIX: If emergency and both failed, log it but continue to check for partial execution
+                
+                // If emergency is active and both fallbacks failed, log it
                 if (emergencyForceEntry) {
-                    logger.error("[EMERGENCY_OVERRIDE] Both VIP and scalping failed - but trades may have executed partially")
+                    logger.error("[EMERGENCY_OVERRIDE] Both VIP and scalping fallbacks failed - Emergency override cannot force entry without candidates")
                 }
             }
             
