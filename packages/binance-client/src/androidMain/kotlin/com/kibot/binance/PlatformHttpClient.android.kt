@@ -3,6 +3,7 @@ package com.kibot.binance
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.compression.ContentEncoding
 import io.ktor.client.plugins.logging.LogLevel
 import io.ktor.client.plugins.logging.Logger
 import io.ktor.client.plugins.logging.Logging
@@ -14,6 +15,11 @@ private object QuietKtorLogger : Logger {
 }
 
 internal actual fun createPlatformHttpClient(json: Json): HttpClient = HttpClient(CIO) {
+    // ContentEncoding MUST be installed BEFORE ContentNegotiation
+    install(ContentEncoding) {
+        gzip()
+        deflate()
+    }
     install(ContentNegotiation) {
         json(json)
     }
