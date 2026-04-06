@@ -343,7 +343,7 @@ object MacRuntimeConfigLoader {
                 ?: 100L,
             leadLagUdpHeartbeatTimeoutMillis = optional("KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS")
                 ?.toLongOrNull()
-                ?: 500L,
+                ?: 300L,  // FIX: Minimal 3x interval (100ms * 3) untuk stability, mencegah false disconnect
             leadLagUdpHeartbeatRequiredBotIds = optional("KIBOT_HIVE_EXPECTED_BOT_IDS")
                 ?.split(",")
                 ?.mapNotNull { token ->

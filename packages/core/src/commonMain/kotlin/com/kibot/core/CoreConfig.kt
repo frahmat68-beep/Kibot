@@ -239,6 +239,7 @@ data class DualEngineConfig(
     val barbarianTrailingDistancePct: Double = 0.8,  // FIX: Longgarkan dari 0.5 → 0.8 (anti-premature exit)
     val barbarianTrailingActivationProfitPct: Double = 0.5,  // FIX: Naikkan dari 0.3 → 0.5 (wait for real profit)
     val barbarianMaxHoldSeconds: Int = 180,  // Force exit after 3 minutes max
+    val barbarianDecayVelocityMinTicks: Double = 2.0,  // FIX: Min 2 ticks/min to consider "active"
     val barbarianMinRankingScore: Double = 0.30,  // Very low floor - let the pump speak
     val barbarianBypassAllGuardrails: Boolean = true,  // Master switch to skip spread/veto/ranking checks
     
