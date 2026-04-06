@@ -28,6 +28,7 @@ import com.kibot.core.LiveExecutionCoordinator
 import com.kibot.core.MarketRegimeAnalyzer
 import com.kibot.core.PairSelectionPolicy
 import com.kibot.core.PairSelector
+import com.kibot.macengine.notify.TelegramNotifier
 import com.kibot.core.ReconciliationService
 import com.kibot.core.RiskConfig
 import com.kibot.core.RiskEngine
@@ -275,6 +276,8 @@ class MacEngineDaemon(
     // [CAPITAL ALLOCATION] Track which bucket (STABLE/AGGRESSIVE) was used for each position
     private val positionBucketTypeByPair = java.util.concurrent.ConcurrentHashMap<String, String>()  // "STABLE" or "AGGRESSIVE"
     private val positionEntryCapitalByPair = java.util.concurrent.ConcurrentHashMap<String, Double>()  // Track capital deployed
+    // [TELEGRAM NOTIFIER] Send profit alerts to Telegram (safe-fail if not configured)
+    private val telegramNotifier = TelegramNotifier.fromEnv()
     
     private val onlyRuntimeLogPrefixes = setOf("EXECUTION_BUY", "EXECUTION_SELL", "WHY_NOT_BUY", "STALL_RECOVERY")
     private data class CapitalAwareness(
@@ -5750,6 +5753,22 @@ class MacEngineDaemon(
                         "[CAPITAL_DEPOSIT] ${pairKey}: profit=${formatDecimal(netProfit, 0)} deposited to ${bucketType} bucket " +
                         "(gross=${formatDecimal(pnlIdr, 0)}, fees=${formatDecimal(estimatedFees, 0)})"
                     )
+                    
+                    // [TELEGRAM NOTIFICATION] Send profit alert to Telegram
+                    if (netProfit > 0) {
+                        val profitPct = if (buyPrice != null && buyPrice > 0.0) {
+                            (netProfit / ((buyPrice * (sellQty ?: 0.0)))) * 100.0
+                        } else {
+                            0.0
+                        }
+                        telegramNotifier.sendProfitAlert(
+                            pair = pairKey,
+                            engineType = bucketType ?: "UNKNOWN",
+                            profitPct = profitPct,
+                            profitIdr = netProfit,
+                            bucketType = bucketType ?: "UNKNOWN",
+                        )
+                    }
                     
                     // Cleanup tracking
                     positionBucketTypeByPair.remove(pairKey)
