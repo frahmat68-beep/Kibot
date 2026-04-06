@@ -4097,8 +4097,19 @@ class MacEngineDaemon(
         ) {
             return false
         }
-        val balances = runCatching { exchange.fetchBalances() }.getOrDefault(emptyList())
-        val marketQuotes = runCatching { exchange.fetchMarketQuotes() }.getOrDefault(emptyList())
+        val balances = runCatching { 
+            val b = exchange.fetchBalances()
+            logger.info("[EXCHANGE_FETCH] Fetched {} balances from {}", b.size, config.exchangeKind)
+            b
+        }.getOrDefault(emptyList())
+        val marketQuotes = runCatching {
+            logger.info("[EXCHANGE_FETCH] Fetching market quotes from {} exchange...", config.exchangeKind)
+            val q = exchange.fetchMarketQuotes()
+            logger.info("[EXCHANGE_FETCH] Fetched {} market quotes from {}", q.size, config.exchangeKind)
+            q
+        }.onFailure { 
+            logger.error("[EXCHANGE_FETCH] Failed to fetch market quotes: {}", it.message, it)
+        }.getOrDefault(emptyList())
         val openOrders = runCatching { exchange.fetchOpenOrders() }.getOrDefault(emptyList())
         val recentPersistedOrders = controlPlane.fetchRecentOrders(config.controlPlane.botId, limit = 200)
         val reconciliationPairs = (openOrders.map { it.pairId } + recentPersistedOrders.map { it.pairId })
