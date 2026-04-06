@@ -23,7 +23,14 @@ class VetoService {
         if (signal.leadPairId?.value?.lowercase() == candidate.pairId.value.lowercase()) {
             return false
         }
-        return signal.leadMomentumScore >= 0.72 && quote.sectorMomentumScore < 0.52
+        // FIX: Lead tinggi + Sector rendah = LAGGING OPPORTUNITY, bukan VETO!
+        // Jika lead sudah pump tapi sector belum ikut, ini peluang entry sebelum sector catch-up
+        // OLD (BROKEN): return signal.leadMomentumScore >= 0.72 && quote.sectorMomentumScore < 0.52
+        // Sekarang: APPROVE entry pada kondisi ini (return false = no veto)
+        if (signal.leadMomentumScore >= 0.72 && quote.sectorMomentumScore < 0.52) {
+            return false  // LAGGING OPPORTUNITY - APPROVE, don't veto!
+        }
+        return false  // Default: allow entry
     }
 
     fun shouldTightenTrailing(
