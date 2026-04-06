@@ -5613,6 +5613,7 @@ class MacEngineDaemon(
             managedPositions = managedPositions,
             activeOrders = activePersistedOrders,
             cycle = cycle,
+            marketQuotes = marketQuotes,
         )
         val cleanupRotationExit = planPreRotationCleanupExit(
             now = now,
@@ -9103,29 +9104,40 @@ class MacEngineDaemon(
         managedPositions: List<com.kibot.core.ManagedPosition>,
         activeOrders: List<com.kibot.shared.models.OrderSnapshot>,
         cycle: com.kibot.core.StrategyCycleResult,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
     ): com.kibot.core.ExitDecision? {
         if (managedPositions.isEmpty()) return null
         val activeByPair = activeOrders.filter { it.status in activeOrderStatuses }.groupBy { it.pairId }
         val maxHoldMs = dualEngineConfig.barbarianMaxHoldSeconds * 1000L
-        val stagnationFloor = dualEngineConfig.barbarianMinPriceVelocityPct1m
+        val minDecayVelocity = dualEngineConfig.barbarianDecayVelocityMinTicks
 
         val target = managedPositions.firstOrNull { position ->
             val pairKey = position.pairId.value.lowercase()
             val entryAt = barbarianLeadLagEntryAtByPair[pairKey] ?: return@firstOrNull false
             val noSellOrder = activeByPair[position.pairId].orEmpty().none { it.side == com.kibot.shared.models.OrderSide.SELL }
             val holdMs = (now.toEpochMilliseconds() - entryAt.toEpochMilliseconds()).coerceAtLeast(0L)
-            val stagnating = abs(position.unrealizedPnlPct) < stagnationFloor
-            noSellOrder && holdMs >= maxHoldMs && stagnating
+            
+            // FIX: DECAY VELOCITY CHECK - Only force exit if tick velocity is DEAD!
+            // Jika order book masih sangat aktif (>= 2 ticks/min), JANGAN force exit!
+            // Biarkan Trailing Stop 0.8% yang bekerja untuk koin yang masih pumping.
+            val currentQuote = marketQuotes.firstOrNull { it.pairId == position.pairId }
+            val currentTickVelocity = currentQuote?.tickFrequencyPerMinute ?: 0.0
+            val isDecaying = currentTickVelocity < minDecayVelocity
+            
+            // Only force exit if: (1) held >= 180s, (2) no sell order, (3) order book is DEAD/stagnant
+            noSellOrder && holdMs >= maxHoldMs && isDecaying
         } ?: return null
 
         val holdSec = ((now.toEpochMilliseconds() - (barbarianLeadLagEntryAtByPair[target.pairId.value.lowercase()]?.toEpochMilliseconds() ?: now.toEpochMilliseconds()))
             .coerceAtLeast(0L) / 1_000.0)
+        val currentQuote = marketQuotes.firstOrNull { it.pairId == target.pairId }
+        val tickVelocity = currentQuote?.tickFrequencyPerMinute ?: 0.0
         val score = cycle.rankedPairs.firstOrNull { it.pairId == target.pairId }?.rankingScore ?: 0.70
         val signal = com.kibot.shared.models.StrategySignal(
             pairId = target.pairId,
             signalType = com.kibot.shared.models.StrategySignalType.EXIT,
             confidence = score.coerceIn(0.60, 0.99),
-            rationale = listOf("Barbarian max-hold 180s tercapai + stagnan, force sell taker."),
+            rationale = listOf("Barbarian max-hold 180s + tick velocity DEAD (${formatDecimal(tickVelocity, 1)} < ${minDecayVelocity} ticks/min), force sell."),
             entryPrice = target.currentBidPrice,
             takeProfitPrice = target.takeProfitPrice,
             stopPrice = target.stopPrice,
@@ -9141,7 +9153,7 @@ class MacEngineDaemon(
         return com.kibot.core.ExitDecision(
             position = target,
             reason = com.kibot.core.ExitReason.TIME_EXIT,
-            message = "BARBARIAN_MAX_HOLD forced sell ${target.pairId.value} after ${formatDecimal(holdSec, 0)}s stagnan.",
+            message = "BARBARIAN_DECAY_EXIT ${target.pairId.value} after ${formatDecimal(holdSec, 0)}s, tick velocity=${formatDecimal(tickVelocity, 1)} (DEAD).",
             executionPlan = com.kibot.shared.models.ExecutionPlan(
                 signal = signal,
                 side = com.kibot.shared.models.OrderSide.SELL,
