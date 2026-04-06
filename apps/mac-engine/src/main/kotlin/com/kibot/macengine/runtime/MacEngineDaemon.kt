@@ -669,6 +669,7 @@ class MacEngineDaemon(
     private var lastMonthlyPnlAnchorSignature: String? = null
     private var pnlResetAnchor = loadPnlResetAnchor()
     private var lastPnlResetAnchorSignature: String? = null
+    private var lastDailyResetDateStr: String? = null  // Track last auto-reset date (WIB) to avoid duplicate resets
     private var activeLeadLagCallout: ActiveLeadLagCallout? = null
     // Use ConcurrentHashMap for thread-safe access from UDP listener and main loop
     private val pendingKinanceSignalsByTrace = java.util.concurrent.ConcurrentHashMap<String, TrinityPendingSignal>()
@@ -3770,6 +3771,10 @@ class MacEngineDaemon(
         
         // [CAPITAL ALLOCATION] Initialize or update 70/30 capital manager
         val totalEquityIdr = estimatePortfolioValue(resolvedBalances, resolvedMarketQuotes)
+        
+        // [DAILY PNL AUTO-RESET] Check if midnight WIB crossed — reset baseline
+        maybeAutoResetDailyPnl(totalEquityIdr.toDoubleOrZero())
+        
         if (capitalAllocationManager == null && totalEquityIdr.toDoubleOrZero() > 0) {
             capitalAllocationManager = CapitalAllocationManager(
                 totalCapitalIdr = totalEquityIdr.toDoubleOrZero(),
@@ -10883,6 +10888,49 @@ class MacEngineDaemon(
         pnlResetAnchor = snapshot
         persistPnlResetAnchor(snapshot)
         repository.noteStatus("Manual PnL reset anchor diset ke ${formatMonetary(currentEquity)}.")
+    }
+
+    /**
+     * maybeAutoResetDailyPnl - Auto-reset daily PnL baseline at 00:00 WIB (Jakarta time).
+     * Called every main loop tick. Only triggers once per calendar day.
+     * This ensures pnlToday shows the profit/loss since midnight today.
+     */
+    private fun maybeAutoResetDailyPnl(currentEquity: Double) {
+        if (currentEquity <= 0.0) return
+        val jakartaNow = kotlinx.datetime.Clock.System.now()
+            .toLocalDateTime(TimeZone.of("Asia/Jakarta"))
+        val todayDateStr = jakartaNow.date.toString()  // e.g., "2026-04-07"
+        
+        // Already reset today? Skip.
+        if (lastDailyResetDateStr == todayDateStr) return
+        
+        // First check: if anchor exists and was set TODAY, don't overwrite (manual reset takes precedence)
+        val existingAnchor = pnlResetAnchor
+        if (existingAnchor != null) {
+            val anchorDate = kotlinx.datetime.Instant.fromEpochMilliseconds(existingAnchor.observedAtEpochMs)
+                .toLocalDateTime(TimeZone.of("Asia/Jakarta"))
+                .date.toString()
+            if (anchorDate == todayDateStr) {
+                // Anchor already set today (probably manual topup) — mark as done, don't overwrite
+                lastDailyResetDateStr = todayDateStr
+                return
+            }
+        }
+        
+        // New day detected — reset baseline to current equity
+        val snapshot = PnlResetAnchorSnapshot(
+            botId = config.controlPlane.botId.value,
+            deviceId = config.device.deviceId.value,
+            anchorEquityIdr = currentEquity,
+            observedAtEpochMs = kotlinx.datetime.Clock.System.now().toEpochMilliseconds(),
+            reason = "daily_auto_reset_midnight",
+        )
+        pnlResetAnchor = snapshot
+        persistPnlResetAnchor(snapshot)
+        lastDailyResetDateStr = todayDateStr
+        logger.info("🌅 Daily PnL auto-reset triggered at {} WIB. New baseline: {}",
+            jakartaNow.toString(), formatMonetary(currentEquity))
+        repository.noteStatus("🌅 Daily PnL auto-reset. Baseline: ${formatMonetary(currentEquity)}")
     }
 
     private fun loadMonthlyPnlAnchor(): MonthlyPnlAnchorSnapshot? {
