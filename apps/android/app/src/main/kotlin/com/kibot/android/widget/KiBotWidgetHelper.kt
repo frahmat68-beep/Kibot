@@ -12,12 +12,39 @@ import kotlinx.coroutines.launch
 object KiBotWidgetHelper {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private const val PREFS_NAME = "kibot_widget_prefs"
+    private const val MIN_UPDATE_INTERVAL_MS = 3_000L
+    @Volatile
+    private var lastUpdateSignature: String? = null
+    @Volatile
+    private var lastUpdateAtMs: Long = 0L
     
     /**
      * Update widget data when bot state changes
      * Uses SharedPreferences for reliable cross-process data sharing
      */
     fun updateWidgetData(context: Context, botState: BotState) {
+        val signature = buildString {
+            append(botState.balance.toLong())
+            append('|')
+            append(botState.pnlToday.toLong())
+            append('|')
+            append(botState.totalReturn.toInt())
+            append('|')
+            append(botState.heartbeat.kidax.status)
+            append('|')
+            append(botState.heartbeat.kinance.status)
+            append('|')
+            append(botState.heartbeat.kibot.status)
+            append('|')
+            append(botState.heartbeat.kidax.ping)
+        }
+        val now = System.currentTimeMillis()
+        if (signature == lastUpdateSignature && now - lastUpdateAtMs < MIN_UPDATE_INTERVAL_MS) {
+            return
+        }
+        lastUpdateSignature = signature
+        lastUpdateAtMs = now
+
         android.util.Log.i("KiBotWidget", "📊 updateWidgetData called - balance=${botState.balance}, pnl=${botState.pnlToday}, connected=${botState.isConnected}")
         
         try {

@@ -59,6 +59,7 @@ class StrategyOrchestrator(
     private val vetoService: VetoService = VetoService(),
     private val executionConfig: StrategyExecutionConfig = StrategyExecutionConfig(),
     private val riskConfig: RiskConfig = RiskConfig(),
+    private val dualEngineConfig: DualEngineConfig = DualEngineConfig(),
 ) {
     private val recentPairExitTimestampsMs = mutableMapOf<PairId, Long>()
     private var lastObservedHeldPairs: Set<PairId> = emptySet()
@@ -73,6 +74,32 @@ class StrategyOrchestrator(
         pairSupportHints: List<AiPairSupportHint> = emptyList(),
         weeklySummary: WeeklyLearningSummary? = null,
         aiSoftAuditOnly: Boolean = false,
+    ): StrategyCycleResult {
+        return analyzeWithContext(
+            botId = botId,
+            balances = balances,
+            openOrders = openOrders,
+            dailyRisk = dailyRisk,
+            health = health,
+            marketQuotes = marketQuotes,
+            pairSupportHints = pairSupportHints,
+            weeklySummary = weeklySummary,
+            aiSoftAuditOnly = aiSoftAuditOnly,
+            selectionContextOverride = null,
+        )
+    }
+
+    fun analyzeWithContext(
+        botId: BotId,
+        balances: List<BalanceSnapshot>,
+        openOrders: List<com.kibot.shared.models.OrderSnapshot>,
+        dailyRisk: DailyRiskSnapshot?,
+        health: EngineHealthSnapshot,
+        marketQuotes: List<MarketQuote>,
+        pairSupportHints: List<AiPairSupportHint> = emptyList(),
+        weeklySummary: WeeklyLearningSummary? = null,
+        aiSoftAuditOnly: Boolean = false,
+        selectionContextOverride: PairSelectionContext? = null,
     ): StrategyCycleResult {
         val quoteByPair = marketQuotes.associateBy { it.pairId }
         val equity = estimatePortfolioValueReference(balances, marketQuotes)
@@ -106,7 +133,12 @@ class StrategyOrchestrator(
             leadLagSignal.leadMomentumScore >= 0.80
         val leadLagMaxSpreadPct = if (urgentEntryMode) 5.0 else 2.0
         val freeCashIdr = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
-        val selectionContext = PairSelectionContext(
+        val selectionContext = selectionContextOverride?.copy(
+            userBalanceIdr = equity,
+            availableCashIdr = freeCashIdr,
+            minimumExecutableNotionalIdr = executionConfig.minOrderNotionalIdr,
+            basketCount = riskConfig.maxConcurrentPositions.coerceAtLeast(syntheticPositions.size + 1),
+        ) ?: PairSelectionContext(
             userBalanceIdr = equity,
             availableCashIdr = freeCashIdr,
             minimumExecutableNotionalIdr = executionConfig.minOrderNotionalIdr,
@@ -167,6 +199,7 @@ class StrategyOrchestrator(
             observedAtEpochMs = nowMs,
             leadLagSignal = leadLagSignal,
             aiSoftAuditOnly = aiSoftAuditOnly,
+            selectionContext = selectionContext,
         )
         val entryExecutionPlans = entrySignals
             .let { signals ->
@@ -259,6 +292,7 @@ class StrategyOrchestrator(
         observedAtEpochMs: Long,
         leadLagSignal: LeadLagSelectionSignal?,
         aiSoftAuditOnly: Boolean,
+        selectionContext: PairSelectionContext,
     ): List<StrategySignal> {
         if (!modeSnapshot.tradingAllowed || (!deploymentPlan.allowNewEntries && !deploymentPlan.allowRotation)) return emptyList()
         if (marketSnapshot.regime == MarketRegime.BREAKDOWN_PANIC) return emptyList()
@@ -314,7 +348,7 @@ class StrategyOrchestrator(
                 if (candidate.pairId in heldPairs || candidate.pairId in pendingBuyPairs) return@mapNotNull null
                 if (!hasFunding && !rotationFundingAllowed) return@mapNotNull null
                 if (isPairInReentryCooldown(candidate.pairId, observedAtEpochMs)) return@mapNotNull null
-                if (vetoService.shouldVetoEntry(
+                if (!selectionContext.bypassVetoService && vetoService.shouldVetoEntry(
                         candidate = pairScore,
                         quote = quote,
                         leadLagSignal = leadLagSignal,
@@ -333,7 +367,7 @@ class StrategyOrchestrator(
                     urgentEntryMode = urgentEntryMode,
                 ) ?: return@mapNotNull null
 
-                if (pairScore.rankingScore < thresholds.minRankingScore) return@mapNotNull null
+                if (!selectionContext.bypassRankingFloor && pairScore.rankingScore < thresholds.minRankingScore) return@mapNotNull null
 
                 val selectionScore = scoreEntryCandidate(
                     pairScore = pairScore,

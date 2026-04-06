@@ -43,6 +43,16 @@ class PairSelector(
         val poolSize = policy.prefilterCandidatePoolSize.coerceAtLeast(policy.shortlistSize)
         if (eligibleQuotes.size <= poolSize) return eligibleQuotes
 
+        // DUAL ENGINE: Barbarian Anomaly Engine bypasses spread checks
+        if (context.bypassSpreadCheck) {
+            // Barbarian mode: skip all spread/slippage guardrails, only check price band
+            return eligibleQuotes
+                .filter { passesPriceBandGate(it, context) }
+                .sortedByDescending(::prefilterScore)
+                .take(poolSize)
+        }
+
+        // Normal filtering with spread checks (Macro Follower Engine or legacy mode)
         val lenientCandidates = eligibleQuotes.asSequence()
             .filter { quote ->
                 passesPriceBandGate(quote, context) &&
@@ -96,8 +106,17 @@ class PairSelector(
             baseline = policy.smallCapitalMinTop5DepthIdr,
             saturationMultiplier = 5.0,
         )
-        val spreadScore = inverseThresholdScore(quote.spreadPct, spreadGuardPct.coerceAtLeast(policy.maxSpreadPct))
-        val slippageScore = inverseThresholdScore(quote.estimatedSlippagePct, policy.maxEstimatedSlippagePct)
+        // DUAL ENGINE: Barbarian Engine bypasses spread scoring - use neutral score
+        val spreadScore = if (context.bypassSpreadCheck) {
+            0.70  // Neutral score - don't penalize spread
+        } else {
+            inverseThresholdScore(quote.spreadPct, spreadGuardPct.coerceAtLeast(policy.maxSpreadPct))
+        }
+        val slippageScore = if (context.bypassSpreadCheck) {
+            0.70  // Neutral score - don't penalize slippage
+        } else {
+            inverseThresholdScore(quote.estimatedSlippagePct, policy.maxEstimatedSlippagePct)
+        }
         val stabilityScore = quote.orderBookStabilityScore.coerceIn(0.0, 1.0)
         val tradeCountScore = quote.tradeCount24h
             .takeIf { it > 0 }
@@ -133,7 +152,12 @@ class PairSelector(
             volumeConsistencyScore = volumeConsistencyScore,
             fillQualityScore = fillQualityScore,
         )
-        val spreadRejected = quote.spreadPct > spreadGuardPct
+        // DUAL ENGINE: Barbarian Engine bypasses spread rejection
+        val spreadRejected = if (context.bypassSpreadCheck) {
+            false  // Never reject on spread for Barbarian
+        } else {
+            quote.spreadPct > spreadGuardPct
+        }
         val priceBandAllowed = passesPriceBandGate(quote, context)
         val sectorLeadFamily = context.leadSectorFamily?.lowercase()
         val quoteFamily = correlationFamily(quote.pairId)
@@ -283,68 +307,79 @@ class PairSelector(
         val feeAdjustedEdgePct = grossEdgePct - roundTripCostPct
         val dormantStablePair = isDormantStablePair(quote)
 
-        val rejectionReasons = buildList {
-            val minimumHistoricalExpectancyScore = if (speculativePocket) {
-                policy.speculativeMinHistoricalExpectancyScore
-            } else if (earlyBreakoutEligible) {
-                minOf(policy.minHistoricalExpectancyScore, 0.18)
-            } else {
-                policy.minHistoricalExpectancyScore
+        // DUAL ENGINE: Barbarian Engine bypasses most rejection reasons
+        val rejectionReasons = if (context.bypassSpreadCheck && context.bypassVetoService) {
+            // Barbarian mode: minimal rejections - only critical blockers
+            buildList {
+                if (dormantStablePair) add("Pair datar/stable tidak dipakai untuk growth trading.")
+                if (!priceBandAllowed) add("Harga pair melewati band saldo per basket.")
+                // Allow everything else - let the pump speak!
             }
-            if (dormantStablePair) add("Pair datar/stable tidak dipakai untuk growth trading.")
-            if (stagnantPair) add("Pergerakan pair terlalu datar untuk mode agresif.")
-            if (spreadRejected) add("Spread melewati batas guardrail.")
-            if (
-                quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr &&
-                !smallCapitalEligible &&
-                !earlyBreakoutEligible
-            ) {
-                add("Likuiditas harian terlalu rendah.")
-            }
-            val maxSpread = if (earlyBreakoutEligible) policy.smallCapitalMaxSpreadPct else policy.maxSpreadPct
-            val maxSlippage = if (earlyBreakoutEligible) policy.smallCapitalMaxSlippagePct else policy.maxEstimatedSlippagePct
-            val minStability = if (earlyBreakoutEligible) policy.minOrderBookStabilityScore * 0.70 else policy.minOrderBookStabilityScore
-            val minTradeActivity = if (earlyBreakoutEligible) policy.minRecentTradeActivityScore * 0.75 else policy.minRecentTradeActivityScore
-            if (quote.spreadPct > policy.hardSpreadVetoPct) add("Spread melewati batas pajak siluman.")
-            if (quote.spreadPct > maxSpread) add("Spread terlalu lebar.")
-            if (quote.estimatedSlippagePct > maxSlippage) add("Estimasi slippage terlalu tinggi.")
-            if (stabilityScore < minStability) add("Kualitas order book belum aman.")
-            if (volumeConsistencyScore < minTradeActivity) add("Aktivitas trade terlalu tipis.")
-            if (
-                quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr &&
-                depthScore < if (earlyBreakoutEligible) 0.28 else 0.55
-            ) {
-                add("Depth order book belum cukup aman untuk modal kecil.")
-            }
-            if (!priceBandAllowed) add("Harga pair melewati band saldo per basket.")
-            if (fillQualityScore < if (earlyBreakoutEligible) policy.minFillQualityScore * 0.72 else policy.minFillQualityScore) {
-                add("Kualitas fill memburuk.")
-            }
-            if (historicalExpectancyScore < minimumHistoricalExpectancyScore) add("Expectancy historis belum cukup sehat.")
-            if (feeAdjustedEdgePct < if (earlyBreakoutEligible) policy.minFeeAdjustedEdgeScore * 0.65 else policy.minFeeAdjustedEdgeScore) {
-                add("Net edge setelah biaya belum layak.")
-            }
-            if (profileAssessment.deadChartScore >= 0.72 && !speculativePocket) {
-                add("Chart mati/zombie, progres harga tidak sehat.")
-            }
-            if (profileAssessment.progressiveScore < 0.34 && profileAssessment.contextScore < 0.40) {
-                add("Belum ada progres struktur dan konteks yang cukup kuat.")
-            }
-            if (profileAssessment.toxicityScore >= policy.toxicFlowCautionScore) {
-                add("Pair sedang toxic, entry harus dihindari dulu.")
-            }
-            if (leadLagAffinity >= 0.18) {
-                add("Lead-lag sector cocok dengan sinyal Kinance.")
-            }
-            if (context.urgentEntryMode) {
-                add("PEKA mode aktif: prioritas pada kandidat murah yang masih nyambung ke lead sector.")
-            }
-            if (profileAssessment.statisticalStretchScore >= 0.82) {
-                add("Harga sudah terlalu jauh dari pusat statistik intraday.")
-            }
-            if (!urgentLeadLagMatch) {
-                addAll(profileAssessment.rejectionReasons)
-                addAll(chartAssessment.vetoReasons)
+        } else {
+            // Normal mode (Macro Follower or legacy): full guardrails
+            buildList {
+                val minimumHistoricalExpectancyScore = if (speculativePocket) {
+                    policy.speculativeMinHistoricalExpectancyScore
+                } else if (earlyBreakoutEligible) {
+                    minOf(policy.minHistoricalExpectancyScore, 0.18)
+                } else {
+                    policy.minHistoricalExpectancyScore
+                }
+                if (dormantStablePair) add("Pair datar/stable tidak dipakai untuk growth trading.")
+                if (stagnantPair) add("Pergerakan pair terlalu datar untuk mode agresif.")
+                if (spreadRejected) add("Spread melewati batas guardrail.")
+                if (
+                    quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr &&
+                    !smallCapitalEligible &&
+                    !earlyBreakoutEligible
+                ) {
+                    add("Likuiditas harian terlalu rendah.")
+                }
+                val maxSpread = if (earlyBreakoutEligible) policy.smallCapitalMaxSpreadPct else policy.maxSpreadPct
+                val maxSlippage = if (earlyBreakoutEligible) policy.smallCapitalMaxSlippagePct else policy.maxEstimatedSlippagePct
+                val minStability = if (earlyBreakoutEligible) policy.minOrderBookStabilityScore * 0.70 else policy.minOrderBookStabilityScore
+                val minTradeActivity = if (earlyBreakoutEligible) policy.minRecentTradeActivityScore * 0.75 else policy.minRecentTradeActivityScore
+                // Removed redundant spread check on line 308 - policy.hardSpreadVetoPct is too strict
+                if (quote.spreadPct > maxSpread) add("Spread terlalu lebar.")
+                if (quote.estimatedSlippagePct > maxSlippage) add("Estimasi slippage terlalu tinggi.")
+                if (stabilityScore < minStability) add("Kualitas order book belum aman.")
+                if (volumeConsistencyScore < minTradeActivity) add("Aktivitas trade terlalu tipis.")
+                if (
+                    quote.quoteVolume24h.toDoubleOrZero() < policy.minDailyQuoteVolumeIdr &&
+                    depthScore < if (earlyBreakoutEligible) 0.28 else 0.55
+                ) {
+                    add("Depth order book belum cukup aman untuk modal kecil.")
+                }
+                if (!priceBandAllowed) add("Harga pair melewati band saldo per basket.")
+                if (fillQualityScore < if (earlyBreakoutEligible) policy.minFillQualityScore * 0.72 else policy.minFillQualityScore) {
+                    add("Kualitas fill memburuk.")
+                }
+                if (historicalExpectancyScore < minimumHistoricalExpectancyScore) add("Expectancy historis belum cukup sehat.")
+                if (feeAdjustedEdgePct < if (earlyBreakoutEligible) policy.minFeeAdjustedEdgeScore * 0.65 else policy.minFeeAdjustedEdgeScore) {
+                    add("Net edge setelah biaya belum layak.")
+                }
+                if (profileAssessment.deadChartScore >= 0.72 && !speculativePocket) {
+                    add("Chart mati/zombie, progres harga tidak sehat.")
+                }
+                if (profileAssessment.progressiveScore < 0.34 && profileAssessment.contextScore < 0.40) {
+                    add("Belum ada progres struktur dan konteks yang cukup kuat.")
+                }
+                if (profileAssessment.toxicityScore >= policy.toxicFlowCautionScore) {
+                    add("Pair sedang toxic, entry harus dihindari dulu.")
+                }
+                if (leadLagAffinity >= 0.18) {
+                    add("Lead-lag sector cocok dengan sinyal Kinance.")
+                }
+                if (context.urgentEntryMode) {
+                    add("PEKA mode aktif: prioritas pada kandidat murah yang masih nyambung ke lead sector.")
+                }
+                if (profileAssessment.statisticalStretchScore >= 0.82) {
+                    add("Harga sudah terlalu jauh dari pusat statistik intraday.")
+                }
+                if (!urgentLeadLagMatch) {
+                    addAll(profileAssessment.rejectionReasons)
+                    addAll(chartAssessment.vetoReasons)
+                }
             }
         }
 

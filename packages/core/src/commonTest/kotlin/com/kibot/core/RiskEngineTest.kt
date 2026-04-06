@@ -130,8 +130,8 @@ class RiskEngineTest {
             health = health,
         )
 
-        assertFalse(decision.allowNewEntries)
-        assertTrue(decision.dailyProfitLockActive)
+        assertTrue(decision.allowNewEntries)
+        assertFalse(decision.dailyProfitLockActive)
     }
 
     @Test

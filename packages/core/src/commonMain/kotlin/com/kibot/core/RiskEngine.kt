@@ -102,7 +102,10 @@ class RiskEngine(
             realizedLossTriggered -> false
             dailyRisk.rebasePending -> false
             dailyProfitLockActive -> false
-            !health.exchangeReachable || !health.supabaseReachable -> false
+            // FIX: DEGRADED MODE - Supabase down TIDAK boleh block entry!
+            // Bot tetap trade meskipun control plane unreachable
+            // OLD: !health.exchangeReachable || !health.supabaseReachable -> false
+            !health.exchangeReachable -> false  // Only block if EXCHANGE down
             health.syncHealth == com.kibot.shared.models.SyncHealth.BROKEN -> false
             dailyTradeCount >= config.maxDailyTradeActions -> false
             dailyRoundTripCount >= config.maxDailyRoundTrips -> false

@@ -24,7 +24,10 @@ class CapitalAllocationManager(
     private val rebalanceDriftThreshold: Double = 0.05 // 5% drift threshold
 ) {
     
-    // Current allocations
+    // Track total equity for proper 70/30 calculation
+    private var currentTotalEquityIdr = totalCapitalIdr
+    
+    // Current allocations (recalculated based on free capital within 70/30 split)
     private var currentStableCapitalIdr = totalCapitalIdr * stableRotationPercent
     private var currentAggressiveCapitalIdr = totalCapitalIdr * aggressivePercent
     
@@ -32,7 +35,7 @@ class CapitalAllocationManager(
     private val targetStableCapitalIdr = totalCapitalIdr * stableRotationPercent
     private val targetAggressiveCapitalIdr = totalCapitalIdr * aggressivePercent
     
-    // Tracking
+    // Tracking deployed capital PER BUCKET (not just total)
     private var totalDeployedStableIdr = 0.0
     private var totalDeployedAggressiveIdr = 0.0
     private var rebalanceCount = 0
@@ -150,6 +153,7 @@ class CapitalAllocationManager(
      */
     private fun detectRebalanceNeeded(): Boolean {
         val totalAvailable = currentStableCapitalIdr + currentAggressiveCapitalIdr
+        if (totalAvailable <= 0.0) return false
         val currentStablePercent = currentStableCapitalIdr / totalAvailable
         val driftFromTarget = abs(currentStablePercent - stableRotationPercent)
         
@@ -200,14 +204,51 @@ class CapitalAllocationManager(
     }
     
     /**
-     * Update available capital based on actual FREE IDR balance
-     * This should be called every sync cycle to reflect true available capital
+     * Recalculate deployed capital based on positions currently held
+     * This properly accounts for positions that have been exited
+     * 
+     * @param stableHoldingsIdr Total IDR value of positions in stable bucket
+     * @param aggressiveHoldingsIdr Total IDR value of positions in aggressive bucket
+     */
+    fun recalculateDeployed(stableHoldingsIdr: Double = 0.0, aggressiveHoldingsIdr: Double = 0.0) {
+        totalDeployedStableIdr = maxOf(0.0, stableHoldingsIdr)
+        totalDeployedAggressiveIdr = maxOf(0.0, aggressiveHoldingsIdr)
+    }
+    
+    /**
+     * Update available capital based on current equity and free balance
+     * 
+     * Proper 70/30 calculation:
+     * - Available_Stable = (Total_Equity x 0.70) - Currently_Deployed_Stable
+     * - Available_Aggressive = (Total_Equity x 0.30) - Currently_Deployed_Aggressive
      * 
      * @param freeIdrBalance Current free IDR balance from exchange
+     * @param totalEquityIdr Current total portfolio equity
+     * @param stableHoldingsIdr Total notional value of currently held stable positions
+     * @param aggressiveHoldingsIdr Total notional value of currently held aggressive positions
      */
-    fun updateFreeCapital(freeIdrBalance: Double) {
-        // Redistribute free capital to buckets based on 70/30 split
-        currentStableCapitalIdr = freeIdrBalance * stableRotationPercent
-        currentAggressiveCapitalIdr = freeIdrBalance * aggressivePercent
+    fun updateFreeCapital(
+        freeIdrBalance: Double, 
+        totalEquityIdr: Double = currentTotalEquityIdr,
+        stableHoldingsIdr: Double = 0.0,
+        aggressiveHoldingsIdr: Double = 0.0
+    ) {
+        // Update total equity tracking
+        currentTotalEquityIdr = totalEquityIdr
+        
+        // Recalculate deployed based on actual holdings NOW (this resets stale deployed tracking)
+        recalculateDeployed(stableHoldingsIdr, aggressiveHoldingsIdr)
+        
+        // Calculate target allocations based on TOTAL EQUITY
+        val targetStableCapital = totalEquityIdr * stableRotationPercent
+        val targetAggressiveCapital = totalEquityIdr * aggressivePercent
+        
+        // Calculate available capital: target minus what's currently deployed
+        val availableStable = maxOf(0.0, targetStableCapital - totalDeployedStableIdr)
+        val availableAggressive = maxOf(0.0, targetAggressiveCapital - totalDeployedAggressiveIdr)
+        
+        // Set current available allocations
+        currentStableCapitalIdr = availableStable
+        currentAggressiveCapitalIdr = availableAggressive
     }
 }

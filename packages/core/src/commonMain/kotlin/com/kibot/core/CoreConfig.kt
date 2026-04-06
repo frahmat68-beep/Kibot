@@ -7,7 +7,7 @@ data class LeaseProtocolConfig(
 
 data class PairSelectionPolicy(
     // MICRO-CAP AGGRESSIVE: Lowered volume minimums for small coins
-    val minDailyQuoteVolumeIdr: Double = 5_000_000.0,
+    val minDailyQuoteVolumeIdr: Double = 2_000_000.0,  // FIX: Turun dari 5M → 2M untuk micro-cap coins
     val smallCapitalMinDailyQuoteVolumeIdr: Double = 150_000.0,
     val smallCapitalMinTop5DepthIdr: Double = 5_000.0,
     val smallCapitalMinTradeCount24h: Int = 8,
@@ -176,8 +176,8 @@ data class StrategyExecutionConfig(
     val maxExecutableEntriesPerCycle: Int = 4,
     val productiveIdleRankingDelta: Double = 0.09,
     val productiveIdleOpportunityDelta: Double = 0.08,
-    val minExpectedNetProfitIdr: Double = 200.0,
-    val minExpectedNetProfitIdrSpeculative: Double = 220.0,
+    val minExpectedNetProfitIdr: Double = 100.0,  // FIX: Turun dari 200 → 100 untuk account kecil
+    val minExpectedNetProfitIdrSpeculative: Double = 120.0,  // FIX: Turun dari 220 → 120
     val minProfitToCostMultiplier: Double = 1.10,
     val minProfitAfterFeesBufferIdr: Double = 55.0,
     val minNetEdgeAfterCostsBufferPct: Double = 0.0,
@@ -236,8 +236,8 @@ data class DualEngineConfig(
     val barbarianMinPriceBreakoutPct5m: Double = 2.0,  // Or 2%+ price move in 5 minutes
     val barbarianForceMarketOrders: Boolean = true,  // Always use Taker for speed
     val barbarianTrailingStopInitialPct: Double = 1.5,  // Tight stop for quick exit
-    val barbarianTrailingDistancePct: Double = 0.5,  // Very tight trail - lock profit fast
-    val barbarianTrailingActivationProfitPct: Double = 0.3,  // Start trailing early at 0.3% profit
+    val barbarianTrailingDistancePct: Double = 0.8,  // FIX: Longgarkan dari 0.5 → 0.8 (anti-premature exit)
+    val barbarianTrailingActivationProfitPct: Double = 0.5,  // FIX: Naikkan dari 0.3 → 0.5 (wait for real profit)
     val barbarianMaxHoldSeconds: Int = 180,  // Force exit after 3 minutes max
     val barbarianMinRankingScore: Double = 0.30,  // Very low floor - let the pump speak
     val barbarianBypassAllGuardrails: Boolean = true,  // Master switch to skip spread/veto/ranking checks

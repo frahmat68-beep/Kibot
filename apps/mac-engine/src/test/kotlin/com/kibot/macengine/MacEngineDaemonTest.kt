@@ -2103,6 +2103,9 @@ class MacEngineDaemonTest {
         leadLagUdpHeartbeatRequiredBotIds = leadLagUdpHeartbeatRequiredBotIds,
         indodaxHyperGuardrailEnabled = true,
         indodaxHyperGuardrailTakerFeePct = 0.51,
+        telegramAlertsEnabled = false,
+        telegramBotToken = null,
+        telegramChatId = null,
         hyperAggressiveConfig = HyperAggressiveConfig(),
     )
 

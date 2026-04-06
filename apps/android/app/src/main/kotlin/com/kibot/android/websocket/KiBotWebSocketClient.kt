@@ -16,6 +16,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import java.util.concurrent.TimeUnit
+import kotlin.math.min
 
 class KiBotWebSocketClient(
     private var wsUrl: String = ServerConfig().getUrl()
@@ -47,12 +48,18 @@ class KiBotWebSocketClient(
     
     private var lastPingTime = 0L
     private var isConnecting = false
+    private var reconnectAttempt = 0
+    private var lastMessageAtMs = 0L
+    private var watchdogJob: Job? = null
+    private var lastFullStateRequestAtMs = 0L
 
     fun connect() {
         if (isConnecting || _connectionStatus.value == ConnectionStatus.CONNECTED) {
             Log.i(TAG, "⚠️ Already connected or connecting, skipping")
             return
         }
+        webSocket?.cancel()
+        webSocket = null
 
         isConnecting = true
         _connectionStatus.value = ConnectionStatus.CONNECTING
@@ -79,6 +86,7 @@ class KiBotWebSocketClient(
     fun disconnect() {
         Log.d(TAG, "Disconnecting")
         reconnectJob?.cancel()
+        watchdogJob?.cancel()
         webSocket?.close(1000, "User requested disconnect")
         webSocket = null
         isConnecting = false
@@ -134,6 +142,9 @@ class KiBotWebSocketClient(
     }
 
     fun requestFullState() {
+        val now = System.currentTimeMillis()
+        if (now - lastFullStateRequestAtMs < 800) return
+        lastFullStateRequestAtMs = now
         val request = mapOf("type" to "request", "data" to "full_state")
         sendMessage(gson.toJson(request))
     }
@@ -150,9 +161,36 @@ class KiBotWebSocketClient(
     private fun scheduleReconnect() {
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
-            delay(5000)
+            reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(8)
+            val baseMs = 1_500L
+            val maxMs = 45_000L
+            val expMs = (baseMs shl (reconnectAttempt - 1)).coerceAtMost(maxMs)
+            val jitterMs = (Math.random() * 700L).toLong()
+            val waitMs = min(expMs + jitterMs, maxMs)
+            Log.w(TAG, "⏳ Reconnect attempt #$reconnectAttempt in ${waitMs}ms")
+            delay(waitMs)
             Log.d(TAG, "Attempting reconnect...")
             connect()
+        }
+    }
+
+    private fun startWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = scope.launch {
+            while (isActive && _connectionStatus.value == ConnectionStatus.CONNECTED) {
+                delay(20_000)
+                val now = System.currentTimeMillis()
+                val staleMs = now - lastMessageAtMs
+                if (staleMs > 45_000) {
+                    Log.w(TAG, "🛟 WebSocket stream stale (${staleMs}ms). Forcing reconnect.")
+                    webSocket?.cancel()
+                    this@KiBotWebSocketClient.webSocket = null
+                    _connectionStatus.value = ConnectionStatus.DISCONNECTED
+                    updateBotState { it.copy(isConnected = false) }
+                    scheduleReconnect()
+                    break
+                }
+            }
         }
     }
 
@@ -228,7 +266,7 @@ class KiBotWebSocketClient(
                     }
                 }
                 
-                "trade" -> {
+                "trade", "trades" -> {
                     val tradeData = gson.fromJson(dataElement, TradeData::class.java)
                     scope.launch {
                         _trades.emit(tradeData)
@@ -641,8 +679,11 @@ class KiBotWebSocketClient(
         override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
             Log.i(TAG, "✅ WebSocket CONNECTED to $wsUrl")
             isConnecting = false
+            reconnectAttempt = 0
+            lastMessageAtMs = System.currentTimeMillis()
             _connectionStatus.value = ConnectionStatus.CONNECTED
             updateBotState { it.copy(isConnected = true) }
+            startWatchdog()
             
             // Subscribe to channels
             subscribe()
@@ -668,6 +709,7 @@ class KiBotWebSocketClient(
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             Log.w(TAG, "❌ WebSocket closed: $code - $reason")
             this@KiBotWebSocketClient.webSocket = null
+            watchdogJob?.cancel()
             _connectionStatus.value = ConnectionStatus.DISCONNECTED
             updateBotState { it.copy(isConnected = false) }
             
@@ -679,6 +721,8 @@ class KiBotWebSocketClient(
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
             Log.e(TAG, "🚨 WebSocket FAILURE: ${t.message}", t)
             isConnecting = false
+            this@KiBotWebSocketClient.webSocket = null
+            watchdogJob?.cancel()
             _connectionStatus.value = ConnectionStatus.ERROR
             updateBotState { it.copy(isConnected = false) }
             

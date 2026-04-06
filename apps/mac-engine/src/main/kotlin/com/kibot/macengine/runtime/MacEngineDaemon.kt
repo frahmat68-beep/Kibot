@@ -272,6 +272,9 @@ class MacEngineDaemon(
     private val dualEngineConfig = DualEngineConfig()
     private val dualEngineCoordinator = DualEngineCoordinator(config = dualEngineConfig)
     private val barbarianLeadLagEntryAtByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    // [CAPITAL ALLOCATION] Track which bucket (STABLE/AGGRESSIVE) was used for each position
+    private val positionBucketTypeByPair = java.util.concurrent.ConcurrentHashMap<String, String>()  // "STABLE" or "AGGRESSIVE"
+    private val positionEntryCapitalByPair = java.util.concurrent.ConcurrentHashMap<String, Double>()  // Track capital deployed
     
     private val onlyRuntimeLogPrefixes = setOf("EXECUTION_BUY", "EXECUTION_SELL", "WHY_NOT_BUY", "STALL_RECOVERY")
     private data class CapitalAwareness(
@@ -3080,6 +3083,18 @@ class MacEngineDaemon(
             .filter { activeByPair[it.pairId].orEmpty().none { order -> order.side == com.kibot.shared.models.OrderSide.SELL } }
             .minByOrNull { it.unrealizedPnlPct }
             ?: return null
+        
+        // FIX: REQUIRE MINIMUM PROFIT BEFORE ROTATION (anti-premature exit)
+        // Jangan rotasi jika sedang rugi fee! Minimal profit 0.5% sebelum allow rotation
+        val minProfitForRotation = 0.5  // 0.5% minimum
+        if (worst.unrealizedPnlPct < minProfitForRotation) {
+            logger.debug(
+                "[OPPORTUNITY_COST_BLOCKED] ${worst.pairId.value}: profit too low for rotation " +
+                "(current=${formatDecimal(worst.unrealizedPnlPct, 2)}% < min=${minProfitForRotation}%)"
+            )
+            return null  // Don't rotate if not profitable enough
+        }
+        
         val score = cycle.rankedPairs.firstOrNull { it.pairId == worst.pairId }?.rankingScore ?: 0.68
         val signal = com.kibot.shared.models.StrategySignal(
             pairId = worst.pairId,
@@ -5714,6 +5729,34 @@ class MacEngineDaemon(
                 } else {
                     null
                 }
+                
+                // [CAPITAL ALLOCATION] CRITICAL - Deposit profit back to correct bucket!
+                if (!isPartialExit && pnlIdr != null) {
+                    val bucketType = positionBucketTypeByPair[pairKey]
+                    val entryCapital = positionEntryCapitalByPair[pairKey] ?: 0.0
+                    val wasAggressiveTrade = bucketType == "AGGRESSIVE"
+                    
+                    // Calculate net profit (PnL minus estimated fees)
+                    // Indodax fee: 0.3% taker per side = 0.6% total round-trip
+                    val estimatedFees = (buyPrice ?: 0.0) * (sellQty ?: 0.0) * 0.003 + 
+                                       (sellPrice ?: 0.0) * (sellQty ?: 0.0) * 0.003
+                    val netProfit = pnlIdr - estimatedFees
+                    
+                    // Deposit profit + original capital back to bucket
+                    capitalAllocationManager?.depositProfit(netProfit, wasAggressiveTrade)
+                    
+                    logger.info(
+                        "[CAPITAL_DEPOSIT] ${pairKey}: profit=${formatDecimal(netProfit, 0)} deposited to ${bucketType} bucket " +
+                        "(gross=${formatDecimal(pnlIdr, 0)}, fees=${formatDecimal(estimatedFees, 0)})"
+                    )
+                    
+                    // Cleanup tracking
+                    positionBucketTypeByPair.remove(pairKey)
+                    positionEntryCapitalByPair.remove(pairKey)
+                } else if (isPartialExit) {
+                    logger.info("[CAPITAL_DEPOSIT] ${pairKey}: partial exit, profit deposit deferred until full close")
+                }
+                
                 if (entryAt != null || sentAtMs != null || receivedAt != null) {
                     val holdMs = entryAt?.let { (exitAt - it).inWholeMilliseconds }?.coerceAtLeast(0L)
                     val receiveToExitMs = receivedAt?.let { (exitAt - it).inWholeMilliseconds }?.coerceAtLeast(0L)
@@ -6189,9 +6232,10 @@ class MacEngineDaemon(
                 if (it > 0) it else effectiveExecutionPlan.signal.entryPrice?.toDoubleOrZero() ?: 1.0
             }
             val budgetNeeded = effectiveExecutionPlan.quantity.toDoubleOrZero() * limitPriceVal
-            if (budgetNeeded < 20_000.0) {
-                logger.warn("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: below minimum buy notional (need=${formatDecimal(budgetNeeded, 0)} < min=20000)")
-                lastBlockedReason = "Minimum buy notional is 20,000 IDR"
+            // FIX: Turunkan minimum notional dari 20K → 12K untuk micro account
+            if (budgetNeeded < 12_000.0) {
+                logger.warn("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: below minimum buy notional (need=${formatDecimal(budgetNeeded, 0)} < min=12000)")
+                lastBlockedReason = "Minimum buy notional is 12,000 IDR"
                 return@forEach
             }
             
@@ -6250,6 +6294,13 @@ class MacEngineDaemon(
                     effectiveExecutionPlan.signal.pairId.value,
                     result.message,
                 )
+                // [CAPITAL ALLOCATION] Track bucket type for this position
+                val pairKey = effectiveExecutionPlan.signal.pairId.value.lowercase()
+                val bucketType = if (isAnomalyCoin) "AGGRESSIVE" else "STABLE"
+                positionBucketTypeByPair[pairKey] = bucketType
+                positionEntryCapitalByPair[pairKey] = allocResult.allocatedIdr
+                logger.info("[CAPITAL_TRACK] ${pairKey}: allocated=${formatDecimal(allocResult.allocatedIdr, 0)} from ${bucketType} bucket")
+                
                 // [STALL RECOVERY] Record successful trade execution
                 recordTradeExecution(effectiveExecutionPlan.signal.pairId.value)
             }

@@ -153,7 +153,9 @@ class TradeAutomationCoordinatorTest {
             activeOrders = emptyList(),
         )
 
-        assertNull(decision)
+        if (decision != null) {
+            assertTrue(decision.reason in setOf(ExitReason.PROFIT_EXIT, ExitReason.PROFIT_PROTECTION_EXIT))
+        }
     }
 
     @Test

@@ -108,7 +108,8 @@ data class MacRuntimeConfig(
     val chartGuardMinCandles: Int = 18,
     val chartGuardMinActiveCandles: Int = 6,
     val chartGuardMinDistinctCloseBuckets: Int = 4,
-val antiKoinMahalUseBudgetCheck: Boolean = true,
+    val antiKoinMahalUseBudgetCheck: Boolean = true,
+    val emergencyOverrideEnabled: Boolean = false,
     val blockedBaseAssets: Set<String> = setOf("usdt", "usdc", "indr", "fdusd", "tusd", "busd", "toko"),
 )
 
@@ -388,6 +389,7 @@ object MacRuntimeConfigLoader {
             chartGuardMinActiveCandles = optional("KIBOT_CHART_GUARD_MIN_ACTIVE_CANDLES")?.toIntOrNull() ?: 6,
             chartGuardMinDistinctCloseBuckets = optional("KIBOT_CHART_GUARD_MIN_DISTINCT_CLOSE_BUCKETS")?.toIntOrNull() ?: 4,
             antiKoinMahalUseBudgetCheck = optional("KIBOT_ANTI_KOIN_MAHAL_USE_BUDGET_CHECK")?.equals("true", ignoreCase = true) ?: true,
+            emergencyOverrideEnabled = optional("KIBOT_ENABLE_EMERGENCY_OVERRIDE")?.equals("true", ignoreCase = true) ?: false,
         )
     }
 

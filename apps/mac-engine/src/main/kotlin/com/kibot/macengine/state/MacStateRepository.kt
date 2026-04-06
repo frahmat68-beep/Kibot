@@ -172,6 +172,12 @@ class MacStateRepository {
         val uptimeMs = Clock.System.now().toEpochMilliseconds() - startedAtEpochMs
         val uptimeText = formatUptime(uptimeMs)
         val prev = _state.value
+        val nextPortfolioValue = parseMonetaryLabel(next.portfolioValueIdr)
+        val prevPortfolioValue = parseMonetaryLabel(prev.portfolioValueIdr)
+        val quoteFeedLikelyMissing =
+            next.referenceQuoteAssetPriceIdr == null ||
+                next.exchangePingValueMs == null ||
+                next.exchangePingMs == "--"
         val looksLikeBootSnapshot =
             next.scanUniverseCount == 0 &&
                 next.topCandidate == "-" &&
@@ -184,11 +190,21 @@ class MacStateRepository {
                         next.statusMessage.contains("sinkron", ignoreCase = true)
                     )
         val keepPortfolioFallback =
-            next.portfolioValueIdr == "Rp0" &&
-                prev.portfolioValueIdr != "Rp0" &&
-                (next.statusMessage.contains("sync", ignoreCase = true) ||
-                    next.statusMessage.contains("lease", ignoreCase = true) ||
-                    next.statusMessage.contains("failed", ignoreCase = true))
+            (
+                next.portfolioValueIdr == "Rp0" &&
+                    prev.portfolioValueIdr != "Rp0" &&
+                    (next.statusMessage.contains("sync", ignoreCase = true) ||
+                        next.statusMessage.contains("lease", ignoreCase = true) ||
+                        next.statusMessage.contains("failed", ignoreCase = true))
+                ) ||
+                (
+                    prev.holdingsDetailed.isNotEmpty() &&
+                        next.holdingsDetailed.isEmpty() &&
+                        next.syncHealth != "HEALTHY" &&
+                        quoteFeedLikelyMissing &&
+                        prevPortfolioValue > 0.0 &&
+                        nextPortfolioValue in 0.0..(prevPortfolioValue * 0.92)
+                    )
         _state.value = next.copy(
             isBotRunning = if (looksLikeBootSnapshot && prev.isBotRunning) prev.isBotRunning else next.isBotRunning,
             effectiveState = if (looksLikeBootSnapshot && prev.isBotRunning) prev.effectiveState else next.effectiveState,
@@ -199,9 +215,9 @@ class MacStateRepository {
             radarPairs = if (looksLikeBootSnapshot && prev.radarPairs.isNotEmpty()) prev.radarPairs else next.radarPairs,
             scanUniverseCount = if (looksLikeBootSnapshot && prev.scanUniverseCount > 0) prev.scanUniverseCount else next.scanUniverseCount,
             liveExecutionEnabled = if (looksLikeBootSnapshot && prev.isBotRunning) prev.liveExecutionEnabled else next.liveExecutionEnabled,
-            portfolioValueIdr = next.portfolioValueIdr,  // [FIX] Always use latest, don't fallback to stale value
-            totalValueIdr = next.totalValueIdr,  // [FIX] Always use latest balance from exchange, even if Rp0
-            freeIdrLabel = next.freeIdrLabel,  // [FIX] Always use latest free IDR, don't show stale cached value
+            portfolioValueIdr = if (keepPortfolioFallback) prev.portfolioValueIdr else next.portfolioValueIdr,
+            totalValueIdr = if (keepPortfolioFallback) prev.totalValueIdr else next.totalValueIdr,
+            freeIdrLabel = if (keepPortfolioFallback) prev.freeIdrLabel else next.freeIdrLabel,
             syncHealth = if (looksLikeBootSnapshot && prev.syncHealth != "BROKEN") prev.syncHealth else next.syncHealth,
             healthSummary = if (looksLikeBootSnapshot && prev.healthSummary.isNotBlank()) prev.healthSummary else next.healthSummary,
             statusMessage = if (looksLikeBootSnapshot && prev.statusMessage.isNotBlank()) prev.statusMessage else next.statusMessage,
@@ -210,8 +226,8 @@ class MacStateRepository {
             kidaxNodeStatus = if (looksLikeBootSnapshot && prev.kidaxNodeStatus != "offline") prev.kidaxNodeStatus else next.kidaxNodeStatus,
             kibotNodeStatus = if (looksLikeBootSnapshot && prev.kibotNodeStatus != "offline") prev.kibotNodeStatus else next.kibotNodeStatus,
             kinanceNodeStatus = if (looksLikeBootSnapshot && prev.kinanceNodeStatus != "offline") prev.kinanceNodeStatus else next.kinanceNodeStatus,
-            heldAssets = if (looksLikeBootSnapshot && prev.heldAssets.isNotEmpty()) prev.heldAssets else next.heldAssets,
-            holdingsDetailed = if (looksLikeBootSnapshot && prev.holdingsDetailed.isNotEmpty()) prev.holdingsDetailed else next.holdingsDetailed,
+            heldAssets = if ((looksLikeBootSnapshot || keepPortfolioFallback) && prev.heldAssets.isNotEmpty()) prev.heldAssets else next.heldAssets,
+            holdingsDetailed = if ((looksLikeBootSnapshot || keepPortfolioFallback) && prev.holdingsDetailed.isNotEmpty()) prev.holdingsDetailed else next.holdingsDetailed,
             lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
             serverUptime = uptimeText,
             liveTimeline = if (next.liveTimeline.isNotEmpty()) {
@@ -308,6 +324,16 @@ class MacStateRepository {
         recordTimeline("SYNC", command.defaultStatusMessage())
         return next
     }
+}
+
+private fun parseMonetaryLabel(label: String): Double {
+    val cleaned = label
+        .replace("Rp", "", ignoreCase = true)
+        .replace(".", "")
+        .replace(",", ".")
+        .replace("+", "")
+        .trim()
+    return cleaned.toDoubleOrNull() ?: 0.0
 }
 
 private fun MacCommand.defaultStatusMessage(): String = when (this) {

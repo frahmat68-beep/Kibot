@@ -19,9 +19,9 @@ private object QuietKtorLogger : Logger {
 
 internal actual fun createPlatformHttpClient(json: Json): HttpClient = HttpClient(CIO) {
     install(HttpTimeout) {
-        requestTimeoutMillis = 8_000
-        connectTimeoutMillis = 5_000
-        socketTimeoutMillis = 8_000
+        requestTimeoutMillis = 15_000
+        connectTimeoutMillis = 8_000
+        socketTimeoutMillis = 15_000
     }
     defaultRequest {
         headers.append(HttpHeaders.UserAgent, "KiBot/1.0 (+https://kibot.local)")

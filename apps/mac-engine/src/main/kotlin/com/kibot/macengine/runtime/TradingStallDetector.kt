@@ -14,18 +14,18 @@ import kotlinx.datetime.Instant
 import kotlin.time.Duration.Companion.hours
 
 data class TradingStallState(
-    // EMERGENCY FIX: Init to 2 hours ago so stall detector triggers IMMEDIATELY on startup!
-    // Old bug: defaulted to Clock.System.now() → bot thinks it just traded → waits 60 min
-    val lastTradeTimestamp: Instant = Clock.System.now().minus(2.hours),
-    val stallDetectedAt: Instant? = Clock.System.now().minus(2.hours),  // Init to now so stallMinutes is immediately populated
-    val stallMinutes: Long = 120,  // 2 hours - triggers emergency immediately after restart
+    val lastTradeTimestamp: Instant = Clock.System.now(),
+    val stallDetectedAt: Instant? = null,
+    val stallMinutes: Long = 0,
     val escapeAttemptCount: Int = 0,
-    val lastEscapeAttemptMode: String = "SAFE"
+    val lastEscapeAttemptMode: String = "SAFE",
+    val lastEscapeAttemptAt: Instant? = null,
 )
 
 class TradingStallDetector(
     val stallTimeoutMinutes: Long = 60,  // 1 hour threshold (configurable)
-    val escalationModes: List<String> = listOf("SAFE", "DEFENSIVE", "GROWTH", "ATTACK")
+    val escalationModes: List<String> = listOf("SAFE", "DEFENSIVE", "GROWTH", "ATTACK"),
+    val minEscalationIntervalMinutes: Long = 5,
 ) {
     private var state = TradingStallState()
     
@@ -54,10 +54,26 @@ class TradingStallDetector(
                     stallDetectedAt = now,
                     stallMinutes = minutesSinceLastTrade
                 )
+            } else {
+                state = state.copy(stallMinutes = minutesSinceLastTrade)
             }
             return true
         }
+        if (state.stallDetectedAt != null || state.stallMinutes > 0) {
+            state = state.copy(
+                stallDetectedAt = null,
+                stallMinutes = 0,
+                escapeAttemptCount = 0,
+                lastEscapeAttemptAt = null,
+            )
+        }
         return false
+    }
+
+    fun shouldAttemptRecovery(now: Instant = Clock.System.now()): Boolean {
+        val lastAttempt = state.lastEscapeAttemptAt ?: return true
+        val elapsedMinutes = (now.toEpochMilliseconds() - lastAttempt.toEpochMilliseconds()) / 60000
+        return elapsedMinutes >= minEscalationIntervalMinutes
     }
     
     /**
@@ -74,10 +90,11 @@ class TradingStallDetector(
     /**
      * Record escape attempt (mode escalation)
      */
-    fun recordEscapeAttempt(newMode: String) {
+    fun recordEscapeAttempt(newMode: String, now: Instant = Clock.System.now()) {
         state = state.copy(
             escapeAttemptCount = state.escapeAttemptCount + 1,
-            lastEscapeAttemptMode = newMode
+            lastEscapeAttemptMode = newMode,
+            lastEscapeAttemptAt = now,
         )
     }
     

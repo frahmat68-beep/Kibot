@@ -47,8 +47,8 @@ sealed class Screen(
 
 class KiBotViewModel(application: Application) : AndroidViewModel(application) {
     private val preferencesManager = PreferencesManager(application)
-    private val primaryDashboardServer = ServerConfig(host = "213.35.118.26", port = 8787)
-    private val wsClient = KiBotWebSocketClient(primaryDashboardServer.getUrl())
+    private val initialServerConfig = preferencesManager.getServerConfig()
+    private val wsClient = KiBotWebSocketClient(initialServerConfig.getUrl())
     
     val botState: StateFlow<BotState> = wsClient.botState
     val connectionStatus: StateFlow<ConnectionStatus> = wsClient.connectionStatus
@@ -56,7 +56,7 @@ class KiBotViewModel(application: Application) : AndroidViewModel(application) {
     
     private val _currentScreen = MutableStateFlow<Screen>(Screen.Dashboard)
     val currentScreen: StateFlow<Screen> = _currentScreen
-    private val _serverConfig = MutableStateFlow(primaryDashboardServer)
+    private val _serverConfig = MutableStateFlow(initialServerConfig)
     val serverConfig: StateFlow<ServerConfig> = _serverConfig
 
     init {
@@ -85,9 +85,8 @@ class KiBotViewModel(application: Application) : AndroidViewModel(application) {
 
     fun saveServerConfig(config: ServerConfig) {
         preferencesManager.saveServerConfig(config)
-        // Live dashboard data is sourced from KiDax. Other bot statuses arrive via Trinity heartbeat.
-        _serverConfig.value = primaryDashboardServer
-        wsClient.reconnect(primaryDashboardServer.getUrl())
+        _serverConfig.value = config
+        wsClient.reconnect(config.getUrl())
         _currentScreen.value = Screen.Dashboard
     }
     

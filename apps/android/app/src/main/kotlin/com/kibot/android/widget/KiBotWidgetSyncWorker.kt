@@ -6,7 +6,9 @@ import androidx.work.WorkerParameters
 import com.google.gson.JsonParser
 import com.kibot.android.data.BotState
 import com.kibot.android.data.HeartbeatData
+import com.kibot.android.data.ServerConfig
 import com.kibot.android.data.ServiceStatus
+import com.kibot.android.util.PreferencesManager
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -15,14 +17,17 @@ class KiBotWidgetSyncWorker(
     appContext: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
+    private val preferencesManager = PreferencesManager(appContext)
     private val http = OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
         .build()
 
     override suspend fun doWork(): Result {
+        val serverConfig = preferencesManager.getServerConfig()
+        val apiUrl = "http://${serverConfig.host}:${serverConfig.port}/api/state"
         val request = Request.Builder()
-            .url("http://213.35.118.26:8787/api/state")
+            .url(apiUrl)
             .get()
             .build()
         return runCatching {
