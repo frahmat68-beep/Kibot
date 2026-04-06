@@ -191,6 +191,7 @@ private fun exchangeRiskConfig(exchangeKind: ExchangeKind): RiskConfig = when (e
 
 private fun exchangeExecutionConfig(exchangeKind: ExchangeKind): StrategyExecutionConfig = when (exchangeKind) {
     ExchangeKind.INDODAX -> StrategyExecutionConfig(
+        referenceQuoteAsset = "idr",
         minOrderNotionalIdr = 10_000.0,
     )
     ExchangeKind.BINANCE_SPOT -> StrategyExecutionConfig(
@@ -8322,6 +8323,7 @@ class MacEngineDaemon(
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
     ): DecimalValue {
         val referenceQuoteIdr = quoteAssetToIdrPrice(referenceQuoteAsset(), marketQuotes) ?: 1.0
+        logger.info("[PORTFOLIO_CALC] referenceQuoteAsset={} rate_to_idr={}", referenceQuoteAsset(), formatDecimal(referenceQuoteIdr, 0))
         val total = balances.sumOf { balance ->
             val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
             val totalValueInIdr = balance.totalValueInIdr
@@ -8341,7 +8343,7 @@ class MacEngineDaemon(
         }
         val portfolioIdr = total.coerceAtLeast(0.0)
         if (balances.any { it.free.toDoubleOrZero() + it.locked.toDoubleOrZero() > 0.0 }) {
-            logger.info("[PORTFOLIO_CALC] total_equity={} from {} balances, {} quotes", 
+            logger.info("[PORTFOLIO_CALC] total_equity={} IDR from {} balances, {} quotes", 
                 formatDecimal(portfolioIdr, 0), balances.count { (it.free.toDoubleOrZero() + it.locked.toDoubleOrZero()) > 0.0 }, marketQuotes.size)
         }
         return DecimalValue.fromDouble(portfolioIdr)
