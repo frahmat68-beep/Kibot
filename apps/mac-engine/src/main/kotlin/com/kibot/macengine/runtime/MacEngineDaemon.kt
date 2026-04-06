@@ -5018,6 +5018,8 @@ class MacEngineDaemon(
         var exchangePingMs = ((System.nanoTime() - publicPingStartedAtNs) / 1_000_000L)
             .takeIf { exchangeReachable }
             ?.coerceAtLeast(1L)
+        
+        logger.debug("[PROBE_STAGE1] Public HTTP {} = {}", publicPingUrl, if (exchangeReachable) "OK" else "FAILED")
 
         if (!exchangeReachable) {
             val pingStartedAtNs = System.nanoTime()
@@ -5025,6 +5027,7 @@ class MacEngineDaemon(
             exchangePingMs = ((System.nanoTime() - pingStartedAtNs) / 1_000_000L)
                 .takeIf { exchangeReachable }
                 ?.coerceAtLeast(1L)
+            logger.debug("[PROBE_STAGE2] exchange.ping() = {}", if (exchangeReachable) "OK" else "FAILED")
         }
 
         if (!exchangeReachable) {
@@ -5035,8 +5038,17 @@ class MacEngineDaemon(
             if (fallbackReachable) {
                 exchangeReachable = true
                 exchangePingMs = ((System.nanoTime() - fallbackStartedAtNs) / 1_000_000L).coerceAtLeast(1L)
-                logger.info("Exchange probe fallback succeeded via market quotes.")
+                logger.info("[PROBE_STAGE3] Exchange probe FALLBACK OK via market quotes fetch")
+            } else {
+                logger.debug("[PROBE_STAGE3] Market quotes fallback failed or empty")
             }
+        }
+        if (exchangeReachable) {
+            logger.info("[EXCHANGE_PROBE] SUCCESS after {} attempts", 
+                if (lastExchangeReachable) "0" else "1+")
+        } else {
+            logger.warn("[EXCHANGE_PROBE] FAILED - Exchange unreachable (failure count: {})", 
+                (consecutiveExchangeProbeFailures + 1).coerceAtMost(10))
         }
         lastExchangeProbeAt = now
         lastExchangeReachable = exchangeReachable
