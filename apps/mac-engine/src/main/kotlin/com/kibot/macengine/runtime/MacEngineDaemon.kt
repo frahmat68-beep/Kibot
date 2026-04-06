@@ -6081,12 +6081,12 @@ class MacEngineDaemon(
                 return@forEach
             }
             
-            // Check per-coin limit (25% max)
+            // Check per-coin limit (ADAPTIVE based on account size)
             val totalEquity = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
-            val perCoinLimit = totalEquity * 0.25  // Hard 25% limit
+            val perCoinLimit = getAdaptivePerCoinLimit(totalEquity)
             if (budgetNeeded > perCoinLimit) {
-                logger.error("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: exceeds 25% limit (need=${formatDecimal(budgetNeeded, 0)} > limit=${formatDecimal(perCoinLimit, 0)})")
-                lastBlockedReason = "Position size ${formatDecimal(budgetNeeded, 0)} IDR exceeds 25% per-coin limit (${formatDecimal(perCoinLimit, 0)} IDR)"
+                logger.error("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: exceeds adaptive limit (need=${formatDecimal(budgetNeeded, 0)} > limit=${formatDecimal(perCoinLimit, 0)})")
+                lastBlockedReason = "Position size ${formatDecimal(budgetNeeded, 0)} IDR exceeds adaptive per-coin limit (${formatDecimal(perCoinLimit, 0)} IDR)"
                 return@forEach
             }
             
@@ -6515,9 +6515,9 @@ class MacEngineDaemon(
             return false
         }
         val totalEq2 = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
-        val limit2 = totalEq2 * 0.25
+        val limit2 = getAdaptivePerCoinLimit(totalEq2)
         if (budget2 > limit2) {
-            logger.error("[CAPITAL_BLOCKED] BUY_MOMENTUM ${normalizedSynthetic.signal.pairId.value}: exceeds 25% limit")
+            logger.error("[CAPITAL_BLOCKED] BUY_MOMENTUM ${normalizedSynthetic.signal.pairId.value}: exceeds adaptive limit")
             return false
         }
         val finalQty2 = (allocResult2.allocatedIdr / limitPrice2).coerceAtLeast(0.00000001)
@@ -6752,9 +6752,9 @@ class MacEngineDaemon(
             return false
         }
         val totalEq3 = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
-        val limit3 = totalEq3 * 0.25
+        val limit3 = getAdaptivePerCoinLimit(totalEq3)
         if (budget3 > limit3) {
-            logger.error("[CAPITAL_BLOCKED] DYNAMIC_VIP ${normalized.signal.pairId.value}: exceeds 25% limit")
+            logger.error("[CAPITAL_BLOCKED] DYNAMIC_VIP ${normalized.signal.pairId.value}: exceeds adaptive limit")
             return false
         }
         val finalQty3 = (allocResult3.allocatedIdr / limitPrice3).coerceAtLeast(0.00000001)
@@ -6991,9 +6991,9 @@ class MacEngineDaemon(
             return false
         }
         val totalEq4 = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
-        val limit4 = totalEq4 * 0.25
+        val limit4 = getAdaptivePerCoinLimit(totalEq4)
         if (budget4 > limit4) {
-            logger.error("[CAPITAL_BLOCKED] LIGHT_SCALPING ${normalized.signal.pairId.value}: exceeds 25% limit")
+            logger.error("[CAPITAL_BLOCKED] LIGHT_SCALPING ${normalized.signal.pairId.value}: exceeds adaptive limit")
             return false
         }
         val finalQty4 = (allocResult4.allocatedIdr / limitPrice4).coerceAtLeast(0.00000001)
@@ -7476,9 +7476,9 @@ class MacEngineDaemon(
                             logWhyNotBuy(now, order.pairId.value, "capital_allocation_rejected")
                         } else {
                             val totalEq5 = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
-                            val limit5 = totalEq5 * 0.25
+                            val limit5 = getAdaptivePerCoinLimit(totalEq5)
                             if (budget5 > limit5) {
-                                logger.error("[CAPITAL_BLOCKED] ORDER_CHASE ${slicedChasePlan.signal.pairId.value}: exceeds 25% limit")
+                                logger.error("[CAPITAL_BLOCKED] ORDER_CHASE ${slicedChasePlan.signal.pairId.value}: exceeds adaptive limit")
                                 logWhyNotBuy(now, order.pairId.value, "position_size_limit_exceeded")
                             } else {
                                 val finalQty5 = (allocResult5.allocatedIdr / limitPrice5).coerceAtLeast(0.00000001)
@@ -8581,6 +8581,23 @@ class MacEngineDaemon(
     }
 
     private fun formatDecimal(value: Double, digits: Int): String = "%.${digits}f".format(java.util.Locale.US, value)
+
+    /**
+     * Adaptive per-coin limit based on account size.
+     * Small accounts need higher % to meet minimum order requirements.
+     * @return maximum IDR allowed per single coin position
+     */
+    private fun getAdaptivePerCoinLimit(totalEquity: Double): Double {
+        val ratio = when {
+            totalEquity < 150_000 -> 0.60   // 60% for tiny (<150K) - must meet min_order
+            totalEquity < 300_000 -> 0.45   // 45% for very small
+            totalEquity < 500_000 -> 0.35   // 35% for small
+            totalEquity < 1_000_000 -> 0.30 // 30% for medium
+            else -> 0.25                     // 25% for large (original)
+        }
+        // Also ensure at least 15K floor (above Indodax minimum)
+        return maxOf(15_000.0, totalEquity * ratio)
+    }
 
     private fun buildDisplayRadarPairs(
         strategyCycle: com.kibot.core.StrategyCycleResult?,
