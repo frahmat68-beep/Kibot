@@ -6045,7 +6045,7 @@ class MacEngineDaemon(
             }
             
             // Check per-coin limit (25% max)
-            val totalEquity = capitalAwareness.totalEquityIdr
+            val totalEquity = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
             val perCoinLimit = totalEquity * 0.25  // Hard 25% limit
             if (budgetNeeded > perCoinLimit) {
                 logger.error("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: exceeds 25% limit (need=${formatDecimal(budgetNeeded, 0)} > limit=${formatDecimal(perCoinLimit, 0)})")
@@ -6463,11 +6463,34 @@ class MacEngineDaemon(
             executionPlan = normalizedSynthetic,
             marketQuotes = marketQuotes,
         )
+        
+        // [CAPITAL ALLOCATION CHECK] - 2nd entry point (BUY_MOMENTUM)
+        val pairCoin2 = normalizedSynthetic.signal.pairId.value.substringBefore("_").lowercase()
+        val isAnomaly2 = pairCoin2 in (listOf("koma", "shib", "doge"))
+        val limitPrice2 = (normalizedSynthetic.limitPrice?.toDoubleOrZero() ?: 0.0).let {
+            if (it > 0) it else normalizedSynthetic.signal.entryPrice?.toDoubleOrZero() ?: 1.0
+        }
+        val budget2 = normalizedSynthetic.quantity.toDoubleOrZero() * limitPrice2
+        val allocResult2 = capitalAllocationManager?.allocate(isAnomaly2, budget2)
+        if (allocResult2 == null || allocResult2.allocatedIdr <= 0.0) {
+            logger.error("[CAPITAL_BLOCKED] BUY_MOMENTUM ${normalizedSynthetic.signal.pairId.value}: allocation denied")
+            logWhyNotBuy(now, normalizedSynthetic.signal.pairId.value, "capital_allocation_rejected")
+            return false
+        }
+        val totalEq2 = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
+        val limit2 = totalEq2 * 0.25
+        if (budget2 > limit2) {
+            logger.error("[CAPITAL_BLOCKED] BUY_MOMENTUM ${normalizedSynthetic.signal.pairId.value}: exceeds 25% limit")
+            return false
+        }
+        val finalQty2 = (allocResult2.allocatedIdr / limitPrice2).coerceAtLeast(0.00000001)
+        val finalPlan2 = normalizedSynthetic.copy(quantity = DecimalValue.fromDouble(finalQty2))
+        
         val result = liveExecutionCoordinator.submitEntry(
             botId = config.controlPlane.botId,
             deviceId = config.device.deviceId,
             term = lease.term,
-            executionPlan = normalizedSynthetic,
+            executionPlan = finalPlan2,
             existingPersistedOrders = activePersistedOrders,
             exchange = exchange,
             controlPlane = controlPlane,
@@ -6677,11 +6700,34 @@ class MacEngineDaemon(
             logWhyNotBuy(now, targetQuote.pairId.value, blocked)
             return false
         }
+        
+        // [CAPITAL ALLOCATION CHECK] - 3rd entry point (DYNAMIC_VIP)
+        val pairCoin3 = normalized.signal.pairId.value.substringBefore("_").lowercase()
+        val isAnomaly3 = pairCoin3 in (listOf("koma", "shib", "doge"))
+        val limitPrice3 = (normalized.limitPrice?.toDoubleOrZero() ?: 0.0).let {
+            if (it > 0) it else normalized.signal.entryPrice?.toDoubleOrZero() ?: 1.0
+        }
+        val budget3 = normalized.quantity.toDoubleOrZero() * limitPrice3
+        val allocResult3 = capitalAllocationManager?.allocate(isAnomaly3, budget3)
+        if (allocResult3 == null || allocResult3.allocatedIdr <= 0.0) {
+            logger.error("[CAPITAL_BLOCKED] DYNAMIC_VIP ${normalized.signal.pairId.value}: allocation denied")
+            logWhyNotBuy(now, targetQuote.pairId.value, "capital_allocation_rejected")
+            return false
+        }
+        val totalEq3 = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
+        val limit3 = totalEq3 * 0.25
+        if (budget3 > limit3) {
+            logger.error("[CAPITAL_BLOCKED] DYNAMIC_VIP ${normalized.signal.pairId.value}: exceeds 25% limit")
+            return false
+        }
+        val finalQty3 = (allocResult3.allocatedIdr / limitPrice3).coerceAtLeast(0.00000001)
+        val finalPlan3 = normalized.copy(quantity = DecimalValue.fromDouble(finalQty3))
+        
         val result = liveExecutionCoordinator.submitEntry(
             botId = config.controlPlane.botId,
             deviceId = config.device.deviceId,
             term = lease.term,
-            executionPlan = normalized,
+            executionPlan = finalPlan3,
             existingPersistedOrders = activePersistedOrders,
             exchange = exchange,
             controlPlane = controlPlane,
@@ -6893,11 +6939,34 @@ class MacEngineDaemon(
             executionPlan = normalized,
             marketQuotes = marketQuotes,
         )
+        
+        // [CAPITAL ALLOCATION CHECK] - 4th entry point (LIGHT_SCALPING)
+        val pairCoin4 = normalized.signal.pairId.value.substringBefore("_").lowercase()
+        val isAnomaly4 = pairCoin4 in (listOf("koma", "shib", "doge"))
+        val limitPrice4 = (normalized.limitPrice?.toDoubleOrZero() ?: 0.0).let {
+            if (it > 0) it else normalized.signal.entryPrice?.toDoubleOrZero() ?: 1.0
+        }
+        val budget4 = normalized.quantity.toDoubleOrZero() * limitPrice4
+        val allocResult4 = capitalAllocationManager?.allocate(isAnomaly4, budget4)
+        if (allocResult4 == null || allocResult4.allocatedIdr <= 0.0) {
+            logger.error("[CAPITAL_BLOCKED] LIGHT_SCALPING ${normalized.signal.pairId.value}: allocation denied")
+            logWhyNotBuy(now, targetQuote.pairId.value, "capital_allocation_rejected")
+            return false
+        }
+        val totalEq4 = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
+        val limit4 = totalEq4 * 0.25
+        if (budget4 > limit4) {
+            logger.error("[CAPITAL_BLOCKED] LIGHT_SCALPING ${normalized.signal.pairId.value}: exceeds 25% limit")
+            return false
+        }
+        val finalQty4 = (allocResult4.allocatedIdr / limitPrice4).coerceAtLeast(0.00000001)
+        val finalPlan4 = normalized.copy(quantity = DecimalValue.fromDouble(finalQty4))
+        
         val result = liveExecutionCoordinator.submitEntry(
             botId = config.controlPlane.botId,
             deviceId = config.device.deviceId,
             term = lease.term,
-            executionPlan = normalized,
+            executionPlan = finalPlan4,
             existingPersistedOrders = activePersistedOrders,
             exchange = exchange,
             controlPlane = controlPlane,
@@ -7356,6 +7425,46 @@ class MacEngineDaemon(
                             executionPlan = chasePlan,
                             marketQuotes = quoteByPair.values.toList(),
                         )
+                        
+                        // [CAPITAL ALLOCATION CHECK] - 5th entry point (ORDER_CHASE)
+                        val pairCoin5 = slicedChasePlan.signal.pairId.value.substringBefore("_").lowercase()
+                        val isAnomaly5 = pairCoin5 in (listOf("koma", "shib", "doge"))
+                        val limitPrice5 = (slicedChasePlan.limitPrice?.toDoubleOrZero() ?: 0.0).let {
+                            if (it > 0) it else slicedChasePlan.signal.entryPrice?.toDoubleOrZero() ?: 1.0
+                        }
+                        val budget5 = slicedChasePlan.quantity.toDoubleOrZero() * limitPrice5
+                        val allocResult5 = capitalAllocationManager?.allocate(isAnomaly5, budget5)
+                        if (allocResult5 == null || allocResult5.allocatedIdr <= 0.0) {
+                            logger.error("[CAPITAL_BLOCKED] ORDER_CHASE ${slicedChasePlan.signal.pairId.value}: allocation denied")
+                            logWhyNotBuy(now, order.pairId.value, "capital_allocation_rejected")
+                        } else {
+                            val totalEq5 = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
+                            val limit5 = totalEq5 * 0.25
+                            if (budget5 > limit5) {
+                                logger.error("[CAPITAL_BLOCKED] ORDER_CHASE ${slicedChasePlan.signal.pairId.value}: exceeds 25% limit")
+                                logWhyNotBuy(now, order.pairId.value, "position_size_limit_exceeded")
+                            } else {
+                                val finalQty5 = (allocResult5.allocatedIdr / limitPrice5).coerceAtLeast(0.00000001)
+                                val finalPlan5 = slicedChasePlan.copy(quantity = DecimalValue.fromDouble(finalQty5))
+                                
+                                val chaseResult = liveExecutionCoordinator.submitEntry(
+                                    botId = config.controlPlane.botId,
+                                    deviceId = config.device.deviceId,
+                                    term = lease.term,
+                                    executionPlan = finalPlan5,
+                                    existingPersistedOrders = recentOrders,
+                                    exchange = exchange,
+                                    controlPlane = controlPlane,
+                                    bypassLeaseValidation = isEmergencyOverrideActive(now),
+                                )
+                                if (chaseResult.submitted) {
+                                    logger.info("[ORDER_CHASE] pair=${order.pairId.value} action=CANCELED_LIMIT_AND_FIRED_MARKET")
+                                } else {
+                                    logWhyNotBuy(now, order.pairId.value, "order_chase_failed:${chaseResult.message}")
+                                }
+                                return@forEach
+                            }
+                        }
                         val chaseResult = liveExecutionCoordinator.submitEntry(
                             botId = config.controlPlane.botId,
                             deviceId = config.device.deviceId,
