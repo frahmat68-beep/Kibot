@@ -28,7 +28,9 @@ internal actual fun createPlatformHttpClient(json: Json): HttpClient = HttpClien
         headers.append(HttpHeaders.Accept, "application/json,text/plain,*/*")
         // Add headers that help bypass Cloudflare bot protection
         headers.append("Accept-Language", "en-US,en;q=0.9")
-        headers.append("Accept-Encoding", "gzip, deflate, br")
+        // DO NOT request gzip - it's causing JSON parsing errors
+        // The server sends it anyway but at least we're clear about our preference
+        // headers.append("Accept-Encoding", "gzip, deflate, br")
         headers.append("Sec-Fetch-Dest", "document")
         headers.append("Sec-Fetch-Mode", "navigate")
         headers.append("Sec-Fetch-Site", "none")
