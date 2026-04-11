@@ -91,7 +91,7 @@ Multi-provider AI veto system dengan fallback order:
 
 Approval thresholds:
 - Standard: score ≥ 0.62, expected net ≥ 0.18%
-- Instant: score ≥ 0.48, expected net ≥ -0.02%
+- Strict: score ≥ 0.70, expected net ≥ 0.25%  # CONSERVATIVE mode
 
 ## Strict Guardrails
 
