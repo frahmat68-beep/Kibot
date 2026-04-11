@@ -57,7 +57,8 @@ Trinity adalah sistem High-Frequency Trading (HFT) otomatis berbasis Microservic
 
 ## Trading Philosophy
 
-- **Zero-Cash Mindset**: Modal tidak boleh diam — rotate aggressively
-- **Predictive, Not Reactive**: Beli sebelum pump di Indodax (signal dari Binance)
-- **Micro-Cap Priority**: Fokus koin murah (< Rp500) untuk ROI maksimal
+- **Capital Efficiency**: Modal diputar hanya saat probabilitas edge positif
+- **Liquidity First**: Prioritas pair liquid dengan spread/slippage terkontrol
+- **Signal-Confirmed Entry**: Entry hanya saat Kinance fresh + scoring lolos gate
+- **Survival First**: Modal yang selamat adalah modal yang bisa compound
 - **Adaptive Trailing Stop**: Widen stop for micro-caps to avoid noise exits
