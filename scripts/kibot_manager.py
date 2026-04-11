@@ -489,6 +489,30 @@ def _refresh_daily_guard_from_equity(current_equity: float | None) -> None:
             _resume_new_entries("new day reset")
 
 
+def _reconcile_daily_guard_day_rollover() -> None:
+    today = (datetime.now(timezone.utc) + timedelta(hours=WIB_UTC_OFFSET_HOURS)).date().isoformat()
+    if _daily_guard_state.get("date") == today:
+        return
+    _daily_guard_state.update(
+        {
+            "date": today,
+            "start_of_day_equity": _daily_guard_state.get("current_equity"),
+            "daily_pnl_pct": 0.0,
+            "hard_stopped": False,
+            "triggered_at": "",
+            "reset_at": "",
+            "reason": "",
+        }
+    )
+    _save_daily_guard_state()
+    if bool(_gate_state.get("daily_hard_stop")):
+        _gate_state["daily_hard_stop"] = False
+        _gate_state["daily_hard_stop_reason"] = ""
+        _gate_state["daily_hard_stop_reset_at"] = ""
+        _save_gate_state()
+    _resume_new_entries("new day rollover")
+
+
 def _trigger_daily_hard_stop(current_equity: float | None, daily_pnl_pct: float) -> None:
     reset_at = _next_wib_midnight_iso()
     _daily_guard_state.update(
@@ -2370,6 +2394,7 @@ def main() -> None:
     
     _ensure_env()
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    _reconcile_daily_guard_day_rollover()
     _write_json_file(PROVIDER_STATE_PATH, _provider_runtime_state)
     _save_pair_cooldown_state()
     _save_gate_state()
