@@ -465,7 +465,7 @@ def _daily_guard_reset_due() -> bool:
 
 
 def _refresh_daily_guard_from_equity(current_equity: float | None) -> None:
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = (datetime.now(timezone.utc) + timedelta(hours=WIB_UTC_OFFSET_HOURS)).date().isoformat()
     if _daily_guard_state.get("date") != today:
         _daily_guard_state.update(
             {
