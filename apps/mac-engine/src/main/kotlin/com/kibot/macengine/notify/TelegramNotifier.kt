@@ -12,6 +12,8 @@ import java.util.concurrent.CompletableFuture
 class TelegramNotifier(
     private val botToken: String?,
     private val chatId: String?,
+    private val minExitAlertProfitPct: Double,
+    private val minExitAlertProfitIdr: Double,
 ) {
     private val enabled = !botToken.isNullOrBlank() && !chatId.isNullOrBlank()
     private val httpClient: HttpClient = HttpClient.newBuilder()
@@ -27,11 +29,81 @@ class TelegramNotifier(
     ) {
         if (!enabled) return
         val text = buildString {
-            appendLine("✅ [KiDax] TAKE PROFIT!")
-            appendLine("Pair: ${pair.uppercase()}")
-            appendLine("Engine: $engineType")
-            appendLine("Profit: +${"%.2f".format(profitPct)}% (Rp ${"%.0f".format(profitIdr)})")
-            appendLine("Bucket: $bucketType")
+            appendLine("📈 TP ${pair.uppercase()}")
+            appendLine("PnL: ${if (profitPct >= 0) "+" else ""}${"%.2f".format(profitPct)}% | Rp ${"%.0f".format(profitIdr)}")
+            append("Mode: $engineType / $bucketType")
+        }
+        sendAsync(text)
+    }
+
+    fun sendExecutionSellAlert(
+        pair: String,
+        reason: String,
+        pnlIdr: Double?,
+        pnlPct: Double?,
+    ) {
+        if (!enabled) return
+        val profitIdr = pnlIdr ?: 0.0
+        val profitPct = pnlPct ?: 0.0
+        val isLossOrCut = profitIdr < 0.0 || reason.contains("cut loss", ignoreCase = true) ||
+            reason.contains("stop loss", ignoreCase = true) || reason.contains("force sell", ignoreCase = true)
+        val isMeaningfulProfit = profitIdr >= minExitAlertProfitIdr || profitPct >= minExitAlertProfitPct
+        if (!isLossOrCut && !isMeaningfulProfit) return
+        val mood = when {
+            profitIdr > 0.0 -> "💰 SELL PROFIT"
+            profitIdr < 0.0 -> "🛑 CUT LOSS"
+            else -> "📤 EXIT"
+        }
+        val text = buildString {
+            appendLine("$mood ${pair.uppercase()}")
+            appendLine(
+                when {
+                    pnlIdr == null -> "PnL: ?"
+                    pnlPct != null -> "PnL: ${if (profitIdr >= 0) "+" else ""}${"%.2f".format(pnlPct)}% | Rp ${"%.0f".format(kotlin.math.abs(profitIdr))}"
+                    else -> "PnL: ${if (profitIdr >= 0) "+" else "-"}Rp ${"%.0f".format(kotlin.math.abs(profitIdr))}"
+                }
+            )
+            append("Alasan: ${reason.trim().take(60)}")
+        }
+        sendAsync(text)
+    }
+
+    fun sendMessage(message: String) {
+        if (!enabled) return
+        sendAsync(message.take(3500))
+    }
+
+    fun sendStatusCard(
+        title: String,
+        timeLabel: String,
+        balanceLabel: String,
+        line1: String,
+        line2: String,
+        statusLabel: String,
+    ) {
+        if (!enabled) return
+        val text = buildString {
+            appendLine("🚀 $title")
+            appendLine("⏰ $timeLabel | 💰 $balanceLabel")
+            appendLine(line1)
+            appendLine(line2)
+            append("✅ $statusLabel")
+        }
+        sendAsync(text)
+    }
+
+    fun sendDailyReport(
+        title: String,
+        tradesLabel: String,
+        winRateLabel: String,
+        pnlLabel: String,
+    ) {
+        if (!enabled) return
+        val text = buildString {
+            appendLine("📊 $title")
+            appendLine("Trades: $tradesLabel")
+            appendLine("Win rate: $winRateLabel")
+            append("PnL: $pnlLabel")
         }
         sendAsync(text)
     }
@@ -61,6 +133,12 @@ class TelegramNotifier(
                 ?: System.getenv("KIBOT_TELEGRAM_BOT_TOKEN"),
             chatId = System.getenv("TELEGRAM_CHAT_ID")
                 ?: System.getenv("KIBOT_TELEGRAM_CHAT_ID"),
+            minExitAlertProfitPct = System.getenv("KIBOT_TELEGRAM_MIN_EXIT_ALERT_PROFIT_PCT")
+                ?.toDoubleOrNull()
+                ?: 1.5,
+            minExitAlertProfitIdr = System.getenv("KIBOT_TELEGRAM_MIN_EXIT_ALERT_PROFIT_IDR")
+                ?.toDoubleOrNull()
+                ?: 20_000.0,
         )
     }
 }

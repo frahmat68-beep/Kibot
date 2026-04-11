@@ -16,6 +16,7 @@ import java.net.InetAddress
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import kotlin.math.abs
 
 enum class ExchangeKind {
     INDODAX,
@@ -42,13 +43,14 @@ data class MacRuntimeConfig(
     val leaseTtlSeconds: Int,
     val enableLiveExecution: Boolean,
     val shadowMode: Boolean = false,
-    val enableExecutionAiAssist: Boolean = false,
+    val enableExecutionAiAssist: Boolean = true,
     val enableLanAdvertising: Boolean = true,
     val dashboardStatePollIntervalMillis: Long = 5_000L,
     val dashboardLogPollIntervalMillis: Long = 5_000L,
     val releaseLabel: String,
     val aiSupportConfig: GeminiSupportConfig?,
     val adaptiveAiPolicyPath: Path,
+    val localLearningMemoryPath: Path,
     val targetEnforcementMemoryPath: Path,
     val pnlResetAnchorPath: Path,
     val monthlyPnlAnchorPath: Path,
@@ -56,6 +58,9 @@ data class MacRuntimeConfig(
     val localPositionStatePath: Path,
     val analysisPublishIntervalMillis: Long,
     val strategyMetricsPublishIntervalMillis: Long,
+    val autonomousAiReviewIntervalMillis: Long,
+    val stableCapitalAllocationPercent: Double,
+    val aggressiveCapitalAllocationPercent: Double,
     val supabaseLogUploadEnabled: Boolean,
     val supabaseLogMinLevel: LogLevel,
     val supabaseNonCriticalWriteEnabled: Boolean,
@@ -66,6 +71,7 @@ data class MacRuntimeConfig(
     val telegramAlertsEnabled: Boolean,
     val telegramBotToken: String?,
     val telegramChatId: String?,
+    val telegramFatalAlertDebounceMillis: Long,
     val leadLagSignalEnabled: Boolean,
     val leadLagTargetBotId: BotId?,
     val leadLagSignalTtlMillis: Long,
@@ -108,6 +114,7 @@ data class MacRuntimeConfig(
     val chartGuardMinCandles: Int = 18,
     val chartGuardMinActiveCandles: Int = 6,
     val chartGuardMinDistinctCloseBuckets: Int = 4,
+    val indodaxRemoteHistoryEnabled: Boolean = false,
     val antiKoinMahalUseBudgetCheck: Boolean = true,
     val emergencyOverrideEnabled: Boolean = false,
     val blockedBaseAssets: Set<String> = setOf("usdt", "usdc", "indr", "fdusd", "tusd", "busd", "toko"),
@@ -159,6 +166,18 @@ object MacRuntimeConfigLoader {
             ?.uppercase()
             ?.let { raw -> runCatching { DeviceRole.valueOf(raw) }.getOrNull() }
             ?: DeviceRole.PRIMARY
+        val configuredStable = optional("KIBOT_STABLE_CAPITAL_ALLOCATION_PCT")?.toDoubleOrNull()
+        val configuredAggressive = optional("KIBOT_AGGRESSIVE_CAPITAL_ALLOCATION_PCT")?.toDoubleOrNull()
+        val stableCapitalAllocationPercent = when {
+            configuredStable != null && configuredAggressive != null &&
+                configuredStable in 0.50..0.95 &&
+                configuredAggressive in 0.05..0.50 &&
+                abs((configuredStable + configuredAggressive) - 1.0) <= 0.001 -> configuredStable
+            configuredStable != null && configuredStable in 0.50..0.95 -> configuredStable
+            configuredAggressive != null && configuredAggressive in 0.05..0.50 -> (1.0 - configuredAggressive)
+            else -> 0.70
+        }
+        val aggressiveCapitalAllocationPercent = (1.0 - stableCapitalAllocationPercent)
 
         return MacRuntimeConfig(
             runtimeProfileKey = runtimeProfileKey,
@@ -191,7 +210,7 @@ object MacRuntimeConfigLoader {
             leaseTtlSeconds = optional("BOT_DEFAULT_LEASE_TTL_SECONDS")?.toIntOrNull() ?: 30,
             enableLiveExecution = optional("BOT_ENABLE_LIVE_EXECUTION")?.equals("true", ignoreCase = true) == true,
             shadowMode = optional("SHADOW_MODE")?.equals("true", ignoreCase = true) ?: false,
-            enableExecutionAiAssist = optional("BOT_ENABLE_EXECUTION_AI_ASSIST")?.equals("true", ignoreCase = true) ?: false,
+            enableExecutionAiAssist = optional("BOT_ENABLE_EXECUTION_AI_ASSIST")?.equals("true", ignoreCase = true) ?: true,
             enableLanAdvertising = optional("MAC_ENGINE_ENABLE_LAN_ADVERTISE")?.equals("true", ignoreCase = true) ?: true,
             dashboardStatePollIntervalMillis = optional("MAC_DASHBOARD_STATE_POLL_INTERVAL_MS")?.toLongOrNull() ?: 5_000L,
             dashboardLogPollIntervalMillis = optional("MAC_DASHBOARD_LOG_POLL_INTERVAL_MS")?.toLongOrNull() ?: 5_000L,
@@ -207,18 +226,23 @@ object MacRuntimeConfigLoader {
                         apiKey = apiKey,
                         model = optional("GEMINI_SUPPORT_MODEL") ?: "gemini-2.0-flash-lite",
                         maxCandidates = optional("GEMINI_SUPPORT_MAX_CANDIDATES")?.toIntOrNull() ?: 6,
-                        minIntervalMinutes = optional("GEMINI_SUPPORT_MIN_INTERVAL_MINUTES")?.toIntOrNull() ?: 240,
+                        minIntervalMinutes = optional("GEMINI_SUPPORT_MIN_INTERVAL_MINUTES")?.toIntOrNull() ?: 30,
                         timeoutMillis = optional("GEMINI_SUPPORT_TIMEOUT_MS")?.toLongOrNull() ?: 15_000L,
                         maxOutputTokens = optional("GEMINI_SUPPORT_MAX_OUTPUT_TOKENS")?.toIntOrNull() ?: 384,
-                        hourlyRequestBudget = optional("GEMINI_SUPPORT_HOURLY_REQUEST_BUDGET")?.toIntOrNull() ?: 2,
-                        dailyRequestBudget = optional("GEMINI_SUPPORT_DAILY_REQUEST_BUDGET")?.toIntOrNull() ?: 12,
-                        failureCooldownMinutes = optional("GEMINI_SUPPORT_FAILURE_COOLDOWN_MINUTES")?.toIntOrNull() ?: 120,
+                        hourlyRequestBudget = optional("GEMINI_SUPPORT_HOURLY_REQUEST_BUDGET")?.toIntOrNull() ?: 6,
+                        dailyRequestBudget = optional("GEMINI_SUPPORT_DAILY_REQUEST_BUDGET")?.toIntOrNull() ?: 48,
+                        failureCooldownMinutes = optional("GEMINI_SUPPORT_FAILURE_COOLDOWN_MINUTES")?.toIntOrNull() ?: 30,
                     )
                 },
             adaptiveAiPolicyPath = resolveScopedRuntimePath(
                 explicit = optional("KIBOT_AI_ADAPTIVE_POLICY_PATH"),
                 scopedDefault = cwd.resolve(".tmp/ai-audits/$runtimeProfileKey/latest/adaptive_policy.json"),
                 legacyDefault = cwd.resolve(".tmp/ai-audits/latest/adaptive_policy.json"),
+            ),
+            localLearningMemoryPath = resolveScopedRuntimePath(
+                explicit = optional("KIBOT_LOCAL_LEARNING_MEMORY_PATH"),
+                scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/local_learning_memory.json"),
+                legacyDefault = cwd.resolve(".tmp/runtime/local_learning_memory.json"),
             ),
             targetEnforcementMemoryPath = resolveScopedRuntimePath(
                 explicit = optional("KIBOT_TARGET_ENFORCEMENT_MEMORY_PATH"),
@@ -245,6 +269,11 @@ object MacRuntimeConfigLoader {
                 ?: true,
             analysisPublishIntervalMillis = optional("BOT_ANALYSIS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 30_000L,
             strategyMetricsPublishIntervalMillis = optional("BOT_STRATEGY_METRICS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 300_000L,
+            autonomousAiReviewIntervalMillis = optional("KIBOT_AUTONOMOUS_AI_REVIEW_INTERVAL_MS")
+                ?.toLongOrNull()
+                ?: 1_800_000L,
+            stableCapitalAllocationPercent = stableCapitalAllocationPercent,
+            aggressiveCapitalAllocationPercent = aggressiveCapitalAllocationPercent,
             supabaseLogUploadEnabled = optional("BOT_SUPABASE_LOG_UPLOAD_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
@@ -274,8 +303,38 @@ object MacRuntimeConfigLoader {
                 else -> error("BINANCE_API_KEY and BINANCE_API_SECRET must be set together.")
             },
             binanceClientConfig = BinanceClientConfig(
-                publicBaseUrl = optional("BINANCE_PUBLIC_BASE_URL") ?: "https://api.binance.com",
+                publicBaseUrl = optional("BINANCE_PUBLIC_BASE_URL")
+                    ?: when (optional("BINANCE_SCANNER_MARKET_DATA_MODE")?.uppercase()) {
+                        "FUTURES_USDM", "USDM_FUTURES", "FUTURES" -> "https://fapi.binance.com"
+                        else -> "https://api.binance.com"
+                    },
                 privateBaseUrl = optional("BINANCE_PRIVATE_BASE_URL") ?: "https://api.binance.com",
+                publicRestPathPrefix = optional("BINANCE_PUBLIC_REST_PATH_PREFIX")
+                    ?: when (optional("BINANCE_SCANNER_MARKET_DATA_MODE")?.uppercase()) {
+                        "FUTURES_USDM", "USDM_FUTURES", "FUTURES" -> "/fapi/v1"
+                        else -> "/api/v3"
+                    },
+                privateRestPathPrefix = optional("BINANCE_PRIVATE_REST_PATH_PREFIX") ?: "/api/v3",
+                publicWebSocketUrl = optional("BINANCE_PUBLIC_WS_URL")
+                    ?: when (optional("BINANCE_SCANNER_MARKET_DATA_MODE")?.uppercase()) {
+                        "FUTURES_USDM", "USDM_FUTURES", "FUTURES" -> "wss://fstream.binance.com/ws"
+                        else -> "wss://stream.binance.com:9443/ws"
+                    },
+                publicBaseUrls = optional("BINANCE_PUBLIC_BASE_URLS")
+                    ?.split(",", " ", "\n", "\t")
+                    ?.map { it.trim() }
+                    ?.filter { it.isNotBlank() }
+                    .orEmpty(),
+                privateBaseUrls = optional("BINANCE_PRIVATE_BASE_URLS")
+                    ?.split(",", " ", "\n", "\t")
+                    ?.map { it.trim() }
+                    ?.filter { it.isNotBlank() }
+                    .orEmpty(),
+                publicWebSocketUrls = optional("BINANCE_PUBLIC_WS_URLS")
+                    ?.split(",", " ", "\n", "\t")
+                    ?.map { it.trim() }
+                    ?.filter { it.isNotBlank() }
+                    .orEmpty(),
                 receiveWindowMillis = optional("BINANCE_RECEIVE_WINDOW_MS")?.toLongOrNull() ?: 10_000L,
                 defaultFeePct = optional("BINANCE_DEFAULT_FEE_PCT")?.toDoubleOrNull() ?: 0.001,
                 primaryQuoteAsset = optional("BINANCE_PRIMARY_QUOTE_ASSET")?.lowercase() ?: "usdt",
@@ -284,6 +343,10 @@ object MacRuntimeConfigLoader {
             telegramAlertsEnabled = optional("KIBOT_TELEGRAM_ALERTS_ENABLED")?.equals("true", ignoreCase = true) == true,
             telegramBotToken = optional("KIBOT_TELEGRAM_BOT_TOKEN"),
             telegramChatId = optional("KIBOT_TELEGRAM_CHAT_ID"),
+            telegramFatalAlertDebounceMillis = optional("KIBOT_TELEGRAM_FATAL_ALERT_DEBOUNCE_MS")
+                ?.toLongOrNull()
+                ?.coerceAtLeast(30_000L)
+                ?: 180_000L,
             leadLagSignalEnabled = optional("KIBOT_LEAD_LAG_SIGNAL_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
@@ -340,10 +403,10 @@ object MacRuntimeConfigLoader {
                 ?: true,
             leadLagUdpHeartbeatIntervalMillis = optional("KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS")
                 ?.toLongOrNull()
-                ?: 100L,
+                ?: 1_000L,
             leadLagUdpHeartbeatTimeoutMillis = optional("KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS")
                 ?.toLongOrNull()
-                ?: 300L,  // FIX: Minimal 3x interval (100ms * 3) untuk stability, mencegah false disconnect
+                ?: 5_000L,
             leadLagUdpHeartbeatRequiredBotIds = optional("KIBOT_HIVE_EXPECTED_BOT_IDS")
                 ?.split(",")
                 ?.mapNotNull { token ->
@@ -356,7 +419,8 @@ object MacRuntimeConfigLoader {
             indodaxHyperGuardrailEnabled = optional("KIBOT_INDODAX_HYPER_GUARDRAIL_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
-            indodaxHyperGuardrailTakerFeePct = optional("KIBOT_INDODAX_HYPER_GUARDRAIL_TAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.51,
+            // Keep conservative but realistic default; override via env for your actual account tier.
+            indodaxHyperGuardrailTakerFeePct = optional("KIBOT_INDODAX_HYPER_GUARDRAIL_TAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.4211,
             hyperAggressiveConfig = HyperAggressiveConfig(
                 targetDailyPct = optional("KIBOT_HYPER_TARGET_DAILY_PCT")?.toDoubleOrNull() ?: 25.0,
                 sexyWindowMs = optional("KIBOT_HYPER_SEXY_WINDOW_MS")?.toLongOrNull() ?: 60_000L,
@@ -388,6 +452,7 @@ object MacRuntimeConfigLoader {
             chartGuardMinCandles = optional("KIBOT_CHART_GUARD_MIN_CANDLES")?.toIntOrNull() ?: 18,
             chartGuardMinActiveCandles = optional("KIBOT_CHART_GUARD_MIN_ACTIVE_CANDLES")?.toIntOrNull() ?: 6,
             chartGuardMinDistinctCloseBuckets = optional("KIBOT_CHART_GUARD_MIN_DISTINCT_CLOSE_BUCKETS")?.toIntOrNull() ?: 4,
+            indodaxRemoteHistoryEnabled = optional("KIBOT_INDODAX_REMOTE_HISTORY_ENABLED")?.equals("true", ignoreCase = true) ?: false,
             antiKoinMahalUseBudgetCheck = optional("KIBOT_ANTI_KOIN_MAHAL_USE_BUDGET_CHECK")?.equals("true", ignoreCase = true) ?: true,
             emergencyOverrideEnabled = optional("KIBOT_ENABLE_EMERGENCY_OVERRIDE")?.equals("true", ignoreCase = true) ?: false,
         )

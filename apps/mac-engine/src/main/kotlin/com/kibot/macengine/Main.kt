@@ -76,9 +76,13 @@ fun main(args: Array<String>) {
         Thread {
             logger.info("Shutting down KiBot mac engine.")
             runBlocking {
+                runCatching { daemon.shutdown() }
+                    .onFailure { logger.warn("Failed to cancel daemon scopes on shutdown: {}", it.message) }
                 runCatching { daemon.flushNonCriticalControlPlaneBufferNow() }
                     .onFailure { logger.warn("Failed to flush buffered non-critical control-plane writes on shutdown: {}", it.message) }
             }
+            runCatching { server.stop() }
+                .onFailure { logger.warn("Failed to stop dashboard server on shutdown: {}", it.message) }
             scope.cancel()
         },
     )

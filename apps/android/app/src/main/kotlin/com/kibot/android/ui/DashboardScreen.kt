@@ -55,7 +55,8 @@ fun DashboardScreen(
             item {
                 BalanceCard(
                     totalBalance = botState.balance,
-                    totalReturn = botState.totalReturn,
+                    returnToday = botState.pnlToday,
+                    pnlTodayPercent = botState.pnlTodayPercent,
                     pnlToday = botState.pnlToday
                 )
             }
@@ -69,7 +70,7 @@ fun DashboardScreen(
             item {
                 BotStatusCard(
                     name = "KiBot Manager",
-                    subtitle = "The Brain & Veto Manager",
+                    subtitle = kibotSubtitle(botState),
                     status = botState.heartbeat.kibot.status,
                     pingMs = null,
                     aiStatus = botState.heartbeat.kibot.aiStatus,
@@ -82,7 +83,7 @@ fun DashboardScreen(
             item {
                 BotStatusCard(
                     name = "Kinance",
-                    subtitle = "Binance Predictive Radar",
+                    subtitle = kinanceSubtitle(botState),
                     status = botState.heartbeat.kinance.status,
                     pingMs = null,
                     aiStatus = botState.heartbeat.kinance.aiStatus,
@@ -117,7 +118,7 @@ fun DashboardScreen(
             item {
                 BotStatusCard(
                     name = "KiDax",
-                    subtitle = "Indodax Executioner",
+                    subtitle = kidaxSubtitle(botState),
                     status = botState.heartbeat.kidax.status,
                     pingMs = botState.heartbeat.kidax.ping,
                     aiStatus = botState.heartbeat.kidax.aiStatus,
@@ -138,7 +139,7 @@ fun DashboardScreen(
                         
                         botState.positions.take(5).forEach { position ->
                             HoldingItem(
-                                coin = position.pair.replace("/IDR", ""),
+                                coin = position.pair.substringBefore("_"),
                                 amount = position.amount,
                                 price = position.currentPrice,
                                 pnl = position.pnlPercent
@@ -209,6 +210,33 @@ fun DashboardScreen(
             }
         }
     }
+}
+
+private fun kidaxSubtitle(botState: BotState): String {
+    val mainPosition = botState.positions.firstOrNull()
+    return when {
+        mainPosition != null -> {
+            val pair = mainPosition.pair.substringBefore("_").uppercase()
+            "Lagi jaga $pair ${formatPercent(mainPosition.pnlPercent)}"
+        }
+        botState.topCandidate != "-" -> "Lagi scan ${botState.topCandidate}"
+        botState.statusMessage.isNotBlank() -> botState.statusMessage
+        else -> "Indodax executioner siap tembak"
+    }
+}
+
+private fun kinanceSubtitle(botState: BotState): String = when {
+    botState.connectedBotId == "kinance" && botState.topCandidate != "-" -> "Radar lagi scan ${botState.topCandidate}"
+    botState.heartbeat.kinance.status == "online" && botState.topCandidate != "-" -> "Mesh lagi kirim bias ${botState.topCandidate}"
+    botState.heartbeat.kinance.status == "degraded" -> "Radar lagi sinkron ulang"
+    else -> "Binance predictive radar standby"
+}
+
+private fun kibotSubtitle(botState: BotState): String = when {
+    botState.connectedBotId == "kibot" && botState.topCandidate != "-" -> "Otak pusat lagi nilai ${botState.topCandidate}"
+    botState.positions.isNotEmpty() -> "Lagi ngatur risk & exit posisi aktif"
+    botState.heartbeat.kibot.status == "degraded" -> "Manager lagi recovery sync"
+    else -> "Otak pusat jaga veto dan risk"
 }
 
 @Composable

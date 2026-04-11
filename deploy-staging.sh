@@ -102,6 +102,7 @@ echo "🛑 Stopping existing services..."
 systemctl stop kinance-engine.service || true
 systemctl stop kidax-engine.service || true
 systemctl stop kibot-manager.service || true
+systemctl stop kibot-engine.service || true
 sleep 2
 
 echo "📦 Installing artifacts..."
@@ -109,7 +110,7 @@ cp build/libs/*.jar /opt/kibot/trinity/lib/ 2>/dev/null || true
 cp scripts/*.py /opt/kibot/trinity/scripts/ || true
 
 echo "🟢 Starting services..."
-systemctl start kibot-manager.service
+systemctl start kibot-engine.service
 sleep 3
 systemctl start kinance-engine.service
 sleep 3
@@ -120,7 +121,7 @@ echo "✅ Services started"
 sleep 5
 
 echo "🔍 Checking service status..."
-systemctl status kibot-manager.service --no-pager | head -5
+systemctl status kibot-engine.service --no-pager | head -5
 systemctl status kinance-engine.service --no-pager | head -5
 systemctl status kidax-engine.service --no-pager | head -5
 
@@ -154,6 +155,5 @@ echo "4. Monitor 1+ hour before moving to production"
 echo ""
 echo "📊 Commands:"
 echo "   Check status:    ssh $DEPLOY_USER@$DEPLOY_HOST 'systemctl status kibot-*'"
-echo "   View logs:       ssh $DEPLOY_USER@$DEPLOY_HOST 'journalctl -u kibot-manager'"
-echo "   Emergency stop:  curl http://$DEPLOY_HOST:9998/emergency"
+echo "   View logs:       ssh $DEPLOY_USER@$DEPLOY_HOST 'journalctl -u kibot-engine'"
 echo ""

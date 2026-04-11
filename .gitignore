@@ -5,6 +5,8 @@ local.properties
 .DS_Store
 .idea/
 *.iml
+__pycache__/
+*.pyc
 captures/
 .kotlin/
 *.hprof
@@ -17,6 +19,7 @@ captures/
 .secrets/
 .dist/
 .tooling/
+.continue/
 .wrapper-bootstrap/
 apps/mac-engine/.env
 apps/mac-engine/bin/

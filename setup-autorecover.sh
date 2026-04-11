@@ -33,13 +33,48 @@ sudo systemctl start kibot-engine
 # Check service status
 sudo systemctl status kibot-engine --no-pager
 
-# Setup cron job for health check every 5 minutes
-CRON_JOB="*/5 * * * * /home/ubuntu/KiBot/kibot-recovery.sh"
-AI_CRON_JOB="5 * * * * /home/ubuntu/KiBot/scripts/ai_learning_cycle.sh"
-(crontab -l 2>/dev/null; echo "$CRON_JOB"; echo "$AI_CRON_JOB") | awk '!seen[$0]++' | crontab -
+sudo tee /etc/systemd/system/kibot-recovery.service >/dev/null <<'EOF'
+[Unit]
+Description=KiBot recovery watchdog
+After=network-online.target kibot-engine.service
+Wants=network-online.target kibot-engine.service
 
-echo "Cron job added:"
-crontab -l | grep kibot
+[Service]
+Type=oneshot
+Environment=KIBOT_RUNTIME_ROOT=/home/ubuntu/KiBot
+Environment=KIBOT_SERVICE_NAME=kibot-engine
+Environment=KIBOT_DASHBOARD_PORT=8789
+Environment=KIBOT_ENV_FILE=/home/ubuntu/KiBot/.env.kibot
+Environment=KIBOT_EXPECT_LIVE_EXECUTION=true
+ExecStart=/home/ubuntu/KiBot/kibot-recovery.sh
+EOF
+
+sudo tee /etc/systemd/system/kibot-recovery.timer >/dev/null <<'EOF'
+[Unit]
+Description=KiBot recovery watchdog timer
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=45s
+AccuracySec=5s
+Persistent=true
+Unit=kibot-recovery.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now kibot-recovery.timer
+
+if crontab -l 2>/dev/null | grep -vF "/home/ubuntu/KiBot/kibot-recovery.sh" | sed '/^$/d' | crontab - 2>/dev/null; then
+  echo "Legacy recovery cron removed"
+else
+  echo "No legacy recovery cron found"
+fi
+
+AI_CRON_JOB="5 * * * * /home/ubuntu/KiBot/scripts/ai_learning_cycle.sh"
+(crontab -l 2>/dev/null; echo "$AI_CRON_JOB") | awk '!seen[$0]++' | crontab -
 
 # Make recovery script executable
 chmod +x /home/ubuntu/KiBot/kibot-recovery.sh

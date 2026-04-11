@@ -1,6 +1,7 @@
 package com.kibot.core
 
 import kotlin.math.abs
+import kotlin.math.floor
 
 /**
  * CapitalAllocationManager - Manages 70/30 capital split for Trinity Bot
@@ -15,6 +16,11 @@ import kotlin.math.abs
  * - Market orders for speed
  * - Higher volatility, higher reward
  * 
+ * Micro-Account Mode (<500K):
+ * - Merges buckets into single pool
+ * - Scales positions based on balance
+ * - Assigns HOLDER/CHASER roles
+ * 
  * Capital rebalancing when drift > 5% detected
  */
 class CapitalAllocationManager(
@@ -23,6 +29,28 @@ class CapitalAllocationManager(
     private val aggressivePercent: Double = 0.30,     // 30% aggressive
     private val rebalanceDriftThreshold: Double = 0.05 // 5% drift threshold
 ) {
+    
+    // Micro-account mode detection
+    private var isMicroAccount: Boolean = false
+    private var microModeMaxPositions: Int = 0
+    
+    companion object {
+        const val MICRO_ACCOUNT_THRESHOLD_IDR = 500_000.0
+        const val MIN_ORDER_INDODAX_IDR = 20_000.0
+        const val MULTI_SLOT_TRIGGER_IDR = 20_000.0
+        const val DEPLOYABLE_PCT = 0.90
+
+        fun calculateDynamicAdditionalSlots(totalFreeIdr: Double): Int {
+            if (totalFreeIdr < MULTI_SLOT_TRIGGER_IDR) return 0
+            return floor(totalFreeIdr / MULTI_SLOT_TRIGGER_IDR).toInt().coerceAtLeast(1)
+        }
+    }
+    
+    // Position role for micro-mode
+    enum class PositionRole {
+        HOLDER,   // Patient, target 3%+
+        CHASER    // Aggressive, target 1.5%, rotates on pump
+    }
     
     // Track total equity for proper 70/30 calculation
     private var currentTotalEquityIdr = totalCapitalIdr
@@ -42,11 +70,12 @@ class CapitalAllocationManager(
     
     data class AllocationResult(
         val allocatedIdr: Double,
-        val bucketType: String,  // "STABLE" or "AGGRESSIVE"
+        val bucketType: String,  // "STABLE", "AGGRESSIVE", or "MICRO_POOL"
         val originalTarget: Double,
         val currentAvailable: Double,
         val requiresRebalance: Boolean,
         val rebalanceMessage: String? = null,
+        val positionRole: PositionRole? = null  // NEW: Only set in micro mode
     )
     
     data class AllocationStatus(
@@ -66,9 +95,27 @@ class CapitalAllocationManager(
      * 
      * @param isAnomalyCoin True for 30% aggressive bucket, False for 70% stable bucket
      * @param requestedAmountIdr Amount to allocate
+     * @param totalFreeIdr Current free balance (for micro-mode check)
+     * @param currentPositionCount Current open positions
      * @return AllocationResult with allocated amount or error
      */
-    fun allocate(isAnomalyCoin: Boolean, requestedAmountIdr: Double = 0.0): AllocationResult {
+    fun allocate(
+        isAnomalyCoin: Boolean, 
+        requestedAmountIdr: Double = 0.0,
+        totalFreeIdr: Double = 0.0,
+        currentPositionCount: Int = 0
+    ): AllocationResult {
+        
+        // NEW: Check micro-mode first
+        if (totalFreeIdr > 0 && checkMicroMode(totalFreeIdr)) {
+            return allocateMicroMode(
+                totalFreeIdr = totalFreeIdr,
+                currentPositionCount = currentPositionCount,
+                isHighPumpSignal = isAnomalyCoin
+            )
+        }
+        
+        // EXISTING: Normal 70/30 allocation logic
         val (currentBucket, targetBucket, bucketName) = if (isAnomalyCoin) {
             Triple(
                 currentAggressiveCapitalIdr,
@@ -243,12 +290,157 @@ class CapitalAllocationManager(
         val targetStableCapital = totalEquityIdr * stableRotationPercent
         val targetAggressiveCapital = totalEquityIdr * aggressivePercent
         
-        // Calculate available capital: target minus what's currently deployed
-        val availableStable = maxOf(0.0, targetStableCapital - totalDeployedStableIdr)
-        val availableAggressive = maxOf(0.0, targetAggressiveCapital - totalDeployedAggressiveIdr)
+        // Calculate unmet sleeve demand first, then clamp the combined result to actual free cash.
+        val unmetStable = maxOf(0.0, targetStableCapital - totalDeployedStableIdr)
+        val unmetAggressive = maxOf(0.0, targetAggressiveCapital - totalDeployedAggressiveIdr)
+        val totalUnmet = unmetStable + unmetAggressive
+        val actualFreeIdr = maxOf(0.0, freeIdrBalance)
+        val scaling = when {
+            actualFreeIdr <= 0.0 || totalUnmet <= 0.0 -> 0.0
+            totalUnmet <= actualFreeIdr -> 1.0
+            else -> actualFreeIdr / totalUnmet
+        }
+        val availableStable = unmetStable * scaling
+        val availableAggressive = unmetAggressive * scaling
         
         // Set current available allocations
         currentStableCapitalIdr = availableStable
         currentAggressiveCapitalIdr = availableAggressive
+    }
+    
+    // ========== MICRO-ACCOUNT MODE METHODS ==========
+    
+    /**
+     * Calculate max positions based on available capital and minimum order size.
+     * Used in micro-account mode. Scales with balance growth.
+     */
+    fun calculateMaxPositions(totalFreeIdr: Double): Int {
+        val deployable = totalFreeIdr * DEPLOYABLE_PCT
+        if (deployable < MIN_ORDER_INDODAX_IDR) return 0
+        val multiSlotCap = calculateDynamicAdditionalSlots(deployable)
+        val maxPos = maxOf(
+            (deployable / MIN_ORDER_INDODAX_IDR).toInt(),
+            multiSlotCap,
+        )
+        // Scale up naturally: more saldo = more diversification
+        // No artificial cap - let it grow until 70/30 mode kicks in at 500K
+        return maxPos.coerceAtLeast(0)
+    }
+    
+    /**
+     * Check if micro-account mode should be active
+     */
+    fun checkMicroMode(totalFreeIdr: Double): Boolean {
+        val effectiveAccountSizeIdr = maxOf(totalFreeIdr, currentTotalEquityIdr)
+        isMicroAccount = effectiveAccountSizeIdr < MICRO_ACCOUNT_THRESHOLD_IDR
+        if (isMicroAccount) {
+            microModeMaxPositions = calculateMaxPositions(totalFreeIdr)
+            println("[MICRO_MODE] Activated: totalFree=$totalFreeIdr effectiveAccount=$effectiveAccountSizeIdr maxPositions=$microModeMaxPositions")
+        }
+        return isMicroAccount
+    }
+    
+    /**
+     * Get allocation per position in micro mode
+     */
+    fun getMicroModeAllocationPerPosition(totalFreeIdr: Double): Double {
+        val deployable = totalFreeIdr * DEPLOYABLE_PCT
+        val maxPos = calculateMaxPositions(totalFreeIdr)
+        return if (maxPos > 0) deployable / maxPos else 0.0
+    }
+    
+    /**
+     * Allocate capital in micro-account mode.
+     * Merges Stable + Aggressive buckets into single pool.
+     * Assigns position roles: HOLDER (first) or CHASER (second+).
+     */
+    fun allocateMicroMode(
+        totalFreeIdr: Double,
+        currentPositionCount: Int,
+        isHighPumpSignal: Boolean
+    ): AllocationResult {
+        val deployable = totalFreeIdr * DEPLOYABLE_PCT
+        val maxPositions = calculateMaxPositions(totalFreeIdr)
+        
+        // Check if we can open another position
+        if (currentPositionCount >= maxPositions) {
+            println("[MICRO_MODE] Max positions reached: $currentPositionCount/$maxPositions")
+            return AllocationResult(
+                allocatedIdr = 0.0,
+                bucketType = "MICRO_POOL",
+                originalTarget = 0.0,
+                currentAvailable = 0.0,
+                requiresRebalance = false,
+                rebalanceMessage = "max_positions_reached",
+                positionRole = null
+            )
+        }
+        
+        // Check minimum order size
+        val allocationPerPos = deployable / maxPositions
+        if (allocationPerPos < MIN_ORDER_INDODAX_IDR) {
+            println("[MICRO_MODE] Insufficient capital: allocation=$allocationPerPos < min=$MIN_ORDER_INDODAX_IDR")
+            return AllocationResult(
+                allocatedIdr = 0.0,
+                bucketType = "MICRO_POOL",
+                originalTarget = 0.0,
+                currentAvailable = 0.0,
+                requiresRebalance = false,
+                rebalanceMessage = "below_minimum_order",
+                positionRole = null
+            )
+        }
+        
+        // Assign role based on position count and signal
+        val role = when {
+            currentPositionCount == 0 && !isHighPumpSignal -> PositionRole.HOLDER
+            currentPositionCount == 0 && isHighPumpSignal -> PositionRole.CHASER
+            currentPositionCount >= 1 -> PositionRole.CHASER // Second+ position always chaser
+            else -> PositionRole.CHASER
+        }
+        
+        println("[MICRO_MODE] Allocated Rp$allocationPerPos as $role (position ${currentPositionCount + 1}/$maxPositions)")
+        
+        return AllocationResult(
+            allocatedIdr = allocationPerPos,
+            bucketType = "MICRO_POOL",
+            originalTarget = deployable,
+            currentAvailable = deployable - (allocationPerPos * currentPositionCount),
+            requiresRebalance = false,
+            rebalanceMessage = null,
+            positionRole = role
+        )
+    }
+    
+    /**
+     * Check if CHASER position should rotate to a new pump.
+     * Only rotates if math makes sense (new gain - fees > current profit).
+     */
+    fun shouldRotateChaser(
+        currentUnrealizedProfitPct: Double,
+        newCoinExpectedGainPct: Double,
+        estimatedRotationCostPct: Double = 0.01 // ~1% for buy+sell fees+spread
+    ): Boolean {
+        val netGainAfterRotation = newCoinExpectedGainPct - estimatedRotationCostPct
+        val shouldRotate = netGainAfterRotation > currentUnrealizedProfitPct
+        
+        println("[ROTATION_CHECK] current=${currentUnrealizedProfitPct}%, " +
+            "newExpected=${newCoinExpectedGainPct}%, " +
+            "cost=${estimatedRotationCostPct}%, " +
+            "netGain=$netGainAfterRotation%, " +
+            "shouldRotate=$shouldRotate")
+        
+        return shouldRotate
+    }
+    
+    /**
+     * Check minimum profit threshold before allowing exit.
+     * Ensures we don't sell at a loss after fees.
+     */
+    fun canExitWithProfit(
+        unrealizedProfitPct: Double,
+        minProfitThresholdPct: Double = 0.008 // 0.8% covers fees
+    ): Boolean {
+        return unrealizedProfitPct >= minProfitThresholdPct
     }
 }

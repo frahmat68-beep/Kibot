@@ -34,7 +34,8 @@ data class Position(
     val buyPrice: Double,
     val currentPrice: Double,
     val pnl: Double,
-    val pnlPercent: Double
+    val pnlPercent: Double,
+    val valueIdr: Double = 0.0,
 )
 
 @Serializable
@@ -76,13 +77,16 @@ data class TradeData(
     val id: String,
     val pair: String,
     val side: String, // "buy" or "sell"
+    val status: String = "",
+    val orderType: String = "",
     val price: Double,
     val amount: Double,
     val total: Double,
     val timestamp: Long,
     val entryPrice: Double? = null,
     val exitPrice: Double? = null,
-    val profitLoss: Double? = null
+    val profitLoss: Double? = null,
+    val profitLossPercent: Double? = null,
 )
 
 // ============== Portfolio Data ==============
@@ -91,7 +95,10 @@ data class TradeData(
 data class ReturnSummary(
     val day1: Double = 0.0,
     val day7: Double = 0.0,
-    val day30: Double = 0.0
+    val day30: Double = 0.0,
+    val day1Idr: Double = 0.0,
+    val day7Idr: Double = 0.0,
+    val day30Idr: Double = 0.0,
 )
 
 @Serializable
@@ -107,11 +114,14 @@ data class BotState(
     val balance: Double = 0.0,
     val totalReturn: Double = 0.0,
     val pnlToday: Double = 0.0,
+    val pnlTodayPercent: Double = 0.0,
     val positions: List<Position> = emptyList(),
     val netWorthHistory: List<NetWorthPoint> = emptyList(),
     val returnSummary: ReturnSummary = ReturnSummary(),
     val assetAllocation: List<AssetAllocation> = emptyList(),
     val trades: List<TradeData> = emptyList(),
+    val topCandidate: String = "-",
+    val radarPairs: List<String> = emptyList(),
     val heartbeat: HeartbeatData = HeartbeatData(),
     val effectiveState: String = "STOPPED",
     val syncHealth: String = "DEGRADED",
@@ -167,7 +177,14 @@ data class Trade(
 // Configuration model
 data class ServerConfig(
     val host: String = "213.35.118.26",
-    val port: Int = 8787
+    val port: Int = 8787,
+    val dashboardAuthToken: String = "",
 ) {
-    fun getUrl(): String = "ws://$host:$port/ws"
+    fun getUrl(): String {
+        val base = "ws://$host:$port/ws"
+        val token = dashboardAuthToken.trim()
+        if (token.isBlank()) return base
+        val encoded = java.net.URLEncoder.encode(token, "UTF-8")
+        return "$base?token=$encoded"
+    }
 }

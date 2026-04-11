@@ -299,7 +299,7 @@ private fun LargeWidget(
             Row(modifier = GlanceModifier.fillMaxWidth()) {
                 Column {
                     Text(
-                        text = "PnL Today",
+                        text = "Return Today",
                         style = TextStyle(
                             color = ColorProvider(WidgetTextSecondary),
                             fontSize = 10.sp
@@ -319,7 +319,7 @@ private fun LargeWidget(
                 
                 Column {
                     Text(
-                        text = "Return Today",
+                        text = "PnL Today",
                         style = TextStyle(
                             color = ColorProvider(WidgetTextSecondary),
                             fontSize = 10.sp

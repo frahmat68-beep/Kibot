@@ -11,6 +11,7 @@ import com.kibot.shared.models.PositionState
 import com.kibot.shared.models.RiskLadderLevel
 import kotlinx.datetime.Clock
 import kotlin.math.absoluteValue
+import kotlin.math.max
 
 class CapitalDeploymentEngine(
     private val config: RiskConfig = RiskConfig(),
@@ -49,6 +50,19 @@ class CapitalDeploymentEngine(
         }
         val currentEquity = portfolio.totalEquityIdr.toDoubleOrZero()
         val openPositions = portfolio.positions.count { it.state != PositionState.CLOSED }
+        val freeCashIdr = portfolio.balances.sumOf { balance ->
+            when {
+                balance.asset.equals("idr", ignoreCase = true) -> balance.free.toDoubleOrZero()
+                balance.asset.equals("usdt", ignoreCase = true) ||
+                    balance.asset.equals("usdc", ignoreCase = true) ||
+                    balance.asset.equals("fdusd", ignoreCase = true) ||
+                    balance.asset.equals("tusd", ignoreCase = true) ||
+                    balance.asset.equals("busd", ignoreCase = true) ->
+                    balance.totalValueInIdr?.toDoubleOrZero() ?: balance.free.toDoubleOrZero()
+                else -> 0.0
+            }
+        }.coerceAtLeast(0.0)
+        val dynamicFreeCashSlots = CapitalAllocationManager.calculateDynamicAdditionalSlots(freeCashIdr)
         val openPositionValues = portfolio.positions
             .filter { it.state != PositionState.CLOSED }
             .map { position ->
@@ -81,9 +95,13 @@ class CapitalDeploymentEngine(
                 ((currentEquity * (1.0 - reservePct)).coerceAtLeast(0.0)) / config.targetMinPositionBudgetIdr,
             ).toInt().coerceAtLeast(1)
         }.coerceAtMost(config.maxConcurrentPositions)
-        val baseTotalCap = (openPositions + risk.maxAllowedAdditionalPositions)
-            .coerceAtMost(config.maxConcurrentPositions)
-            .coerceAtMost(affordableSlotCap)
+        val baseTotalCap = max(
+            (openPositions + risk.maxAllowedAdditionalPositions)
+                .coerceAtMost(config.maxConcurrentPositions)
+                .coerceAtMost(affordableSlotCap),
+            (openPositions + dynamicFreeCashSlots)
+                .coerceAtMost(config.maxConcurrentPositions),
+        )
         val firstCandidate = candidates.firstOrNull()
         val secondCandidate = candidates.getOrNull(1)
         val topCandidateGap = ((firstCandidate?.rankingScore ?: 0.0) - (secondCandidate?.rankingScore ?: 0.0))
@@ -237,6 +255,7 @@ class CapitalDeploymentEngine(
             if (dominantAllInReady) add("Kandidat utama sangat dominan, bot mengunci fokus modal hampir penuh ke pair teratas untuk mengejar akselerasi profit.")
             if (rotatableStale.isNotEmpty()) add("Posisi stagnan juga boleh dipaksa rotasi agar modal tidak nganggur saat winner baru muncul.")
             if (allowRotation) add("Rotasi dipercepat dari posisi lemah, stagnan, atau loser saat ada kandidat baru yang jauh lebih eksplosif.")
+            if (dynamicFreeCashSlots > 0) add("Free cash masih cukup untuk $dynamicFreeCashSlots slot tambahan, jadi multi-positioning tetap dibuka.")
         }
 
         return CapitalDeploymentPlan(

@@ -48,13 +48,20 @@ val decimalFormat: NumberFormat = NumberFormat.getNumberInstance().apply {
 fun formatRupiah(value: Double): String {
     val isNegative = value < 0
     val absValue = kotlin.math.abs(value)
-    
-    // Format with proper decimal handling
-    val numberFormat = NumberFormat.getNumberInstance(Locale("id", "ID")).apply {
-        minimumFractionDigits = 0
-        maximumFractionDigits = 0  // Round to nearest integer for display
+
+    val fractionDigits = when {
+        absValue == 0.0 -> 0
+        absValue < 1.0 -> 6
+        absValue < 100.0 -> 4
+        absValue < 1000.0 -> 3
+        else -> 0
     }
-    
+
+    val numberFormat = NumberFormat.getNumberInstance(Locale("id", "ID")).apply {
+        minimumFractionDigits = if (fractionDigits > 0) fractionDigits else 0
+        maximumFractionDigits = fractionDigits
+    }
+
     val formatted = numberFormat.format(absValue)
     return if (isNegative) "-Rp $formatted" else "Rp $formatted"
 }
@@ -135,7 +142,8 @@ fun PingIndicator(
 @Composable
 fun BalanceCard(
     totalBalance: Double,
-    totalReturn: Double,
+    returnToday: Double,
+    pnlTodayPercent: Double,
     pnlToday: Double,
     modifier: Modifier = Modifier
 ) {
@@ -188,9 +196,9 @@ fun BalanceCard(
                         color = TextTertiary
                     )
                     Text(
-                        text = formatRupiah(pnlToday),
+                        text = formatRupiah(returnToday),
                         style = MaterialTheme.typography.titleMedium,
-                        color = if (pnlToday >= 0) ProfitGreen else LossRed,
+                        color = if (returnToday >= 0) ProfitGreen else LossRed,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -204,14 +212,14 @@ fun BalanceCard(
                 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "Total Return",
+                        text = "PnL Today",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextTertiary
                     )
                     Text(
-                        text = formatPercent(totalReturn),
+                        text = formatPercent(pnlTodayPercent),
                         style = MaterialTheme.typography.titleMedium,
-                        color = if (totalReturn >= 0) ProfitGreen else LossRed,
+                        color = if (pnlTodayPercent >= 0) ProfitGreen else LossRed,
                         fontWeight = FontWeight.SemiBold
                     )
                 }

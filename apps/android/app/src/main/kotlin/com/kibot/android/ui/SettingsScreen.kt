@@ -11,6 +11,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kibot.android.data.ServerConfig
@@ -25,6 +26,7 @@ fun SettingsScreen(
 ) {
     var host by remember { mutableStateOf(currentConfig.host) }
     var port by remember { mutableStateOf(currentConfig.port.toString()) }
+    var token by remember { mutableStateOf(currentConfig.dashboardAuthToken) }
     var isSaving by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
 
@@ -104,6 +106,27 @@ fun SettingsScreen(
                 singleLine = true
             )
 
+            // Dashboard Auth Token (optional, but required for non-local servers)
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it },
+                label = { Text("Dashboard Auth Token") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary,
+                    focusedBorderColor = KiBotBlue,
+                    unfocusedBorderColor = TextSecondary,
+                    focusedLabelColor = KiBotBlue,
+                    unfocusedLabelColor = TextSecondary,
+                    cursorColor = KiBotBlue
+                ),
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true
+            )
+
             // Message
             if (message.isNotEmpty()) {
                 Text(
@@ -121,7 +144,7 @@ fun SettingsScreen(
                         val portNum = port.toIntOrNull()
                         if (host.isNotBlank() && portNum != null && portNum > 0) {
                             isSaving = true
-                            val newConfig = ServerConfig(host.trim(), portNum)
+                            val newConfig = ServerConfig(host = host.trim(), port = portNum, dashboardAuthToken = token.trim())
                             onSave(newConfig)
                             message = "Settings saved!"
                             isSaving = false
@@ -151,7 +174,7 @@ fun SettingsScreen(
 
             // Default Notice
             Text(
-                "Default: 213.35.118.26:8787",
+                "Default: 213.35.118.26:8787 (token kosong hanya untuk local/lan trusted)",
                 style = MaterialTheme.typography.labelSmall,
                 color = TextTertiary,
                 modifier = Modifier.padding(top = 16.dp)

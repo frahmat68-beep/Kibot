@@ -214,6 +214,23 @@ class HybridStrategyTests {
     }
 
     @Test
+    fun `Capital allocation - live holdings reduce available sleeves`() {
+        capitalManager.reset()
+        capitalManager.updateFreeCapital(
+            freeIdrBalance = 62_500.0,
+            totalEquityIdr = 100_000.0,
+            stableHoldingsIdr = 25_000.0,
+            aggressiveHoldingsIdr = 10_000.0,
+        )
+        val status = capitalManager.getStatus()
+        // free cash can be slightly less than unmet sleeve demand; allocation scales proportionally.
+        assertEquals(43_269.23, status.stableCapitalIdr, 0.05)
+        assertEquals(19_230.77, status.aggressiveCapitalIdr, 0.05)
+        assertEquals(25_000.0, status.totalDeployedStable, 0.01)
+        assertEquals(10_000.0, status.totalDeployedAggressive, 0.01)
+    }
+
+    @Test
     fun `Order execution strategy - stable uses limit orders`() {
         val rec = orderStrategy.recommendEntryOrderType(
             isAnomalyCoin = false,

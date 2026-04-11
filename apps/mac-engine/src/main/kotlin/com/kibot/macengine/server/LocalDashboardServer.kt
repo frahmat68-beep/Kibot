@@ -23,11 +23,13 @@ import io.ktor.server.html.respondHtml
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.request.uri
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
 import io.ktor.server.response.respondText
 import io.ktor.server.response.respondTextWriter
+import io.ktor.server.request.header
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
@@ -60,11 +62,15 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.decodeFromString
+import java.io.EOFException
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.channels.ClosedChannelException
 import java.util.Collections
 import java.net.NetworkInterface
+import java.util.concurrent.CancellationException
 import org.slf4j.LoggerFactory
 
 class LocalDashboardServer(
@@ -81,6 +87,7 @@ class LocalDashboardServer(
     private val logger = LoggerFactory.getLogger(LocalDashboardServer::class.java)
     private val lanProbeUrl = detectLanProbeUrl(host, port)
     private val lanServiceAdvertiser = if (enableLanAdvertising) LanServiceAdvertiser(host, port) else null
+    private val commandAuth = DashboardCommandAuth.fromEnv(host)
 
     private val server = embeddedServer(CIO, host = host, port = port) {
         install(CallLogging)
@@ -88,6 +95,10 @@ class LocalDashboardServer(
         install(WebSockets)
         install(StatusPages) {
             exception<Throwable> { call, cause ->
+                if (isBenignClientDisconnect(cause)) {
+                    logger.debug("Ignoring benign disconnect on ${call.request.uri}: ${cause.message}")
+                    return@exception
+                }
                 call.respond(HttpStatusCode.InternalServerError, mapOf("error" to (cause.message ?: "unknown")))
             }
         }
@@ -460,14 +471,22 @@ class LocalDashboardServer(
                 applyDashboardSecurityHeaders(call, cacheControl = "no-store, no-cache, must-revalidate, max-age=0")
                 call.response.header("Connection", "keep-alive")
                 call.respondTextWriter(ContentType.Text.EventStream) {
-                    write(": kibot-state-stream\n\n")
-                    flush()
-                    repository.state.collect { latest ->
-                        if (!isActive) return@collect
-                        val payload = Json.encodeToString(latest)
-                        write("event: state\n")
-                        write("data: $payload\n\n")
+                    try {
+                        write(": kibot-state-stream\n\n")
                         flush()
+                        repository.state.collect { latest ->
+                            if (!isActive) return@collect
+                            val payload = Json.encodeToString(latest)
+                            write("event: state\n")
+                            write("data: $payload\n\n")
+                            flush()
+                        }
+                    } catch (error: Throwable) {
+                        if (isBenignClientDisconnect(error)) {
+                            logger.debug("State stream closed by client: ${error.message}")
+                        } else {
+                            throw error
+                        }
                     }
                 }
             }
@@ -483,6 +502,11 @@ class LocalDashboardServer(
             }
 
             webSocket("/api/live/ws") {
+                if (!commandAuth.allowSession(call)) {
+                    close(io.ktor.websocket.CloseReason(io.ktor.websocket.CloseReason.Codes.VIOLATED_POLICY, "unauthorized"))
+                    return@webSocket
+                }
+                val limiter = DashboardCommandRateLimiter()
                 val snapshot = repository.state.value.toLiveSnapshot(host, port, botId)
                 send(
                     Json.encodeToString(
@@ -502,6 +526,15 @@ class LocalDashboardServer(
                 try {
                     for (frame in incoming) {
                         val text = (frame as? Frame.Text)?.readText() ?: continue
+                        if (!limiter.allow()) {
+                            close(
+                                io.ktor.websocket.CloseReason(
+                                    io.ktor.websocket.CloseReason.Codes.TRY_AGAIN_LATER,
+                                    "rate_limited",
+                                ),
+                            )
+                            return@webSocket
+                        }
                         val request = runCatching {
                             Json.decodeFromString<CommandCenterCommandRequest>(text)
                         }.getOrNull() ?: continue
@@ -515,6 +548,11 @@ class LocalDashboardServer(
 
             // WebSocket alias for Android app compatibility
             webSocket("/ws") {
+                if (!commandAuth.allowSession(call)) {
+                    close(io.ktor.websocket.CloseReason(io.ktor.websocket.CloseReason.Codes.VIOLATED_POLICY, "unauthorized"))
+                    return@webSocket
+                }
+                val limiter = DashboardCommandRateLimiter()
                 send(
                     Json.encodeToString(
                         CommandCenterWsEnvelope.Snapshot(repository.state.value.toLiveSnapshot(host, port, botId)),
@@ -533,6 +571,15 @@ class LocalDashboardServer(
                 try {
                     for (frame in incoming) {
                         val text = (frame as? Frame.Text)?.readText() ?: continue
+                        if (!limiter.allow()) {
+                            close(
+                                io.ktor.websocket.CloseReason(
+                                    io.ktor.websocket.CloseReason.Codes.TRY_AGAIN_LATER,
+                                    "rate_limited",
+                                ),
+                            )
+                            return@webSocket
+                        }
                         val request = runCatching {
                             Json.decodeFromString<CommandCenterCommandRequest>(text)
                         }.getOrNull() ?: continue
@@ -668,6 +715,129 @@ class LocalDashboardServer(
     }
 }
 
+private data class DashboardCommandAuth(
+    val required: Boolean,
+    val token: String,
+    val allowedCidrs: List<IpCidr> = emptyList(),
+) {
+    fun allowSession(call: io.ktor.server.application.ApplicationCall): Boolean {
+        if (!required) return true
+        if (token.isBlank()) return false
+        if (allowedCidrs.isNotEmpty()) {
+            val clientIp = extractClientIp(call) ?: return false
+            if (allowedCidrs.none { it.contains(clientIp) }) return false
+        }
+        return extractToken(call) == token
+    }
+
+    private fun extractToken(call: io.ktor.server.application.ApplicationCall): String? {
+        val headerValue = call.request.header("Authorization")?.trim().orEmpty()
+        if (headerValue.startsWith("Bearer ", ignoreCase = true)) {
+            return headerValue.removePrefix("Bearer ").trim().takeIf { it.isNotBlank() }
+        }
+        return call.request.queryParameters["token"]?.trim()?.takeIf { it.isNotBlank() }
+    }
+
+    private fun extractClientIp(call: io.ktor.server.application.ApplicationCall): java.net.InetAddress? {
+        val forwarded = call.request.header("X-Forwarded-For")
+            ?.split(",")
+            ?.firstOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        val raw = forwarded ?: call.request.local.remoteHost
+        return runCatching { java.net.InetAddress.getByName(raw) }.getOrNull()
+    }
+
+    companion object {
+        fun fromEnv(bindHost: String): DashboardCommandAuth {
+            val token = System.getenv("KIBOT_DASHBOARD_AUTH_TOKEN")?.trim().orEmpty()
+            val required = !isLoopbackHost(bindHost)
+            val allowlist = System.getenv("KIBOT_DASHBOARD_ALLOWED_IPS")
+                ?: System.getenv("KIBOT_DASHBOARD_ALLOWED_CIDRS")
+            val allowedCidrs = allowlist
+                ?.split(",", " ", "\n", "\t")
+                ?.mapNotNull { raw -> raw.trim().takeIf { it.isNotBlank() }?.let(IpCidr::parseOrNull) }
+                .orEmpty()
+            return DashboardCommandAuth(
+                required = required,
+                token = token,
+                allowedCidrs = allowedCidrs,
+            )
+        }
+
+        private fun isLoopbackHost(host: String): Boolean {
+            val normalized = host.trim().lowercase()
+            return normalized in setOf("127.0.0.1", "localhost", "::1")
+        }
+    }
+}
+
+private data class IpCidr(
+    val network: java.net.InetAddress,
+    val prefixBits: Int,
+) {
+    fun contains(address: java.net.InetAddress): Boolean {
+        val a = address.address
+        val n = network.address
+        if (a.size != n.size) return false
+        val fullBytes = prefixBits / 8
+        val remainingBits = prefixBits % 8
+        for (idx in 0 until fullBytes) {
+            if (a[idx] != n[idx]) return false
+        }
+        if (remainingBits == 0) return true
+        val mask = (0xFF shl (8 - remainingBits)) and 0xFF
+        return (a[fullBytes].toInt() and mask) == (n[fullBytes].toInt() and mask)
+    }
+
+    companion object {
+        fun parseOrNull(raw: String): IpCidr? {
+            val token = raw.trim()
+            if (token.isBlank()) return null
+            val parts = token.split("/", limit = 2)
+            val addr = runCatching { java.net.InetAddress.getByName(parts[0].trim()) }.getOrNull() ?: return null
+            val maxBits = addr.address.size * 8
+            val prefix = parts.getOrNull(1)
+                ?.trim()
+                ?.toIntOrNull()
+                ?.coerceIn(0, maxBits)
+                ?: maxBits
+            return IpCidr(network = masked(addr, prefix), prefixBits = prefix)
+        }
+
+        private fun masked(address: java.net.InetAddress, prefixBits: Int): java.net.InetAddress {
+            val bytes = address.address.clone()
+            val fullBytes = prefixBits / 8
+            val remainingBits = prefixBits % 8
+            for (idx in fullBytes until bytes.size) {
+                bytes[idx] = 0
+            }
+            if (remainingBits != 0 && fullBytes < bytes.size) {
+                val mask = (0xFF shl (8 - remainingBits)) and 0xFF
+                bytes[fullBytes] = (bytes[fullBytes].toInt() and mask).toByte()
+            }
+            return java.net.InetAddress.getByAddress(bytes)
+        }
+    }
+}
+
+private class DashboardCommandRateLimiter(
+    private val maxCommandsPerMinute: Int = (System.getenv("KIBOT_DASHBOARD_COMMANDS_PER_MIN")?.toIntOrNull() ?: 30)
+        .coerceIn(5, 600),
+) {
+    private var windowStartMs: Long = System.currentTimeMillis()
+    private var count: Int = 0
+
+    fun allow(nowMs: Long = System.currentTimeMillis()): Boolean {
+        if (nowMs - windowStartMs >= 60_000L) {
+            windowStartMs = nowMs
+            count = 0
+        }
+        count++
+        return count <= maxCommandsPerMinute
+    }
+}
+
 private fun MacDashboardState.toLiveSnapshot(serverHost: String, serverPort: Int): CommandCenterLiveSnapshot {
     return toLiveSnapshot(serverHost, serverPort, BotId("main"))
 }
@@ -689,12 +859,14 @@ private fun MacDashboardState.toLiveSnapshot(
         edgeConfidence = runCatching { com.kibot.shared.models.EdgeConfidence.valueOf(edgeConfidence) }.getOrDefault(com.kibot.shared.models.EdgeConfidence.MEDIUM),
         marketRegime = runCatching { com.kibot.shared.models.MarketRegime.valueOf(marketRegime) }.getOrDefault(com.kibot.shared.models.MarketRegime.HIGH_VOLATILITY_UNCLEAR),
         aiProviderSummary = aiProviderSummary,
+        upstreamMarker = upstreamMarker,
         activeEngine = activeEngine,
         standbyEngine = standbyEngine,
         topCandidate = topCandidate,
         scanUniverseCount = scanUniverseCount,
         leaseTerm = leaseTerm,
         healthSummary = healthSummary,
+        lastRejectedReason = lastRejectedReason,
         statusMessage = statusMessage,
         lastHeartbeatLabel = lastHeartbeatLabel,
         lastUpdatedLabel = lastUpdatedLabel,
@@ -739,7 +911,11 @@ private fun MacDashboardState.toLiveSnapshot(
                 pair = it.pair,
                 side = it.side,
                 status = it.status,
+                orderType = it.orderType,
                 detail = it.detail,
+                entryPriceLabel = it.entryPriceLabel,
+                exitPriceLabel = it.exitPriceLabel,
+                outcomeLabel = it.outcomeLabel,
                 pnlIdrLabel = it.pnlIdrLabel,
                 pnlPctLabel = it.pnlPctLabel,
             )
@@ -747,8 +923,19 @@ private fun MacDashboardState.toLiveSnapshot(
         liveTimeline = liveTimeline.map {
             CommandCenterTimelineEntry(it.timestampEpochMs, it.category, it.message)
         },
-        netWorthHistory = emptyList(),  // Will be populated by app tracking
-        assetAllocationDetailed = emptyList(),  // Will be derived from holdings on client
+        netWorthHistory = netWorthHistory.map {
+            com.kibot.shared.models.CommandCenterNetWorthPoint(
+                timestamp = it.timestampEpochMs,
+                value = it.valueIdrLabel,
+            )
+        },
+        assetAllocationDetailed = assetAllocationDetailed.map {
+            com.kibot.shared.models.CommandCenterAssetAllocation(
+                coin = it.coin,
+                percentageLabel = it.percentageLabel,
+                valueLabel = it.valueIdrLabel,
+            )
+        },
         updatedAtEpochMs = lastUpdatedEpochMs,
     )
 }
@@ -1906,6 +2093,19 @@ private fun detectLanProbeUrl(host: String, port: Int): String? {
             ?.hostAddress
     }.getOrNull()
     return lanAddress?.let { "http://$it:$port/api/lan/ping" }
+}
+
+private fun isBenignClientDisconnect(error: Throwable): Boolean {
+    return generateSequence(error) { it.cause }.any { cause ->
+        cause is CancellationException ||
+            cause is EOFException ||
+            cause is ClosedChannelException ||
+            (cause is IOException && (
+                cause.message?.contains("Broken pipe", ignoreCase = true) == true ||
+                    cause.message?.contains("Connection reset", ignoreCase = true) == true ||
+                    cause.message?.contains("Channel was closed", ignoreCase = true) == true
+                ))
+    }
 }
 
 private fun locateDashboardIcon(): File? {

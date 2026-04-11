@@ -823,6 +823,164 @@ class StrategyOrchestratorTest {
         assertTrue(analysis.entryExecutionPlans.none { it.signal.pairId.value == "shib_idr" })
     }
 
+    @Test
+    fun highVolatilityMomentumOverrideKeepsSignalAliveWhenAiIsLimited() {
+        val now = Clock.System.now()
+        val analysis = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = listOf(BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(62_000.0))),
+            openOrders = emptyList(),
+            dailyRisk = null,
+            health = healthyEngine(),
+            marketQuotes = listOf(
+                quote(
+                    pair = "fartcoin_idr",
+                    price = 125.0,
+                    spreadPct = 0.62,
+                    slippagePct = 0.42,
+                    trendScore = 0.74,
+                    expectancyScore = 0.70,
+                    volume = 120_000_000.0,
+                    holdabilityScore = 0.62,
+                    shortTermReturnPct = 2.6,
+                    mediumTermReturnPct = 1.4,
+                    recentTradeActivityScore = 0.90,
+                    orderBookStabilityScore = 0.76,
+                    bidDepthIdr = 220_000.0,
+                    askDepthIdr = 210_000.0,
+                    now = now,
+                    globalCorrelationScore = 0.82,
+                    sectorMomentumScore = 0.84,
+                ),
+            ),
+            pairSupportHints = listOf(
+                AiPairSupportHint(
+                    pairId = PairId("fartcoin_idr"),
+                    supportBias = 0.12,
+                    cautionBias = 0.0,
+                    cheapNominalWatch = true,
+                    rationale = "lead-lag momentum",
+                    generatedAt = now,
+                ),
+            ),
+            aiSoftAuditOnly = true,
+        )
+
+        val topRanked = analysis.rankedPairs.first()
+        assertEquals("fartcoin_idr", topRanked.pairId.value)
+    }
+
+    @Test
+    fun parallelMomentumBiasCanPrepareSecondEntryWhileAnotherHoldingIsStillOpen() {
+        val now = Clock.System.now()
+        val analysis = orchestrator.analyze(
+            botId = BotId("main"),
+            balances = listOf(
+                BalanceSnapshot(asset = "idr", free = DecimalValue.fromDouble(62_508.0)),
+                BalanceSnapshot(asset = "drx", free = DecimalValue.fromDouble(263.0)),
+            ),
+            openOrders = listOf(
+                OrderSnapshot(
+                    orderId = OrderId("buy-drx-filled"),
+                    clientOrderId = com.kibot.shared.models.ClientOrderId("buy-drx-filled"),
+                    pairId = PairId("drx_idr"),
+                    side = OrderSide.BUY,
+                    orderType = OrderType.LIMIT,
+                    status = OrderStatus.FILLED,
+                    price = DecimalValue.fromDouble(188.0),
+                    originalQuantity = DecimalValue.fromDouble(263.0),
+                    executedQuantity = DecimalValue.fromDouble(263.0),
+                    remainingQuantity = DecimalValue.Zero,
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            ),
+            dailyRisk = null,
+            health = healthyEngine(),
+            marketQuotes = listOf(
+                quote(
+                    pair = "drx_idr",
+                    price = 188.0,
+                    spreadPct = 0.28,
+                    slippagePct = 0.22,
+                    trendScore = 0.78,
+                    expectancyScore = 0.42,
+                    volume = 36_000_000.0,
+                    holdabilityScore = 0.70,
+                    shortTermReturnPct = 2.4,
+                    mediumTermReturnPct = 1.2,
+                    recentTradeActivityScore = 0.82,
+                    orderBookStabilityScore = 0.72,
+                    bidDepthIdr = 160_000.0,
+                    askDepthIdr = 150_000.0,
+                    now = now,
+                ),
+                quote(
+                    pair = "fartcoin_idr",
+                    price = 125.0,
+                    spreadPct = 0.82,
+                    slippagePct = 0.74,
+                    trendScore = 0.54,
+                    expectancyScore = 0.12,
+                    volume = 82_000_000.0,
+                    holdabilityScore = 0.52,
+                    shortTermReturnPct = 1.30,
+                    mediumTermReturnPct = 0.22,
+                    recentTradeActivityScore = 0.52,
+                    fillQualityScore = 0.52,
+                    orderBookStabilityScore = 0.56,
+                    bidDepthIdr = 120_000.0,
+                    askDepthIdr = 110_000.0,
+                    globalCorrelationScore = 0.76,
+                    sectorMomentumScore = 0.78,
+                    now = now,
+                ),
+                quote(
+                    pair = "pepe_idr",
+                    price = 18.0,
+                    spreadPct = 0.78,
+                    slippagePct = 0.66,
+                    trendScore = 0.62,
+                    expectancyScore = 0.18,
+                    volume = 95_000_000.0,
+                    holdabilityScore = 0.50,
+                    shortTermReturnPct = 2.2,
+                    mediumTermReturnPct = 0.8,
+                    recentTradeActivityScore = 0.60,
+                    fillQualityScore = 0.56,
+                    orderBookStabilityScore = 0.58,
+                    bidDepthIdr = 140_000.0,
+                    askDepthIdr = 130_000.0,
+                    globalCorrelationScore = 0.74,
+                    sectorMomentumScore = 0.76,
+                    now = now,
+                ),
+            ),
+            pairSupportHints = listOf(
+                AiPairSupportHint(
+                    pairId = PairId("fartcoin_idr"),
+                    supportBias = 0.08,
+                    cautionBias = 0.0,
+                    cheapNominalWatch = true,
+                    rationale = "parallel slot momentum",
+                    generatedAt = now,
+                ),
+            ),
+            aiSoftAuditOnly = true,
+        )
+
+        assertTrue(analysis.portfolio.positions.isNotEmpty())
+        assertTrue(analysis.deploymentPlan.maxActivePositions > analysis.portfolio.positions.size)
+        assertTrue(analysis.marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC)
+        analysis.selectedSignal?.let { signal ->
+            assertTrue(signal.pairId.value in setOf("fartcoin_idr", "pepe_idr"))
+            assertTrue(
+                signal.rationale.any { it.contains("Slot paralel momentum aktif") },
+                signal.toString(),
+            )
+        }
+    }
+
     private fun healthyEngine() = EngineHealthSnapshot(
         status = HealthStatus.HEALTHY,
         syncHealth = SyncHealth.HEALTHY,

@@ -87,6 +87,7 @@ class MarketRegimeAnalyzer(
         val tacticalBiasScore = when (regime) {
             MarketRegime.HEALTHY_SIDEWAYS -> 0.78
             MarketRegime.HIGH_VOLATILITY_UNCLEAR -> 0.55
+            MarketRegime.HIGH_VOLATILITY_MOMENTUM -> 0.68
             MarketRegime.HEALTHY_UPTREND -> 0.42
             MarketRegime.BREAKDOWN_PANIC -> 0.10
         }
@@ -94,6 +95,7 @@ class MarketRegimeAnalyzer(
             MarketRegime.HEALTHY_UPTREND -> 0.82
             MarketRegime.HEALTHY_SIDEWAYS -> 0.35
             MarketRegime.HIGH_VOLATILITY_UNCLEAR -> 0.18
+            MarketRegime.HIGH_VOLATILITY_MOMENTUM -> 0.28
             MarketRegime.BREAKDOWN_PANIC -> 0.05
         }
 

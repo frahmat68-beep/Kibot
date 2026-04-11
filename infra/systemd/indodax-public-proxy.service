@@ -1,0 +1,18 @@
+[Unit]
+Description=Indodax Public API Proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/KiDax
+ExecStart=/usr/bin/python3 /home/ubuntu/KiDax/scripts/indodax_public_proxy.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=indodax-public-proxy
+
+[Install]
+WantedBy=multi-user.target

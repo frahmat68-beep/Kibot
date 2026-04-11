@@ -29,7 +29,8 @@ data class TradeAutomationConfig(
     val timeExitGraceMultiplier: Double = 1.25,
     val maxStaleLossPctForTimeExit: Double = 0.10,
     val orderFillTolerancePct: Double = 0.0025,
-    val emergencyMarketExitLossPct: Double = -1.2,
+    // Hard emergency exit threshold (fast escape). Keep tight to minimize tail-risk.
+    val emergencyMarketExitLossPct: Double = -3.0,
     val ambiguousOrderGraceMinutes: Double = 4.0,
     val estimatedRoundTripCostPct: Double = 0.52,
     val adaptiveFeeFloorPct: Double = 0.32,
@@ -236,7 +237,7 @@ class TradeAutomationCoordinator(
             val quote = quoteByPair[pairId] ?: return@mapNotNull null
             val quoteAssetPriceIdr = quoteAssetReferencePrice(pairId.assets().quoteAsset, marketQuotes) ?: return@mapNotNull null
             val valueIdr = balanceQuantity * quote.bestBid.toDoubleOrZero() * quoteAssetPriceIdr
-            if (valueIdr < max(config.minTrackedPositionValueIdr, executionConfig.minOrderNotionalIdr)) return@mapNotNull null
+            if (valueIdr < config.minTrackedPositionValueIdr) return@mapNotNull null
 
             val pairOrders = ordersByPair[pairId].orEmpty()
             val rankedPair = rankedByPair[pairId]
@@ -260,6 +261,7 @@ class TradeAutomationCoordinator(
             } else {
                 0.0
             }
+            val estimatedNetPnlAfterCostsPct = unrealizedPnlPct - (adaptiveRoundTripCostPct + config.breakEvenExitBufferPct)
             val ageMinutes = ((now.toEpochMilliseconds() - openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 60_000.0)
             val chartAssessment = chartAnalyzer.analyzeQuoteSnapshot(
                 quote = quote,
@@ -311,7 +313,7 @@ class TradeAutomationCoordinator(
             val takeProfitPrice = DecimalValue.fromDouble(weightedEntryPrice * (1.0 + (takeProfitPct / 100.0)))
             val rawStopPrice = weightedEntryPrice * (1.0 - (stopLossPct / 100.0))
             val stopPrice = DecimalValue.fromDouble(
-                if (unrealizedPnlPct >= config.breakEvenArmingNetPnlPct) {
+                if (estimatedNetPnlAfterCostsPct >= config.breakEvenArmingNetPnlPct) {
                     max(rawStopPrice, breakEvenPrice.toDoubleOrZero())
                 } else {
                     rawStopPrice
@@ -405,6 +407,18 @@ class TradeAutomationCoordinator(
         riskDecision: RiskDecision,
         allowRotation: Boolean,
     ): ExitDecision? {
+        if (marketRegime == MarketRegime.BREAKDOWN_PANIC) {
+            return buildEmergencyExitDecision(
+                now = now,
+                position = position,
+                pairScore = pairScore,
+                replacementCandidates = replacementCandidates,
+                marketRegime = marketRegime,
+                modeSnapshot = modeSnapshot,
+                riskDecision = riskDecision,
+                allowRotation = allowRotation,
+            )
+        }
         val currentBid = position.currentBidPrice.toDoubleOrZero()
         val breakEvenPrice = position.breakEvenPrice.toDoubleOrZero()
         val stopPrice = position.stopPrice.toDoubleOrZero()
@@ -430,7 +444,6 @@ class TradeAutomationCoordinator(
             position.unrealizedPnlPct <= config.emergencyMarketExitLossPct -> ExitReason.STOP_LOSS_EXIT
             currentBid <= stopPrice -> ExitReason.STOP_LOSS_EXIT
             currentBid >= takeProfitPrice && !keepWinnerRunning -> ExitReason.PROFIT_EXIT
-            marketRegime == MarketRegime.BREAKDOWN_PANIC -> ExitReason.THESIS_INVALID_EXIT
             shouldRotateLoser(
                 position = position,
                 positionPairScore = pairScore,
@@ -477,9 +490,11 @@ class TradeAutomationCoordinator(
             else -> null
         } ?: return null
 
-        val useEmergencyMarketExit = riskDecision.hardStopTriggered ||
-            marketRegime == MarketRegime.BREAKDOWN_PANIC ||
-            (exitReason == ExitReason.STOP_LOSS_EXIT && position.unrealizedPnlPct <= config.emergencyMarketExitLossPct)
+        // Professional safety: when stop-loss is hit, prioritize certainty of exit over maker-fee optimization.
+        val useStopLossMarketExit = exitReason == ExitReason.STOP_LOSS_EXIT
+        val useEmergencyMarketExit = useStopLossMarketExit ||
+            riskDecision.hardStopTriggered ||
+            marketRegime == MarketRegime.BREAKDOWN_PANIC
         val useRapidRotationMarketExit = !useEmergencyMarketExit &&
             exitReason == ExitReason.ROTATION_EXIT &&
             (
@@ -562,6 +577,84 @@ class TradeAutomationCoordinator(
                 botMode = modeSnapshot.mode,
                 riskLadderLevel = modeSnapshot.riskLadderLevel,
                 pairRankingScore = pairScore?.rankingScore ?: 0.62,
+                speculativePocket = position.speculativePocket,
+            ),
+        )
+    }
+
+    private fun buildEmergencyExitDecision(
+        now: Instant,
+        position: ManagedPosition,
+        pairScore: PairScore?,
+        replacementCandidates: List<com.kibot.shared.models.CandidateOpportunity>,
+        marketRegime: MarketRegime,
+        modeSnapshot: BotModeSnapshot,
+        riskDecision: RiskDecision,
+        allowRotation: Boolean,
+    ): ExitDecision {
+        val currentBid = position.currentBidPrice.toDoubleOrZero()
+        val breakEvenPrice = position.breakEvenPrice.toDoubleOrZero()
+        val stopPrice = position.stopPrice.toDoubleOrZero()
+        val takeProfitPrice = position.takeProfitPrice.toDoubleOrZero()
+        val ageHours = ((now.toEpochMilliseconds() - position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 3_600_000.0)
+
+        val topCandidate = selectReplacementCandidate(
+            position = position,
+            positionPairScore = pairScore,
+            candidates = replacementCandidates,
+        )
+        val plannedQuantity = resolveExitQuantity(
+            position = position,
+            exitReason = ExitReason.THESIS_INVALID_EXIT,
+            currentNotionalIdr = position.currentValueIdr.toDoubleOrZero(),
+        )
+        val telemetryMessage = buildExitTelemetryMessage(
+            reason = ExitReason.THESIS_INVALID_EXIT,
+            position = position,
+            pairScore = pairScore,
+            topCandidate = topCandidate,
+            ageHours = ageHours,
+            keepWinnerRunning = false,
+            currentBid = currentBid,
+            breakEvenPrice = breakEvenPrice,
+            takeProfitPrice = takeProfitPrice,
+            stopPrice = stopPrice,
+            plannedQuantity = plannedQuantity,
+        )
+        val signal = StrategySignal(
+            pairId = position.pairId,
+            signalType = StrategySignalType.EXIT,
+            confidence = (pairScore?.rankingScore ?: 0.62).coerceIn(0.45, 0.98),
+            rationale = listOf(exitReasonMessage(ExitReason.THESIS_INVALID_EXIT, position), telemetryMessage),
+            entryPrice = position.currentBidPrice,
+            takeProfitPrice = position.takeProfitPrice,
+            stopPrice = position.stopPrice,
+            setupType = position.setupType,
+            horizon = position.horizon,
+            pairTier = position.pairTier,
+            speculativePocket = position.speculativePocket,
+            marketRegime = marketRegime,
+            edgeConfidence = modeSnapshot.edgeConfidence,
+            expectedHoldingHours = position.expectedHoldingHours,
+            expectedNetProfitabilityPct = abs(position.unrealizedPnlPct),
+        )
+
+        return ExitDecision(
+            position = position,
+            reason = ExitReason.THESIS_INVALID_EXIT,
+            message = telemetryMessage,
+            executionPlan = ExecutionPlan(
+                signal = signal,
+                side = OrderSide.SELL,
+                orderType = OrderType.MARKET,
+                quantity = plannedQuantity,
+                limitPrice = null,
+                quoteBudget = null,
+                postOnlyPreferred = false,
+                expectedNetEdgePct = 0.0,
+                botMode = modeSnapshot.mode,
+                riskLadderLevel = riskDecision.riskLadderLevel,
+                pairRankingScore = pairScore?.rankingScore ?: 0.0,
                 speculativePocket = position.speculativePocket,
             ),
         )

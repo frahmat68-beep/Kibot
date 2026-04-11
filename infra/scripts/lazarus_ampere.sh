@@ -52,7 +52,7 @@ notify_telegram() {
 
 fatal() {
   log "$1"
-  notify_telegram "Lazarus Ampere berhenti: $1"
+  notify_telegram "Lazarus stop: $1"
   exit 1
 }
 
@@ -204,7 +204,7 @@ while true; do
     rate_limit_level=0
     log "ALHAMDULILLAH! INSTANCE AMPERE BERHASIL DIBUAT!"
     printf '\a'
-    notify_telegram "ALHAMDULILLAH! Ampere A1 berhasil dibuat. Nama instance: ${INSTANCE_NAME}"
+    notify_telegram "Ampere OK: ${INSTANCE_NAME}"
     break
   fi
 
@@ -212,7 +212,7 @@ while true; do
     rate_limit_level=0
     log "ALHAMDULILLAH! INSTANCE AMPERE BERHASIL DIBUAT!"
     printf '\a'
-    notify_telegram "ALHAMDULILLAH! Ampere A1 berhasil dibuat. Nama instance: ${INSTANCE_NAME}"
+    notify_telegram "Ampere OK: ${INSTANCE_NAME}"
     break
   fi
 

@@ -13,6 +13,7 @@ class PreferencesManager(context: Context) {
     companion object {
         private const val KEY_SERVER_HOST = "server_host"
         private const val KEY_SERVER_PORT = "server_port"
+        private const val KEY_DASHBOARD_AUTH_TOKEN = "dashboard_auth_token"
         private const val KEY_LAST_STATUS = "last_status"
         private const val KEY_LAST_BALANCE = "last_balance"
         private const val KEY_LAST_PNL = "last_pnl"
@@ -24,13 +25,15 @@ class PreferencesManager(context: Context) {
     fun getServerConfig(): ServerConfig {
         val host = prefs.getString(KEY_SERVER_HOST, DEFAULT_HOST) ?: DEFAULT_HOST
         val port = prefs.getInt(KEY_SERVER_PORT, DEFAULT_PORT)
-        return ServerConfig(host, port)
+        val token = prefs.getString(KEY_DASHBOARD_AUTH_TOKEN, "") ?: ""
+        return ServerConfig(host = host, port = port, dashboardAuthToken = token)
     }
 
     fun saveServerConfig(config: ServerConfig) {
         prefs.edit().apply {
             putString(KEY_SERVER_HOST, config.host)
             putInt(KEY_SERVER_PORT, config.port)
+            putString(KEY_DASHBOARD_AUTH_TOKEN, config.dashboardAuthToken)
             apply()
         }
     }
