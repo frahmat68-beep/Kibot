@@ -1,0 +1,14 @@
+[Unit]
+Description=KiBot Auto-Recovery Watchdog
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /home/ubuntu/KiDax/kibot-recovery.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
