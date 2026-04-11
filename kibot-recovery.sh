@@ -4,12 +4,17 @@
 
 set -euo pipefail
 
+source /home/ubuntu/KiDax/.env 2>/dev/null || true
+source /home/ubuntu/KiBot/.env.kibot 2>/dev/null || true
+
 SERVICES=("kidax-engine" "kinance-engine" "kibot-manager")
 ENDPOINTS=("http://127.0.0.1:8787/api/state" "http://127.0.0.1:8788/api/state" "http://127.0.0.1:9998/api/state")
 LOG_FILE="/home/ubuntu/KiBot/kibot-recovery.log"
 FAIL_THRESHOLD=3
 CHECK_INTERVAL=30
 RESTART_COOLDOWN=60
+TELEGRAM_BOT_TOKEN="${KIBOT_TELEGRAM_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
+TELEGRAM_CHAT_ID="${KIBOT_TELEGRAM_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
 
 declare -A fail_streak
 for svc in "${SERVICES[@]}"; do
@@ -22,6 +27,11 @@ log() {
 
 notify() {
     log "$1"
+    if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+        curl -sf --max-time 5 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${1}" >/dev/null 2>&1 || true
+    fi
 }
 
 check_endpoint() {
