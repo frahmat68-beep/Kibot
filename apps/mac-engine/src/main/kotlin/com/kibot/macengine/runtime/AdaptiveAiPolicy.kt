@@ -49,9 +49,14 @@ data class AdaptiveAiAdjustments(
 data class AdaptiveAiExecutionFile(
     @SerialName("rotate_now_pairs") val rotateNowPairs: List<String> = emptyList(),
     @SerialName("hold_longer_pairs") val holdLongerPairs: List<String> = emptyList(),
+    @SerialName("temporary_blacklist_pairs") val temporaryBlacklistPairs: List<String> = emptyList(),
+    @SerialName("force_limit_pairs") val forceLimitPairs: List<String> = emptyList(),
+    @SerialName("force_market_pairs") val forceMarketPairs: List<String> = emptyList(),
+    @SerialName("tight_trailing_pairs") val tightTrailingPairs: List<String> = emptyList(),
     @SerialName("concentration_pair") val concentrationPair: String? = null,
     @SerialName("avoid_pair_families") val avoidPairFamilies: List<String> = emptyList(),
     @SerialName("replacement_hints") val replacementHints: List<AdaptiveAiReplacementFile> = emptyList(),
+    @SerialName("learning_notes") val learningNotes: List<String> = emptyList(),
 )
 
 @Serializable
@@ -79,9 +84,14 @@ data class AdaptiveAiReplacementFile(
 data class AdaptiveAiExecutionHints(
     val rotateNowPairs: List<PairId> = emptyList(),
     val holdLongerPairs: List<PairId> = emptyList(),
+    val temporaryBlacklistPairs: List<PairId> = emptyList(),
+    val forceLimitPairs: List<PairId> = emptyList(),
+    val forceMarketPairs: List<PairId> = emptyList(),
+    val tightTrailingPairs: List<PairId> = emptyList(),
     val concentrationPair: PairId? = null,
     val avoidPairFamilies: List<String> = emptyList(),
     val replacementHints: List<AdaptiveAiReplacementHint> = emptyList(),
+    val learningNotes: List<String> = emptyList(),
 )
 
 data class AdaptiveAiReplacementHint(
@@ -160,6 +170,10 @@ class AdaptiveAiPolicyLoader(
             executionHints = AdaptiveAiExecutionHints(
                 rotateNowPairs = parsed.execution.rotateNowPairs.mapNotNull { it.trim().lowercase().takeIf(String::isNotBlank)?.let(::PairId) },
                 holdLongerPairs = parsed.execution.holdLongerPairs.mapNotNull { it.trim().lowercase().takeIf(String::isNotBlank)?.let(::PairId) },
+                temporaryBlacklistPairs = parsed.execution.temporaryBlacklistPairs.mapNotNull { it.trim().lowercase().takeIf(String::isNotBlank)?.let(::PairId) },
+                forceLimitPairs = parsed.execution.forceLimitPairs.mapNotNull { it.trim().lowercase().takeIf(String::isNotBlank)?.let(::PairId) },
+                forceMarketPairs = parsed.execution.forceMarketPairs.mapNotNull { it.trim().lowercase().takeIf(String::isNotBlank)?.let(::PairId) },
+                tightTrailingPairs = parsed.execution.tightTrailingPairs.mapNotNull { it.trim().lowercase().takeIf(String::isNotBlank)?.let(::PairId) },
                 concentrationPair = parsed.execution.concentrationPair?.trim()?.lowercase()?.takeIf { it.isNotBlank() }?.let(::PairId),
                 avoidPairFamilies = parsed.execution.avoidPairFamilies.mapNotNull { it.trim().lowercase().takeIf(String::isNotBlank) }.distinct(),
                 replacementHints = parsed.execution.replacementHints.mapNotNull { hint ->
@@ -172,6 +186,7 @@ class AdaptiveAiPolicyLoader(
                         rationale = hint.rationale.trim(),
                     )
                 },
+                learningNotes = parsed.execution.learningNotes.map(String::trim).filter(String::isNotBlank),
             ),
             watchdog = AdaptiveAiWatchdog(
                 status = parsed.watchdog.status.uppercase().ifBlank { "IDLE" },
@@ -182,7 +197,7 @@ class AdaptiveAiPolicyLoader(
                 forceRotation = parsed.watchdog.forceRotation,
                 forceConcentration = parsed.watchdog.forceConcentration,
                 pressureFloor = parsed.watchdog.pressureFloor.coerceIn(0.0, 1.0),
-                budgetBoostFloor = parsed.watchdog.budgetBoostFloor.coerceIn(1.0, 2.1),
+                budgetBoostFloor = parsed.watchdog.budgetBoostFloor.coerceIn(0.70, 2.1),
                 executionBoostFloor = parsed.watchdog.executionBoostFloor.coerceIn(1.0, 1.95),
                 reserveReliefFloor = parsed.watchdog.reserveReliefFloor.coerceIn(0.0, 0.14),
             ),

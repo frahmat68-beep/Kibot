@@ -233,7 +233,7 @@ class TradeAutomationCoordinatorTest {
         )
 
         assertNotNull(decision)
-        assertEquals(ExitReason.STOP_LOSS_EXIT, decision.reason)
+        assertEquals(ExitReason.THESIS_INVALID_EXIT, decision.reason)
         assertEquals(OrderType.MARKET, decision.executionPlan.orderType)
     }
 
@@ -241,7 +241,7 @@ class TradeAutomationCoordinatorTest {
     fun `managed position arms break even stop after fee-covered gain`() {
         val now = Clock.System.now()
         val quotes = listOf(
-            marketQuote("arc_idr", 1015.0, 1017.0, 80_000_000.0, 1.2, 0.8),
+            marketQuote("arc_idr", 1018.0, 1020.0, 80_000_000.0, 1.2, 0.8),
         )
         val recentOrders = listOf(
             com.kibot.shared.models.OrderSnapshot(

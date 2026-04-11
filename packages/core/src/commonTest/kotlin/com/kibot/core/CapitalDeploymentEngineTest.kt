@@ -200,6 +200,52 @@ class CapitalDeploymentEngineTest {
         assertTrue(plan.candidates.first().pairId == PairId("croak_idr"))
     }
 
+    @Test
+    fun `free cash above twenty thousand keeps parallel slot open during active hold`() {
+        val now = Clock.System.now()
+        val portfolio = PortfolioSnapshot(
+            botId = BotId("main"),
+            balances = listOf(
+                BalanceSnapshot("idr", DecimalValue("62508")),
+                BalanceSnapshot("drx", DecimalValue("263"), totalValueInIdr = DecimalValue("49353")),
+            ),
+            openOrders = emptyList(),
+            positions = listOf(
+                PositionSnapshot(
+                    positionId = com.kibot.shared.models.PositionId("drx-1"),
+                    pairId = PairId("drx_idr"),
+                    baseAsset = "drx",
+                    quoteAsset = "idr",
+                    state = PositionState.OPEN,
+                    quantity = DecimalValue("263"),
+                    averageEntryPrice = DecimalValue("188"),
+                    realizedPnlIdr = DecimalValue.Zero,
+                    unrealizedPnlIdr = DecimalValue("0"),
+                    horizon = TradingHorizon.TACTICAL,
+                    openedAt = now,
+                    updatedAt = now,
+                ),
+            ),
+            totalEquityIdr = DecimalValue("111861"),
+            lastSyncedAt = now,
+        )
+
+        val plan = engine.plan(
+            portfolio = portfolio,
+            rankedPairs = listOf(
+                pairScore("fartcoin_idr", ranking = 0.84, opportunity = 1.95),
+                pairScore("arc_idr", ranking = 0.79, opportunity = 1.52),
+                pairScore("game2_idr", ranking = 0.77, opportunity = 1.46),
+            ),
+            risk = risk.copy(maxAllowedAdditionalPositions = 0),
+            mode = mode.copy(mode = BotMode.ATTACK),
+        )
+
+        assertTrue(plan.maxActivePositions > portfolio.positions.size)
+        assertTrue(plan.allowNewEntries)
+        assertTrue(plan.rationale.any { it.contains("slot tambahan", ignoreCase = true) })
+    }
+
     private fun portfolio() = PortfolioSnapshot(
         botId = BotId("main"),
         balances = listOf(BalanceSnapshot("idr", DecimalValue("100000"))),

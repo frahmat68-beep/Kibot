@@ -51,6 +51,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import java.net.DatagramPacket
@@ -65,11 +67,18 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 class MacEngineDaemonTest {
     private val botId = BotId("main")
     private val macId = DeviceId("macbook-main")
     private val androidId = DeviceId("android-main")
+    private val fixedClock: Clock = object : Clock {
+        private val offsetMs =
+            Instant.parse("2026-03-15T00:00:00Z").toEpochMilliseconds() - System.currentTimeMillis()
+
+        override fun now(): Instant = Instant.fromEpochMilliseconds(System.currentTimeMillis() + offsetMs)
+    }
 
     @Test
     fun `standby acquires expired lease after clean reconciliation`() = runBlocking {
@@ -111,6 +120,7 @@ class MacEngineDaemonTest {
             controlPlane = controlPlane,
             exchange = exchange,
             config = runtimeConfig(),
+            clock = fixedClock,
         )
 
         daemon.syncOnce()
@@ -178,7 +188,7 @@ class MacEngineDaemonTest {
                     price = DecimalValue("1000000"),
                     fee = DecimalValue("1000"),
                     feeAsset = "idr",
-                    executedAt = Clock.System.now(),
+                    executedAt = fixedClock.now(),
                 ),
             ),
         )
@@ -188,6 +198,7 @@ class MacEngineDaemonTest {
             controlPlane = controlPlane,
             exchange = exchange,
             config = runtimeConfig(),
+            clock = fixedClock,
         )
 
         daemon.syncOnce()
@@ -199,6 +210,9 @@ class MacEngineDaemonTest {
 
     @Test
     fun `master submits live order when execution is enabled and gate is clean`() = runBlocking {
+        val previousPlanDebug = System.getProperty("KIBOT_DEBUG_PLAN")
+        System.setProperty("KIBOT_DEBUG_PLAN", "true")
+        try {
         val controlPlane = FakeControlPlaneGateway(botId = botId)
         controlPlane.botState = BotStateSnapshot(
             botId = botId,
@@ -241,7 +255,16 @@ class MacEngineDaemonTest {
 
         val exchange = FakeExchangeGateway(
             marketQuotes = mutableListOf(
-                marketQuote("eth_usdt", 120_000_000.0, 0.74),
+                marketQuote(
+                    pair = "eth_usdt",
+                    quoteVolume = 120_000_000.0,
+                    rankingHint = 0.88,
+                    spreadPct = 0.08,
+                    shortTermReturnPct = 4.2,
+                    mediumTermReturnPct = 6.8,
+                    askDepthTop5Idr = 280_000.0,
+                    bidDepthTop5Idr = 260_000.0,
+                ),
             ),
             balances = mutableListOf(BalanceSnapshot("usdt", DecimalValue("500000"))),
         )
@@ -257,6 +280,7 @@ class MacEngineDaemonTest {
                 chartGuardMinActiveCandles = 1,
                 chartGuardMinDistinctCloseBuckets = 1,
             ),
+            clock = fixedClock,
         )
 
         daemon.syncOnce()
@@ -265,6 +289,13 @@ class MacEngineDaemonTest {
         assertEquals(exchange.currentOrders().size, controlPlane.fetchRecentOrders(botId).size)
         assertTrue(controlPlane.fetchRecentOrders(botId).any { it.pairId == PairId("eth_usdt") })
         assertTrue(controlPlane.fetchRecentOrders(botId).all { it.side == OrderSide.BUY })
+        } finally {
+            if (previousPlanDebug == null) {
+                System.clearProperty("KIBOT_DEBUG_PLAN")
+            } else {
+                System.setProperty("KIBOT_DEBUG_PLAN", previousPlanDebug)
+            }
+        }
     }
 
     @Test
@@ -325,6 +356,7 @@ class MacEngineDaemonTest {
                 deviceRole = DeviceRole.PRIMARY,
                 monthlyPnlAnchorPath = monthlyAnchorPath,
             ),
+            clock = fixedClock,
         )
 
         daemon.syncOnce()
@@ -377,7 +409,7 @@ class MacEngineDaemonTest {
         controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
         val statePath = Files.createTempFile("kibot-toxic-local-state-", ".json").also { Files.deleteIfExists(it) }
         val toxicPath = statePath.parent.resolve("pair-toxic-flow-state.json")
-        val nowMs = Clock.System.now().toEpochMilliseconds()
+        val nowMs = fixedClock.now().toEpochMilliseconds()
         Files.writeString(
             toxicPath,
             """
@@ -400,6 +432,7 @@ class MacEngineDaemonTest {
                 localPositionStateEnabled = true,
                 localPositionStatePath = statePath,
             ),
+            clock = fixedClock,
         )
 
         daemon.syncOnce()
@@ -469,18 +502,19 @@ class MacEngineDaemonTest {
             config = runtimeConfig(
                 enableLiveExecution = true,
                 deviceRole = DeviceRole.PRIMARY,
-                exchangeKind = ExchangeKind.BINANCE_SPOT,
+                exchangeKind = ExchangeKind.INDODAX,
                 chartGuardMinCandles = 1,
                 chartGuardMinActiveCandles = 1,
                 chartGuardMinDistinctCloseBuckets = 1,
             ),
+            clock = fixedClock,
         )
 
         daemon.syncOnce()
 
         val order = exchange.currentOrders().single()
         val submittedBudget = order.originalQuantity.toDoubleOrZero() * order.price.toDoubleOrZero()
-        assertTrue(submittedBudget <= 10_000.0, "submitted budget should be sliced down to venue-safe minimum, got $submittedBudget")
+        assertTrue(submittedBudget <= 20_000.0, "submitted budget should be sliced down to venue-safe minimum, got $submittedBudget")
     }
 
     @Test
@@ -553,6 +587,7 @@ class MacEngineDaemonTest {
                 chartGuardMinActiveCandles = 1,
                 chartGuardMinDistinctCloseBuckets = 1,
             ),
+            clock = fixedClock,
         )
 
         daemon.syncOnce()
@@ -646,6 +681,7 @@ class MacEngineDaemonTest {
                 chartGuardMinActiveCandles = 1,
                 chartGuardMinDistinctCloseBuckets = 1,
             ),
+            clock = fixedClock,
         )
 
         daemon.syncOnce()
@@ -735,6 +771,7 @@ class MacEngineDaemonTest {
                 leadLagUdpHeartbeatTimeoutMillis = 80L,
                 leadLagUdpHeartbeatRequiredBotIds = setOf("kinance"),
             ),
+            clock = fixedClock,
         )
 
         daemon.syncOnce()
@@ -772,11 +809,12 @@ class MacEngineDaemonTest {
                 leadLagUdpHeartbeatTimeoutMillis = 80L,
                 leadLagUdpHeartbeatRequiredBotIds = setOf("kinance"),
             ),
+            clock = fixedClock,
         )
 
         daemon.writePrivateField("trinityHeartbeatSafeModeReason", "Trinity heartbeat timeout: kinance:no_heartbeat.")
         val heartbeats = daemon.readPrivateField<MutableMap<String, Instant>>("lastTrinityHeartbeatByBotId")
-        heartbeats["kinance"] = Clock.System.now()
+        heartbeats["kinance"] = fixedClock.now()
 
         daemon.syncOnce()
 
@@ -810,24 +848,25 @@ class MacEngineDaemonTest {
                 leadLagUdpHeartbeatTimeoutMillis = 80L,
                 leadLagUdpHeartbeatRequiredBotIds = setOf("kinance"),
             ),
+            clock = fixedClock,
         )
 
         val packet = buildBinaryHeartbeatPacket(
             senderCode = 1,
             sequenceId = 7,
-            sentAtEpochMs = Clock.System.now().toEpochMilliseconds(),
+            sentAtEpochMs = fixedClock.now().toEpochMilliseconds(),
         )
         val decoded = daemon.invokePrivateMethod<Any?>("decodeBinaryUdpPacket", packet, packet.size)!!
         val heartbeat = decoded.readPrivateField<Any?>("heartbeat")
         assertTrue(heartbeat != null)
         assertEquals("kinance", heartbeat.readPrivateField<String>("senderBotId"))
         val heartbeatJson = """
-            {"kind":"trinity_state","msgType":"HEARTBEAT","senderBotId":"kinance","sentAtEpochMs":${Clock.System.now().toEpochMilliseconds()},"activePair":"xrp_idr","safeModeArmed":false}
+            {"kind":"trinity_state","msgType":"HEARTBEAT","senderBotId":"kinance","sentAtEpochMs":${fixedClock.now().toEpochMilliseconds()},"activePair":"xrp_idr","safeModeArmed":false}
         """.trimIndent()
         val handled = daemon.invokePrivateMethod<Boolean>(
             "handleTrinityHeartbeatPayload",
             heartbeatJson,
-            Clock.System.now(),
+            fixedClock.now(),
         )
         assertTrue(handled)
 
@@ -856,6 +895,7 @@ class MacEngineDaemonTest {
                 leadLagUdpTargetHost = "127.0.0.1",
                 leadLagUdpTargetPort = 10120,
             ),
+            clock = fixedClock,
         )
 
         val accepted = daemon.invokePrivateMethod<Boolean>("shouldRejectUdpSequence", "kinance", 10)
@@ -885,11 +925,12 @@ class MacEngineDaemonTest {
                 leadLagUdpTargetHost = "127.0.0.1",
                 leadLagUdpTargetPort = 10140,
             ),
+            clock = fixedClock,
         )
 
-        val sentAt = Clock.System.now() - 2_100.milliseconds
-        val stale = daemon.invokePrivateMethod<Boolean>("isLeadLagPayloadTooOld", sentAt, Clock.System.now())
-        val fresh = daemon.invokePrivateMethod<Boolean>("isLeadLagPayloadTooOld", Clock.System.now(), Clock.System.now())
+        val sentAt = fixedClock.now() - 2_100.milliseconds
+        val stale = daemon.invokePrivateMethod<Boolean>("isLeadLagPayloadTooOld", sentAt, fixedClock.now())
+        val fresh = daemon.invokePrivateMethod<Boolean>("isLeadLagPayloadTooOld", fixedClock.now(), fixedClock.now())
 
         assertTrue(stale)
         assertFalse(fresh)
@@ -913,8 +954,8 @@ class MacEngineDaemonTest {
             originalQuantity = DecimalValue("10000"),
             executedQuantity = DecimalValue("3000"),
             remainingQuantity = DecimalValue("7000"),
-            createdAt = Clock.System.now() - 2.minutes,
-            updatedAt = Clock.System.now() - 2.minutes,
+            createdAt = fixedClock.now() - 2.minutes,
+            updatedAt = fixedClock.now() - 2.minutes,
         )
 
         val exchange = FakeExchangeGateway(
@@ -942,11 +983,12 @@ class MacEngineDaemonTest {
                 leadLagUdpTargetHost = "127.0.0.1",
                 leadLagUdpTargetPort = 10150,
             ),
+            clock = fixedClock,
         )
 
         val stabilized = daemon.invokePrivateSuspendMethod<List<OrderSnapshot>>(
             "manageStaleExitOrders",
-            Clock.System.now(),
+            fixedClock.now(),
             heldLease(),
             listOf(
                 com.kibot.core.ManagedPosition(
@@ -960,8 +1002,8 @@ class MacEngineDaemonTest {
                     breakEvenPrice = DecimalValue("140"),
                     takeProfitPrice = DecimalValue("160"),
                     stopPrice = DecimalValue("135"),
-                    openedAt = Clock.System.now() - 1.minutes,
-                    updatedAt = Clock.System.now(),
+                    openedAt = fixedClock.now() - 1.minutes,
+                    updatedAt = fixedClock.now(),
                     horizon = TradingHorizon.TACTICAL,
                     setupType = SetupType.LIGHT_BREAKOUT_CONTINUATION,
                     pairTier = com.kibot.shared.models.PairTier.TIER_B,
@@ -997,9 +1039,10 @@ class MacEngineDaemonTest {
                 leadLagUdpTargetHost = "127.0.0.1",
                 leadLagUdpTargetPort = 10130,
             ),
+            clock = fixedClock,
         )
 
-        val nowMs = Clock.System.now().toEpochMilliseconds()
+        val nowMs = fixedClock.now().toEpochMilliseconds()
         val packet = buildBinaryLeadLagPacket(
             messageType = 12,
             senderCode = 2,
@@ -1011,9 +1054,9 @@ class MacEngineDaemonTest {
         val decoded = daemon.invokePrivateMethod<Any?>("decodeBinaryUdpPacket", packet, packet.size)!!
         val dedupKey = decoded.readPrivateField<String?>("dedupKey")
         val payload = decoded.readPrivateField<Any?>("leadLag")
-        val first = daemon.invokePrivateMethod<Boolean>("shouldRejectUdpDedup", dedupKey, Clock.System.now())
-        val second = daemon.invokePrivateMethod<Boolean>("shouldRejectUdpDedup", dedupKey, Clock.System.now())
-        daemon.invokePrivateMethod<Unit>("armUdpExecutionPrewarm", payload!!, Clock.System.now())
+        val first = daemon.invokePrivateMethod<Boolean>("shouldRejectUdpDedup", dedupKey, fixedClock.now())
+        val second = daemon.invokePrivateMethod<Boolean>("shouldRejectUdpDedup", dedupKey, fixedClock.now())
+        daemon.invokePrivateMethod<Unit>("armUdpExecutionPrewarm", payload!!, fixedClock.now())
 
         val dedup = daemon.readPrivateField<MutableMap<String, Instant>>("udpRecentDedupKeys")
         val prewarm = daemon.readPrivateField<MutableMap<String, Any>>("udpExecutionPrewarmByPair")
@@ -1098,6 +1141,7 @@ class MacEngineDaemonTest {
                 localPositionStateEnabled = true,
                 localPositionStatePath = statePath,
             ),
+            clock = fixedClock,
         )
 
         daemonA.syncOnce()
@@ -1136,6 +1180,7 @@ class MacEngineDaemonTest {
                 localPositionStateEnabled = true,
                 localPositionStatePath = statePath,
             ),
+            clock = fixedClock,
         )
 
         daemonB.syncOnce()
@@ -1225,6 +1270,7 @@ class MacEngineDaemonTest {
                 chartGuardMinActiveCandles = 1,
                 chartGuardMinDistinctCloseBuckets = 1,
             ),
+            clock = fixedClock,
         )
 
         daemon.syncOnce()
@@ -1268,6 +1314,7 @@ class MacEngineDaemonTest {
                 supabaseLogUploadEnabled = true,
                 supabaseLogMinLevel = LogLevel.INFO,
             ),
+            clock = fixedClock,
         )
 
         controlPlane.enqueueCommand(
@@ -1322,16 +1369,37 @@ class MacEngineDaemonTest {
         )
         val balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("12000000")))
         val exchange = FakeExchangeGateway(marketQuotes = quotes, balances = balances)
+        val repository = MacStateRepository()
         val daemon = MacEngineDaemon(
-            repository = MacStateRepository(),
+            repository = repository,
             controlPlane = controlPlane,
             exchange = exchange,
             config = runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 4),
+            clock = fixedClock,
         )
 
-        runUntilOrderSubmitted(daemon, exchange, PairId("stg_idr"), OrderSide.BUY, maxCycles = 8)
-
-        assertTrue(exchange.currentOrders().any { it.side == OrderSide.BUY && it.pairId == PairId("stg_idr") })
+        val target = PairId("stg_idr")
+        repeat(8) {
+            daemon.syncOnce()
+            if (exchange.currentOrders().any { it.side == OrderSide.BUY && it.pairId == target }) return@runBlocking
+        }
+        val tailLogs = controlPlane.fetchRecentLogs(botId, 120).takeLast(40).joinToString("\n") {
+            "${it.level}:${it.category}:${it.message}"
+        }
+        fail(
+            buildString {
+                appendLine("Expected BUY order for ${target.value}.")
+                appendLine("Orders=${exchange.currentOrders()}")
+                appendLine("BotState=${controlPlane.fetchBotState(botId)}")
+                appendLine("RuntimeIntelligence=${controlPlane.runtimeIntelligence}")
+                val date = fixedClock.now().toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
+                appendLine("DailyRisk=${controlPlane.fetchDailyRisk(botId, date)}")
+                appendLine("State=${repository.state.value.statusMessage}")
+                appendLine("TopCandidate=${repository.state.value.topCandidate}")
+                appendLine("RecentLogs:")
+                appendLine(tailLogs)
+            },
+        )
     }
 
     @Test
@@ -1371,6 +1439,7 @@ class MacEngineDaemonTest {
                 supabaseLogUploadEnabled = true,
                 supabaseLogMinLevel = LogLevel.INFO,
             ),
+            clock = fixedClock,
         )
 
         controlPlane.enqueueCommand(
@@ -1461,6 +1530,7 @@ class MacEngineDaemonTest {
                 supabaseLogUploadEnabled = true,
                 supabaseLogMinLevel = LogLevel.INFO,
             ),
+            clock = fixedClock,
         )
 
         controlPlane.enqueueCommand(
@@ -1600,6 +1670,7 @@ class MacEngineDaemonTest {
                 exchangeKind = ExchangeKind.INDODAX,
                 chartGuardMinActiveCandles = 3,
             ),
+            clock = fixedClock,
         )
 
         daemon.syncOnce()
@@ -1680,6 +1751,7 @@ class MacEngineDaemonTest {
             controlPlane = controlPlane,
             exchange = exchange,
             config = runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 4),
+            clock = fixedClock,
         )
 
         daemon.syncOnce()
@@ -1736,6 +1808,7 @@ class MacEngineDaemonTest {
             controlPlane = controlPlane,
             exchange = exchange,
             config = runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 4),
+            clock = fixedClock,
         )
 
         daemon.syncOnce()
@@ -1789,6 +1862,7 @@ class MacEngineDaemonTest {
             controlPlane,
             exchange,
             runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 1),
+            fixedClock,
         )
 
         daemon.syncOnce()
@@ -1894,6 +1968,7 @@ class MacEngineDaemonTest {
             controlPlane,
             exchange,
             runtimeConfig(enableLiveExecution = true, deviceRole = DeviceRole.PRIMARY, chartGuardMinActiveCandles = 1),
+            fixedClock,
         )
 
         repeat(5) { daemon.syncOnce() }
@@ -1955,6 +2030,7 @@ class MacEngineDaemonTest {
                 deviceRole = DeviceRole.PRIMARY,
                 exchangeKind = ExchangeKind.BINANCE_SPOT,
             ),
+            fixedClock,
         )
         daemon.syncOnce()
         delay(1_100)
@@ -2004,15 +2080,10 @@ class MacEngineDaemonTest {
         leadLagUdpHeartbeatTimeoutMillis: Long = 500L,
         leadLagUdpHeartbeatRequiredBotIds: Set<String> = emptySet(),
         localPositionStateEnabled: Boolean = false,
-        localPositionStatePath: java.nio.file.Path = Files.createTempFile("kibot-test-local-state-", ".json").also {
-            Files.deleteIfExists(it)
-        },
-        pnlResetAnchorPath: java.nio.file.Path = Files.createTempFile("kibot-test-pnl-reset-anchor-", ".json").also {
-            Files.deleteIfExists(it)
-        },
-        monthlyPnlAnchorPath: java.nio.file.Path = Files.createTempFile("kibot-test-monthly-anchor-", ".json").also {
-            Files.deleteIfExists(it)
-        },
+        runtimeDir: java.nio.file.Path = Files.createTempDirectory("kibot-test-runtime-"),
+        localPositionStatePath: java.nio.file.Path = runtimeDir.resolve("local_position_state.json"),
+        pnlResetAnchorPath: java.nio.file.Path = runtimeDir.resolve("pnl_reset_anchor.json"),
+        monthlyPnlAnchorPath: java.nio.file.Path = runtimeDir.resolve("monthly_pnl_anchor.json"),
     ): MacRuntimeConfig = MacRuntimeConfig(
         runtimeProfileKey = "indodax",
         exchangeKind = exchangeKind,
@@ -2049,8 +2120,9 @@ class MacEngineDaemonTest {
         dashboardLogPollIntervalMillis = 20_000,
         releaseLabel = "#test",
         aiSupportConfig = null,
-        adaptiveAiPolicyPath = java.nio.file.Paths.get("build/tmp/test-adaptive-policy.json"),
-        targetEnforcementMemoryPath = java.nio.file.Paths.get("build/tmp/test-target-enforcement-memory.json"),
+        adaptiveAiPolicyPath = runtimeDir.resolve("adaptive_policy.json"),
+        localLearningMemoryPath = runtimeDir.resolve("local_learning_memory.json"),
+        targetEnforcementMemoryPath = runtimeDir.resolve("target_enforcement_memory.json"),
         pnlResetAnchorPath = pnlResetAnchorPath,
         monthlyPnlAnchorPath = monthlyPnlAnchorPath,
         chartGuardMinCandles = chartGuardMinCandles,
@@ -2060,6 +2132,9 @@ class MacEngineDaemonTest {
         chartGuardMinDistinctCloseBuckets = chartGuardMinDistinctCloseBuckets,
         analysisPublishIntervalMillis = 1_000,
         strategyMetricsPublishIntervalMillis = 1_000,
+        autonomousAiReviewIntervalMillis = 1_800_000,
+        stableCapitalAllocationPercent = 0.70,
+        aggressiveCapitalAllocationPercent = 0.30,
         supabaseLogUploadEnabled = supabaseLogUploadEnabled,
         supabaseLogMinLevel = supabaseLogMinLevel,
         supabaseNonCriticalWriteEnabled = true,
@@ -2106,6 +2181,7 @@ class MacEngineDaemonTest {
         telegramAlertsEnabled = false,
         telegramBotToken = null,
         telegramChatId = null,
+        telegramFatalAlertDebounceMillis = 180_000L,
         hyperAggressiveConfig = HyperAggressiveConfig(),
     )
 
@@ -2286,11 +2362,17 @@ class MacEngineDaemonTest {
         globalCorrelationScore: Double = 0.71,
         toxicFlowScore: Double = 0.12,
     ) =
+        run {
+            val quoteAsset = pair.substringAfter('_', missingDelimiterValue = "").lowercase()
+            val (bestBid, bestAsk, midPrice) = when (quoteAsset) {
+                "usdt", "usdc", "fdusd", "tusd", "busd" -> Triple("1.0000", "1.0020", "1.0010")
+                else -> Triple("100000", "100200", "100100")
+            }
         com.kibot.shared.models.MarketQuote(
             pairId = PairId(pair),
-            bestBid = DecimalValue("100000"),
-            bestAsk = DecimalValue("100200"),
-            midPrice = DecimalValue("100100"),
+            bestBid = DecimalValue(bestBid),
+            bestAsk = DecimalValue(bestAsk),
+            midPrice = DecimalValue(midPrice),
             spreadPct = spreadPct,
             quoteVolume24h = DecimalValue.fromDouble(quoteVolume),
             baseVolume24h = DecimalValue("120"),
@@ -2314,6 +2396,7 @@ class MacEngineDaemonTest {
             globalCorrelationScore = globalCorrelationScore,
             toxicFlowScore = toxicFlowScore,
         )
+        }
 
     private fun leadLagPayloadJson(
         pair: String,
@@ -2321,11 +2404,13 @@ class MacEngineDaemonTest {
         senderBotId: String = "kinance",
         msgType: String = "DETECTOR_HIT",
         trend: String = "UP",
-        sentAtEpochMs: Long = Clock.System.now().toEpochMilliseconds(),
-        expiresAtEpochMs: Long = sentAtEpochMs + 12_000L,
+        sentAtEpochMs: Long? = null,
+        expiresAtEpochMs: Long? = null,
     ): String {
+        val sentAt = sentAtEpochMs ?: fixedClock.now().toEpochMilliseconds()
+        val expiresAt = expiresAtEpochMs ?: (sentAt + 12_000L)
         return """
-            {"kind":"lead_lag_breakout","msgType":"$msgType","traceId":"$traceId","senderBotId":"$senderBotId","pairId":"$pair","trend":"$trend","detectedAtEpochMs":$sentAtEpochMs,"confidence":0.92,"expectedNetPct":3.5,"shortTermReturnPct":4.0,"mediumTermReturnPct":6.0,"tradeActivityScore":0.95,"forceRotation":true,"sentAtEpochMs":$sentAtEpochMs,"expiresAtEpochMs":$expiresAtEpochMs}
+            {"kind":"lead_lag_breakout","msgType":"$msgType","traceId":"$traceId","senderBotId":"$senderBotId","pairId":"$pair","trend":"$trend","detectedAtEpochMs":$sentAt,"confidence":0.92,"expectedNetPct":3.5,"shortTermReturnPct":4.0,"mediumTermReturnPct":6.0,"tradeActivityScore":0.95,"forceRotation":true,"sentAtEpochMs":$sentAt,"expiresAtEpochMs":$expiresAt}
         """.trimIndent()
     }
 

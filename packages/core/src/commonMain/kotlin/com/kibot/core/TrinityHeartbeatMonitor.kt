@@ -155,8 +155,8 @@ class TrinityHeartbeatMonitor {
             """.trimIndent()
             
             "kibot" -> """
-                ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@$serverHost \
-                  'sudo systemctl restart kibot-manager'
+                ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@$serverHost \
+                  'sudo systemctl restart kibot-engine'
             """.trimIndent()
             
             else -> "# Unknown bot: $botName"

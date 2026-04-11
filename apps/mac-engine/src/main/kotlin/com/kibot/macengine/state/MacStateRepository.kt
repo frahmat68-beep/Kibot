@@ -42,7 +42,11 @@ data class MacRecentOrder(
     val pair: String,
     val side: String,
     val status: String,
+    val orderType: String = "",
     val detail: String,
+    val entryPriceLabel: String = "",
+    val exitPriceLabel: String = "",
+    val outcomeLabel: String = "",
     val pnlIdrLabel: String = "",
     val pnlPctLabel: String = "",
 )
@@ -59,6 +63,19 @@ data class MacTrailingFloorDetail(
 )
 
 @Serializable
+data class MacNetWorthPoint(
+    val timestampEpochMs: Long,
+    val valueIdrLabel: String,
+)
+
+@Serializable
+data class MacAssetAllocationDetail(
+    val coin: String,
+    val percentageLabel: String,
+    val valueIdrLabel: String,
+)
+
+@Serializable
 data class MacDashboardState(
     val isBotRunning: Boolean,
     val effectiveState: BotEffectiveState,
@@ -66,6 +83,7 @@ data class MacDashboardState(
     val edgeConfidence: String,
     val marketRegime: String,
     val topCandidate: String,
+    val upstreamMarker: String = "",
     val radarPairs: List<String>,
     val scanUniverseCount: Int,
     val releaseLabel: String,
@@ -90,6 +108,7 @@ data class MacDashboardState(
     val syncHealth: String,
     val leaseTerm: Long,
     val healthSummary: String,
+    val lastRejectedReason: String = "",
     val weeklyLearningSummary: String,
     val weeklyAdaptationSummary: String,
     val lastHeartbeatLabel: String,
@@ -108,6 +127,8 @@ data class MacDashboardState(
     val liveTimeline: List<MacTimelineEntry>,
     val recentOrders: List<MacRecentOrder>,
     val trailingFloors: List<MacTrailingFloorDetail>,
+    val netWorthHistory: List<MacNetWorthPoint> = emptyList(),
+    val assetAllocationDetailed: List<MacAssetAllocationDetail> = emptyList(),
 ) {
     companion object {
         fun preview(): MacDashboardState = MacDashboardState(
@@ -117,6 +138,7 @@ data class MacDashboardState(
             edgeConfidence = "MEDIUM",
             marketRegime = "HIGH_VOLATILITY_UNCLEAR",
             topCandidate = "-",
+            upstreamMarker = "",
             radarPairs = emptyList(),
             scanUniverseCount = 0,
             releaseLabel = "#0",
@@ -141,6 +163,7 @@ data class MacDashboardState(
             syncHealth = "DEGRADED",
             leaseTerm = 0,
             healthSummary = "Waiting for live server connection.",
+            lastRejectedReason = "",
             weeklyLearningSummary = "Belum ada review mingguan.",
             weeklyAdaptationSummary = "Adaptasi mingguan akan tampil di sini.",
             lastHeartbeatLabel = "Never",
@@ -159,6 +182,8 @@ data class MacDashboardState(
             liveTimeline = emptyList(),
             recentOrders = emptyList(),
             trailingFloors = emptyList(),
+            netWorthHistory = emptyList(),
+            assetAllocationDetailed = emptyList(),
         )
     }
 }
@@ -167,9 +192,12 @@ class MacStateRepository {
     private val _state = MutableStateFlow(MacDashboardState.preview())
     val state: StateFlow<MacDashboardState> = _state.asStateFlow()
     private val startedAtEpochMs = Clock.System.now().toEpochMilliseconds()
+    private val recentOrderRetentionMs = 30 * 60 * 1000L
+    private val liveTimelineRetentionMs = 6 * 60 * 60 * 1000L
 
     fun applyRuntimeState(next: MacDashboardState) {
-        val uptimeMs = Clock.System.now().toEpochMilliseconds() - startedAtEpochMs
+        val nowEpochMs = Clock.System.now().toEpochMilliseconds()
+        val uptimeMs = nowEpochMs - startedAtEpochMs
         val uptimeText = formatUptime(uptimeMs)
         val prev = _state.value
         val nextPortfolioValue = parseMonetaryLabel(next.portfolioValueIdr)
@@ -205,6 +233,22 @@ class MacStateRepository {
                         prevPortfolioValue > 0.0 &&
                         nextPortfolioValue in 0.0..(prevPortfolioValue * 0.92)
                     )
+        val freshPreviousTimeline = prev.liveTimeline.filter { entry ->
+            entry.timestampEpochMs <= 0L || nowEpochMs - entry.timestampEpochMs <= liveTimelineRetentionMs
+        }
+        val freshPreviousOrders = prev.recentOrders.filter { order ->
+            order.timestampEpochMs <= 0L || nowEpochMs - order.timestampEpochMs <= recentOrderRetentionMs
+        }
+        val resolvedTimeline = when {
+            next.liveTimeline.isNotEmpty() -> next.liveTimeline
+            looksLikeBootSnapshot || keepPortfolioFallback -> freshPreviousTimeline
+            else -> emptyList()
+        }
+        val resolvedRecentOrders = when {
+            next.recentOrders.isNotEmpty() -> next.recentOrders
+            looksLikeBootSnapshot || keepPortfolioFallback -> freshPreviousOrders
+            else -> emptyList()
+        }
         _state.value = next.copy(
             isBotRunning = if (looksLikeBootSnapshot && prev.isBotRunning) prev.isBotRunning else next.isBotRunning,
             effectiveState = if (looksLikeBootSnapshot && prev.isBotRunning) prev.effectiveState else next.effectiveState,
@@ -228,17 +272,19 @@ class MacStateRepository {
             kinanceNodeStatus = if (looksLikeBootSnapshot && prev.kinanceNodeStatus != "offline") prev.kinanceNodeStatus else next.kinanceNodeStatus,
             heldAssets = if ((looksLikeBootSnapshot || keepPortfolioFallback) && prev.heldAssets.isNotEmpty()) prev.heldAssets else next.heldAssets,
             holdingsDetailed = if ((looksLikeBootSnapshot || keepPortfolioFallback) && prev.holdingsDetailed.isNotEmpty()) prev.holdingsDetailed else next.holdingsDetailed,
-            lastUpdatedEpochMs = Clock.System.now().toEpochMilliseconds(),
+            lastUpdatedEpochMs = nowEpochMs,
             serverUptime = uptimeText,
-            liveTimeline = if (next.liveTimeline.isNotEmpty()) {
-                next.liveTimeline
+            liveTimeline = resolvedTimeline,
+            recentOrders = resolvedRecentOrders,
+            netWorthHistory = if ((looksLikeBootSnapshot || keepPortfolioFallback) && prev.netWorthHistory.isNotEmpty()) {
+                prev.netWorthHistory
             } else {
-                _state.value.liveTimeline
+                next.netWorthHistory
             },
-            recentOrders = if (next.recentOrders.isNotEmpty()) {
-                next.recentOrders
+            assetAllocationDetailed = if ((looksLikeBootSnapshot || keepPortfolioFallback) && prev.assetAllocationDetailed.isNotEmpty()) {
+                prev.assetAllocationDetailed
             } else {
-                _state.value.recentOrders
+                next.assetAllocationDetailed
             },
         )
     }

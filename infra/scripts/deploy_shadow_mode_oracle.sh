@@ -41,8 +41,9 @@ if [ ! -d "$REPO_ROOT/.git" ]; then
 else
   cd "$REPO_ROOT"
   git fetch origin "$BRANCH"
-  git checkout "$BRANCH"
-  git pull --ff-only origin "$BRANCH"
+  git checkout -f "$BRANCH"
+  git reset --hard "origin/$BRANCH"
+  git clean -fd
 fi
 
 touch "$ENV_FILE"
@@ -93,8 +94,9 @@ BRANCH="main"
 
 cd "$APP_ROOT"
 git fetch origin "$BRANCH"
-git checkout "$BRANCH"
-git pull --ff-only origin "$BRANCH"
+git checkout -f "$BRANCH"
+git reset --hard "origin/$BRANCH"
+git clean -fd
 
 touch "$ENV_FILE"
   if grep -q '^SHADOW_MODE=' "$ENV_FILE"; then

@@ -20,6 +20,7 @@ import com.kibot.shared.models.PairId
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.ResponseException
+import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -56,15 +57,31 @@ class IndodaxGateway internal constructor(
     private val privateRequestFactory = IndodaxPrivateRequestFactory(credentials)
     private val privateCallMutex = Mutex()
 
+    private fun HttpRequestBuilder.applyBrowserLikePublicHeaders() {
+        header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        header("Accept", "application/json,text/plain,*/*")
+        header("Accept-Language", "en-US,en;q=0.9")
+        header("Sec-Fetch-Dest", "document")
+        header("Sec-Fetch-Mode", "navigate")
+        header("Sec-Fetch-Site", "none")
+        header("Cache-Control", "max-age=0")
+        header("Origin", "https://indodax.com")
+        header("Referer", "https://indodax.com/")
+    }
+
     override suspend fun ping(): Boolean {
         return runCatching {
             // Use lightweight ticker endpoint instead of heavy /summaries
-            client.get("${config.publicBaseUrl}/ticker/btcidr").status.isSuccess()
+            client.get("${config.publicBaseUrl}/ticker/btcidr") {
+                applyBrowserLikePublicHeaders()
+            }.status.isSuccess()
         }.getOrDefault(false)
     }
 
     override suspend fun fetchMarketQuotes(): List<MarketQuote> {
-        val response = client.get("${config.publicBaseUrl}/summaries").body<SummariesResponse>()
+        val response = client.get("${config.publicBaseUrl}/summaries") {
+            applyBrowserLikePublicHeaders()
+        }.body<SummariesResponse>()
         return response.tickers.entries.mapNotNull { (pairKey, ticker) ->
             val pairId = PairId(pairKey)
             val pairParts = pairId.assets()
@@ -269,18 +286,12 @@ class IndodaxGateway internal constructor(
         }.recoverCatching { throwable ->
             if (
                 throwable is ExchangeRejectedException &&
-                throwable.message?.contains("amount can't be in decimal", ignoreCase = true) == true &&
-                plan.side == OrderSide.BUY
+                throwable.message?.contains("amount can't be in decimal", ignoreCase = true) == true
             ) {
-                val amountKey = if (plan.orderType == OrderType.MARKET) "idr" else pairParts.baseAsset
-                val normalizedAmount = params[amountKey]
-                    ?.substringBefore('.')
-                    ?.trim()
-                    ?.ifBlank { null }
-                    ?: throw throwable
-                val normalizedLong = normalizedAmount.toLongOrNull() ?: throw throwable
-                if (normalizedLong <= 0L) throw throwable
-                params[amountKey] = normalizedLong.toString()
+                val amountKey = if (plan.orderType == OrderType.MARKET && plan.side == OrderSide.BUY) "idr" else pairParts.baseAsset
+                val normalizedAmount = normalizeIndodaxTradeAmount(params[amountKey] ?: throw throwable)
+                if (normalizedAmount == null) throw throwable
+                params[amountKey] = normalizedAmount
                 submitPrivate<TradeResponse>("trade", params)
             } else {
                 throw throwable
@@ -434,7 +445,21 @@ class IndodaxGateway internal constructor(
                     }
                     throw error
                 }
-                val element = json.parseToJsonElement(payload)
+                val trimmedPayload = payload.trim()
+                if (isRateLimitedPayload(trimmedPayload)) {
+                    if (attempt < 2) {
+                        delay(backoffMs)
+                        backoffMs = (backoffMs * 2).coerceAtMost(8_000L)
+                        return@repeat
+                    }
+                    throw ExchangeRejectedException("Indodax rate limit aktif. Coba lagi beberapa saat.")
+                }
+                val element = runCatching { json.parseToJsonElement(trimmedPayload) }.getOrElse { parseError ->
+                    throw ExchangeRejectedException(
+                        "Indodax mengembalikan payload non-JSON: ${trimmedPayload.take(160)}",
+                        parseError,
+                    )
+                }
                 if (element is JsonObject) {
                     val success = element["success"]?.jsonPrimitive?.contentOrNull
                     if (success == "0") {
@@ -454,10 +479,18 @@ class IndodaxGateway internal constructor(
                         )
                     }
                 }
-                return@withLock json.decodeFromString(payload)
+                return@withLock json.decodeFromString(trimmedPayload)
             }
             throw ExchangeRejectedException("Indodax request failed after nonce retry.")
         }
+    }
+
+    private fun isRateLimitedPayload(payload: String): Boolean {
+        if (payload.isBlank()) return false
+        val normalized = payload.lowercase()
+        return normalized.contains("too many requests") ||
+            normalized.contains("rate limit") ||
+            normalized.contains("throttled")
     }
 
     private suspend fun awaitSubmittedOrder(
@@ -952,6 +985,12 @@ internal fun formatIndodaxIdrInteger(raw: String): String {
     val normalized = formatIndodaxDecimal(raw)
     val integer = normalized.substringBefore('.').trim()
     return integer.ifEmpty { "0" }
+}
+
+internal fun normalizeIndodaxTradeAmount(raw: String): String? {
+    val normalized = formatIndodaxDecimal(raw, scale = 12)
+    val integer = normalized.substringBefore('.').trim()
+    return integer.takeIf { it.isNotBlank() && it.toLongOrNull() != null && it.toLong() > 0L }
 }
 
 private fun weightedFillPrice(fills: List<FillSnapshot>): Double? {

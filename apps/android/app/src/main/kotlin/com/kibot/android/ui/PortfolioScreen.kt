@@ -109,7 +109,8 @@ private fun ReturnSummaryCard(
             ) {
                 ReturnItem(
                     label = "Today",
-                    value = returnSummary.day1,
+                    valuePct = returnSummary.day1,
+                    valueIdr = returnSummary.day1Idr,
                     modifier = Modifier.weight(1f)
                 )
                 
@@ -120,7 +121,8 @@ private fun ReturnSummaryCard(
                 
                 ReturnItem(
                     label = "7D",
-                    value = returnSummary.day7,
+                    valuePct = returnSummary.day7,
+                    valueIdr = returnSummary.day7Idr,
                     modifier = Modifier.weight(1f)
                 )
                 
@@ -131,7 +133,8 @@ private fun ReturnSummaryCard(
                 
                 ReturnItem(
                     label = "30D",
-                    value = returnSummary.day30,
+                    valuePct = returnSummary.day30,
+                    valueIdr = returnSummary.day30Idr,
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -142,7 +145,8 @@ private fun ReturnSummaryCard(
 @Composable
 private fun ReturnItem(
     label: String,
-    value: Double,
+    valuePct: Double,
+    valueIdr: Double,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -158,10 +162,18 @@ private fun ReturnItem(
         Spacer(modifier = Modifier.height(4.dp))
         
         Text(
-            text = formatPercent(value),
+            text = formatPercent(valuePct),
             style = MaterialTheme.typography.titleLarge,
-            color = if (value >= 0) ProfitGreen else LossRed,
+            color = if (valuePct >= 0) ProfitGreen else LossRed,
             fontWeight = FontWeight.Bold
+        )
+
+        Spacer(modifier = Modifier.height(2.dp))
+
+        Text(
+            text = formatRupiah(valueIdr),
+            style = MaterialTheme.typography.labelSmall,
+            color = if (valueIdr >= 0) ProfitGreen else LossRed,
         )
     }
 }
@@ -589,14 +601,16 @@ private fun HoldingsCard(
                         text = "PnL",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextTertiary,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1.2f),
                         textAlign = TextAlign.End
                     )
                 }
                 
                 HorizontalDivider(color = DarkSurfaceVariant)
                 
-                positions.forEach { position ->
+                positions
+                    .sortedByDescending { it.valueIdr }
+                    .forEach { position ->
                     HoldingRow(position = position)
                 }
             }
@@ -621,6 +635,8 @@ private fun HoldingRow(
             modifier = Modifier.weight(2f),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val assetCode = position.pair.substringBefore("_").uppercase()
+            val currentValue = position.currentPrice * position.amount
             Box(
                 modifier = Modifier
                     .size(32.dp)
@@ -629,7 +645,7 @@ private fun HoldingRow(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = position.pair.take(2).uppercase(),
+                    text = assetCode.take(3),
                     style = MaterialTheme.typography.labelSmall,
                     color = KiBotBlue,
                     fontWeight = FontWeight.Bold
@@ -640,13 +656,13 @@ private fun HoldingRow(
             
             Column {
                 Text(
-                    text = position.pair.replace("/IDR", ""),
+                    text = assetCode,
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextPrimary,
                     fontWeight = FontWeight.Medium
                 )
                 Text(
-                    text = "${decimalFormat.format(position.amount)}",
+                    text = "${decimalFormat.format(position.amount)} • ${formatRupiah(position.valueIdr.takeIf { it > 0.0 } ?: currentValue)}",
                     style = MaterialTheme.typography.labelSmall,
                     color = TextTertiary
                 )
@@ -673,11 +689,11 @@ private fun HoldingRow(
         
         // PnL
         Text(
-            text = formatPercent(position.pnlPercent),
-            style = MaterialTheme.typography.bodyMedium,
+            text = "${formatRupiah(position.pnl)}\n${formatPercent(position.pnlPercent)}",
+            style = MaterialTheme.typography.bodySmall,
             color = if (position.pnlPercent >= 0) ProfitGreen else LossRed,
             fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1.2f),
             textAlign = TextAlign.End
         )
     }

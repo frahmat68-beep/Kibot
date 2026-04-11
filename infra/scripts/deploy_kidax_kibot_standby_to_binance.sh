@@ -15,6 +15,11 @@ KIDAX_ROOT="/home/ubuntu/KiDax"
 KIBOT_ROOT="/home/ubuntu/KiBot"
 KIDAX_PORT="8787"
 KIBOT_PORT="8789"
+ENABLE_BINANCE_KIDAX_SERVICE="${ENABLE_BINANCE_KIDAX_SERVICE:-false}"
+DISABLE_BINANCE_STANDBY_SERVICE="${DISABLE_BINANCE_STANDBY_SERVICE:-true}"
+BINANCE_KEY_LINK="${TEMP_DIR}/binance-ssh-key"
+ln -sf "${BINANCE_KEY}" "${BINANCE_KEY_LINK}"
+RSYNC_SSH_CMD="ssh -i ${BINANCE_KEY_LINK} -p ${BINANCE_PORT} -o StrictHostKeyChecking=accept-new"
 
 if [[ ! -x "${GRADLEW}" ]]; then
   echo "[FAIL] gradlew tidak ditemukan di ${GRADLEW}"
@@ -163,15 +168,15 @@ with urllib.request.urlopen(insert_req, timeout=20) as response:
 PY
 }
 
-echo "[1/5] Build mac-engine fat jar"
-./gradlew --no-daemon :apps:mac-engine:fatJar
+echo "[1/5] Build mac-engine installDist"
+./gradlew --no-daemon :apps:mac-engine:installDist
 
 echo "[1b/5] Ensure kibot bot row exists in Supabase"
 ensure_supabase_bot_row
 
-JAR_PATH="${ROOT_DIR}/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar"
-if [[ ! -f "${JAR_PATH}" ]]; then
-  echo "[FAIL] Jar tidak ditemukan: ${JAR_PATH}"
+DIST_ROOT="${ROOT_DIR}/apps/mac-engine/build/install/mac-engine"
+if [[ ! -x "${DIST_ROOT}/bin/mac-engine" ]]; then
+  echo "[FAIL] Launcher tidak ditemukan: ${DIST_ROOT}/bin/mac-engine"
   exit 1
 fi
 
@@ -181,46 +186,40 @@ build_env_file kidax "${KIDAX_ENV}"
 build_env_file kibot "${KIBOT_ENV}"
 
 echo "[2/5] Prepare remote directories"
-ssh -i "${BINANCE_KEY}" -p "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new "${BINANCE_USER}@${BINANCE_HOST}" "mkdir -p '${REMOTE_TMP_DIR}' '${KIDAX_ROOT}/server' '${KIDAX_ROOT}/infra/systemd' '${KIBOT_ROOT}/server' '${KIBOT_ROOT}/infra/systemd'"
+ssh -i "${BINANCE_KEY_LINK}" -p "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new "${BINANCE_USER}@${BINANCE_HOST}" "mkdir -p '${REMOTE_TMP_DIR}' '${KIBOT_ROOT}/server' '${KIBOT_ROOT}/infra/systemd'"
+if [[ "${ENABLE_BINANCE_KIDAX_SERVICE}" == "true" ]]; then
+  ssh -i "${BINANCE_KEY_LINK}" -p "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new "${BINANCE_USER}@${BINANCE_HOST}" "mkdir -p '${KIDAX_ROOT}/server' '${KIDAX_ROOT}/infra/systemd'"
+fi
 
-echo "[3/5] Transfer jar, service files, and recovery scripts"
-scp -i "${BINANCE_KEY}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
-  "${JAR_PATH}" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/mac-engine-all.jar"
-scp -i "${BINANCE_KEY}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
-  "${ROOT_DIR}/infra/systemd/kidax-engine.service" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/kidax-engine.service"
-scp -i "${BINANCE_KEY}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
+echo "[3/5] Transfer dist tree, service files, and recovery scripts"
+rsync -a -e "${RSYNC_SSH_CMD}" \
+  "${DIST_ROOT}/" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/mac-engine-dist/"
+scp -i "${BINANCE_KEY_LINK}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
   "${ROOT_DIR}/infra/systemd/kibot-engine.service" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/kibot-engine.service"
-scp -i "${BINANCE_KEY}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
+if [[ "${ENABLE_BINANCE_KIDAX_SERVICE}" == "true" ]]; then
+  scp -i "${BINANCE_KEY_LINK}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
+    "${ROOT_DIR}/infra/systemd/kidax-engine.service" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/kidax-engine.service"
+fi
+scp -i "${BINANCE_KEY_LINK}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
   "${ROOT_DIR}/infra/scripts/engine-recovery.sh" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/engine-recovery.sh"
-scp -i "${BINANCE_KEY}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
+scp -i "${BINANCE_KEY_LINK}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
   "${ROOT_DIR}/infra/scripts/setup-engine-autorecover.sh" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/setup-engine-autorecover.sh"
-scp -i "${BINANCE_KEY}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
-  "${KIDAX_ENV}" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/env.kidax"
-scp -i "${BINANCE_KEY}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
+scp -i "${BINANCE_KEY_LINK}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
   "${KIBOT_ENV}" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/env.kibot"
+if [[ "${ENABLE_BINANCE_KIDAX_SERVICE}" == "true" ]]; then
+  scp -i "${BINANCE_KEY_LINK}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
+    "${KIDAX_ENV}" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/env.kidax"
+fi
 
-echo "[4/5] Install and start KiDax + KiBot on Binance host"
-ssh -i "${BINANCE_KEY}" -p "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new "${BINANCE_USER}@${BINANCE_HOST}" bash -s <<REMOTE
+echo "[4/5] Install and start Binance services"
+ssh -i "${BINANCE_KEY_LINK}" -p "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new "${BINANCE_USER}@${BINANCE_HOST}" bash -s <<REMOTE
 set -euo pipefail
-install -m 0644 "${REMOTE_TMP_DIR}/mac-engine-all.jar" "${KIDAX_ROOT}/server/mac-engine-all.jar"
-install -m 0644 "${REMOTE_TMP_DIR}/mac-engine-all.jar" "${KIBOT_ROOT}/server/mac-engine-all.jar"
-install -m 0644 "${REMOTE_TMP_DIR}/kidax-engine.service" "${KIDAX_ROOT}/infra/systemd/kidax-engine.service"
+mkdir -p "${KIBOT_ROOT}"
+rsync -a "${REMOTE_TMP_DIR}/mac-engine-dist/" "${KIBOT_ROOT}/"
 install -m 0644 "${REMOTE_TMP_DIR}/kibot-engine.service" "${KIBOT_ROOT}/infra/systemd/kibot-engine.service"
-install -m 0644 "${REMOTE_TMP_DIR}/engine-recovery.sh" "${KIDAX_ROOT}/engine-recovery.sh"
 install -m 0644 "${REMOTE_TMP_DIR}/engine-recovery.sh" "${KIBOT_ROOT}/engine-recovery.sh"
-install -m 0600 "${REMOTE_TMP_DIR}/env.kidax" "${KIDAX_ROOT}/.env.kidax"
 install -m 0600 "${REMOTE_TMP_DIR}/env.kibot" "${KIBOT_ROOT}/.env.kibot"
-install -m 0755 "${REMOTE_TMP_DIR}/setup-engine-autorecover.sh" "${KIDAX_ROOT}/setup-autorecover.sh"
 install -m 0755 "${REMOTE_TMP_DIR}/setup-engine-autorecover.sh" "${KIBOT_ROOT}/setup-autorecover.sh"
-
-KIBOT_RUNTIME_ROOT="${KIDAX_ROOT}" \
-KIBOT_SERVICE_NAME="kidax-engine" \
-KIBOT_DASHBOARD_PORT="${KIDAX_PORT}" \
-KIBOT_ENV_FILE="${KIDAX_ROOT}/.env.kidax" \
-KIBOT_RECOVERY_SCRIPT_PATH="${KIDAX_ROOT}/engine-recovery.sh" \
-KIBOT_SERVICE_FILE_PATH="${KIDAX_ROOT}/infra/systemd/kidax-engine.service" \
-KIBOT_AI_SCRIPT_PATH="${KIDAX_ROOT}/scripts/ai_learning_cycle.sh" \
-bash "${KIDAX_ROOT}/setup-autorecover.sh"
 
 KIBOT_RUNTIME_ROOT="${KIBOT_ROOT}" \
 KIBOT_SERVICE_NAME="kibot-engine" \
@@ -231,16 +230,46 @@ KIBOT_SERVICE_FILE_PATH="${KIBOT_ROOT}/infra/systemd/kibot-engine.service" \
 KIBOT_AI_SCRIPT_PATH="${KIBOT_ROOT}/scripts/ai_learning_cycle.sh" \
 bash "${KIBOT_ROOT}/setup-autorecover.sh"
 
+if [[ "${ENABLE_BINANCE_KIDAX_SERVICE}" == "true" ]]; then
+  mkdir -p "${KIDAX_ROOT}"
+  rsync -a "${REMOTE_TMP_DIR}/mac-engine-dist/" "${KIDAX_ROOT}/"
+  install -m 0644 "${REMOTE_TMP_DIR}/kidax-engine.service" "${KIDAX_ROOT}/infra/systemd/kidax-engine.service"
+  install -m 0644 "${REMOTE_TMP_DIR}/engine-recovery.sh" "${KIDAX_ROOT}/engine-recovery.sh"
+  install -m 0600 "${REMOTE_TMP_DIR}/env.kidax" "${KIDAX_ROOT}/.env.kidax"
+  install -m 0755 "${REMOTE_TMP_DIR}/setup-engine-autorecover.sh" "${KIDAX_ROOT}/setup-autorecover.sh"
+  KIBOT_RUNTIME_ROOT="${KIDAX_ROOT}" \
+  KIBOT_SERVICE_NAME="kidax-engine" \
+  KIBOT_DASHBOARD_PORT="${KIDAX_PORT}" \
+  KIBOT_ENV_FILE="${KIDAX_ROOT}/.env.kidax" \
+  KIBOT_RECOVERY_SCRIPT_PATH="${KIDAX_ROOT}/engine-recovery.sh" \
+  KIBOT_SERVICE_FILE_PATH="${KIDAX_ROOT}/infra/systemd/kidax-engine.service" \
+  KIBOT_AI_SCRIPT_PATH="${KIDAX_ROOT}/scripts/ai_learning_cycle.sh" \
+  bash "${KIDAX_ROOT}/setup-autorecover.sh"
+  sudo systemctl restart kidax-engine
+else
+  sudo systemctl disable --now kidax-engine kidax-engine-recovery.timer || true
+fi
+
+if [[ "${DISABLE_BINANCE_STANDBY_SERVICE}" == "true" ]]; then
+  sudo systemctl disable --now kidax-standby-engine kidax-standby-engine-recovery.timer || true
+fi
+
 sudo systemctl daemon-reload
-sudo systemctl restart kidax-engine
 sudo systemctl restart kibot-engine
 sleep 15
-sudo systemctl is-active --quiet kidax-engine
 sudo systemctl is-active --quiet kibot-engine
-curl -fsS --retry 10 --retry-delay 2 --retry-all-errors "http://127.0.0.1:${KIDAX_PORT}/api/state" >/tmp/kidax-state.json
-curl -fsS --retry 10 --retry-delay 2 --retry-all-errors "http://127.0.0.1:${KIBOT_PORT}/api/state" >/tmp/kibot-state.json
-echo "KiDax state: $(head -c 220 /tmp/kidax-state.json)"
-echo "KiBot state: $(head -c 220 /tmp/kibot-state.json)"
+if curl -fsS --retry 20 --retry-delay 3 --retry-all-errors "http://127.0.0.1:${KIBOT_PORT}/api/state" >/tmp/kibot-state.json; then
+  echo "KiBot state: $(head -c 220 /tmp/kibot-state.json)"
+else
+  echo "[WARN] KiBot state API belum siap saat deploy selesai."
+fi
+if [[ "${ENABLE_BINANCE_KIDAX_SERVICE}" == "true" ]]; then
+  if curl -fsS --retry 20 --retry-delay 3 --retry-all-errors "http://127.0.0.1:${KIDAX_PORT}/api/state" >/tmp/kidax-state.json; then
+    echo "KiDax state: $(head -c 220 /tmp/kidax-state.json)"
+  else
+    echo "[WARN] KiDax state API belum siap saat deploy selesai."
+  fi
+fi
 REMOTE
 
 echo "[5/5] Deploy selesai."

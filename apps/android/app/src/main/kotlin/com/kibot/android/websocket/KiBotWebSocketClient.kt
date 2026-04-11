@@ -317,6 +317,7 @@ class KiBotWebSocketClient(
             // Parse balance from "totalValueIdr" (format: "Rp110.486" or "Rp1.234.567")
             val totalValueIdr = snapshot.get("totalValueIdr")?.asString ?: "Rp0"
             val balance = parseRupiahToDouble(totalValueIdr)
+            val freeIdr = parseRupiahToDouble(snapshot.get("freeIdrLabel")?.asString ?: "Rp0")
             
             // Parse PnL today from "pnlTodayIdr" (format: "-Rp55" or "+Rp1.234")
             val pnlTodayIdr = snapshot.get("pnlTodayIdr")?.asString ?: "Rp0"
@@ -325,6 +326,10 @@ class KiBotWebSocketClient(
             // Parse daily return percentage from "pnlTodayPctLabel" (format: "-0.1%" or "+29.9%")
             val pnlTodayPctLabel = snapshot.get("pnlTodayPctLabel")?.asString ?: "0%"
             val pnlTodayPercent = parsePercentToDouble(pnlTodayPctLabel)
+            val return7dIdr = parseRupiahToDouble(snapshot.get("return7dIdr")?.asString ?: "Rp0")
+            val return7dPct = parsePercentToDouble(snapshot.get("return7dPctLabel")?.asString ?: "0%")
+            val return30dIdr = parseRupiahToDouble(snapshot.get("return30dIdr")?.asString ?: "Rp0")
+            val return30dPct = parsePercentToDouble(snapshot.get("return30dPctLabel")?.asString ?: "0%")
             
             // "totalReturn" in the app now mirrors 1D return for consistency with the dashboard/widget.
             val totalReturnPctLabel = snapshot.get("totalReturnPctLabel")?.asString 
@@ -340,6 +345,7 @@ class KiBotWebSocketClient(
                 val quantityLabel = holding.get("quantityLabel")?.asString ?: "0"
                 val entryPriceLabel = holding.get("entryPriceLabel")?.asString ?: "Rp0"
                 val currentPriceLabel = holding.get("currentPriceLabel")?.asString ?: "Rp0"
+                val valueIdrLabel = holding.get("valueIdrLabel")?.asString ?: "Rp0"
                 val pnlIdrLabel = holding.get("pnlIdrLabel")?.asString ?: "Rp0"
                 val pnlPctLabel = holding.get("pnlPctLabel")?.asString ?: "0%"
                 
@@ -351,6 +357,7 @@ class KiBotWebSocketClient(
                 }
                 val entryPrice = parseRupiahToDouble(entryPriceLabel)
                 val currentPrice = parseRupiahToDouble(currentPriceLabel)
+                val valueIdr = parseRupiahToDouble(valueIdrLabel)
                 val pnl = parseRupiahToDouble(pnlIdrLabel)
                 val pnlPercent = parsePercentToDouble(pnlPctLabel)
                 
@@ -361,10 +368,12 @@ class KiBotWebSocketClient(
                         buyPrice = entryPrice,
                         currentPrice = currentPrice,
                         pnl = pnl,
-                        pnlPercent = pnlPercent
+                        pnlPercent = pnlPercent,
+                        valueIdr = valueIdr
                     ))
                 }
             }
+            positions.sortByDescending { it.valueIdr }
             
             // Parse recent trades from "recentOrders"
             val trades = mutableListOf<TradeData>()
@@ -372,20 +381,35 @@ class KiBotWebSocketClient(
                 val order = orderElement.asJsonObject
                 val pair = order.get("pair")?.asString ?: ""
                 val side = order.get("side")?.asString?.lowercase() ?: "buy"
+                val status = order.get("status")?.asString?.uppercase().orEmpty()
+                val orderType = order.get("orderType")?.asString?.lowercase().orEmpty()
                 val detail = order.get("detail")?.asString ?: ""
                 val timestampMs = order.get("timestampEpochMs")?.asLong ?: System.currentTimeMillis()
                 val pnlLabel = order.get("pnlIdrLabel")?.asString
                 val pnlPctLabel = order.get("pnlPctLabel")?.asString
+                val entryPriceLabel = order.get("entryPriceLabel")?.asString.orEmpty()
+                val exitPriceLabel = order.get("exitPriceLabel")?.asString.orEmpty()
+                if (status !in setOf("FILLED", "PARTIALLY_FILLED")) return@forEach
                 
-                // Parse detail for price/amount (format: "203 @ Rp107")
-                val priceMatch = Regex("""(\d+(?:[.,]\d+)?)\s*@\s*Rp?([\d.,]+)""").find(detail)
-                val amount = priceMatch?.groupValues?.get(1)?.replace(",", ".")?.toDoubleOrNull() ?: run {
-                    android.util.Log.w("KiBotWebSocketClient", "⚠️ Failed to parse amount from trade detail: '$detail'")
-                    0.0
-                }
-                val price = priceMatch?.groupValues?.get(2)?.replace(".", "")?.replace(",", ".")?.toDoubleOrNull() ?: run {
-                    android.util.Log.w("KiBotWebSocketClient", "⚠️ Failed to parse price from trade detail: '$detail'")
-                    0.0
+                // Parse detail for price/amount.
+                // Supported examples:
+                // "203 @ Rp107"
+                // "264.00000000 @ ~ • LIMIT"
+                // "159568.00000000 @ Rp0.062700 • LIMIT"
+                val amount = parseTradeAmount(detail)
+                val parsedEntryPrice = entryPriceLabel.takeIf { it.isNotBlank() }?.let(::parseRupiahToDouble)
+                val parsedExitPrice = exitPriceLabel.takeIf { it.isNotBlank() }?.let(::parseRupiahToDouble)
+                val price = parseTradePrice(detail)
+                    ?: parsedExitPrice
+                    ?: parsedEntryPrice
+                    ?: run {
+                        0.0
+                    }
+                val resolvedTotal = when {
+                    price > 0.0 && amount > 0.0 -> price * amount
+                    parsedExitPrice != null && amount > 0.0 -> parsedExitPrice * amount
+                    parsedEntryPrice != null && amount > 0.0 -> parsedEntryPrice * amount
+                    else -> 0.0
                 }
                 
                 if (pair.isNotEmpty()) {
@@ -393,11 +417,16 @@ class KiBotWebSocketClient(
                         id = "${pair}_${timestampMs}",
                         pair = pair,
                         side = side,
+                        status = status,
+                        orderType = orderType,
                         price = price,
                         amount = amount,
-                        total = price * amount,
+                        total = resolvedTotal,
                         timestamp = timestampMs,
-                        profitLoss = pnlLabel?.let { parseRupiahToDouble(it) }
+                        entryPrice = parsedEntryPrice,
+                        exitPrice = parsedExitPrice,
+                        profitLoss = pnlLabel?.takeIf { it.isNotBlank() }?.let { parseRupiahToDouble(it) },
+                        profitLossPercent = pnlPctLabel?.takeIf { it.isNotBlank() }?.let(::parsePercentToDouble),
                     ))
                 }
             }
@@ -411,6 +440,8 @@ class KiBotWebSocketClient(
             val healthSummary = snapshot.get("healthSummary")?.asString ?: "Menunggu status server."
             val statusMessage = snapshot.get("statusMessage")?.asString ?: "Server monitor sedang booting."
             val connectedBotId = snapshot.get("botId")?.asString?.lowercase() ?: currentState.connectedBotId
+            val topCandidate = snapshot.get("topCandidate")?.asString ?: currentState.topCandidate
+            val radarPairs = snapshot.getAsJsonArray("radarPairs")?.mapNotNull { it.asString } ?: currentState.radarPairs
             val syncHealthStatus = syncHealth.uppercase()
 
             val aiStatus = deriveAiStatus(aiProviderSummary)
@@ -464,10 +495,6 @@ class KiBotWebSocketClient(
                 )
             }
             
-            // Parse return summaries
-            val return7dPct = parsePercentToDouble(snapshot.get("return7dPctLabel")?.asString ?: "0%")
-            val return30dPct = parsePercentToDouble(snapshot.get("return30dPctLabel")?.asString ?: "0%")
-            
             // Parse net worth history for charts
             val netWorthHistory = mutableListOf<NetWorthPoint>()
             snapshot.getAsJsonArray("netWorthHistory")?.forEach { point ->
@@ -502,8 +529,8 @@ class KiBotWebSocketClient(
             // If no allocations provided, derive from positions + free cash
             if (assetAllocations.isEmpty() && (positions.isNotEmpty() || balance > 0)) {
                 val cryptoValue = positions.sumOf { it.currentPrice * it.amount }
-                val freeIdrValue = balance - cryptoValue  // Free cash = Total balance - crypto holdings
-                val totalPortfolio = balance  // Total = crypto + cash
+                val freeIdrValue = freeIdr.takeIf { it > 0.0 } ?: (balance - cryptoValue).coerceAtLeast(0.0)
+                val totalPortfolio = maxOf(balance, cryptoValue + freeIdrValue)
                 
                 // Add free cash (IDR) first
                 if (freeIdrValue > 0 && totalPortfolio > 0) {
@@ -528,11 +555,11 @@ class KiBotWebSocketClient(
             } else if (assetAllocations.isNotEmpty()) {
                 // Allocations exist from server, but ensure cash/IDR is included
                 val hasCash = assetAllocations.any { it.coin.uppercase() == "IDR" || it.coin.uppercase() == "CASH" }
-                if (!hasCash && balance > 0) {
+                if (!hasCash && (freeIdr > 0.0 || balance > 0.0)) {
                     val cryptoValue = positions.sumOf { it.currentPrice * it.amount }
-                    val freeIdrValue = balance - cryptoValue
+                    val freeIdrValue = freeIdr.takeIf { it > 0.0 } ?: (balance - cryptoValue).coerceAtLeast(0.0)
                     if (freeIdrValue > 0) {
-                        val totalPortfolio = balance
+                        val totalPortfolio = maxOf(balance, cryptoValue + freeIdrValue)
                         val cashPct = (freeIdrValue / totalPortfolio) * 100
                         assetAllocations.add(0, AssetAllocation(
                             coin = "IDR",
@@ -558,7 +585,7 @@ class KiBotWebSocketClient(
                     statusMessage.contains("boot", ignoreCase = true)
             val preserveBundle = bootLikeSnapshot && !authoritativeBundle
             val kidaxPrimarySnapshot = connectedBotId == "kidax"
-            val keepExistingFinancials = preserveBundle || !kidaxPrimarySnapshot
+            val keepExistingFinancials = preserveBundle || (!kidaxPrimarySnapshot && !authoritativeBundle)
             val nextBalance = if (keepExistingFinancials) currentState.balance else balance
             val nextPnlToday = pnlToday  // Always update PnL from server
             val nextTotalReturn = totalReturn  // Always update Total Return from server (now mirrors PnL)
@@ -572,17 +599,23 @@ class KiBotWebSocketClient(
                     balance = nextBalance,
                     totalReturn = nextTotalReturn,
                     pnlToday = nextPnlToday,
+                    pnlTodayPercent = pnlTodayPercent,
                     positions = nextPositions,
                     trades = nextTrades,
+                    topCandidate = topCandidate,
+                    radarPairs = radarPairs,
                     heartbeat = HeartbeatData(
                         kidax = kidaxStatus,
                         kinance = kinanceStatus,
                         kibot = kibotStatus
                     ),
                     returnSummary = ReturnSummary(
-                        day1 = pnlTodayPercent,  // Fix: use daily percent here
+                        day1 = pnlTodayPercent,
                         day7 = return7dPct,
-                        day30 = return30dPct
+                        day30 = return30dPct,
+                        day1Idr = pnlToday,
+                        day7Idr = return7dIdr,
+                        day30Idr = return30dIdr,
                     ),
                     netWorthHistory = nextHistory,
                     assetAllocation = nextAllocations,
@@ -617,14 +650,23 @@ class KiBotWebSocketClient(
         }
         
         val isNegative = value.startsWith("-")
-        val cleaned = value
+        val raw = value
             .replace("Rp", "")
             .replace("+", "")
             .replace("-", "")
-            .replace(".", "")  // Remove thousand separators
-            .replace(",", ".")  // Convert decimal separator
             .trim()
-        
+
+        val cleaned = when {
+            raw.contains(',') && raw.contains('.') -> raw.replace(".", "").replace(",", ".")
+            raw.contains(',') -> raw.replace(",", ".")
+            raw.contains('.') -> {
+                val fractionalGroups = raw.split('.').drop(1)
+                val looksLikeThousands = fractionalGroups.isNotEmpty() && fractionalGroups.all { it.length == 3 }
+                if (looksLikeThousands) raw.replace(".", "") else raw
+            }
+            else -> raw
+        }
+
         val result = cleaned.toDoubleOrNull()
         if (result == null) {
             android.util.Log.w("KiBotWebSocketClient", "⚠️ parseRupiahToDouble: Failed to parse '$value' -> '$cleaned'")
@@ -655,6 +697,27 @@ class KiBotWebSocketClient(
         }
         
         return result
+    }
+
+    private fun parseTradeAmount(detail: String): Double {
+        if (detail.isBlank()) return 0.0
+        val amountToken = detail.substringBefore("@", detail)
+            .substringBefore("•")
+            .trim()
+        val amount = amountToken.replace(",", ".").toDoubleOrNull()
+        if (amount == null && amountToken.isNotBlank() && amountToken != "~") {
+            android.util.Log.w("KiBotWebSocketClient", "⚠️ Failed to parse amount from trade detail: '$detail'")
+        }
+        return amount ?: 0.0
+    }
+
+    private fun parseTradePrice(detail: String): Double? {
+        if (detail.isBlank() || !detail.contains("@")) return null
+        val priceToken = detail.substringAfter("@", "")
+            .substringBefore("•")
+            .trim()
+        if (priceToken.isBlank() || priceToken == "~") return null
+        return parseRupiahToDouble(priceToken).takeIf { it > 0.0 }
     }
 
     private inline fun updateBotState(update: (BotState) -> BotState) {

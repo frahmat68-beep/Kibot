@@ -20,6 +20,25 @@ import kotlinx.serialization.json.Json
 import kotlin.math.round
 import kotlin.time.Duration.Companion.minutes
 
+enum class HoldingResearchAction {
+    HOLD,
+    EMERGENCY_DUMP,
+}
+
+data class HoldingResearchRequest(
+    val pairId: String,
+    val assetSymbol: String,
+    val holdingMinutes: Long,
+    val pnlPct: Double,
+    val pnlIdr: Double? = null,
+)
+
+data class HoldingResearchDecision(
+    val pairId: String,
+    val action: HoldingResearchAction,
+    val rawResponse: String,
+)
+
 class GeminiSupportClient private constructor(
     private val config: GeminiSupportConfig,
     private val json: Json,
@@ -91,6 +110,48 @@ class GeminiSupportClient private constructor(
         }
     }
 
+    suspend fun researchHolding(request: HoldingResearchRequest): HoldingResearchDecision? {
+        if (!config.isUsable) return null
+
+        val payload = GeminiGenerateContentRequest(
+            contents = listOf(
+                GeminiContent(
+                    parts = listOf(
+                        GeminiPart(
+                            text = buildHoldingResearchPrompt(request),
+                        ),
+                    ),
+                ),
+            ),
+            generationConfig = GeminiGenerationConfig(
+                temperature = 0.0,
+                maxOutputTokens = minOf(config.maxOutputTokens, 96),
+                responseMimeType = "text/plain",
+            ),
+        )
+
+        val response = httpClient.post("https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent") {
+            parameter("key", config.apiKey)
+            contentType(ContentType.Application.Json)
+            setBody(payload)
+        }.body<GeminiGenerateContentResponse>()
+
+        val rawText = response.candidates
+            .firstOrNull()
+            ?.content
+            ?.parts
+            ?.firstOrNull()
+            ?.text
+            ?.trim()
+            ?: return null
+
+        return HoldingResearchDecision(
+            pairId = request.pairId,
+            action = parseHoldingResearchAction(rawText),
+            rawResponse = rawText,
+        )
+    }
+
     private fun buildPrompt(candidates: List<AiSupportCandidate>): String {
         val candidateJson = json.encodeToString(ListSerializer(AiSupportCandidate.serializer()), candidates)
         return """
@@ -123,6 +184,41 @@ class GeminiSupportClient private constructor(
             
             Shortlist:
             $candidateJson
+        """.trimIndent()
+    }
+
+    private fun buildHoldingResearchPrompt(request: HoldingResearchRequest): String {
+        val pnlLine = buildString {
+            append("PnL saat ini: ")
+            append(if (request.pnlPct >= 0.0) "+" else "")
+            append("%.2f".format(request.pnlPct))
+            append("%")
+            request.pnlIdr?.let { pnlIdr ->
+                append(" (")
+                append(if (pnlIdr >= 0.0) "+" else "-")
+                append("Rp ")
+                append("%.0f".format(kotlin.math.abs(pnlIdr)))
+                append(")")
+            }
+        }
+        return """
+            Kamu adalah Risk Manager yang sangat tegas untuk bot trading crypto.
+            Tugasmu menilai apakah holding ini masih layak dipertahankan secara jangka pendek atau harus dibuang segera demi menyelamatkan modal.
+            
+            Data holding:
+            - Pair: ${request.pairId.uppercase()}
+            - Nama koin: ${request.assetSymbol.uppercase()}
+            - Lama dipegang: ${request.holdingMinutes} menit
+            - $pnlLine
+            
+            Aturan jawaban:
+            - Balas SATU BARIS SAJA.
+            - Pilih salah satu instruksi mutlak:
+              ACTION: HOLD
+              ACTION: EMERGENCY_DUMP
+            - Jika ada risiko rugpull, fundamental hancur, likuiditas/kepercayaan runtuh, atau posisi terlihat seperti sampah yang sebaiknya dibuang segera, pilih EMERGENCY_DUMP.
+            - Jika belum ada alasan kuat untuk buang paksa, pilih HOLD.
+            - Jangan tulis JSON.
         """.trimIndent()
     }
 }
@@ -256,6 +352,13 @@ class GeminiSupportCoordinator(
             )
     }
 
+    suspend fun researchHolding(
+        request: HoldingResearchRequest,
+    ): HoldingResearchDecision? {
+        if (!config.isUsable) return null
+        return runCatching { client.researchHolding(request) }.getOrNull()
+    }
+
     private fun isMaterialShortlistChange(
         previous: ShortlistSnapshot?,
         current: ShortlistSnapshot,
@@ -274,6 +377,20 @@ data class GeminiSupportEvaluation(
     val reusedCachedHints: Boolean = false,
     val blockedReason: String? = null,
 )
+
+internal fun parseHoldingResearchAction(rawResponse: String): HoldingResearchAction {
+    val normalized = rawResponse
+        .lineSequence()
+        .firstOrNull()
+        ?.trim()
+        ?.uppercase()
+        .orEmpty()
+    return when {
+        "EMERGENCY_DUMP" in normalized -> HoldingResearchAction.EMERGENCY_DUMP
+        "ACTION: EMERGENCY_DUMP" in normalized -> HoldingResearchAction.EMERGENCY_DUMP
+        else -> HoldingResearchAction.HOLD
+    }
+}
 
 @Serializable
 private data class GeminiGenerateContentRequest(

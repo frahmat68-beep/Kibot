@@ -1,6 +1,0 @@
-03:02:44.305 INFO  com.kibot.macengine.runtime.MacEngineDaemon - Mac engine daemon loop started.
-03:02:44.346 INFO  io.ktor.server.Application - Autoreload is disabled because the development mode is off.
-03:02:44.483 INFO  io.ktor.server.Application - Application started in 0.197 seconds.
-03:02:44.516 INFO  io.ktor.server.Application - Responding at http://0.0.0.0:8787
-03:02:47.807 INFO  KiBotMac - Shutting down KiBot mac engine.
-03:02:47.811 INFO  com.kibot.macengine.runtime.MacEngineDaemon - Daemon sync cancelled; retrying next cycle.

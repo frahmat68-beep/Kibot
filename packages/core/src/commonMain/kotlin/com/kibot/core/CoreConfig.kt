@@ -92,13 +92,13 @@ data class RiskConfig(
     val defensiveDrawdownPct: Double = 999.0,   // EMERGENCY FIX: Don't go defensive
     val restrictedEntriesDrawdownPct: Double = 999.0,  // EMERGENCY FIX: Never restrict entries
     val stopNewEntriesDrawdownPct: Double = 999.0,     // EMERGENCY FIX: NEVER stop trading!
-    val maxConcurrentPositions: Int = 8,  // EMERGENCY FIX: Increased from 6 to 8 (user has 2 stuck, needs rotation space)
-    val minimumCashReservePct: Double = 0.01,
-    val defensiveCashReservePct: Double = 0.02,  // EMERGENCY FIX: Reduce reserve, maximize deployment (was 0.40 = 40%!)
-    val attackCashReservePct: Double = 0.01,
+    val maxConcurrentPositions: Int = 10,
+    val minimumCashReservePct: Double = 0.03,
+    val defensiveCashReservePct: Double = 0.06,
+    val attackCashReservePct: Double = 0.02,
     val maxPerPositionBudgetPct: Double = 0.98,
     // MICRO-CAP: Lower minimum position sizes
-    val targetMinPositionBudgetIdr: Double = 15_000.0,
+    val targetMinPositionBudgetIdr: Double = 20_000.0,
     val minSecondSlotRankingScore: Double = 0.66,
     val minSecondSlotOpportunityScore: Double = 0.56,
     val singlePositionBudgetBoostMultiplier: Double = 1.55,
@@ -165,7 +165,7 @@ data class WeeklyLearningConfig(
 
 data class StrategyExecutionConfig(
     val referenceQuoteAsset: String = "idr",
-    val minOrderNotionalIdr: Double = 15_000.0,
+    val minOrderNotionalIdr: Double = 20_000.0,
     val entrySpendBufferPct: Double = 0.002,
     // ANTI-PENAKUT FIX: Turunkan threshold entry agar bot lebih berani masuk
     val growthMinRankingScore: Double = 0.50,      // Was 0.63 - terlalu tinggi, banyak peluang terlewat
@@ -246,4 +246,40 @@ data class DualEngineConfig(
     // Engine Selection Criteria
     val preferBarbarianOnHighVolatility: Boolean = true,
     val volatilityThresholdForBarbarian: Double = 3.5,  // Switch to Barbarian if volatility >3.5%
+)
+
+/**
+ * Micro-Account Mode Configuration
+ * Activated when totalEquity < microAccountThreshold
+ */
+data class MicroAccountConfig(
+    /** Threshold below which micro-mode activates */
+    val microAccountThresholdIdr: Double = 500_000.0,
+    
+    /** Indodax minimum order size */
+    val minOrderIndodaxIdr: Double = 20_000.0,
+    
+    /** Percentage of capital to deploy (keep 10% for fees) */
+    val deployableCapitalPct: Double = 0.90,
+    
+    /** Minimum profit to exit (cover round-trip fees) */
+    val minProfitToExitPct: Double = 0.008, // 0.8%
+    
+    /** Profit target for HOLDER position */
+    val holderProfitTargetPct: Double = 0.03, // 3%
+    
+    /** Profit target for CHASER position (quick exit) */
+    val chaserProfitTargetPct: Double = 0.015, // 1.5%
+    
+    /** Stop loss for micro-mode (tighter) */
+    val microStopLossPct: Double = 0.02, // 2%
+    
+    /** Cooldown after stop loss hit (seconds) */
+    val stopLossCooldownSec: Int = 300, // 5 minutes
+    
+    /** Max consecutive losses before circuit breaker */
+    val maxConsecutiveLosses: Int = 3,
+    
+    /** Circuit breaker pause duration (seconds) */
+    val circuitBreakerPauseSec: Int = 21600, // 6 hours
 )

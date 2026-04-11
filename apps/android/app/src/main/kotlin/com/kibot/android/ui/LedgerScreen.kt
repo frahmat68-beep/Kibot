@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.kibot.android.data.TradeData
@@ -260,24 +261,43 @@ private fun TradeItem(
                 Spacer(modifier = Modifier.width(12.dp))
                 
                 Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Text(
                             text = trade.side.uppercase(),
                             style = MaterialTheme.typography.labelSmall,
                             color = if (isBuy) ProfitGreen else LossRed,
                             fontWeight = FontWeight.Bold
                         )
+                        if (trade.orderType.isNotBlank()) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = trade.orderType.uppercase(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextTertiary,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = trade.pair,
                             style = MaterialTheme.typography.bodyLarge,
                             color = TextPrimary,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                     }
                     
                     Text(
-                        text = "${decimalFormat.format(trade.amount)} @ ${formatRupiah(trade.price)}",
+                        text = when {
+                            !isBuy && trade.entryPrice != null && trade.exitPrice != null ->
+                                "${decimalFormat.format(trade.amount)} • ${formatRupiah(trade.entryPrice)} -> ${formatRupiah(trade.exitPrice)}${trade.orderType.takeIf { it.isNotBlank() }?.let { " • ${it.uppercase()}" }.orEmpty()}"
+                            else -> "${decimalFormat.format(trade.amount)} @ ${formatTradePrice(trade.price)}${trade.orderType.takeIf { it.isNotBlank() }?.let { " • ${it.uppercase()}" }.orEmpty()}"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = TextTertiary
                     )
@@ -286,7 +306,7 @@ private fun TradeItem(
             
             Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    text = formatRupiah(trade.total),
+                    text = formatTradeTotal(trade.total),
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextPrimary,
                     fontWeight = FontWeight.Medium
@@ -295,7 +315,10 @@ private fun TradeItem(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     trade.profitLoss?.let { pnl ->
                         Text(
-                            text = formatRupiah(pnl),
+                            text = buildString {
+                                append(if (pnl >= 0) "Untung ${formatRupiah(pnl)}" else "Rugi ${formatRupiah(pnl)}")
+                                trade.profitLossPercent?.let { append(" • ${formatPercent(it)}") }
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = if (pnl >= 0) ProfitGreen else LossRed
                         )
@@ -392,25 +415,32 @@ private fun TradeDetailSheet(
                 ) {
                     DetailRow(label = "Amount", value = decimalFormat.format(trade.amount))
                     HorizontalDivider(color = DarkSurface, modifier = Modifier.padding(vertical = 8.dp))
-                    DetailRow(label = "Price", value = formatRupiah(trade.price))
+                    DetailRow(label = "Price", value = formatTradePrice(trade.price))
                     HorizontalDivider(color = DarkSurface, modifier = Modifier.padding(vertical = 8.dp))
-                    DetailRow(label = "Total", value = formatRupiah(trade.total))
+                    DetailRow(label = "Total", value = formatTradeTotal(trade.total))
+                    if (trade.orderType.isNotBlank()) {
+                        HorizontalDivider(color = DarkSurface, modifier = Modifier.padding(vertical = 8.dp))
+                        DetailRow(label = "Order Type", value = trade.orderType.uppercase())
+                    }
                     
                     trade.entryPrice?.let { entry ->
                         HorizontalDivider(color = DarkSurface, modifier = Modifier.padding(vertical = 8.dp))
-                        DetailRow(label = "Entry Price", value = formatRupiah(entry))
+                        DetailRow(label = "Harga Beli", value = formatRupiah(entry))
                     }
                     
                     trade.exitPrice?.let { exit ->
                         HorizontalDivider(color = DarkSurface, modifier = Modifier.padding(vertical = 8.dp))
-                        DetailRow(label = "Exit Price", value = formatRupiah(exit))
+                        DetailRow(label = "Harga Jual", value = formatRupiah(exit))
                     }
                     
                     trade.profitLoss?.let { pnl ->
                         HorizontalDivider(color = DarkSurface, modifier = Modifier.padding(vertical = 8.dp))
                         DetailRow(
-                            label = "Profit/Loss",
-                            value = formatRupiah(pnl),
+                            label = if (pnl >= 0) "Hasil" else "Hasil",
+                            value = buildString {
+                                append(if (pnl >= 0) "Untung ${formatRupiah(pnl)}" else "Rugi ${formatRupiah(pnl)}")
+                                trade.profitLossPercent?.let { append(" • ${formatPercent(it)}") }
+                            },
                             valueColor = if (pnl >= 0) ProfitGreen else LossRed
                         )
                     }
@@ -457,4 +487,14 @@ private fun DetailRow(
             fontWeight = FontWeight.Medium
         )
     }
+}
+
+private fun formatTradePrice(price: Double): String {
+    if (price <= 0.0) return "~"
+    return formatRupiah(price)
+}
+
+private fun formatTradeTotal(total: Double): String {
+    if (total <= 0.0) return "~"
+    return formatRupiah(total)
 }

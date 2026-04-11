@@ -132,17 +132,26 @@ class StrategyOrchestrator(
             !leadLagSignal.fatigue &&
             leadLagSignal.leadMomentumScore >= 0.80
         val leadLagMaxSpreadPct = if (urgentEntryMode) 5.0 else 2.0
-        val freeCashIdr = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
+        val referenceQuoteAsset = executionConfig.referenceQuoteAsset
+        val freeCashIdr = balances.firstOrNull { it.asset.equals(referenceQuoteAsset, ignoreCase = true) }
+            ?.free
+            ?.toDoubleOrZero()
+            ?: 0.0
+        val dynamicAdditionalSlots = if (referenceQuoteAsset.equals("idr", ignoreCase = true)) {
+            CapitalAllocationManager.calculateDynamicAdditionalSlots(freeCashIdr)
+        } else {
+            0
+        }
         val selectionContext = selectionContextOverride?.copy(
             userBalanceIdr = equity,
             availableCashIdr = freeCashIdr,
             minimumExecutableNotionalIdr = executionConfig.minOrderNotionalIdr,
-            basketCount = riskConfig.maxConcurrentPositions.coerceAtLeast(syntheticPositions.size + 1),
+            basketCount = riskConfig.maxConcurrentPositions.coerceAtLeast(syntheticPositions.size + dynamicAdditionalSlots.coerceAtLeast(1)),
         ) ?: PairSelectionContext(
             userBalanceIdr = equity,
             availableCashIdr = freeCashIdr,
             minimumExecutableNotionalIdr = executionConfig.minOrderNotionalIdr,
-            basketCount = riskConfig.maxConcurrentPositions.coerceAtLeast(syntheticPositions.size + 1),
+            basketCount = riskConfig.maxConcurrentPositions.coerceAtLeast(syntheticPositions.size + dynamicAdditionalSlots.coerceAtLeast(1)),
             leadSectorFamily = leadLagSignal?.leadSectorFamily,
             leadPairId = leadLagSignal?.leadPairId?.value,
             leadMomentumScore = leadLagSignal?.leadMomentumScore ?: 0.0,
@@ -161,11 +170,18 @@ class StrategyOrchestrator(
             observedAt = Clock.System.now(),
         )
         val healthDecision = healthAdvisor.evaluate(health)
-        val marketSnapshot = regimeAnalyzer.analyze(
+        val analyzedMarketSnapshot = regimeAnalyzer.analyze(
             quotes = marketQuotes,
             rankedPairs = rankedPairs,
             health = health,
             performanceMomentumScore = derivePerformanceMomentumScore(resolvedRisk, rankedPairs),
+        )
+        val marketSnapshot = applyMomentumOverride(
+            marketSnapshot = analyzedMarketSnapshot,
+            rankedPairs = rankedPairs,
+            quoteByPair = quoteByPair,
+            leadLagSignal = leadLagSignal,
+            healthDecision = healthDecision,
         )
         val riskDecision = riskEngine.evaluate(
             portfolio = portfolio,
@@ -177,12 +193,27 @@ class StrategyOrchestrator(
             risk = riskDecision,
             healthDecision = healthDecision,
         )
-        val deploymentPlan = deploymentEngine.plan(
+        val baseDeploymentPlan = deploymentEngine.plan(
             portfolio = portfolio,
             rankedPairs = rankedPairs,
             risk = riskDecision,
             mode = modeSnapshot,
         )
+        val deploymentPlan = if (freeCashIdr >= CapitalAllocationManager.MULTI_SLOT_TRIGGER_IDR) {
+            val dynamicMaxActivePositions = maxOf(
+                baseDeploymentPlan.maxActivePositions,
+                syntheticPositions.size + dynamicAdditionalSlots,
+            )
+            baseDeploymentPlan.copy(
+                allowNewEntries = modeSnapshot.tradingAllowed && riskDecision.allowNewEntries,
+                maxActivePositions = dynamicMaxActivePositions,
+                rationale = baseDeploymentPlan.rationale + listOf(
+                    "Free cash ${freeCashIdr.toInt()} masih cukup untuk slot paralel, jadi kapasitas posisi diperluas dinamis.",
+                ),
+            )
+        } else {
+            baseDeploymentPlan
+        }
 
         val entrySignals = buildSignals(
             rankedPairs = rankedPairs,
@@ -310,6 +341,10 @@ class StrategyOrchestrator(
             .toSet()
 
         val rotationFundingAllowed = deploymentPlan.allowRotation && heldPairs.isNotEmpty()
+        val parallelMomentumBiasActive = marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM &&
+            deploymentPlan.allowNewEntries &&
+            deploymentPlan.maxActivePositions > heldPairs.size &&
+            deploymentPlan.suggestedPerPositionBudgetIdr >= executionConfig.minOrderNotionalIdr
         val thresholds = resolveEntryThresholds(
             modeSnapshot = modeSnapshot,
             marketSnapshot = marketSnapshot,
@@ -317,6 +352,7 @@ class StrategyOrchestrator(
             weeklySummary = weeklySummary,
             dailyRisk = dailyRisk,
             urgentEntryMode = urgentEntryMode,
+            parallelMomentumBiasActive = parallelMomentumBiasActive,
         )
         if (thresholds.dailyProfitLockActive) return emptyList()
         val scoreFloor = 0.0
@@ -365,6 +401,7 @@ class StrategyOrchestrator(
                     marketSnapshot = marketSnapshot,
                     baseOpportunityFloor = thresholds.minOpportunityScore,
                     urgentEntryMode = urgentEntryMode,
+                    parallelMomentumBiasActive = thresholds.parallelMomentumBiasActive,
                 ) ?: return@mapNotNull null
 
                 if (!selectionContext.bypassRankingFloor && pairScore.rankingScore < thresholds.minRankingScore) return@mapNotNull null
@@ -401,6 +438,7 @@ class StrategyOrchestrator(
                 modeSnapshot = modeSnapshot,
                 dominantPairId = dominantPairId,
                 productiveIdleBiasActive = thresholds.productiveIdleBiasActive,
+                parallelMomentumBiasActive = thresholds.parallelMomentumBiasActive,
                 leadLagSignal = leadLagSignal,
                 aiSoftAuditOnly = aiSoftAuditOnly,
             )
@@ -412,6 +450,7 @@ class StrategyOrchestrator(
         modeSnapshot: BotModeSnapshot,
         dominantPairId: PairId?,
         productiveIdleBiasActive: Boolean,
+        parallelMomentumBiasActive: Boolean,
         leadLagSignal: LeadLagSelectionSignal?,
         aiSoftAuditOnly: Boolean,
     ): StrategySignal {
@@ -441,6 +480,9 @@ class StrategyOrchestrator(
             rationale = buildList {
                 add("Pair ${selectedPairScore.pairId.value} masuk shortlist entry yang siap dieksekusi.")
                 add(setupReadiness.rationale)
+                if (aiSoftAuditOnly) {
+                    add("AI sedang limited/offline, jadi keputusan entry tetap mengikuti sinyal teknikal dan momentum.")
+                }
                 if (dominantPairId == selectedPairScore.pairId) {
                     add("Kandidat ini unggul cukup jauh dari alternatif terdekat, jadi modal tidak dipaksa menyebar.")
                 }
@@ -449,6 +491,9 @@ class StrategyOrchestrator(
                 }
                 if (productiveIdleBiasActive) {
                     add("Modal sedang idle, jadi threshold entry sedikit dilonggarkan pada kandidat yang benar-benar kuat.")
+                }
+                if (parallelMomentumBiasActive) {
+                    add("Slot paralel momentum aktif: masih ada free cash dan shortlist sehat, jadi kandidat kedua boleh ditembak tanpa menunggu holding lama keluar.")
                 }
                 if (leadLagSignal?.fatigue == true) {
                     add(
@@ -485,6 +530,7 @@ class StrategyOrchestrator(
         weeklySummary: WeeklyLearningSummary? = null,
         dailyRisk: DailyRiskSnapshot? = null,
         urgentEntryMode: Boolean = false,
+        parallelMomentumBiasActive: Boolean = false,
     ): EntryThresholds {
         val baseRankingScore = when (modeSnapshot.mode) {
             BotMode.SAFE -> Double.MAX_VALUE
@@ -501,6 +547,7 @@ class StrategyOrchestrator(
             modeSnapshot.mode in setOf(BotMode.GROWTH, BotMode.ATTACK) &&
             marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC &&
             marketSnapshot.marketOpportunityScore >= 0.57
+        val adaptiveParallelBiasActive = productiveIdleBiasActive || parallelMomentumBiasActive
         val learningAggressionBias = when {
             weeklySummary == null -> 0.0
             weeklySummary.falseEntryRate <= 0.18 &&
@@ -512,7 +559,7 @@ class StrategyOrchestrator(
             else -> 0.0
         }
         val breakoutIdleBias = if (
-            productiveIdleBiasActive &&
+            adaptiveParallelBiasActive &&
             marketSnapshot.marketOpportunityScore >= 0.62 &&
             marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC
         ) {
@@ -520,6 +567,8 @@ class StrategyOrchestrator(
         } else {
             0.0
         }
+        val parallelMomentumRankingBias = if (parallelMomentumBiasActive) 0.05 else 0.0
+        val parallelMomentumOpportunityBias = if (parallelMomentumBiasActive) 0.05 else 0.0
         val urgentRankingBias = if (urgentEntryMode) 0.06 else 0.0
         val urgentOpportunityBias = if (urgentEntryMode) 0.05 else 0.0
         val lockRankingFloor = if (dailyProfitLockActive) riskConfig.dailyProfitLockRankingScore else 0.0
@@ -527,20 +576,23 @@ class StrategyOrchestrator(
         return EntryThresholds(
             minRankingScore = (
                 baseRankingScore -
-                    if (productiveIdleBiasActive) executionConfig.productiveIdleRankingDelta else 0.0 -
+                    if (adaptiveParallelBiasActive) executionConfig.productiveIdleRankingDelta else 0.0 -
                     learningAggressionBias -
                     breakoutIdleBias -
-                    urgentRankingBias
+                    urgentRankingBias -
+                    parallelMomentumRankingBias
                 )
                 .coerceAtLeast(lockRankingFloor),
             minOpportunityScore = (
                 executionConfig.minExpectedOpportunityScore -
-                    if (productiveIdleBiasActive) executionConfig.productiveIdleOpportunityDelta else 0.0 -
+                    if (adaptiveParallelBiasActive) executionConfig.productiveIdleOpportunityDelta else 0.0 -
                     (learningAggressionBias * 0.75) -
                     (breakoutIdleBias * 0.70) -
-                    urgentOpportunityBias
+                    urgentOpportunityBias -
+                    parallelMomentumOpportunityBias
                 ).coerceAtLeast(lockOpportunityFloor),
             productiveIdleBiasActive = productiveIdleBiasActive,
+            parallelMomentumBiasActive = parallelMomentumBiasActive,
             dailyProfitLockActive = dailyProfitLockActive,
         )
     }
@@ -551,6 +603,7 @@ class StrategyOrchestrator(
         marketSnapshot: MarketOpportunitySnapshot,
         baseOpportunityFloor: Double,
         urgentEntryMode: Boolean = false,
+        parallelMomentumBiasActive: Boolean = false,
     ): SetupReadiness? {
         val setupType: com.kibot.shared.models.SetupType
         val signalType: StrategySignalType
@@ -559,6 +612,24 @@ class StrategyOrchestrator(
         val rationale: String
 
         when {
+            parallelMomentumBiasActive &&
+                marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM &&
+                quote.spreadPct <= 1.0 &&
+                quote.estimatedSlippagePct <= 1.0 &&
+                quote.bidDepthTop5Idr.toDoubleOrZero() >= 25_000.0 &&
+                quote.askDepthTop5Idr.toDoubleOrZero() >= 25_000.0 &&
+                quote.orderBookStabilityScore >= 0.42 &&
+                pairScore.fillQualityScore >= 0.44 &&
+                pairScore.trendQualityScore >= 0.46 &&
+                quote.recentTradeActivityScore >= 0.42 &&
+                pairScore.feeAdjustedEdgeScore >= -0.05 -> {
+                setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION
+                signalType = StrategySignalType.BREAKOUT_ENTRY
+                adjustedOpportunityFloor = (baseOpportunityFloor - if (urgentEntryMode) 0.10 else 0.08).coerceAtLeast(0.0)
+                expectedHoldingHours = 8.0
+                rationale = "Slot paralel momentum aktif: spread, slippage, dan depth masih aman, jadi entry kedua boleh ikut arus tanpa menunggu posisi lama selesai."
+            }
+
             pairScore.speculativePocket &&
                 marketSnapshot.regime != MarketRegime.BREAKDOWN_PANIC &&
                 speculativePocketAllowed(marketSnapshot) &&
@@ -584,12 +655,17 @@ class StrategyOrchestrator(
                 setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION
                 signalType = StrategySignalType.BREAKOUT_ENTRY
                 adjustedOpportunityFloor = when (marketSnapshot.regime) {
+                    MarketRegime.HIGH_VOLATILITY_MOMENTUM -> (baseOpportunityFloor - if (urgentEntryMode) 0.060 else 0.040)
                     MarketRegime.HEALTHY_UPTREND -> (baseOpportunityFloor - if (urgentEntryMode) 0.045 else 0.025)
                     MarketRegime.HEALTHY_SIDEWAYS -> (baseOpportunityFloor - if (urgentEntryMode) 0.030 else 0.015)
                     else -> baseOpportunityFloor
                 }.coerceAtLeast(0.0)
                 expectedHoldingHours = if (pairScore.preferredHorizon == TradingHorizon.SWING) 30.0 else 12.0
-                rationale = "Momentum eksplosif terlihat bersih, jadi bot boleh ambil breakout lebih tegas selama net edge tetap masuk akal."
+                rationale = if (marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM) {
+                    "Momentum override aktif: volatilitas tinggi dibaca sebagai arus searah, jadi breakout boleh dieksekusi selama spread dan depth tetap sehat."
+                } else {
+                    "Momentum eksplosif terlihat bersih, jadi bot boleh ambil breakout lebih tegas selama net edge tetap masuk akal."
+                }
             }
 
             pairScore.preferredHorizon == TradingHorizon.SWING &&
@@ -638,10 +714,15 @@ class StrategyOrchestrator(
                 adjustedOpportunityFloor = when (marketSnapshot.regime) {
                     MarketRegime.HEALTHY_SIDEWAYS -> baseOpportunityFloor + if (urgentEntryMode) 0.0 else 0.015
                     MarketRegime.HIGH_VOLATILITY_UNCLEAR -> baseOpportunityFloor + if (urgentEntryMode) 0.015 else 0.03
+                    MarketRegime.HIGH_VOLATILITY_MOMENTUM -> (baseOpportunityFloor - if (urgentEntryMode) 0.020 else 0.005)
                     else -> baseOpportunityFloor
                 }.coerceAtMost(1.0)
                 expectedHoldingHours = if (pairScore.preferredHorizon == TradingHorizon.SWING) 48.0 else 10.0
-                rationale = "Breakout continuation tetap boleh, tapi threshold diperketat saat market belum benar-benar nyaman."
+                rationale = if (marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM) {
+                    "Breakout continuation diprioritaskan karena arus momentum sudah jelas, jadi threshold dibuka sedikit tanpa melepas guard spread/depth."
+                } else {
+                    "Breakout continuation tetap boleh, tapi threshold diperketat saat market belum benar-benar nyaman."
+                }
             }
 
             else -> return null
@@ -675,6 +756,9 @@ class StrategyOrchestrator(
                 ((marketSnapshot.swingBiasScore - 0.50) * 0.10).coerceIn(-0.03, 0.03)
             setupReadiness.signalType == StrategySignalType.MEAN_REVERSION_ENTRY ->
                 ((marketSnapshot.tacticalBiasScore - 0.50) * 0.10).coerceIn(-0.03, 0.03)
+            marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM &&
+                setupReadiness.signalType == StrategySignalType.BREAKOUT_ENTRY ->
+                0.035
             else ->
                 if (marketSnapshot.regime == MarketRegime.HEALTHY_UPTREND) 0.02 else 0.0
         }
@@ -726,7 +810,7 @@ class StrategyOrchestrator(
             else -> 0.0
         }
         val urgentEntryBias = when {
-            leadLagSignal == null || aiSoftAuditOnly -> 0.0
+            leadLagSignal == null -> 0.0
             leadLagSignal.fatigue -> 0.0
             setupReadiness.signalType != StrategySignalType.BREAKOUT_ENTRY -> 0.0
             leadLagSignal.leadSectorFamily != null &&
@@ -1175,9 +1259,72 @@ class StrategyOrchestrator(
     ): List<String> = buildList {
         add("Regime ${market.regime.name}, mode ${mode.mode.name}, edge ${mode.edgeConfidence.name}.")
         add("Risk ladder ${risk.riskLadderLevel.name}, profit protection ${risk.profitProtectionStatus.name}.")
+        if (market.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM) {
+            add("Momentum override aktif: volatilitas tinggi dianggap tren searah karena spread, depth, dan tape masih sehat.")
+        }
         if (signal != null) add("Kandidat entry ${signal.pairId.value} ${signal.horizon.name.lowercase()} sudah lolos gate analisa.")
         if (signal == null) add("Belum ada setup yang cukup layak untuk dipakai modal.")
         if (!liveGateReady) add("Gate eksekusi live masih tertutup atau belum cukup aman.")
+    }
+
+    private fun applyMomentumOverride(
+        marketSnapshot: MarketOpportunitySnapshot,
+        rankedPairs: List<PairScore>,
+        quoteByPair: Map<PairId, MarketQuote>,
+        leadLagSignal: LeadLagSelectionSignal?,
+        healthDecision: EntryHealthDecision,
+    ): MarketOpportunitySnapshot {
+        if (marketSnapshot.regime != MarketRegime.HIGH_VOLATILITY_UNCLEAR) return marketSnapshot
+        if (!healthDecision.tradingAllowed) return marketSnapshot
+        val overrideCandidate = rankedPairs
+            .asSequence()
+            .filter { it.allowed }
+            .mapNotNull { pairScore ->
+                val quote = quoteByPair[pairScore.pairId] ?: return@mapNotNull null
+                if (!isMomentumOverrideCandidate(pairScore, quote, leadLagSignal)) return@mapNotNull null
+                pairScore.pairId
+            }
+            .firstOrNull()
+            ?: return marketSnapshot
+        return marketSnapshot.copy(
+            regime = MarketRegime.HIGH_VOLATILITY_MOMENTUM,
+            tacticalBiasScore = maxOf(marketSnapshot.tacticalBiasScore, 0.68),
+            swingBiasScore = maxOf(marketSnapshot.swingBiasScore, 0.28),
+            rationale = (
+                marketSnapshot.rationale +
+                    "Momentum override aktif pada ${overrideCandidate.value}: lonjakan harga/volume searah dengan spread <= 1% dan orderbook tetap hidup."
+                ).distinct(),
+        )
+    }
+
+    private fun isMomentumOverrideCandidate(
+        pairScore: PairScore,
+        quote: MarketQuote,
+        leadLagSignal: LeadLagSelectionSignal?,
+    ): Boolean {
+        val spreadHealthy = quote.spreadPct in 0.0..1.0
+        val depthHealthy =
+            quote.bidDepthTop5Idr.toDoubleOrZero() > 0.0 &&
+                quote.askDepthTop5Idr.toDoubleOrZero() > 0.0
+        val priceIgnition =
+            shortTermReturnPct(quote) >= (executionConfig.breakoutAggressiveEntryMinShortTermReturnPct * 0.72) &&
+                quote.mediumTermReturnPct >= maxOf(0.18, executionConfig.breakoutAggressiveEntryMinMediumTermReturnPct * 0.70)
+        val tapeHealthy =
+            quote.recentTradeActivityScore >= 0.68 &&
+                quote.orderBookStabilityScore >= 0.58 &&
+                quote.estimatedSlippagePct <= 1.0
+        val edgeHealthy =
+            pairScore.feeAdjustedEdgeScore >= (executionConfig.marketEntryMinExpectedNetProfitPct * 0.70) &&
+                pairScore.trendQualityScore >= 0.54
+        val leadLagSupport = when {
+            leadLagSignal == null -> true
+            leadLagSignal.fatigue -> false
+            leadLagSignal.leadPairId?.value?.equals(pairScore.pairId.value, ignoreCase = true) == true -> true
+            leadLagSignal.leadSectorFamily != null &&
+                leadLagSignal.leadSectorFamily == correlationFamily(pairScore.pairId) -> true
+            else -> leadLagSignal.leadMomentumScore >= 0.78
+        }
+        return spreadHealthy && depthHealthy && priceIgnition && tapeHealthy && edgeHealthy && leadLagSupport
     }
 
     private fun applySupportHints(
@@ -1425,6 +1572,7 @@ private data class EntryThresholds(
     val minRankingScore: Double,
     val minOpportunityScore: Double,
     val productiveIdleBiasActive: Boolean,
+    val parallelMomentumBiasActive: Boolean,
     val dailyProfitLockActive: Boolean,
 )
 

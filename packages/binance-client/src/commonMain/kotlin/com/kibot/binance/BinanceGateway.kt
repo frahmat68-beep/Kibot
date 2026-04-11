@@ -19,6 +19,7 @@ import com.kibot.shared.models.OrderType
 import com.kibot.shared.models.PairId
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.plugins.ResponseException
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -38,6 +39,10 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlin.math.absoluteValue
 import kotlin.math.max
+import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 
 class BinanceGateway internal constructor(
     private val config: BinanceClientConfig,
@@ -51,12 +56,16 @@ class BinanceGateway internal constructor(
 
     override suspend fun ping(): Boolean {
         return runCatching {
-            client.get("${config.publicBaseUrl}/api/v3/ping").status.isSuccess()
+            withUrlFailover(config.publicRestUrls("ping")) { url ->
+                client.get(url).status.isSuccess()
+            }
         }.getOrDefault(false)
     }
 
     override suspend fun fetchMarketQuotes(): List<MarketQuote> {
-        val response = client.get("${config.publicBaseUrl}/api/v3/ticker/24hr").body<List<Ticker24hRow>>()
+        val response = withUrlFailover(config.publicRestUrls("ticker/24hr")) { url ->
+            client.get(url).body<List<Ticker24hRow>>()
+        }
         val primaryQuote = config.primaryQuoteAsset.lowercase()
         return response.mapNotNull { ticker ->
             if (ticker.symbol.length <= primaryQuote.length) return@mapNotNull null
@@ -132,7 +141,7 @@ class BinanceGateway internal constructor(
 
     override suspend fun fetchBalances(): List<BalanceSnapshot> {
         if (!privateApiEnabled) return emptyList()
-        val response = signedGet<AccountInfoResponse>("/api/v3/account")
+        val response = signedGet<AccountInfoResponse>("account")
         return response.balances.mapNotNull { balance ->
             val free = DecimalValue(balance.free)
             val locked = DecimalValue(balance.locked)
@@ -152,14 +161,14 @@ class BinanceGateway internal constructor(
 
     override suspend fun fetchOpenOrders(): List<OrderSnapshot> {
         if (!privateApiEnabled) return emptyList()
-        val response = signedGet<List<OrderRow>>("/api/v3/openOrders")
+        val response = signedGet<List<OrderRow>>("openOrders")
         return response.map { it.toOrderSnapshot() }
     }
 
     override suspend fun fetchRecentFills(pairId: PairId?, limit: Int): List<FillSnapshot> {
         if (!privateApiEnabled || pairId == null) return emptyList()
         val response = signedGet<List<MyTradeRow>>(
-            path = "/api/v3/myTrades",
+            path = "myTrades",
             params = linkedMapOf(
                 "symbol" to pairId.toBinanceSymbol(),
                 "limit" to limit.coerceIn(1, 1000).toString(),
@@ -217,7 +226,7 @@ class BinanceGateway internal constructor(
                 )
             }
         }
-        val response = signedPost<OrderPlacementResponse>("/api/v3/order", params)
+        val response = signedPost<OrderPlacementResponse>("order", params)
         return response.toOrderSnapshot(pairId)
     }
 
@@ -267,7 +276,7 @@ class BinanceGateway internal constructor(
         }.getOrNull() ?: return false
         return runCatching {
             signedDelete<OrderRow>(
-                path = "/api/v3/order",
+                path = "order",
                 params = linkedMapOf(
                     "symbol" to openOrder.pairId.toBinanceSymbol(),
                     "origClientOrderId" to clientOrderId.value,
@@ -285,7 +294,7 @@ class BinanceGateway internal constructor(
     suspend fun fetchOrderByClientOrderId(clientOrderId: ClientOrderId, pairId: PairId): OrderSnapshot {
         requirePrivateApi("fetch Binance order by client order id")
         val response = signedGet<OrderRow>(
-            path = "/api/v3/order",
+            path = "order",
             params = linkedMapOf(
                 "symbol" to pairId.toBinanceSymbol(),
                 "origClientOrderId" to clientOrderId.value,
@@ -300,13 +309,15 @@ class BinanceGateway internal constructor(
     ): T {
         requirePrivateApi("perform Binance private GET")
         val query = signedQuery(params)
-        val responseText = client.get("${config.privateBaseUrl}$path") {
-            url {
-                query.parameters.forEach { (key, value) -> parameter(key, value) }
-                parameter("signature", query.signature)
-            }
-            header("X-MBX-APIKEY", credentials.apiKey)
-        }.bodyAsText()
+        val responseText = withUrlFailover(config.privateRestUrls(path)) { url ->
+            client.get(url) {
+                url {
+                    query.parameters.forEach { (key, value) -> parameter(key, value) }
+                    parameter("signature", query.signature)
+                }
+                header("X-MBX-APIKEY", credentials.apiKey)
+            }.bodyAsText()
+        }
         return decodeResponse(responseText)
     }
 
@@ -316,11 +327,13 @@ class BinanceGateway internal constructor(
     ): T {
         requirePrivateApi("perform Binance private POST")
         val query = signedQuery(params)
-        val responseText = client.post("${config.privateBaseUrl}$path") {
-            header("X-MBX-APIKEY", credentials.apiKey)
-            contentType(ContentType.Application.FormUrlEncoded)
-            setBody((query.parameters + ("signature" to query.signature)).toFormBody())
-        }.bodyAsText()
+        val responseText = withUrlFailover(config.privateRestUrls(path)) { url ->
+            client.post(url) {
+                header("X-MBX-APIKEY", credentials.apiKey)
+                contentType(ContentType.Application.FormUrlEncoded)
+                setBody((query.parameters + ("signature" to query.signature)).toFormBody())
+            }.bodyAsText()
+        }
         return decodeResponse(responseText)
     }
 
@@ -330,14 +343,46 @@ class BinanceGateway internal constructor(
     ): T {
         requirePrivateApi("perform Binance private DELETE")
         val query = signedQuery(params)
-        val responseText = client.delete("${config.privateBaseUrl}$path") {
-            url {
-                query.parameters.forEach { (key, value) -> parameter(key, value) }
-                parameter("signature", query.signature)
-            }
-            header("X-MBX-APIKEY", credentials.apiKey)
-        }.bodyAsText()
+        val responseText = withUrlFailover(config.privateRestUrls(path)) { url ->
+            client.delete(url) {
+                url {
+                    query.parameters.forEach { (key, value) -> parameter(key, value) }
+                    parameter("signature", query.signature)
+                }
+                header("X-MBX-APIKEY", credentials.apiKey)
+            }.bodyAsText()
+        }
         return decodeResponse(responseText)
+    }
+
+    private suspend fun <T> withUrlFailover(urls: List<String>, block: suspend (String) -> T): T {
+        var lastError: Throwable? = null
+        val candidates = urls.ifEmpty { error("No Binance endpoint candidates provided for request.") }
+        for ((idx, url) in candidates.withIndex()) {
+            try {
+                return block(url)
+            } catch (error: Throwable) {
+                lastError = error
+                if (idx == candidates.lastIndex) break
+                if (!shouldRetryAgainstNextEndpoint(error)) throw error
+            }
+        }
+        throw (lastError ?: error("Binance request failed with unknown error."))
+    }
+
+    private fun shouldRetryAgainstNextEndpoint(error: Throwable): Boolean {
+        return when (error) {
+            is ConnectException,
+            is SocketTimeoutException,
+            is UnknownHostException,
+            is IOException,
+            -> true
+            is ResponseException -> {
+                val status = error.response.status.value
+                status == 429 || status in 500..599
+            }
+            else -> false
+        }
     }
 
     private inline fun <reified T> decodeResponse(responseText: String): T {

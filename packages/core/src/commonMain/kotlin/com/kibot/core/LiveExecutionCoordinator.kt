@@ -8,6 +8,8 @@ import com.kibot.shared.models.LeaseTerm
 import com.kibot.shared.models.OrderId
 import com.kibot.shared.models.OrderSnapshot
 import com.kibot.shared.models.OrderStatus
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.Clock
 
 data class LiveExecutionResult(
@@ -57,8 +59,9 @@ class LiveExecutionCoordinator(
         exchange: ExchangeGateway,
         controlPlane: ControlPlaneGateway,
         bypassLeaseValidation: Boolean = false,
+        bypassSamePairOrderCheck: Boolean = false,
     ): LiveExecutionResult {
-        if (existingPersistedOrders.any { it.pairId == executionPlan.signal.pairId }) {
+        if (!bypassSamePairOrderCheck && existingPersistedOrders.any { it.pairId == executionPlan.signal.pairId }) {
             return LiveExecutionResult(
                 submitted = false,
                 message = "Exit ${executionPlan.signal.pairId.value} ditunda karena masih ada order aktif untuk pair yang sama.",
@@ -84,6 +87,10 @@ class LiveExecutionCoordinator(
         controlPlane: ControlPlaneGateway,
         bypassLeaseValidation: Boolean = false,
     ): LiveExecutionResult {
+        println(
+            "[LIVE_EXECUTION] submitManagedOrder begin pair=${executionPlan.signal.pairId.value} " +
+                "side=${executionPlan.side.name} orderType=${executionPlan.orderType.name} bypassLeaseValidation=$bypassLeaseValidation",
+        )
         val reservation = if (bypassLeaseValidation) {
             // EMERGENCY: Skip lease validation - control plane may be unavailable
             null
@@ -125,7 +132,41 @@ class LiveExecutionCoordinator(
         }
 
         return try {
-            val order = exchange.placeOrder(executionPlan, clientOrderId)
+            var placedOrder: OrderSnapshot? = null
+            var lastPlaceError: Throwable? = null
+            for (attempt in 0 until 3) {
+                println(
+                    "[LIVE_EXECUTION] placeOrder attempt=${attempt + 1} pair=${executionPlan.signal.pairId.value} " +
+                        "clientOrderId=${clientOrderId.value}",
+                )
+                val attemptOrder = runCatching {
+                    withTimeoutOrNull(15_000L) {
+                        exchange.placeOrder(executionPlan, clientOrderId)
+                    }
+                }.getOrElse { error ->
+                    lastPlaceError = error
+                    println(
+                        "[LIVE_EXECUTION] placeOrder exception attempt=${attempt + 1} pair=${executionPlan.signal.pairId.value} " +
+                            "error=${error.message ?: error::class.simpleName ?: "unknown"}",
+                    )
+                    null
+                }
+                if (attemptOrder != null) {
+                    placedOrder = attemptOrder
+                    println(
+                        "[LIVE_EXECUTION] placeOrder success attempt=${attempt + 1} pair=${executionPlan.signal.pairId.value} " +
+                            "clientOrderId=${clientOrderId.value}",
+                    )
+                    break
+                }
+                println(
+                    "[LIVE_EXECUTION] placeOrder returned null attempt=${attempt + 1} pair=${executionPlan.signal.pairId.value}",
+                )
+                if (attempt < 2) {
+                    delay(500L * (attempt + 1))
+                }
+            }
+            val order = placedOrder ?: throw (lastPlaceError ?: error("exchange.placeOrder returned null"))
             if (!bypassLeaseValidation) {
                 controlPlane.upsertOrderSnapshot(
                     botId = botId,
@@ -144,6 +185,10 @@ class LiveExecutionCoordinator(
                 message = "${executionPlan.side.name} ${executionPlan.orderType.name} ${executionPlan.signal.pairId.value} berhasil dikirim (${clientOrderId.value}).",
             )
         } catch (error: ExchangeRejectedException) {
+            println(
+                "[LIVE_EXECUTION] ExchangeRejectedException pair=${executionPlan.signal.pairId.value} " +
+                    "message=${error.message ?: "unknown"}",
+            )
             if (!bypassLeaseValidation) {
                 controlPlane.upsertOrderSnapshot(
                     botId = botId,
@@ -164,9 +209,28 @@ class LiveExecutionCoordinator(
                 message = "Submit ${executionPlan.side.name} ${executionPlan.signal.pairId.value} ditolak exchange: ${error.message ?: "unknown error"}.",
             )
         } catch (error: Throwable) {
-            val reconciledOrder = runCatching {
-                exchange.fetchOpenOrders().firstOrNull { it.clientOrderId == clientOrderId }
+            println(
+                "[LIVE_EXECUTION] placeOrder throwable pair=${executionPlan.signal.pairId.value} " +
+                    "message=${error.message ?: error::class.simpleName ?: "unknown"}",
+            )
+            var reconciledOrder = runCatching {
+                withTimeoutOrNull(5_000L) {
+                    exchange.fetchOpenOrders().firstOrNull { it.clientOrderId == clientOrderId }
+                }
             }.getOrNull()
+            if (reconciledOrder == null) {
+                repeat(4) { attempt ->
+                    delay(500L)
+                    reconciledOrder = runCatching {
+                        withTimeoutOrNull(5_000L) {
+                            exchange.fetchOpenOrders().firstOrNull { it.clientOrderId == clientOrderId }
+                        }
+                    }.getOrNull()
+                    if (reconciledOrder != null) {
+                        return@repeat
+                    }
+                }
+            }
 
             if (reconciledOrder != null) {
                 if (!bypassLeaseValidation) {

@@ -30,4 +30,11 @@ class IndodaxPrivateRequestFactoryTest {
         assertEquals("12345", formatIndodaxDecimal("1.2345e4"))
         assertEquals("0", formatIndodaxDecimal("0.0000000001"))
     }
+
+    @Test
+    fun `normalizes trade amount for decimal rejection retry`() {
+        assertEquals("24588", normalizeIndodaxTradeAmount("24588.000000"))
+        assertEquals("12345", normalizeIndodaxTradeAmount("1.2345e4"))
+        assertEquals(null, normalizeIndodaxTradeAmount("0.001"))
+    }
 }
