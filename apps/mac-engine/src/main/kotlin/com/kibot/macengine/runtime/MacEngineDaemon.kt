@@ -10733,6 +10733,7 @@ class MacEngineDaemon(
             } else {
                 listOfNotNull(
                     "PnL Circuit ${pnlCircuit.level} (${formatSignedPercent(pnlTodayPct / 100.0)}): ${pnlCircuit.operatorAction}",
+                    lastLeadLagSignalAt?.let { "Lead-lag age ${formatAge(now, it)}" },
                     healthDecisionSummary.takeIf { it.isNotBlank() },
                     explicitRejectedReason.takeIf { it.isNotBlank() },
                     targetPursuit?.takeIf { it.active }?.let {
