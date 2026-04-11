@@ -10727,6 +10727,7 @@ class MacEngineDaemon(
             standbyEngine = "View Only",
             syncHealth = botState.syncHealth.name,
             leaseTerm = lease?.term?.value ?: botState.currentTerm.value,
+            lastLeadLagSignalAgeMs = lastLeadLagSignalAt?.let { maxOf((now - it).inWholeMilliseconds, 0L) },
             healthSummary = if (botState.effectiveState == BotEffectiveState.SAFE_MODE) {
                 botState.safeModeReason ?: "Safe mode active. Manual review is required."
             } else {
