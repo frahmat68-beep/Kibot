@@ -467,6 +467,7 @@ def _daily_guard_reset_due() -> bool:
 def _refresh_daily_guard_from_equity(current_equity: float | None) -> None:
     today = (datetime.now(timezone.utc) + timedelta(hours=WIB_UTC_OFFSET_HOURS)).date().isoformat()
     if _daily_guard_state.get("date") != today:
+        had_daily_hard_stop = bool(_gate_state.get("daily_hard_stop"))
         _daily_guard_state.update(
             {
                 "date": today,
@@ -480,6 +481,12 @@ def _refresh_daily_guard_from_equity(current_equity: float | None) -> None:
             }
         )
         _save_daily_guard_state()
+        if had_daily_hard_stop:
+            _gate_state["daily_hard_stop"] = False
+            _gate_state["daily_hard_stop_reason"] = ""
+            _gate_state["daily_hard_stop_reset_at"] = ""
+            _save_gate_state()
+            _resume_new_entries("new day reset")
 
 
 def _trigger_daily_hard_stop(current_equity: float | None, daily_pnl_pct: float) -> None:
