@@ -47,6 +47,8 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.math.BigDecimal
+import java.math.RoundingMode
 
 class IndodaxGateway internal constructor(
     private val config: IndodaxClientConfig,
@@ -891,9 +893,10 @@ private fun deriveBaseQuantityFromQuote(
     quoteAmount: String?,
     price: String?,
 ): String {
-    val quoteValue = quoteAmount?.toDoubleOrNull() ?: return "0"
-    val priceValue = price?.toDoubleOrNull()?.takeIf { it > 0.0 } ?: return "0"
-    return formatIndodaxDecimal((quoteValue / priceValue).toString())
+    val quoteValue = quoteAmount?.toBigDecimalOrNull() ?: return "0"
+    val priceValue = price?.toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO } ?: return "0"
+    val quantity = quoteValue.divide(priceValue, 18, RoundingMode.FLOOR)
+    return formatIndodaxDecimal(quantity.toPlainString(), scale = 12)
 }
 
 private fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
@@ -953,32 +956,10 @@ internal fun formatIndodaxDecimal(
 ): String {
     val trimmed = raw.trim()
     if (trimmed.isEmpty()) return "0"
-    val negative = trimmed.startsWith("-")
-    val unsigned = trimmed.removePrefix("-").removePrefix("+")
-    val lower = unsigned.lowercase()
-    val scientific = lower.split("e", limit = 2)
-    val mantissa = scientific[0]
-    val exponent = scientific.getOrNull(1)?.toIntOrNull() ?: 0
-
-    val dotIndex = mantissa.indexOf('.').takeIf { it >= 0 } ?: mantissa.length
-    val digits = mantissa.filter { it.isDigit() }
-    if (digits.isEmpty() || digits.all { it == '0' }) return "0"
-
-    val decimalIndex = dotIndex + exponent
-    val plain = when {
-        decimalIndex <= 0 -> "0." + "0".repeat(-decimalIndex) + digits
-        decimalIndex >= digits.length -> digits + "0".repeat(decimalIndex - digits.length)
-        else -> digits.take(decimalIndex) + "." + digits.drop(decimalIndex)
-    }
-
-    val plainParts = plain.split('.', limit = 2)
-    val integer = plainParts[0].trimStart('0').ifEmpty { "0" }
-    val fraction = plainParts.getOrElse(1) { "" }
-        .let { if (scale >= 0) it.take(scale) else it }
-        .trimEnd('0')
-
-    val normalized = if (fraction.isEmpty()) integer else "$integer.$fraction"
-    return if (negative && normalized != "0") "-$normalized" else normalized
+    val decimal = runCatching { BigDecimal(trimmed) }.getOrNull() ?: return "0"
+    val normalized = decimal.setScale(scale.coerceAtLeast(0), RoundingMode.DOWN).stripTrailingZeros()
+    val plain = normalized.toPlainString()
+    return if (plain == "-0") "0" else plain
 }
 
 internal fun formatIndodaxIdrInteger(raw: String): String {

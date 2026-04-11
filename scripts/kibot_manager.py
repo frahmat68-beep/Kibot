@@ -9,7 +9,7 @@ import socket
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -166,6 +166,16 @@ INDODAX_SUMMARIES_URL = os.getenv("INDODAX_SUMMARIES_URL", "https://indodax.com/
 INDODAX_TICKER_CACHE_TTL_SEC = int(os.getenv("KIBOT_INDODAX_TICKER_CACHE_TTL_SEC", "600"))
 EMERGENCY_SELL_NEGATIVE_PNL_PCT = float(os.getenv("KIBOT_EMERGENCY_SELL_NEGATIVE_PNL_PCT", "-2.2"))
 EMERGENCY_SELL_COOLDOWN_SEC = int(os.getenv("KIBOT_EMERGENCY_SELL_COOLDOWN_SEC", "20"))
+API_HEALTH_CHECK_INTERVAL_SEC = float(os.getenv("KIBOT_API_HEALTH_CHECK_INTERVAL_SEC", "15"))
+API_HEALTH_FAIL_THRESHOLD = int(os.getenv("KIBOT_API_HEALTH_FAIL_THRESHOLD", "2"))
+CONTROL_PLANE_TIMEOUT_SEC = float(os.getenv("KIBOT_CONTROL_PLANE_TIMEOUT_SEC", "3.0"))
+CONTROL_PLANE_STALE_SEC = float(os.getenv("KIBOT_CONTROL_PLANE_STALE_SEC", "30"))
+DAILY_LOSS_LIMIT_PCT = float(os.getenv("KIBOT_DAILY_LOSS_LIMIT_PCT", "0.02"))
+WIB_UTC_OFFSET_HOURS = int(os.getenv("KIBOT_WIB_UTC_OFFSET_HOURS", "7"))
+DAILY_GUARD_STATE_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_GUARD_FILE", str(STATE_ROOT / "daily_guard.json")))
+MANAGER_GATE_STATE_PATH = Path(os.getenv("KIBOT_MANAGER_GATE_STATE_FILE", str(STATE_ROOT / "manager_gate.json")))
+SAFE_ENTRY_MSG_TYPES = {"DETECTOR_HIT", "INSTANT_BUY_ANOMALY"}
+EXIT_MSG_TYPES = {"SELL_WALL_SURGE", "MOMENTUM_LOSS", "TRAILING_STOP_HIT", "THESIS_INVALID_EXIT"}
 # Maximum size for unbounded caches
 _SEEN_NEWS_IDS_MAX_SIZE = int(os.getenv("KIBOT_SEEN_NEWS_IDS_MAX_SIZE", "5000"))
 _seen_news_ids: set[str] = set()
@@ -180,6 +190,35 @@ _last_active_positions_log_at: float = 0.0
 _last_runtime_note_write_at: float = 0.0
 _recent_runtime_events: List[Dict[str, Any]] = []
 _veto_metrics: Dict[str, int] = {"approved": 0, "rejected": 0, "sell_confirmed": 0, "emergency_sell": 0}
+_api_fail_streak: int = 0
+_api_health_state: str = "HEALTHY"
+_control_plane_healthy: bool = True
+_control_plane_last_success_at: float = 0.0
+_gate_state: Dict[str, Any] = _load_json_file(
+    MANAGER_GATE_STATE_PATH,
+    {
+        "mode": "CONSERVATIVE",
+        "entry_state": "HEALTHY",
+        "reason": "",
+        "updated_at": "",
+        "daily_hard_stop": False,
+        "daily_hard_stop_reset_at": "",
+        "daily_hard_stop_reason": "",
+    },
+)
+_daily_guard_state: Dict[str, Any] = _load_json_file(
+    DAILY_GUARD_STATE_PATH,
+    {
+        "date": "",
+        "start_of_day_equity": None,
+        "current_equity": None,
+        "daily_pnl_pct": None,
+        "hard_stopped": False,
+        "triggered_at": "",
+        "reset_at": "",
+        "reason": "",
+    },
+)
 
 
 def _load_json_file(path: Path, default: Any) -> Any:
@@ -202,6 +241,192 @@ _pair_cooldown_state: Dict[str, Dict[str, Any]] = _load_json_file(STATE_ROOT / "
 
 def _save_pair_cooldown_state() -> None:
     _write_json_file(STATE_ROOT / "pair_cooldowns.json", _pair_cooldown_state)
+
+
+def _save_gate_state() -> None:
+    _write_json_file(MANAGER_GATE_STATE_PATH, _gate_state)
+
+
+def _save_daily_guard_state() -> None:
+    _write_json_file(DAILY_GUARD_STATE_PATH, _daily_guard_state)
+
+
+def _next_wib_midnight_iso() -> str:
+    now_utc = datetime.now(timezone.utc)
+    now_wib = now_utc + timedelta(hours=WIB_UTC_OFFSET_HOURS)
+    midnight_wib = datetime.combine(now_wib.date() + timedelta(days=1), datetime.min.time())
+    reset_utc = midnight_wib - timedelta(hours=WIB_UTC_OFFSET_HOURS)
+    return reset_utc.replace(tzinfo=timezone.utc).isoformat()
+
+
+def _entry_state_is_suspended() -> bool:
+    return str(_gate_state.get("entry_state") or "HEALTHY").upper() != "HEALTHY"
+
+
+def _set_entry_state(entry_state: str, *, reason: str = "", daily_hard_stop: bool | None = None) -> None:
+    normalized = entry_state.upper().strip() or "HEALTHY"
+    _gate_state["entry_state"] = normalized
+    _gate_state["reason"] = reason
+    _gate_state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if daily_hard_stop is not None:
+        _gate_state["daily_hard_stop"] = bool(daily_hard_stop)
+    _save_gate_state()
+
+
+def _suspend_new_entries(reason: str, *, daily_hard_stop: bool = False) -> None:
+    current = str(_gate_state.get("entry_state") or "HEALTHY").upper()
+    if current == "SUSPENDED" and _gate_state.get("reason") == reason and bool(_gate_state.get("daily_hard_stop")) == bool(daily_hard_stop):
+        return
+    _set_entry_state("SUSPENDED", reason=reason, daily_hard_stop=daily_hard_stop)
+    _append_runtime_event("entry_suspended", {"reason": reason, "daily_hard_stop": daily_hard_stop})
+    print(f"[KIBOT][GATE] entry suspended reason={reason} daily_hard_stop={daily_hard_stop}", flush=True)
+
+
+def _resume_new_entries(reason: str) -> None:
+    if not _entry_state_is_suspended():
+        return
+    if bool(_gate_state.get("daily_hard_stop")):
+        return
+    _set_entry_state("HEALTHY", reason=reason, daily_hard_stop=False)
+    _append_runtime_event("entry_resumed", {"reason": reason})
+    print(f"[KIBOT][GATE] entry resumed reason={reason}", flush=True)
+
+
+def _set_conservative_mode(reason: str) -> None:
+    if str(_gate_state.get("mode") or "CONSERVATIVE").upper() == "CONSERVATIVE":
+        return
+    _gate_state["mode"] = "CONSERVATIVE"
+    _gate_state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _gate_state["reason"] = reason
+    _save_gate_state()
+    _append_runtime_event("trading_mode_changed", {"mode": "CONSERVATIVE", "reason": reason})
+    print(f"[KIBOT][MODE] switched to CONSERVATIVE reason={reason}", flush=True)
+
+
+def _set_normal_mode(reason: str) -> None:
+    if str(_gate_state.get("mode") or "CONSERVATIVE").upper() == "NORMAL":
+        return
+    _gate_state["mode"] = "NORMAL"
+    _gate_state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _gate_state["reason"] = reason
+    _save_gate_state()
+    _append_runtime_event("trading_mode_changed", {"mode": "NORMAL", "reason": reason})
+    print(f"[KIBOT][MODE] switched to NORMAL reason={reason}", flush=True)
+
+
+def _record_control_plane_success() -> None:
+    global _control_plane_healthy, _control_plane_last_success_at, _api_fail_streak, _api_health_state
+    _control_plane_healthy = True
+    _control_plane_last_success_at = time.time()
+    if _api_fail_streak != 0 or _api_health_state != "HEALTHY":
+        _api_fail_streak = 0
+        _api_health_state = "HEALTHY"
+        print("[KIBOT][HEALTH] API/control-plane recovered", flush=True)
+        _append_runtime_event("api_health", {"state": "HEALTHY"})
+
+
+def _record_control_plane_failure(reason: str) -> None:
+    global _control_plane_healthy, _api_fail_streak, _api_health_state
+    _control_plane_healthy = False
+    _api_fail_streak += 1
+    if _api_fail_streak >= API_HEALTH_FAIL_THRESHOLD:
+        if _api_health_state != "SUSPENDED":
+            _api_health_state = "SUSPENDED"
+            _append_runtime_event("api_health", {"state": "SUSPENDED", "reason": reason, "streak": _api_fail_streak})
+            print(f"[KIBOT][HEALTH] API suspended reason={reason} streak={_api_fail_streak}", flush=True)
+        _suspend_new_entries(reason="API health fail streak")
+    else:
+        if _api_health_state != "DEGRADED":
+            _api_health_state = "DEGRADED"
+            _append_runtime_event("api_health", {"state": "DEGRADED", "reason": reason, "streak": _api_fail_streak})
+        print(f"[KIBOT][HEALTH] API degraded reason={reason} streak={_api_fail_streak}", flush=True)
+
+
+def _daily_guard_reset_due() -> bool:
+    reset_at = str(_daily_guard_state.get("reset_at") or "")
+    if not reset_at:
+        return False
+    try:
+        return datetime.now(timezone.utc) >= datetime.fromisoformat(reset_at)
+    except Exception:
+        return False
+
+
+def _refresh_daily_guard_from_equity(current_equity: float | None) -> None:
+    today = datetime.now(timezone.utc).date().isoformat()
+    if _daily_guard_state.get("date") != today:
+        _daily_guard_state.update(
+            {
+                "date": today,
+                "start_of_day_equity": current_equity,
+                "current_equity": current_equity,
+                "daily_pnl_pct": None,
+                "hard_stopped": False,
+                "triggered_at": "",
+                "reset_at": "",
+                "reason": "",
+            }
+        )
+        _save_daily_guard_state()
+
+
+def _trigger_daily_hard_stop(current_equity: float | None, daily_pnl_pct: float) -> None:
+    reset_at = _next_wib_midnight_iso()
+    _daily_guard_state.update(
+        {
+            "hard_stopped": True,
+            "current_equity": current_equity,
+            "daily_pnl_pct": daily_pnl_pct,
+            "triggered_at": datetime.now(timezone.utc).isoformat(),
+            "reset_at": reset_at,
+            "reason": "daily_loss_limit_hit",
+        }
+    )
+    _save_daily_guard_state()
+    _gate_state["daily_hard_stop"] = True
+    _gate_state["daily_hard_stop_reset_at"] = reset_at
+    _gate_state["daily_hard_stop_reason"] = "daily_loss_limit_hit"
+    _save_gate_state()
+    _suspend_new_entries("daily_loss_limit_hit", daily_hard_stop=True)
+    _append_runtime_event("daily_hard_stop", {"daily_pnl_pct": daily_pnl_pct, "reset_at": reset_at})
+    print(f"[KIBOT][GATE] daily hard stop triggered pnl_pct={daily_pnl_pct:.4f} reset_at={reset_at}", flush=True)
+
+
+def _check_daily_loss_limit(current_equity: float | None = None) -> None:
+    if current_equity is None:
+        current_equity = float(_daily_guard_state.get("current_equity") or 0.0) or None
+    _refresh_daily_guard_from_equity(current_equity)
+    if _daily_guard_state.get("hard_stopped") and _daily_guard_reset_due():
+        _daily_guard_state.update({"hard_stopped": False, "reason": "", "triggered_at": ""})
+        _save_daily_guard_state()
+        _gate_state["daily_hard_stop"] = False
+        _gate_state["daily_hard_stop_reason"] = ""
+        _gate_state["daily_hard_stop_reset_at"] = ""
+        _save_gate_state()
+        _resume_new_entries("daily hard stop reset")
+        print("[KIBOT][GATE] daily hard stop reset", flush=True)
+    start_equity = float(_daily_guard_state.get("start_of_day_equity") or 0.0)
+    if not start_equity or not current_equity:
+        return
+    daily_pnl_pct = (float(current_equity) - start_equity) / start_equity
+    _daily_guard_state["current_equity"] = float(current_equity)
+    _daily_guard_state["daily_pnl_pct"] = daily_pnl_pct
+    _save_daily_guard_state()
+    if daily_pnl_pct <= -abs(DAILY_LOSS_LIMIT_PCT) and not bool(_daily_guard_state.get("hard_stopped")):
+        _trigger_daily_hard_stop(current_equity, daily_pnl_pct)
+
+
+def _health_gate_loop() -> None:
+    while not _shutdown_event.is_set():
+        try:
+            if _check_kinance_health():
+                _record_control_plane_success()
+            else:
+                _record_control_plane_failure("kinance_unhealthy")
+            _check_daily_loss_limit()
+        except Exception as error:
+            print(f"[KIBOT][HEALTH][ERROR] gate loop failed reason={error}", flush=True)
+        _shutdown_event.wait(API_HEALTH_CHECK_INTERVAL_SEC)
 
 
 def _cooldown_pair(pair: str, *, reason: str, minutes: int, metadata: Dict[str, Any] | None = None) -> None:
@@ -885,11 +1110,16 @@ def _upsert_trade_history(entry: Dict[str, Any]) -> None:
     headers = _headers()
     headers["Prefer"] = "return=minimal"
     primary_url = f"{SUPABASE_URL}/rest/v1/trade_history"
-    response = requests.post(primary_url, headers=headers, json=entry, timeout=TIMEOUT)
-    if response.status_code < 300:
-        return
-    if response.status_code != 404:
-        response.raise_for_status()
+    try:
+        response = requests.post(primary_url, headers=headers, json=entry, timeout=CONTROL_PLANE_TIMEOUT_SEC)
+        if response.status_code < 300:
+            _record_control_plane_success()
+            return
+        if response.status_code != 404:
+            response.raise_for_status()
+        _record_control_plane_success()
+    except Exception as error:
+        _record_control_plane_failure(f"trade_history_upsert:{error}")
     # Fallback when table trade_history is absent on this project.
     fallback_url = f"{SUPABASE_URL}/rest/v1/logs"
     fallback_payload = {
@@ -902,8 +1132,13 @@ def _upsert_trade_history(entry: Dict[str, Any]) -> None:
         "metadata": {"source": "kibot_manager", "fallback_from": "trade_history"},
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    fallback_resp = requests.post(fallback_url, headers=headers, json=fallback_payload, timeout=TIMEOUT)
-    fallback_resp.raise_for_status()
+    try:
+        fallback_resp = requests.post(fallback_url, headers=headers, json=fallback_payload, timeout=CONTROL_PLANE_TIMEOUT_SEC)
+        fallback_resp.raise_for_status()
+        _record_control_plane_success()
+    except Exception as error:
+        _record_control_plane_failure(f"trade_history_fallback:{error}")
+        raise
 
 
 def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
@@ -1131,11 +1366,26 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     if msg_type == "HEARTBEAT" and msg.get("source") == "kinance":
         _on_kinance_heartbeat_received()
         return
+
+    if msg_type in EXIT_MSG_TYPES:
+        pass
+    elif msg_type in SAFE_ENTRY_MSG_TYPES and _entry_state_is_suspended():
+        print(
+            f"[KIBOT][BLOCK] Blocking {msg_type} - entry suspended state={_gate_state.get('entry_state')} reason={_gate_state.get('reason')}",
+            flush=True,
+        )
+        return
+    elif _entry_state_is_suspended():
+        print(
+            f"[KIBOT][BLOCK] Blocking {msg_type} - entry suspended state={_gate_state.get('entry_state')} reason={_gate_state.get('reason')}",
+            flush=True,
+        )
+        return
     
     # === EARLY RETURN IF KINANCE DEAD ===
     if not _check_kinance_health():
         # Only allow EXIT signals when Kinance unhealthy
-        if msg_type not in {"SELL_WALL_SURGE", "MOMENTUM_LOSS", "TRAILING_STOP_HIT"}:
+        if msg_type not in EXIT_MSG_TYPES:
             print(f"[KIBOT][BLOCK] Blocking {msg_type} - KINANCE unhealthy", flush=True)
             return
     
@@ -1148,7 +1398,7 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     if msg_type == "EXECUTION_FILLED":
         _book_entry_from_execution(msg)
         return
-    if msg_type not in {"DETECTOR_HIT", "INSTANT_BUY_ANOMALY", "SELL_WALL_SURGE", "MOMENTUM_LOSS"}:
+    if msg_type not in (SAFE_ENTRY_MSG_TYPES | EXIT_MSG_TYPES):
         return
     # Relay original detector signal so KiDax can hold Kinance-side evidence for double-confirmation.
     _broadcast_udp(msg)
@@ -1162,7 +1412,7 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         print(f"[KIBOT][WARN] missing pair in msgType={msg_type}", flush=True)
         return
     pair_on_cooldown, cooldown_reason = _pair_cooldown_active(pair)
-    if pair_on_cooldown and msg_type not in {"SELL_WALL_SURGE", "MOMENTUM_LOSS"}:
+    if pair_on_cooldown and msg_type not in EXIT_MSG_TYPES:
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         print(
             f"[KIBOT][VETO_REJECTED] pair={pair} reason=PAIR_COOLDOWN cooldown_reason={cooldown_reason}",
@@ -1220,6 +1470,11 @@ def _process_signal(msg: Dict[str, Any]) -> None:
             "payload": {"reason": "STALE_SIGNAL", "signal_age_ms": signal_age_ms},
         }
         _broadcast_udp(veto)
+        return
+
+    if msg_type in SAFE_ENTRY_MSG_TYPES and (not _control_plane_healthy or (time.time() - _control_plane_last_success_at) > CONTROL_PLANE_STALE_SEC):
+        _suspend_new_entries("control_plane_stale")
+        print(f"[KIBOT][BLOCK] Blocking {msg_type} - control-plane stale", flush=True)
         return
     expected_move_pct = float(
         payload.get("expectedMovePct")
@@ -1775,6 +2030,9 @@ def main() -> None:
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
     _write_json_file(PROVIDER_STATE_PATH, _provider_runtime_state)
     _save_pair_cooldown_state()
+    _save_gate_state()
+    _save_daily_guard_state()
+    _set_conservative_mode("fresh_start")
     if DAILY_SUMMARY_ENABLED:
         _write_json_file(DAILY_SUMMARY_PATH, _load_daily_summary())
     _append_runtime_event(
@@ -1794,6 +2052,8 @@ def main() -> None:
     gecko_thread.start()
     heartbeat_thread = threading.Thread(target=_heartbeat_loop, name="kibot-heartbeat-loop", daemon=True)
     heartbeat_thread.start()
+    health_gate_thread = threading.Thread(target=_health_gate_loop, name="kibot-health-gate-loop", daemon=True)
+    health_gate_thread.start()
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # Allow socket reuse for quick restarts
