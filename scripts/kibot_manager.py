@@ -134,6 +134,10 @@ RUNTIME_NOTE_PATH = Path(
 )
 RUNTIME_NOTE_MIN_INTERVAL_SEC = int(os.getenv("KIBOT_MANAGER_RUNTIME_NOTE_MIN_INTERVAL_SEC", "15"))
 DAILY_SUMMARY_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_SUMMARY_FILE", str(STATE_ROOT / "daily_summary.json")))
+PAIR_MEMORY_PATH = Path(os.getenv("KIBOT_MANAGER_PAIR_MEMORY_FILE", str(STATE_ROOT / "pair_memory.json")))
+PAIR_MEMORY_ROLLING_WINDOW = int(os.getenv("KIBOT_PAIR_MEMORY_ROLLING_WINDOW", "50"))
+PAIR_MEMORY_MIN_TRADES_FOR_WINRATE = int(os.getenv("KIBOT_PAIR_MEMORY_MIN_TRADES_FOR_WINRATE", "3"))
+AI_BATCH_REVIEW_INTERVAL_SEC = int(os.getenv("KIBOT_AI_BATCH_REVIEW_INTERVAL_SEC", str(6 * 60 * 60)))
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
@@ -219,6 +223,7 @@ _daily_guard_state: Dict[str, Any] = _load_json_file(
         "reason": "",
     },
 )
+_pair_memory: Dict[str, Dict[str, Any]] = _load_json_file(PAIR_MEMORY_PATH, {})
 
 
 def _load_json_file(path: Path, default: Any) -> Any:
@@ -249,6 +254,114 @@ def _save_gate_state() -> None:
 
 def _save_daily_guard_state() -> None:
     _write_json_file(DAILY_GUARD_STATE_PATH, _daily_guard_state)
+
+
+def _save_pair_memory_state() -> None:
+    _write_json_file(PAIR_MEMORY_PATH, _pair_memory)
+
+
+def _default_pair_memory() -> Dict[str, Any]:
+    return {
+        "slippage_history": [],
+        "spread_observed": [],
+        "win_rate_by_hour": {},
+        "last_loss_at": None,
+        "cooldown_until": None,
+        "fake_pump_count": 0,
+        "avg_execution_latency_ms": 0.0,
+        "trade_count": 0,
+        "win_count": 0,
+        "last_updated_at": "",
+    }
+
+
+def _wib_hour_now() -> int:
+    return (datetime.now(timezone.utc) + timedelta(hours=WIB_UTC_OFFSET_HOURS)).hour
+
+
+def _pair_memory_for(pair_id: str) -> Dict[str, Any]:
+    pair_key = pair_id.lower().strip()
+    if not pair_key:
+        return _default_pair_memory()
+    memory = _pair_memory.setdefault(pair_key, _default_pair_memory())
+    if "trade_count" not in memory:
+        memory.update(_default_pair_memory())
+    return memory
+
+
+def _update_pair_memory(
+    pair_id: str,
+    *,
+    pnl_pct: float,
+    slippage_pct: float | None = None,
+    spread_pct: float | None = None,
+    actual_latency_ms: float | None = None,
+    fake_pump: bool = False,
+    loss_threshold_pct: float = 0.75,
+    cooldown_sec: int = 60 * 60,
+) -> None:
+    pair_key = pair_id.lower().strip()
+    if not pair_key:
+        return
+    memory = _pair_memory_for(pair_key)
+    if slippage_pct is not None:
+        history = list(memory.get("slippage_history") or [])
+        history.append(float(slippage_pct))
+        memory["slippage_history"] = history[-PAIR_MEMORY_ROLLING_WINDOW:]
+    if spread_pct is not None:
+        history = list(memory.get("spread_observed") or [])
+        history.append(float(spread_pct))
+        memory["spread_observed"] = history[-PAIR_MEMORY_ROLLING_WINDOW:]
+    if actual_latency_ms is not None and actual_latency_ms > 0:
+        current = float(memory.get("avg_execution_latency_ms") or 0.0)
+        count = int(memory.get("trade_count") or 0)
+        memory["avg_execution_latency_ms"] = round(((current * count) + actual_latency_ms) / (count + 1), 3)
+    hour_bucket = str(_wib_hour_now())
+    win_rate_by_hour = memory.setdefault("win_rate_by_hour", {})
+    hour_stats = win_rate_by_hour.setdefault(hour_bucket, {"wins": 0, "total": 0})
+    hour_stats["total"] += 1
+    memory["trade_count"] = int(memory.get("trade_count") or 0) + 1
+    if pnl_pct > 0:
+        hour_stats["wins"] += 1
+        memory["win_count"] = int(memory.get("win_count") or 0) + 1
+    else:
+        memory["last_loss_at"] = datetime.now(timezone.utc).isoformat()
+        if pnl_pct <= -abs(loss_threshold_pct):
+            memory["cooldown_until"] = time.time() + cooldown_sec
+    if fake_pump:
+        memory["fake_pump_count"] = int(memory.get("fake_pump_count") or 0) + 1
+    memory["last_updated_at"] = datetime.now(timezone.utc).isoformat()
+    _pair_memory[pair_key] = memory
+    _save_pair_memory_state()
+
+
+def _get_pair_avg_slippage(pair_id: str, fallback: float = 0.0) -> float:
+    memory = _pair_memory.get(pair_id.lower().strip(), {})
+    history = memory.get("slippage_history") or []
+    if not history:
+        return fallback
+    return sum(float(value) for value in history) / len(history)
+
+
+def _get_pair_win_rate_now(pair_id: str) -> float:
+    memory = _pair_memory.get(pair_id.lower().strip(), {})
+    hour_bucket = str(_wib_hour_now())
+    hour_stats = (memory.get("win_rate_by_hour") or {}).get(hour_bucket)
+    if not hour_stats or int(hour_stats.get("total") or 0) < PAIR_MEMORY_MIN_TRADES_FOR_WINRATE:
+        return 0.5
+    total = float(hour_stats.get("total") or 0)
+    return float(hour_stats.get("wins") or 0) / total if total > 0 else 0.5
+
+
+def _is_pair_on_cooldown(pair_id: str) -> bool:
+    memory = _pair_memory.get(pair_id.lower().strip(), {})
+    cooldown_until = memory.get("cooldown_until")
+    if cooldown_until is None:
+        return False
+    try:
+        return time.time() < float(cooldown_until)
+    except Exception:
+        return False
 
 
 def _next_wib_midnight_iso() -> str:
@@ -427,6 +540,78 @@ def _health_gate_loop() -> None:
         except Exception as error:
             print(f"[KIBOT][HEALTH][ERROR] gate loop failed reason={error}", flush=True)
         _shutdown_event.wait(API_HEALTH_CHECK_INTERVAL_SEC)
+
+
+def _build_performance_summary() -> Dict[str, Any]:
+    pair_stats: Dict[str, Any] = {}
+    for pair_id, memory in _pair_memory.items():
+        pair_stats[pair_id] = {
+            "win_rate_now": _get_pair_win_rate_now(pair_id),
+            "avg_slippage_pct": round(_get_pair_avg_slippage(pair_id, fallback=0.0), 4),
+            "on_cooldown": _is_pair_on_cooldown(pair_id),
+            "trade_count": int(memory.get("trade_count") or 0),
+            "fake_pump_count": int(memory.get("fake_pump_count") or 0),
+        }
+    return {
+        "period_hours": 6,
+        "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+        "hard_stop_active": bool(_daily_guard_state.get("hard_stopped")),
+        "api_fail_streak": _api_fail_streak,
+        "cp_healthy": _control_plane_healthy,
+        "mode": str(_gate_state.get("mode") or "CONSERVATIVE"),
+        "entry_state": str(_gate_state.get("entry_state") or "HEALTHY"),
+        "pair_stats": pair_stats,
+    }
+
+
+def _apply_ai_recommendation(recommendation: Dict[str, Any]) -> None:
+    if not isinstance(recommendation, dict):
+        return
+    for pair in recommendation.get("pairs_to_cooldown", []):
+        if isinstance(pair, str) and pair.strip():
+            _cooldown_pair(pair, reason="ai_batch_review", minutes=60)
+    mode = str(recommendation.get("mode_recommendation") or "no_change")
+    if mode == "CONSERVATIVE":
+        _set_conservative_mode("ai_batch_review")
+    elif mode == "NORMAL" and not bool(_daily_guard_state.get("hard_stopped")) and _api_fail_streak == 0 and _control_plane_healthy:
+        _set_normal_mode("ai_batch_review")
+    _append_runtime_event("ai_batch_review", recommendation)
+
+
+def _run_ai_batch_review() -> None:
+    summary = _build_performance_summary()
+    prompt = (
+        "Kamu adalah risk analyst untuk autonomous crypto trading bot.\n"
+        "Filosofi: survival first, compounding gradual.\n\n"
+        f"Data performa 6 jam terakhir:\n{json.dumps(summary, ensure_ascii=False, indent=2)}\n\n"
+        "Berikan rekomendasi JSON dengan keys: "
+        "\"pairs_to_cooldown\", \"mode_recommendation\", \"reasoning\"."
+    )
+    try:
+        text, provider = _call_ai_router(
+            task="batch_review",
+            system_prompt="Jawab JSON singkat saja.",
+            user_prompt=prompt,
+            model_hint=POST_MORTEM_MODEL,
+            timeout_sec=min(POST_MORTEM_TIMEOUT_SEC, 20.0),
+        )
+        if not text:
+            return
+        parsed = _parse_json_candidate(text)
+        if isinstance(parsed, dict) and parsed:
+            _apply_ai_recommendation(parsed)
+            print(f"[KIBOT][AI_REVIEW] provider={provider} applied={json.dumps(parsed, ensure_ascii=False)[:240]}", flush=True)
+    except Exception as error:
+        print(f"[KIBOT][AI_REVIEW][WARN] failed reason={error}", flush=True)
+
+
+def _ai_batch_review_loop() -> None:
+    while not _shutdown_event.is_set():
+        try:
+            _run_ai_batch_review()
+        except Exception as error:
+            print(f"[KIBOT][AI_REVIEW][ERROR] {error}", flush=True)
+        _shutdown_event.wait(AI_BATCH_REVIEW_INTERVAL_SEC)
 
 
 def _cooldown_pair(pair: str, *, reason: str, minutes: int, metadata: Dict[str, Any] | None = None) -> None:
@@ -1106,6 +1291,53 @@ def _estimate_exit_viability(expected_move_pct: float, slippage_pct: float) -> D
     }
 
 
+def _simulate_what_if(
+    *,
+    pair_id: str,
+    entry_price: float,
+    budget_idr: float,
+    spread_pct: float,
+    slippage_pct: float,
+    fee_pct: float = 0.003,
+    trailing_stop_pct: float = 0.05,
+    target_profit_pct: float = 0.018,
+) -> Dict[str, Any]:
+    historical_slippage = _get_pair_avg_slippage(pair_id, fallback=slippage_pct)
+    historical_win_rate = _get_pair_win_rate_now(pair_id)
+    effective_slippage = max(float(slippage_pct), float(historical_slippage))
+    round_trip_cost_pct = (max(0.0, spread_pct) / 2.0) + effective_slippage + (fee_pct * 2.0)
+    breakeven_move_pct = round_trip_cost_pct
+    expected_net_pct = target_profit_pct - round_trip_cost_pct
+    max_loss_pct = trailing_stop_pct + round_trip_cost_pct
+    max_loss_idr = budget_idr * max_loss_pct
+    reward_idr = budget_idr * expected_net_pct
+    risk_reward_ratio = (reward_idr / max_loss_idr) if max_loss_idr > 0 else 0.0
+    expected_value = (historical_win_rate * reward_idr) - ((1.0 - historical_win_rate) * max_loss_idr)
+    if expected_net_pct <= 0:
+        recommendation = "SKIP"
+    elif risk_reward_ratio < 1.0:
+        recommendation = "SKIP"
+    elif expected_value <= 0:
+        recommendation = "SKIP"
+    elif risk_reward_ratio < 1.5 or historical_win_rate < 0.45:
+        recommendation = "REDUCE_SIZE"
+    else:
+        recommendation = "ENTER"
+    return {
+        "pair_id": pair_id,
+        "entry_price": entry_price,
+        "budget_idr": budget_idr,
+        "expected_net_pct": round(expected_net_pct, 4),
+        "breakeven_move_pct": round(breakeven_move_pct, 4),
+        "max_loss_idr": round(max_loss_idr, 0),
+        "win_probability": round(historical_win_rate, 3),
+        "risk_reward_ratio": round(risk_reward_ratio, 2),
+        "recommendation": recommendation,
+        "historical_slippage_pct": round(historical_slippage, 4),
+        "effective_slippage_pct": round(effective_slippage, 4),
+    }
+
+
 def _upsert_trade_history(entry: Dict[str, Any]) -> None:
     headers = _headers()
     headers["Prefer"] = "return=minimal"
@@ -1146,6 +1378,7 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
     gross = float(msg.get("gross_pnl_idr") or 0.0)
     est_cost = float(msg.get("estimated_cost_idr") or 0.0)
     net = gross - est_cost
+    pair_id = str(msg.get("pair") or "unknown").lower().strip()
     try:
         _upsert_trade_history(
             {
@@ -1172,7 +1405,15 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
         )
         _append_runtime_event(
             "book_entry",
-            {"pair": msg.get("pair"), "net_pnl_idr": round(net, 4), "trace_id": msg.get("traceId")},
+            {"pair": pair_id, "net_pnl_idr": round(net, 4), "trace_id": msg.get("traceId")},
+        )
+        _update_pair_memory(
+            pair_id,
+            pnl_pct=float(msg.get("pnl_pct") or msg.get("pnlPct") or 0.0),
+            slippage_pct=float(msg.get("slippage_pct") or 0.0),
+            spread_pct=float(msg.get("spread_pct") or 0.0),
+            actual_latency_ms=float(msg.get("latency_ms") or 0.0),
+            fake_pump=bool(msg.get("fake_pump") or False),
         )
         _write_runtime_note()
     except Exception as error:
@@ -1181,12 +1422,19 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
             flush=True,
         )
     if POST_MORTEM_ENABLED and net < 0:
+        _update_pair_memory(
+            pair_id,
+            pnl_pct=float(msg.get("pnl_pct") or msg.get("pnlPct") or 0.0),
+            slippage_pct=float(msg.get("slippage_pct") or 0.0),
+            spread_pct=float(msg.get("spread_pct") or 0.0),
+            fake_pump=True,
+        )
         thread = threading.Thread(
             target=evaluate_foolish_trade,
             args=(
                 {
                     "trace_id": msg.get("traceId"),
-                    "pair": msg.get("pair"),
+                    "pair": pair_id,
                     "gross_pnl_idr": gross,
                     "estimated_cost_idr": est_cost,
                     "net_pnl_idr": net,
@@ -1411,6 +1659,29 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     if not pair:
         print(f"[KIBOT][WARN] missing pair in msgType={msg_type}", flush=True)
         return
+    if msg_type in SAFE_ENTRY_MSG_TYPES:
+        entry_price = float(msg.get("entryPrice") or msg.get("entry_price") or msg.get("price") or 0.0)
+        budget_idr = float(msg.get("budgetIdr") or msg.get("budget_idr") or msg.get("quoteBudgetIdr") or 0.0)
+        spread_pct = float(msg.get("spreadPct") or msg.get("spread_pct") or 0.0)
+        slippage_pct = float(msg.get("slippagePct") or msg.get("slippage_pct") or 0.0)
+        if entry_price > 0.0 and budget_idr > 0.0:
+            what_if = _simulate_what_if(
+                pair_id=pair,
+                entry_price=entry_price,
+                budget_idr=budget_idr,
+                spread_pct=spread_pct,
+                slippage_pct=slippage_pct,
+                trailing_stop_pct=float(msg.get("trailingStopPct") or 0.05),
+                target_profit_pct=float(msg.get("targetProfitPct") or 0.018),
+            )
+            _append_runtime_event("what_if", what_if)
+            print(
+                f"[KIBOT][WHATIF] pair={pair} ev={what_if['expected_net_pct']:.4f} rr={what_if['risk_reward_ratio']:.2f} rec={what_if['recommendation']}",
+                flush=True,
+            )
+            if what_if["recommendation"] == "SKIP":
+                print(f"[KIBOT][BLOCK] Blocking {msg_type} - what-if rejected", flush=True)
+                return
     pair_on_cooldown, cooldown_reason = _pair_cooldown_active(pair)
     if pair_on_cooldown and msg_type not in EXIT_MSG_TYPES:
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -2054,6 +2325,8 @@ def main() -> None:
     heartbeat_thread.start()
     health_gate_thread = threading.Thread(target=_health_gate_loop, name="kibot-health-gate-loop", daemon=True)
     health_gate_thread.start()
+    ai_review_thread = threading.Thread(target=_ai_batch_review_loop, name="kibot-ai-review-loop", daemon=True)
+    ai_review_thread.start()
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # Allow socket reuse for quick restarts
