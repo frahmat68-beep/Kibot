@@ -31,6 +31,8 @@ Dokumen ini menjelaskan state ringan yang dipakai `KiBot manager` supaya keputus
   - event terakhir seperti `ai_provider_success`, `ai_provider_failure`, `emergency_veto_sell`, `active_positions_snapshot`
 - `trinity_heartbeat_emit`
   - heartbeat UDP ringan dari `kibot-manager` supaya node lain tidak masuk safe mode karena peer `kibot` dianggap hilang
+- `lastLeadLagSignalAgeMs`
+  - age sinyal lead-lag terakhir yang diproses engine, buat audit freshness feed dan stale signal
 
 ## Tuning Live Yang Dipakai
 - `KiBot` tetap ringan sebagai Python daemon, bukan JVM tambahan.
