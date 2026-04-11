@@ -798,6 +798,7 @@ class MacEngineDaemon(
     @Volatile private var lastLeaseLockdownAttemptAt: Instant? = null
     private val daemonStartedAt: Instant = clock.now()
     private val lastTrinityHeartbeatByBotId = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    @Volatile private var lastLeadLagSignalAt: Instant? = null
     @Volatile private var latestPeerBotStates: Map<String, BotStateSnapshot?> = emptyMap()
     @Volatile private var lastKnownHealthyPeerBotStates: Map<String, BotStateSnapshot> = emptyMap()
     @Volatile private var lastTrinityHeartbeatSentAt: Instant? = null
@@ -5068,6 +5069,7 @@ class MacEngineDaemon(
 
     private suspend fun handleLeadLagPayload(payloadJson: String?, now: Instant): String? {
         if (!config.leadLagSignalEnabled) return null  // Accept signals on any exchange
+        lastLeadLagSignalAt = now
         val payload = payloadJson
             ?.takeIf { it.contains("lead_lag_breakout") || it.contains("\"msgType\"") }
             ?.let { raw -> runCatching { json.decodeFromString<LeadLagCalloutPayload>(raw) }.getOrNull() }
