@@ -1,6 +1,8 @@
 package com.kibot.macengine.runtime
 
 import com.kibot.aisupport.GeminiSupportCoordinator
+import com.kibot.aisupport.HoldingResearchAction
+import com.kibot.aisupport.HoldingResearchRequest
 import com.kibot.aisupport.MultiAIClient
 import com.kibot.core.CapitalDeploymentEngine
 import com.kibot.core.ChartAnalyzer
@@ -61,7 +63,9 @@ import com.kibot.shared.models.EngineHeartbeatSnapshot
 import com.kibot.shared.models.EngineLeaseSnapshot
 import com.kibot.shared.models.HealthStatus
 import com.kibot.shared.models.LeaseState
+import com.kibot.shared.models.LeaseTerm
 import com.kibot.shared.models.LogLevel
+import com.kibot.shared.models.MarketRegime
 import com.kibot.shared.models.PairId
 import com.kibot.shared.models.PortfolioSnapshot
 import com.kibot.shared.models.PositionSnapshot
@@ -69,15 +73,22 @@ import com.kibot.shared.models.ReconciliationReport
 import com.kibot.shared.models.ReconciliationState
 import com.kibot.shared.models.RuntimeIntelligenceUpdate
 import com.kibot.shared.models.SyncHealth
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.jsonArray
@@ -87,6 +98,7 @@ import kotlinx.datetime.DatePeriod
 import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
+import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.plus
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.minus
@@ -113,6 +125,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
@@ -178,13 +191,21 @@ private fun exchangePairSelectionPolicy(exchangeKind: ExchangeKind): PairSelecti
 
 private fun exchangeRiskConfig(exchangeKind: ExchangeKind): RiskConfig = when (exchangeKind) {
     ExchangeKind.INDODAX -> RiskConfig(
-        hardDailyLossLimitPct = 0.03,
+        hardDailyLossLimitPct = 0.04,
         hardRealizedLossLimitIdr = 15_000.0,
-        warningDrawdownPct = 0.02,
-        reduceSizeDrawdownPct = 0.04,
-        defensiveDrawdownPct = 0.06,
-        restrictedEntriesDrawdownPct = 0.08,
-        stopNewEntriesDrawdownPct = 0.10,
+        dailyProfitLockPct = 0.025,
+        warningDrawdownPct = 0.015,
+        reduceSizeDrawdownPct = 0.025,
+        defensiveDrawdownPct = 0.040,
+        restrictedEntriesDrawdownPct = 0.055,
+        stopNewEntriesDrawdownPct = 0.070,
+        maxConcurrentPositions = 10,
+        minimumCashReservePct = 0.03,
+        defensiveCashReservePct = 0.06,
+        attackCashReservePct = 0.02,
+        targetMinPositionBudgetIdr = 20_000.0,
+        maxPerPositionBudgetPct = 0.70,
+        dominantAllInMaxAllocationPct = 0.55,
     )
     ExchangeKind.BINANCE_SPOT -> RiskConfig(
         targetMinPositionBudgetIdr = 8.0,
@@ -198,7 +219,8 @@ private fun exchangeRiskConfig(exchangeKind: ExchangeKind): RiskConfig = when (e
 private fun exchangeExecutionConfig(exchangeKind: ExchangeKind): StrategyExecutionConfig = when (exchangeKind) {
     ExchangeKind.INDODAX -> StrategyExecutionConfig(
         referenceQuoteAsset = "idr",
-        minOrderNotionalIdr = 10_000.0,
+        minOrderNotionalIdr = 20_000.0,
+        maxExecutableEntriesPerCycle = 10,
     )
     ExchangeKind.BINANCE_SPOT -> StrategyExecutionConfig(
         referenceQuoteAsset = "usdt",
@@ -220,9 +242,12 @@ private fun exchangeExecutionConfig(exchangeKind: ExchangeKind): StrategyExecuti
 
 private fun exchangeTradeAutomationConfig(exchangeKind: ExchangeKind): TradeAutomationConfig = when (exchangeKind) {
     ExchangeKind.INDODAX -> TradeAutomationConfig(
-        minTrackedPositionValueIdr = 9_000.0,
-        partialTakeProfitMinRemainingNotionalIdr = 10_000.0,
-        partialTakeProfitMinPositionNotionalIdr = 10_000.0,
+        minTrackedPositionValueIdr = 12_000.0,
+        partialTakeProfitMinPnlPct = 1.15,
+        partialTakeProfitSellRatio = 0.50,
+        partialTakeProfitMinRemainingNotionalIdr = 20_000.0,
+        partialTakeProfitMinPositionNotionalIdr = 20_000.0,
+        partialTakeProfitMinNetSurplusIdr = 140.0,
     )
     ExchangeKind.BINANCE_SPOT -> TradeAutomationConfig(
         minTrackedPositionValueIdr = 7.5,
@@ -242,6 +267,7 @@ class MacEngineDaemon(
     private val controlPlane: ControlPlaneGateway,
     private val exchange: ExchangeGateway,
     private val config: MacRuntimeConfig,
+    private val clock: Clock = Clock.System,
     private val leaseCoordinator: LeaseCoordinator = LeaseCoordinator(
         LeaseProtocolConfig(
             heartbeatIntervalSeconds = 10,
@@ -278,6 +304,29 @@ class MacEngineDaemon(
     private val positionEntryCapitalByPair = java.util.concurrent.ConcurrentHashMap<String, Double>()  // Track capital deployed
     // [TELEGRAM NOTIFIER] Send profit alerts to Telegram (safe-fail if not configured)
     private val telegramNotifier = TelegramNotifier.fromEnv()
+    private val telegramCommandPoller = config.telegramBotToken?.takeIf { it.isNotBlank() }
+        ?.let { token ->
+            config.telegramChatId?.takeIf { it.isNotBlank() }?.let { chatId ->
+                TelegramCommandPoller(
+                    botToken = token,
+                    allowedChatId = chatId,
+                )
+            }
+        }
+    private val telegramCommandScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var telegramCommandJob: kotlinx.coroutines.Job? = null
+    private val holdingsResearchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val holdingsResearchFirstSeenAtByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    private val holdingsResearchLastAttemptAtByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    private val holdingsResearchInFlightByPair = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
+    private val holdingsResearchEmergencyDumpSentAtByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    private val holdingsResearchInterval = 30.minutes
+    private val holdingsResearchEmergencyCooldown = 10.minutes
+    private val autonomousAiReviewScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var autonomousAiReviewJob: kotlinx.coroutines.Job? = null
+    @Volatile private var lastAutonomousAiReviewAt: Instant? = null
+    private val autonomousAiReviewInterval = config.autonomousAiReviewIntervalMillis.milliseconds
+    @Volatile private var latestManagedPositionsForAi: List<com.kibot.core.ManagedPosition> = emptyList()
     
     private val onlyRuntimeLogPrefixes = setOf("EXECUTION_BUY", "EXECUTION_SELL", "WHY_NOT_BUY", "STALL_RECOVERY")
     private data class CapitalAwareness(
@@ -349,6 +398,13 @@ class MacEngineDaemon(
         val receivedAt: Instant,
         val forceRotation: Boolean,
         val expiresAt: Instant,
+    )
+
+    private data class HoldingResearchTarget(
+        val pairId: String,
+        val assetSymbol: String,
+        val pnlPct: Double,
+        val pnlIdr: Double?,
     )
 
     private data class LocalTrailingSnapshot(
@@ -452,6 +508,7 @@ class MacEngineDaemon(
         val deviceId: String,
         val observedAtEpochMs: Long,
         val orders: List<com.kibot.shared.models.OrderSnapshot>,
+        val recentFills: List<com.kibot.shared.models.FillSnapshot> = emptyList(),
         val managedPositions: List<LocalManagedPositionState>,
     )
 
@@ -618,9 +675,10 @@ class MacEngineDaemon(
 
     private val logger = LoggerFactory.getLogger(javaClass)
     private val json = Json { ignoreUnknownKeys = true }
-    private val nonCriticalControlPlaneFlushIntervalMs = 60.minutes.inWholeMilliseconds
+    private val nonCriticalControlPlaneFlushIntervalMs = 10.seconds.inWholeMilliseconds
     private var nonCriticalControlPlaneBuffer = loadNonCriticalControlPlaneBuffer()
     private val adaptiveAiPolicyLoader = AdaptiveAiPolicyLoader(config.adaptiveAiPolicyPath)
+    private val localLearningMemoryStore = LocalLearningMemoryStore(config.localLearningMemoryPath)
     private val aiProviderStatusLoader = AiProviderStatusLoader()
     private val dailyTargetPursuitBrain = DailyTargetPursuitBrain()
     private var registered = false
@@ -663,6 +721,7 @@ class MacEngineDaemon(
     private var recentFillsFetchedAt: Instant? = null
     private var cachedRecentFillsKey: String? = null
     private var cachedAdaptiveAiPolicy: AdaptiveAiPolicy? = null
+    @Volatile private var cachedLocalLearningSnapshot: LocalLearningSnapshot = LocalLearningSnapshot()
     private var adaptiveAiPolicyFetchedAt: Instant? = null
     private var targetEnforcementMemory = loadTargetEnforcementMemory()
     private var monthlyPnlAnchor = loadMonthlyPnlAnchor()
@@ -694,6 +753,7 @@ class MacEngineDaemon(
     private val localAutonomyPeakBidByPair = java.util.concurrent.ConcurrentHashMap<String, Double>()
     private val localAutonomyTrailingFloorByPair = java.util.concurrent.ConcurrentHashMap<String, LocalTrailingSnapshot>()
     private val localAutonomyTrailingFloorLogByPair = java.util.concurrent.ConcurrentHashMap<String, Double>()
+    private val perSymbolExecutionLeaseUntilByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
     private val historicalPeakCacheByPair = java.util.concurrent.ConcurrentHashMap<String, HistoricalPeakCacheEntry>()
     private val candleHistoryGuardCacheByPair = java.util.concurrent.ConcurrentHashMap<String, CandleHistoryGuardCacheEntry>()
     private val multiTimeframeQuoteCacheByPair = java.util.concurrent.ConcurrentHashMap<String, MultiTimeframeQuoteCacheEntry>()
@@ -718,6 +778,11 @@ class MacEngineDaemon(
     private val dynamicVipUntilByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
     @Volatile private var lastWhyNotBuyAt: Instant? = null
     @Volatile private var lastWhyNotBuySignature: String? = null
+	    @Volatile private var lastRejectedReasonLabel: String? = null
+	    @Volatile private var lastRejectedReasonAt: Instant? = null
+	    @Volatile private var forcedSafeModeReason: String? = null
+	    @Volatile private var forcedSafeModeAt: Instant? = null
+    @Volatile private var lastPipelineMarkerLabel: String = ""
     private val sinBinUntilByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
     private val crashGuardTriggerTimeline = ArrayDeque<Instant>()
     @Volatile private var globalCooldownUntil: Instant? = null
@@ -729,8 +794,10 @@ class MacEngineDaemon(
     @Volatile private var holdingsFocusToggle = false
     @Volatile private var lastActivePositionsBroadcastAt: Instant? = null
     @Volatile private var lastLeaseLockdownAttemptAt: Instant? = null
-    private val daemonStartedAt: Instant = Clock.System.now()
+    private val daemonStartedAt: Instant = clock.now()
     private val lastTrinityHeartbeatByBotId = java.util.concurrent.ConcurrentHashMap<String, Instant>()
+    @Volatile private var latestPeerBotStates: Map<String, BotStateSnapshot?> = emptyMap()
+    @Volatile private var lastKnownHealthyPeerBotStates: Map<String, BotStateSnapshot> = emptyMap()
     @Volatile private var lastTrinityHeartbeatSentAt: Instant? = null
     @Volatile private var lastDeadBotCheckAt: Instant? = null
     private val udpSequenceCounter = AtomicInteger(1)
@@ -743,7 +810,12 @@ class MacEngineDaemon(
     @Volatile private var lastToxicFlowStateSignature: String? = null
     @Volatile private var localRecoveryFallbackAnnounced = false
     @Volatile private var lastOperatorAlertStateKey: String? = null
+    @Volatile private var pendingFatalAlertSince: Instant? = null
+    @Volatile private var pendingFatalAlertKey: String? = null
+    @Volatile private var fatalAlertSentForCurrentIncident: Boolean = false
     private val toxicFlowStateByPair = loadToxicFlowState().entries.associateBy { it.pairId.lowercase() }.toMutableMap()
+    private data class RecentExitSignal(val at: Instant, val reason: String)
+    private val recentExitSignalByPair = java.util.concurrent.ConcurrentHashMap<String, RecentExitSignal>()
     private val hiveExtraUdpPeers: List<Pair<String, Int>> = run {
         val raw = System.getenv("KIBOT_HIVE_UDP_PEERS")
             ?.split(",")
@@ -796,7 +868,7 @@ class MacEngineDaemon(
         val quote = pairId.pairAssets().quoteAsset.lowercase()
         val key = pairId.value.lowercase()
         if (key in hiddenStablePairs) return false
-        if (dynamicVipUntilByPair[key]?.let { Clock.System.now() < it } == true) return true
+        if (dynamicVipUntilByPair[key]?.let { clock.now() < it } == true) return true
         return key in aListTunnelPairs || quote in setOf("idr", "usdt", "usdc", "btc", "eth", "bnb")
     }
 
@@ -807,6 +879,15 @@ class MacEngineDaemon(
             val request = HttpRequest.newBuilder()
                 .uri(URI.create(indodaxSummariesEndpoint))
                 .timeout(Duration.ofSeconds(3))
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("Accept", "application/json,text/plain,*/*")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .header("Sec-Fetch-Dest", "document")
+                .header("Sec-Fetch-Mode", "navigate")
+                .header("Sec-Fetch-Site", "none")
+                .header("Cache-Control", "max-age=0")
+                .header("Origin", "https://indodax.com")
+                .header("Referer", "https://indodax.com/")
                 .GET()
                 .build()
             val response = indodaxHistoryHttpClient.send(request, HttpResponse.BodyHandlers.ofString())
@@ -931,22 +1012,27 @@ class MacEngineDaemon(
         val lastAttempt = lastLeaseLockdownAttemptAt
         if (lastAttempt != null && (now - lastAttempt).inWholeMilliseconds < leaseLockdownRetryCooldownMs) return
         lastLeaseLockdownAttemptAt = now
-        runCatching {
-            controlPlane.acquireLease(
-                botId = config.controlPlane.botId,
-                deviceId = config.device.deviceId,
-                ttlSeconds = config.leaseTtlSeconds,
-            )
-        }.onSuccess { lease ->
-            lastObservedLeaseTerm = lease.term
-            repository.noteStatus("Lease lockdown active: reclaimed execution lease term ${lease.term.value}.")
-            appendAuditLog(
-                level = LogLevel.WARN,
-                category = "FAILOVER",
-                message = "Lease lockdown reclaimed term ${lease.term.value} for ${config.device.deviceId.value}.",
-            )
-        }.onFailure { retryError ->
-            repository.noteStatus("Lease lockdown retry gagal: ${retryError.message ?: "unknown"}")
+        val reclaimed = withTimeoutOrNull(2_500L) {
+            runCatching {
+                controlPlane.acquireLease(
+                    botId = config.controlPlane.botId,
+                    deviceId = config.device.deviceId,
+                    ttlSeconds = config.leaseTtlSeconds,
+                )
+            }.onSuccess { lease ->
+                lastObservedLeaseTerm = lease.term
+                repository.noteStatus("Lease lockdown active: reclaimed execution lease term ${lease.term.value}.")
+                appendAuditLog(
+                    level = LogLevel.WARN,
+                    category = "FAILOVER",
+                    message = "Lease lockdown reclaimed term ${lease.term.value} for ${config.device.deviceId.value}.",
+                )
+            }.onFailure { retryError ->
+                repository.noteStatus("Lease lockdown retry gagal: ${retryError.message ?: "unknown"}")
+            }.getOrNull()
+        }
+        if (reclaimed == null && !isControlPlaneReachable(now)) {
+            repository.noteStatus("Lease lockdown retry dilewati: control-plane timeout, local mode diprioritaskan.")
         }
     }
 
@@ -963,13 +1049,42 @@ class MacEngineDaemon(
         ) {
             return existingLease
         }
-        val currentBotState = runCatching { controlPlane.fetchBotState(config.controlPlane.botId) }.getOrNull()
+        val currentBotState = readControlPlane<BotStateSnapshot?>(null) {
+            controlPlane.fetchBotState(config.controlPlane.botId)
+        }
         if (currentBotState?.effectiveState == BotEffectiveState.SAFE_MODE) return existingLease
         if (existingLease.isHeldBy(config.device.deviceId, now) && existingLease?.conflictDetected != true) {
             return existingLease
         }
         attemptLeaseLockdownRecovery(now)
-        return runCatching { controlPlane.fetchLease(config.controlPlane.botId) }.getOrNull() ?: existingLease
+        return readControlPlane(existingLease) { controlPlane.fetchLease(config.controlPlane.botId) }
+    }
+
+    private fun buildMomentumFallbackLease(
+        now: Instant,
+        botState: BotStateSnapshot,
+        source: String,
+    ): EngineLeaseSnapshot {
+        val fallbackTerm = lastObservedLeaseTerm?.value
+            ?: botState.currentTerm.value
+            .coerceAtLeast(1L)
+        val lease = EngineLeaseSnapshot(
+            botId = config.controlPlane.botId,
+            currentHolder = config.device.deviceId,
+            term = LeaseTerm(fallbackTerm),
+            state = LeaseState.HELD,
+            expiresAt = now.plus(config.leaseTtlSeconds.seconds),
+            lastHeartbeatAt = now,
+            conflictDetected = false,
+        )
+        logger.warn(
+            "LIFECYCLE_BYPASS: synthetic {} lease activated for botId={} deviceId={} term={}",
+            source,
+            lease.botId.value,
+            lease.currentHolder?.value ?: "-",
+            lease.term.value,
+        )
+        return lease
     }
 
     private suspend fun <T> readControlPlane(
@@ -1008,15 +1123,15 @@ class MacEngineDaemon(
         return outcome
     }
 
-    private fun nonCriticalControlPlaneBufferPath(): java.nio.file.Path {
-        val basePath = if (config.localPositionStateEnabled) {
-            config.localPositionStatePath
-        } else {
-            config.targetEnforcementMemoryPath
-        }
-        val parent = basePath.parent ?: java.nio.file.Paths.get(".")
-        return parent.resolve("control-plane-noncritical-buffer.json")
-    }
+	    private fun nonCriticalControlPlaneBufferPath(): java.nio.file.Path {
+	        val basePath = if (config.localPositionStateEnabled) {
+	            config.localPositionStatePath
+	        } else {
+	            config.targetEnforcementMemoryPath
+	        }
+	        val siblingName = "${basePath.fileName}.control-plane-noncritical-buffer.json"
+	        return basePath.resolveSibling(siblingName)
+	    }
 
     private fun loadNonCriticalControlPlaneBuffer(): NonCriticalControlPlaneBufferSnapshot {
         val path = nonCriticalControlPlaneBufferPath()
@@ -1053,7 +1168,7 @@ class MacEngineDaemon(
             botId = config.controlPlane.botId.value,
             deviceId = config.device.deviceId.value,
             observedAtEpochMs = now.toEpochMilliseconds(),
-            lastFlushEpochMs = existing.lastFlushEpochMs.takeIf { it > 0L } ?: now.toEpochMilliseconds(),
+            lastFlushEpochMs = existing.lastFlushEpochMs,
             pendingHeartbeat = snapshot,
         )
         persistNonCriticalControlPlaneBuffer()
@@ -1070,7 +1185,7 @@ class MacEngineDaemon(
             botId = config.controlPlane.botId.value,
             deviceId = config.device.deviceId.value,
             observedAtEpochMs = now.toEpochMilliseconds(),
-            lastFlushEpochMs = existing.lastFlushEpochMs.takeIf { it > 0L } ?: now.toEpochMilliseconds(),
+            lastFlushEpochMs = existing.lastFlushEpochMs,
             pendingDailyRisk = BufferedDailyRiskWrite(
                 botId = botId.value,
                 date = date.toString(),
@@ -1091,7 +1206,7 @@ class MacEngineDaemon(
             botId = config.controlPlane.botId.value,
             deviceId = config.device.deviceId.value,
             observedAtEpochMs = now.toEpochMilliseconds(),
-            lastFlushEpochMs = existing.lastFlushEpochMs.takeIf { it > 0L } ?: now.toEpochMilliseconds(),
+            lastFlushEpochMs = existing.lastFlushEpochMs,
             pendingFastTelemetry = BufferedFastTelemetryWrite(
                 totalBalanceIdr = totalBalanceIdr,
                 currentPingMs = currentPingMs,
@@ -1102,15 +1217,18 @@ class MacEngineDaemon(
     }
 
     suspend fun flushNonCriticalControlPlaneBufferNow() {
-        flushNonCriticalControlPlaneBuffer(now = Clock.System.now(), force = true)
+        flushNonCriticalControlPlaneBuffer(now = clock.now(), force = true)
     }
 
     private suspend fun flushNonCriticalControlPlaneBuffer(now: Instant, force: Boolean = false) {
         val buffer = nonCriticalControlPlaneBuffer
         val hasPending = buffer.pendingHeartbeat != null || buffer.pendingDailyRisk != null || buffer.pendingFastTelemetry != null
         if (!hasPending) return
+        val hasPendingHeartbeat = buffer.pendingHeartbeat != null
         val lastFlushEpochMs = buffer.lastFlushEpochMs
-        if (!force && lastFlushEpochMs > 0L && now.toEpochMilliseconds() - lastFlushEpochMs < nonCriticalControlPlaneFlushIntervalMs) return
+        val nowEpochMs = now.toEpochMilliseconds()
+        val sinceLastFlushMs = nowEpochMs - lastFlushEpochMs
+        if (!force && !hasPendingHeartbeat && lastFlushEpochMs > 0L && sinceLastFlushMs in 0 until nonCriticalControlPlaneFlushIntervalMs) return
 
         var flushedHeartbeat = false
         var flushedDailyRisk = false
@@ -1141,8 +1259,8 @@ class MacEngineDaemon(
         }
 
         nonCriticalControlPlaneBuffer = buffer.copy(
-            observedAtEpochMs = now.toEpochMilliseconds(),
-            lastFlushEpochMs = now.toEpochMilliseconds(),
+            observedAtEpochMs = nowEpochMs,
+            lastFlushEpochMs = nowEpochMs,
             pendingHeartbeat = if (flushedHeartbeat) null else buffer.pendingHeartbeat,
             pendingDailyRisk = if (flushedDailyRisk) null else buffer.pendingDailyRisk,
             pendingFastTelemetry = if (flushedFastTelemetry) null else buffer.pendingFastTelemetry,
@@ -1504,8 +1622,8 @@ class MacEngineDaemon(
                 0.0,
             )
             val quoteBudget = minOf(
-                cycle.deploymentPlan.suggestedPerPositionBudgetIdr.coerceAtLeast(50_000.0),
-                cycle.portfolio.totalEquityIdr.toDoubleOrZero().coerceAtLeast(50_000.0) * 0.85,
+                cycle.deploymentPlan.suggestedPerPositionBudgetIdr.coerceAtLeast(minimumLiveNotionalForExchange()),
+                cycle.portfolio.totalEquityIdr.toDoubleOrZero().coerceAtLeast(minimumLiveNotionalForExchange()) * 0.85,
             )
             val impact = runCatching {
                 exchange.estimateMarketBuyImpact(
@@ -1536,7 +1654,7 @@ class MacEngineDaemon(
             val allowed = totalEntryCostPct <= expectedMomentumPct
             if (!allowed) {
                 appendThrottledAuditLog(
-                    now = Clock.System.now(),
+                    now = clock.now(),
                     level = LogLevel.INFO,
                     category = "HYPER_GUARDRAIL",
                     message = "Guardrail INDODAX blokir ${target.pairId.value}: cost ${formatDecimal(totalEntryCostPct, 2)}% > momentum ${formatDecimal(expectedMomentumPct, 2)}%.",
@@ -1752,10 +1870,19 @@ class MacEngineDaemon(
                     ),
                 )
             }
-            val dynamicTrailingStopPct = dynamicTrailingStopPct(gainPct, currentBid)
+            val dynamicTrailingStopPct = dynamicTrailingStopPct(gainPct, currentBid, position.pairId)
             val armed = peak >= (entryPx * (1.0 + (hyperConfig.trailingArmMinGainPct / 100.0)))
             if (!armed) continue
-            val shouldExitByTrail = currentBid <= (peak * (1.0 - (dynamicTrailingStopPct / 100.0))) && noSellOrder
+            
+            // Use profit-locked floor instead of simple trailing floor
+            val profitLockedFloor = calculateProfitLockedFloor(entryPx, peak, gainPct, dynamicTrailingStopPct)
+            val shouldExitByTrail = currentBid <= profitLockedFloor && noSellOrder
+            
+            // Log profit lock status for debugging
+            if (gainPct >= 1.5) {
+                logger.info("[PROFIT_LOCK] pair=${position.pairId.value} gain=${formatDecimal(gainPct, 2)}% peak=$peak floor=$profitLockedFloor currentBid=$currentBid armed=$armed")
+            }
+            
             if (!shouldExitByTrail) continue
             val signal = com.kibot.shared.models.StrategySignal(
                 pairId = position.pairId,
@@ -1816,16 +1943,29 @@ class MacEngineDaemon(
         return chosenPeak to retroApplied
     }
 
-    private fun fetchIndodaxHistoricalPeakSince(
-        pairId: com.kibot.shared.models.PairId,
-        sinceEpochMs: Long?,
-    ): Double? {
-        if (config.exchangeKind != ExchangeKind.INDODAX) return null
+    /**
+     * Reset peak tracking for a pair when a NEW position is opened.
+     * This ensures trailing stop uses the new entry price as baseline, not old peaks.
+     */
+    private fun resetPeakTrackingForNewEntry(pairId: com.kibot.shared.models.PairId, entryPrice: Double) {
         val pairKey = pairId.value.lowercase()
-        val nowMs = Clock.System.now().toEpochMilliseconds()
-        val cached = historicalPeakCacheByPair[pairKey]
-        if (cached != null && (nowMs - cached.fetchedAtEpochMs) <= 60_000L) {
-            return cached.peakPrice
+        localAutonomyPeakBidByPair[pairKey] = entryPrice
+        localAutonomyTrailingFloorLogByPair.remove(pairKey)
+        leadLagTrailingPeakBidByPair.remove(pairKey)
+        logger.info("[PEAK_RESET] pair=$pairKey newEntry=$entryPrice - trailing stop baseline reset")
+    }
+
+	    private fun fetchIndodaxHistoricalPeakSince(
+	        pairId: com.kibot.shared.models.PairId,
+	        sinceEpochMs: Long?,
+	    ): Double? {
+	        if (config.exchangeKind != ExchangeKind.INDODAX) return null
+	        if (!config.indodaxRemoteHistoryEnabled) return null
+	        val pairKey = pairId.value.lowercase()
+	        val nowMs = clock.now().toEpochMilliseconds()
+	        val cached = historicalPeakCacheByPair[pairKey]
+	        if (cached != null && (nowMs - cached.fetchedAtEpochMs) <= 60_000L) {
+	            return cached.peakPrice
         }
         val fromSec = ((sinceEpochMs ?: (nowMs - 6.hours.inWholeMilliseconds)).coerceAtLeast(0L) / 1000L).coerceAtLeast(1L)
         val toSec = (nowMs / 1000L).coerceAtLeast(fromSec + 60L)
@@ -1858,15 +1998,16 @@ class MacEngineDaemon(
         }.getOrNull()
     }
 
-    private fun fetchIndodaxCandleHistoryGuardStats(
-        pairId: com.kibot.shared.models.PairId,
-    ): CandleHistoryGuardCacheEntry? {
-        if (config.exchangeKind != ExchangeKind.INDODAX) return null
-        val pairKey = pairId.value.lowercase()
-        val nowMs = Clock.System.now().toEpochMilliseconds()
-        val cached = candleHistoryGuardCacheByPair[pairKey]
-        if (cached != null && (nowMs - cached.fetchedAtEpochMs) <= 60_000L) {
-            return cached
+	    private fun fetchIndodaxCandleHistoryGuardStats(
+	        pairId: com.kibot.shared.models.PairId,
+	    ): CandleHistoryGuardCacheEntry? {
+	        if (config.exchangeKind != ExchangeKind.INDODAX) return null
+	        if (!config.indodaxRemoteHistoryEnabled) return null
+	        val pairKey = pairId.value.lowercase()
+	        val nowMs = clock.now().toEpochMilliseconds()
+	        val cached = candleHistoryGuardCacheByPair[pairKey]
+	        if (cached != null && (nowMs - cached.fetchedAtEpochMs) <= 60_000L) {
+	            return cached
         }
         val toSec = (nowMs / 1000L).coerceAtLeast(1L)
         val fromSec = (toSec - chartGuardLookbackSeconds).coerceAtLeast(1L)
@@ -2373,12 +2514,12 @@ class MacEngineDaemon(
                 sinceEpochMs = recentBuySinceMs,
             )
             val gainPct = ((peak - entryPx) / entryPx) * 100.0
-            val dynamicTrailingStopPct = dynamicTrailingStopPct(gainPct, currentBid)
+            val dynamicTrailingStopPct = dynamicTrailingStopPct(gainPct, currentBid, position.pairId)
             val armed = peak >= (entryPx * (1.0 + (hyperConfig.trailingArmMinGainPct / 100.0)))
-            val floor = peak * (1.0 - (dynamicTrailingStopPct / 100.0))
+            val floor = calculateProfitLockedFloor(entryPx, peak, gainPct, dynamicTrailingStopPct)
             val notional = position.currentValueIdr.toDoubleOrZero().takeIf { it > 0.0 }
                 ?: (currentBid * position.quantity.toDoubleOrZero().coerceAtLeast(0.0))
-            if (notional < dustUiHideMinValueIdr) return@mapNotNull null
+            if (notional < dustHoldingsIgnoreMinValueIdr) return@mapNotNull null
             val hasActiveSellOrder = activeByPair[position.pairId].orEmpty().any { it.side == com.kibot.shared.models.OrderSide.SELL }
             val snapshot = LocalTrailingSnapshot(
                 pair = position.pairId,
@@ -2444,11 +2585,11 @@ class MacEngineDaemon(
                     sinceEpochMs = recentBuySinceMs,
                 )
                 val gainPct = ((peak - entryPx) / entryPx.coerceAtLeast(0.0000001)) * 100.0
-                val dynamicTrailingStopPct = dynamicTrailingStopPct(gainPct, currentBid)
+                val dynamicTrailingStopPct = dynamicTrailingStopPct(gainPct, currentBid, pairId)
                 val armed = peak >= (entryPx * (1.0 + (hyperConfig.trailingArmMinGainPct / 100.0)))
-                val floor = peak * (1.0 - (dynamicTrailingStopPct / 100.0))
+                val floor = calculateProfitLockedFloor(entryPx, peak, gainPct, dynamicTrailingStopPct)
                 val notional = currentBid * quantity
-                if (notional < dustUiHideMinValueIdr) return@mapNotNull null
+                if (notional < dustHoldingsIgnoreMinValueIdr) return@mapNotNull null
                 val hasActiveSellOrder = activeByPair[pairId].orEmpty().any { it.side == com.kibot.shared.models.OrderSide.SELL }
                 val snapshot = LocalTrailingSnapshot(
                     pair = pairId,
@@ -2570,6 +2711,10 @@ class MacEngineDaemon(
             formatDecimal(snapshot.peakPrice, 8),
             formatDecimal(snapshot.dynamicTrailingStopPct, 2),
         )
+        recentExitSignalByPair[snapshot.pair.value.lowercase()] = RecentExitSignal(
+            at = clock.now(),
+            reason = sellReason,
+        )
         return com.kibot.core.ExitDecision(
             position = position ?: com.kibot.core.ManagedPosition(
                 pairId = snapshot.pair,
@@ -2584,8 +2729,8 @@ class MacEngineDaemon(
                     0.0
                 },
                 breakEvenPrice = DecimalValue.fromDouble(snapshot.entryPrice),
-                openedAt = Clock.System.now(),
-                updatedAt = Clock.System.now(),
+                openedAt = clock.now(),
+                updatedAt = clock.now(),
                 setupType = com.kibot.shared.models.SetupType.SWING_TREND_CONTINUATION,
                 horizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
                 pairTier = com.kibot.shared.models.PairTier.TIER_B,
@@ -2622,7 +2767,8 @@ class MacEngineDaemon(
         if (executionPlan.orderType != com.kibot.shared.models.OrderType.MARKET) return executionPlan
         val quote = marketQuotes.firstOrNull { it.pairId == executionPlan.signal.pairId } ?: return executionPlan
         val spreadPct = quote.spreadPct.coerceAtLeast(0.0)
-        if (spreadPct <= 1.5) return executionPlan
+        val spreadCapPct = if (executionPlan.signal.marketRegime == MarketRegime.HIGH_VOLATILITY_MOMENTUM) 1.0 else 1.5
+        if (spreadPct <= spreadCapPct) return executionPlan
         val mid = quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 } ?: return null
         return executionPlan.copy(
             orderType = com.kibot.shared.models.OrderType.LIMIT,
@@ -2632,8 +2778,40 @@ class MacEngineDaemon(
     }
 
     private fun minimumLiveNotionalForExchange(): Double = when (config.exchangeKind) {
-        ExchangeKind.INDODAX -> 20_000.0
+        ExchangeKind.INDODAX -> exchangeExecutionConfig(config.exchangeKind).minOrderNotionalIdr.coerceAtLeast(20_000.0)
         ExchangeKind.BINANCE_SPOT -> 7.5
+    }
+
+    private fun applyNewsAgileEntryScaling(
+        executionPlan: com.kibot.shared.models.ExecutionPlan,
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    ): com.kibot.shared.models.ExecutionPlan {
+        if (config.exchangeKind != ExchangeKind.INDODAX) return executionPlan
+        if (executionPlan.side != com.kibot.shared.models.OrderSide.BUY) return executionPlan
+        if (executionPlan.signal.marketRegime != MarketRegime.HIGH_VOLATILITY_MOMENTUM) return executionPlan
+        val freeIdr = resolveAllocatableIdrFromBalances(balances)
+        if (freeIdr <= 0.0) return executionPlan
+        val minimumNotional = minimumLiveNotionalForExchange()
+        val capBudget = (freeIdr * 0.50).coerceAtLeast(minimumNotional)
+        val currentBudget = executionPlan.quoteBudget?.toDoubleOrZero()
+            ?: executionPlan.quantity.toDoubleOrZero() * (
+                executionPlan.limitPrice?.toDoubleOrZero()?.takeIf { it > 0.0 }
+                    ?: executionPlan.signal.entryPrice?.toDoubleOrZero()?.takeIf { it > 0.0 }
+                    ?: marketQuotes.firstOrNull { it.pairId == executionPlan.signal.pairId }?.bestAsk?.toDoubleOrZero()
+                    ?: 0.0
+                )
+        if (currentBudget <= 0.0 || currentBudget <= capBudget) return executionPlan
+        val refPrice = executionPlan.limitPrice?.toDoubleOrZero()?.takeIf { it > 0.0 }
+            ?: executionPlan.signal.entryPrice?.toDoubleOrZero()?.takeIf { it > 0.0 }
+            ?: marketQuotes.firstOrNull { it.pairId == executionPlan.signal.pairId }?.bestAsk?.toDoubleOrZero()?.takeIf { it > 0.0 }
+            ?: return executionPlan
+        val scaledBudget = capBudget.coerceAtLeast(minimumNotional)
+        val scaledQty = (scaledBudget / refPrice).coerceAtLeast(0.00000001)
+        return executionPlan.copy(
+            quantity = DecimalValue.fromDouble(scaledQty),
+            quoteBudget = DecimalValue.fromDouble(scaledBudget),
+        )
     }
 
     private fun entryBlockedByBlueChipVolume(
@@ -2689,7 +2867,7 @@ class MacEngineDaemon(
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
     ): List<com.kibot.shared.models.ExecutionPlan> {
         if (executionPlans.size <= 1) return executionPlans
-        val freeIdr = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
+        val freeIdr = resolveIdrFreeBalance(balances)
         val totalEquityIdr = balances.sumOf { it.totalValueInIdr?.toDoubleOrZero() ?: 0.0 }.takeIf { it > 0.0 } ?: freeIdr
         val lowCapital = totalEquityIdr in 0.0000001..150_000.0
         return executionPlans.sortedByDescending { plan ->
@@ -2752,10 +2930,16 @@ class MacEngineDaemon(
     ): com.kibot.shared.models.ExecutionPlan? {
         if (executionPlan.side != com.kibot.shared.models.OrderSide.BUY) return executionPlan
         val quote = marketQuotes.firstOrNull { it.pairId == executionPlan.signal.pairId } ?: return executionPlan
+        val isMomentumOverride =
+            executionPlan.signal.marketRegime == MarketRegime.HIGH_VOLATILITY_MOMENTUM &&
+                quote.spreadPct <= 1.0 &&
+                quote.bidDepthTop5Idr.toDoubleOrZero() > 0.0 &&
+                quote.askDepthTop5Idr.toDoubleOrZero() > 0.0 &&
+                quote.recentTradeActivityScore >= 0.68
         val chartAssessment = chartAnalyzer.analyzeQuoteSnapshot(quote)
-        if (chartAssessment.shouldAvoidEntry) return null
+        if (chartAssessment.shouldAvoidEntry && !isMomentumOverride) return null
         return when (chartAssessment.preferredOrderType) {
-            ChartAnalyzer.PreferredOrderType.AVOID -> null
+            ChartAnalyzer.PreferredOrderType.AVOID -> if (isMomentumOverride) executionPlan else null
             ChartAnalyzer.PreferredOrderType.MARKET -> executionPlan
             ChartAnalyzer.PreferredOrderType.LIMIT_MID -> {
                 val mid = quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 } ?: return executionPlan
@@ -2870,8 +3054,8 @@ class MacEngineDaemon(
             unrealizedPnlIdr = DecimalValue.Zero,
             unrealizedPnlPct = 0.0,
             breakEvenPrice = DecimalValue.fromDouble(currentBid),
-            openedAt = Clock.System.now(),
-            updatedAt = Clock.System.now(),
+            openedAt = clock.now(),
+            updatedAt = clock.now(),
             setupType = com.kibot.shared.models.SetupType.SWING_TREND_CONTINUATION,
             horizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
             pairTier = com.kibot.shared.models.PairTier.TIER_B,
@@ -2916,6 +3100,26 @@ class MacEngineDaemon(
         }
         return managedPositions.firstOrNull { position ->
             val noSellOrder = activeByPair[position.pairId].orEmpty().none { it.side == com.kibot.shared.models.OrderSide.SELL }
+            
+            // PROFIT PROTECTION: Don't force-sell positions that are in profit >= 1.5%
+            // Let trailing stop handle profitable exits gracefully
+            val isInProfit = position.unrealizedPnlPct >= 1.5
+            if (isInProfit && btcEthCrash) {
+                logger.info("[CRASH_GUARD_EXEMPT] ${position.pairId.value} in profit ${formatDecimal(position.unrealizedPnlPct, 2)}% - letting trailing stop handle exit")
+                return@firstOrNull false
+            }
+            
+            // Also check peak-based profit: if position HAD significant profit (>=3%), 
+            // trust trailing stop even if currently slightly negative
+            val pairKey = position.pairId.value.lowercase()
+            val peakPrice = localAutonomyPeakBidByPair[pairKey] ?: position.currentBidPrice.toDoubleOrZero()
+            val entryPrice = position.averageEntryPrice.toDoubleOrZero().coerceAtLeast(0.0000001)
+            val peakGainPct = ((peakPrice - entryPrice) / entryPrice) * 100.0
+            if (peakGainPct >= 3.0 && btcEthCrash) {
+                logger.info("[CRASH_GUARD_EXEMPT] ${position.pairId.value} had peak profit ${formatDecimal(peakGainPct, 2)}% - trailing stop active")
+                return@firstOrNull false
+            }
+            
             noSellOrder && (position.unrealizedPnlPct <= hardStopLossPct || btcEthCrash)
         }?.let { position ->
             val score = cycle.rankedPairs.firstOrNull { it.pairId == position.pairId }?.rankingScore ?: 0.72
@@ -2953,6 +3157,88 @@ class MacEngineDaemon(
                     riskLadderLevel = cycle.modeSnapshot.riskLadderLevel,
                     pairRankingScore = score,
                     speculativePocket = true,
+                ),
+            )
+        }
+    }
+
+    private fun planAbsoluteLossProtectionExit(
+        now: Instant,
+        managedPositions: List<com.kibot.core.ManagedPosition>,
+        activeOrders: List<com.kibot.shared.models.OrderSnapshot>,
+        cycle: com.kibot.core.StrategyCycleResult,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    ): com.kibot.core.ExitDecision? {
+        if (managedPositions.isEmpty()) return null
+        val activeByPair = activeOrders.filter { it.status in activeOrderStatuses }.groupBy { it.pairId }
+        val quotesByPair = marketQuotes.associateBy { it.pairId }
+        val absoluteHardLossPct = -5.0
+
+        return managedPositions.firstOrNull { position ->
+            val noSellOrder = activeByPair[position.pairId].orEmpty().none { it.side == com.kibot.shared.models.OrderSide.SELL }
+            if (!noSellOrder) return@firstOrNull false
+            val ageMinutes = ((now.toEpochMilliseconds() - position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 60_000.0)
+            val quote = quotesByPair[position.pairId]
+            val decision = lossPreventionSystem.shouldForceExit(
+                pairId = position.pairId.value.lowercase(),
+                entryPrice = position.averageEntryPrice.toDoubleOrZero(),
+                currentPrice = position.currentBidPrice.toDoubleOrZero(),
+                ageMinutes = ageMinutes,
+                unrealizedPnlPct = position.unrealizedPnlPct,
+                quote = quote,
+            )
+            position.unrealizedPnlPct <= absoluteHardLossPct || decision.shouldExit
+        }?.let { position ->
+            val quote = quotesByPair[position.pairId]
+            val ageMinutes = ((now.toEpochMilliseconds() - position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 60_000.0)
+            val decision = lossPreventionSystem.shouldForceExit(
+                pairId = position.pairId.value.lowercase(),
+                entryPrice = position.averageEntryPrice.toDoubleOrZero(),
+                currentPrice = position.currentBidPrice.toDoubleOrZero(),
+                ageMinutes = ageMinutes,
+                unrealizedPnlPct = position.unrealizedPnlPct,
+                quote = quote,
+            )
+            val score = cycle.rankedPairs.firstOrNull { it.pairId == position.pairId }?.rankingScore ?: 0.85
+            val reasonText = when {
+                position.unrealizedPnlPct <= absoluteHardLossPct -> "ABSOLUTE_HARD_LOSS_CAP"
+                decision.reason.isNotBlank() -> decision.reason
+                else -> "LOSS_PREVENTION_EXIT"
+            }
+            val signal = com.kibot.shared.models.StrategySignal(
+                pairId = position.pairId,
+                signalType = com.kibot.shared.models.StrategySignalType.EXIT,
+                confidence = score.coerceIn(0.70, 0.99),
+                rationale = listOf("Loss protection memaksa exit ${position.pairId.value} saat rugi membesar."),
+                entryPrice = position.currentBidPrice,
+                takeProfitPrice = position.takeProfitPrice,
+                stopPrice = position.stopPrice,
+                setupType = position.setupType,
+                horizon = position.horizon,
+                pairTier = position.pairTier,
+                speculativePocket = position.speculativePocket,
+                marketRegime = cycle.marketSnapshot.regime,
+                edgeConfidence = cycle.modeSnapshot.edgeConfidence,
+                expectedHoldingHours = position.expectedHoldingHours,
+                expectedNetProfitabilityPct = kotlin.math.abs(position.unrealizedPnlPct),
+            )
+            com.kibot.core.ExitDecision(
+                position = position,
+                reason = com.kibot.core.ExitReason.STOP_LOSS_EXIT,
+                message = "$reasonText forced sell ${position.pairId.value} at ${formatDecimal(position.unrealizedPnlPct, 2)}%.",
+                executionPlan = com.kibot.shared.models.ExecutionPlan(
+                    signal = signal,
+                    side = com.kibot.shared.models.OrderSide.SELL,
+                    orderType = com.kibot.shared.models.OrderType.MARKET,
+                    quantity = position.quantity,
+                    limitPrice = null,
+                    quoteBudget = null,
+                    postOnlyPreferred = false,
+                    expectedNetEdgePct = kotlin.math.abs(position.unrealizedPnlPct),
+                    botMode = cycle.modeSnapshot.mode,
+                    riskLadderLevel = cycle.modeSnapshot.riskLadderLevel,
+                    pairRankingScore = score,
+                    speculativePocket = position.speculativePocket,
                 ),
             )
         }
@@ -3019,14 +3305,41 @@ class MacEngineDaemon(
         activeOrders: List<com.kibot.shared.models.OrderSnapshot>,
         balances: List<BalanceSnapshot>,
         cycle: com.kibot.core.StrategyCycleResult,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
     ): com.kibot.core.ExitDecision? {
         if (config.exchangeKind != ExchangeKind.INDODAX) return null
         if (managedPositions.isEmpty()) return null
-        val idrFree = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
+        if (marketQuotes.size < 50 || cycle.rankedPairs.isEmpty()) {
+            logger.info(
+                "[LIQUIDITY_REBALANCE_SKIP] quotes={} rankedPairs={} - skip emergency rebalance during warm-up / quote instability",
+                marketQuotes.size,
+                cycle.rankedPairs.size,
+            )
+            return null
+        }
+        val idrFree = resolveIdrFreeBalance(balances)
         if (idrFree >= emergencyLiquidityMinIdr) return null
+        val now = clock.now()
         val activeByPair = activeOrders.filter { it.status in activeOrderStatuses }.groupBy { it.pairId }
         val candidate = managedPositions
-            .filter { activeByPair[it.pairId].orEmpty().none { order -> order.side == com.kibot.shared.models.OrderSide.SELL } }
+            .filter { position ->
+                activeByPair[position.pairId].orEmpty().none { order -> order.side == com.kibot.shared.models.OrderSide.SELL }
+            }
+            .filterNot { position ->
+                val recent = recentExitSignalByPair[position.pairId.value.lowercase()] ?: return@filterNot false
+                val ageMs = (now.toEpochMilliseconds() - recent.at.toEpochMilliseconds()).coerceAtLeast(0L)
+                val shouldSuppress = ageMs <= 5.minutes.inWholeMilliseconds &&
+                    (recent.reason == "local_trailing_stop_hit" || recent.reason == "retroactive_trailing_stop_hit")
+                if (shouldSuppress) {
+                    logger.info(
+                        "[LIQUIDITY_REBALANCE_SKIP] pair={} suppressed after recent exit reason={} ageSec={}",
+                        position.pairId.value.lowercase(),
+                        recent.reason,
+                        ageMs / 1000,
+                    )
+                }
+                shouldSuppress
+            }
             .minByOrNull { it.unrealizedPnlPct }
             ?: return null
         val score = cycle.rankedPairs.firstOrNull { it.pairId == candidate.pairId }?.rankingScore ?: 0.65
@@ -3079,7 +3392,7 @@ class MacEngineDaemon(
         if (config.exchangeKind != ExchangeKind.INDODAX) return null
         val targetPair = leadLagPriorityPair ?: superSexyTarget ?: return null
         if (managedPositions.isEmpty()) return null
-        val idrFree = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
+        val idrFree = resolveIdrFreeBalance(balances)
         if (idrFree >= opportunityLiquidationMinIdr) return null
         val activeByPair = activeOrders.filter { it.status in activeOrderStatuses }.groupBy { it.pairId }
         val worst = managedPositions
@@ -3165,7 +3478,7 @@ class MacEngineDaemon(
             controlPlane.appendLog(
                 botId = config.controlPlane.botId,
                 record = AuditLogRecord(
-                    recordedAt = Clock.System.now(),
+                    recordedAt = clock.now(),
                     level = if (status == "ABORTED_SLIPPAGE") LogLevel.WARN else LogLevel.INFO,
                     category = "LEAD_LAG_EXECUTION_REPORT",
                     deviceId = config.device.deviceId,
@@ -3190,35 +3503,192 @@ class MacEngineDaemon(
         }
     }
 
-    private fun dynamicTrailingStopPct(gainPct: Double, currentPrice: Double? = null): Double {
+    private fun dynamicTrailingStopPct(
+        gainPct: Double,
+        currentPrice: Double? = null,
+        pairId: com.kibot.shared.models.PairId? = null,
+    ): Double {
+        // SMART PEAK LOCK: Semakin tinggi profit, semakin ketat trailing stop
+        // Tujuan: Lock profit di peak, jangan biarkan jatuh terlalu jauh
         val base = when {
-            gainPct >= 20.0 -> 4.2
-            gainPct >= 12.0 -> 3.4
-            gainPct >= 7.0 -> 2.8
-            gainPct >= 3.5 -> 2.2
-            gainPct >= 1.5 -> 1.8
-            else -> 1.5
+            gainPct >= 20.0 -> 2.5    // High profit: ketat, lock 17.5%+
+            gainPct >= 12.0 -> 2.0    // Lock 10%+
+            gainPct >= 7.0 -> 1.5     // 7% profit → max drop 1.5% → lock 5.5%+
+            gainPct >= 5.0 -> 1.2     // Lock 3.8%+
+            gainPct >= 3.0 -> 1.0     // Lock 2%+
+            gainPct >= 1.5 -> 0.8     // Lock 0.7%+ (cover fee)
+            else -> 1.2               // Default: modest trailing
         }
-        // MICRO-CAP BOOST: Widen trailing stop for cheap coins to avoid noise-triggered exits
+        // MICRO-CAP: Slightly wider for noise, but NOT as extreme as before
         val priceBoost = when {
             currentPrice == null || currentPrice <= 0.0 -> 0.0
-            currentPrice < 50.0 -> 7.0   // Ultra micro-cap: very wide stop
-            currentPrice < 100.0 -> 5.5  // Micro-cap: wide stop
-            currentPrice < 300.0 -> 4.0  // Small-cap: moderate stop
-            currentPrice < 500.0 -> 3.0  // Low-mid cap
-            currentPrice < 1000.0 -> 1.5 // Mid cap
+            currentPrice < 50.0 -> 1.5   // Ultra micro-cap: +1.5% extra
+            currentPrice < 100.0 -> 1.0  // Micro-cap: +1% extra
+            currentPrice < 300.0 -> 0.5  // Small-cap: +0.5% extra
             else -> 0.0
         }
-        return maxOf(base, priceBoost)
+        val widened = base + priceBoost
+        val executionHints = executionLearningHints()
+        val risk = cachedLocalLearningSnapshot.risk
+        val bucketTightened = if (pairId != null && positionBucketTypeByPair[pairId.value.lowercase()] == "AGGRESSIVE") {
+            when {
+                gainPct >= 12.0 -> (widened - 0.85).coerceAtLeast(0.55 + minOf(priceBoost, 0.25))
+                gainPct >= 7.0 -> (widened - 0.55).coerceAtLeast(0.65 + minOf(priceBoost, 0.25))
+                gainPct >= 3.0 -> (widened - 0.25).coerceAtLeast(0.80 + minOf(priceBoost, 0.20))
+                else -> widened
+            }
+        } else {
+            widened
+        }
+        val profitSafeTightened = if (pairId != null && positionBucketTypeByPair[pairId.value.lowercase()] == "AGGRESSIVE") {
+            when {
+                gainPct >= 15.0 -> minOf(bucketTightened, 0.75 + minOf(priceBoost, 0.20))
+                gainPct >= 10.0 -> minOf(bucketTightened, 0.95 + minOf(priceBoost, 0.20))
+                gainPct >= 6.0 -> minOf(bucketTightened, 1.10 + minOf(priceBoost, 0.25))
+                else -> bucketTightened
+            }
+        } else {
+            bucketTightened
+        }
+        val riskTightened = if (risk.bootstrapConditionalVar95Pct <= -3.0 || risk.maxDrawdownPct >= 5.0) {
+            minOf(profitSafeTightened, 0.75 + minOf(priceBoost, 0.25))
+        } else {
+            profitSafeTightened
+        }
+        return if (pairId != null && pairId in executionHints.tightTrailingPairs) {
+            minOf(riskTightened, 0.5 + minOf(priceBoost, 0.25))
+        } else {
+            riskTightened
+        }
     }
 
-    private fun logWhyNotBuy(now: Instant, pair: String, reason: String) {
-        val lastAt = lastWhyNotBuyAt
-        if (lastAt != null && (now - lastAt).inWholeMilliseconds < 1_500L) return
-        val signature = "$pair|$reason"
-        lastWhyNotBuyAt = now
-        lastWhyNotBuySignature = signature
-        logger.info("[WHY_NOT_BUY] pair={} reason={}", pair, reason)
+    /**
+     * Calculate minimum floor price that guarantees profit after fees.
+     * Fee Indodax: 0.3% buy + 0.3% sell = 0.6% total, plus 0.2% slippage buffer = 0.8%
+     */
+    private fun calculateBreakevenFloor(entryPrice: Double): Double {
+        val totalFeeAndSlippage = 0.008 // 0.8%
+        return entryPrice * (1.0 + totalFeeAndSlippage)
+    }
+
+    /**
+     * Calculate profit-locked floor: once profit hits threshold, floor never goes below breakeven.
+     * This prevents giving back all profit to the market.
+     */
+    private fun calculateProfitLockedFloor(
+        entryPrice: Double,
+        peakPrice: Double,
+        currentGainPct: Double,
+        trailingStopPct: Double
+    ): Double {
+        val breakevenFloor = calculateBreakevenFloor(entryPrice)
+        val trailingFloor = peakPrice * (1.0 - (trailingStopPct / 100.0))
+        
+        // PROFIT LOCK LEVELS:
+        // >= 5% profit reached: floor = max(trailing, entry + 3% net profit)
+        // >= 3% profit reached: floor = max(trailing, breakeven + 1% net profit)  
+        // >= 1.5% profit reached: floor = max(trailing, breakeven)
+        // < 1.5%: normal trailing only
+        val lockedFloor = when {
+            currentGainPct >= 5.0 -> maxOf(trailingFloor, entryPrice * 1.03)  // Lock 3%+
+            currentGainPct >= 3.0 -> maxOf(trailingFloor, entryPrice * 1.015) // Lock 1.5%+
+            currentGainPct >= 1.5 -> maxOf(trailingFloor, breakevenFloor)     // Lock breakeven
+            else -> trailingFloor
+        }
+        
+        return lockedFloor
+    }
+
+	    private fun logWhyNotBuy(now: Instant, pair: String, reason: String) {
+	        val lastAt = lastWhyNotBuyAt
+	        val signature = "$pair|$reason"
+	        if (lastWhyNotBuySignature == signature && lastAt != null && (now - lastAt).inWholeMilliseconds < 8_000L) return
+	        if (lastAt != null && (now - lastAt).inWholeMilliseconds < 1_500L && lastWhyNotBuySignature == signature) return
+	        lastWhyNotBuyAt = now
+	        lastWhyNotBuySignature = signature
+	        val humanReason = humanizeRejectedReason(pair, reason)
+	        lastRejectedReasonLabel = humanReason
+	        lastRejectedReasonAt = now
+            localLearningMemoryStore.recordEntryRejection(
+                now = now,
+                pairId = pair,
+                reason = reason,
+            )
+	        logger.info("[WHY_NOT_BUY] pair={} reason={} detail={}", pair, reason, humanReason)
+	    }
+
+	    private fun recordForcedSafeMode(now: Instant, reason: String) {
+	        forcedSafeModeReason = reason
+	        forcedSafeModeAt = now
+	        repository.noteStatus("Safe mode: $reason")
+	    }
+
+    private fun markPipelineStage(marker: String) {
+        lastPipelineMarkerLabel = marker
+        logger.debug(marker)
+    }
+
+    private fun humanizeRejectedReason(pair: String, reason: String): String {
+        val cleanPair = pair.uppercase()
+        val normalized = reason.trim().lowercase()
+        return when {
+            normalized.contains("spread_cap_enforcement_failed") ->
+                "Rejected $cleanPair: spread > 1.0% jadi entry pasar ditahan dulu."
+            normalized.contains("minimum_notional") || normalized.contains("venue minimum") || normalized.contains("below venue minimum") ->
+                "Rejected $cleanPair: budget entry masih di bawah minimum live."
+            normalized.contains("capital_allocation_rejected") ->
+                "Rejected $cleanPair: alokasi modal lagi nahan entry baru."
+            normalized.contains("risk ladder hard stop") ->
+                "Rejected $cleanPair: risk ladder masih hard stop."
+            normalized.contains("lease_not_held") ->
+                "Rejected $cleanPair: lease eksekusi belum dipegang node aktif."
+            normalized.contains("per_symbol_execution_lease_active") ->
+                "Rejected $cleanPair: pair ini masih dikunci sebentar biar submit nggak dobel."
+            normalized.contains("chart_guard_blocked") || normalized.contains("chart_analyzer_vetoed") ->
+                "Rejected $cleanPair: chart guard lihat strukturnya belum aman."
+            normalized.contains("liquidity_guard_failed") ->
+                "Rejected $cleanPair: orderbook tipis, bid top-5 belum cukup kuat."
+            normalized.contains("bluechip_volume_blocked") ->
+                "Rejected $cleanPair: volume harian belum cukup tebal."
+            normalized.contains("anti-koin mahal") || normalized.contains("anti_koin_mahal") ->
+                "Rejected $cleanPair: harga koin kelewat mahal buat saldo aktif."
+            normalized.contains("capital mismatch") || normalized.contains("capital_mismatch") ->
+                "Rejected $cleanPair: size modal nggak cocok sama harga pair ini."
+            normalized.contains("ai override disabled") ->
+                "Rejected $cleanPair: override AI sedang dimatikan."
+            normalized.contains("insufficient_idr") ->
+                "Rejected $cleanPair: saldo IDR bebas belum cukup."
+            normalized.contains("no_liquid_baseline_candidate") ->
+                "Rejected $cleanPair: belum ada kandidat cair yang layak entry."
+            normalized.contains("trinity_heartbeat_safe_mode") ->
+                "Rejected $cleanPair: heartbeat mesh belum stabil, entry ditahan dulu."
+            normalized.contains("active_buy_order_exists") ->
+                "Rejected $cleanPair: masih ada order buy aktif."
+            normalized.contains("slot_or_pending_buy_full") ->
+                "Rejected $cleanPair: slot entry lagi penuh."
+            normalized.contains("order_chase_failed") ->
+                "Rejected $cleanPair: chase order gagal dapat harga yang aman."
+            normalized.contains("ai offline") || normalized.contains("ai limited") ->
+                "Rejected $cleanPair: AI lagi offline, tapi alasan teknikal utama masih diprioritaskan."
+            else -> "Rejected $cleanPair: ${reason.trim()}"
+        }
+    }
+
+    private fun lastRejectedReasonForState(now: Instant): String {
+        val lastAt = lastRejectedReasonAt ?: return ""
+        if ((now - lastAt).inWholeMilliseconds > 10.minutes.inWholeMilliseconds) return ""
+        return lastRejectedReasonLabel.orEmpty()
+    }
+
+    private fun shouldBypassEmergencyExitGuards(exitDecision: com.kibot.core.ExitDecision): Boolean {
+        val message = exitDecision.message.lowercase()
+        return exitDecision.reason == com.kibot.core.ExitReason.STOP_LOSS_EXIT ||
+            message.contains("ai_holdings_research") ||
+            message.contains("veto_sell_confirmed") ||
+            message.contains("emergency_veto_sell") ||
+            message.contains("crash_guard") ||
+            message.contains("absolute_hard_loss_cap") ||
+            message.contains("loss_prevention_exit")
     }
 
     private fun checkTradingStall(now: Instant) {
@@ -3346,8 +3816,8 @@ class MacEngineDaemon(
     }
 
     private fun getCurrentBotMode(): String {
-        // Get current bot mode - default SAFE if unknown
-        return "SAFE"  // TODO: Get from actual bot state
+        val stateMode = repository.state.value.operatingMode.trim()
+        return stateMode.ifBlank { "SAFE" }
     }
 
     private fun refreshProtectiveState(now: Instant) {
@@ -3466,7 +3936,26 @@ class MacEngineDaemon(
         cachedOpenOrders = emptyList()
         cachedBalances = emptyList()
         ensureLeadLagListenerInitialized()
+        startTelegramCommandPolling()
         while (true) {
+            val currentState = repository.state.value
+            val lifecycleBlocked = !currentState.syncHealth.equals("HEALTHY", ignoreCase = true) ||
+                currentState.effectiveState == BotEffectiveState.DEGRADED
+            val momentumBypass = currentState.marketRegime.equals("HIGH_VOLATILITY_MOMENTUM", ignoreCase = true)
+            val standbyBypass = config.device.role == DeviceRole.STANDBY
+            val shouldRun = !lifecycleBlocked || momentumBypass || standbyBypass
+            if (!shouldRun) {
+                logger.error("LIFECYCLE_BLOCK: Cannot start sync cycle because state is {}", currentState.effectiveState)
+                repository.noteStatus("LIFECYCLE_BLOCK: state=${currentState.effectiveState}")
+            } else if (lifecycleBlocked && (momentumBypass || standbyBypass)) {
+                logger.warn(
+                    "LIFECYCLE_BYPASS: continuing sync cycle despite state={} role={} momentumBypass={} standbyBypass={}",
+                    currentState.effectiveState,
+                    config.device.role,
+                    momentumBypass,
+                    standbyBypass,
+                )
+            }
             try {
                 syncOnce()
             } catch (error: CancellationException) {
@@ -3475,7 +3964,7 @@ class MacEngineDaemon(
             } catch (error: Throwable) {
                 if (isLeaseReserveOwnershipConflict(error)) {
                     repository.noteStatus("Lease owner drift terdeteksi; menjalankan lease lockdown recovery.")
-                    attemptLeaseLockdownRecovery(Clock.System.now())
+                    attemptLeaseLockdownRecovery(clock.now())
                 } else if (error.message?.contains("Lease is conflicted or expired", ignoreCase = true) == true) {
                     repository.noteStatus("Lease conflict transient; auto-recovering.")
                 } else {
@@ -3487,29 +3976,48 @@ class MacEngineDaemon(
         }
     }
 
-    suspend fun syncOnce() = coroutineScope {
-        val cycleStartedAt = Clock.System.now()
-        
-        // [TRINITY HEARTBEAT] Record this bot's heartbeat
-        heartbeatMonitor.recordHeartbeat(
-            botName = config.controlPlane.botId.value.lowercase(),
-            timestamp = cycleStartedAt
-        )
-        
-        // [TRINITY HEALTH CHECK] Check for dead bots every 30 seconds
-        checkDeadBots(cycleStartedAt)
-        
-        // [STALL DETECTION] Check if no trades for >1 hour
-        checkTradingStall(cycleStartedAt)
-        
-        pollLeadLagUdpCommands(cycleStartedAt)
-        maybeEmitTrinityHeartbeat(cycleStartedAt)
-        pruneLeadLagTelemetry(cycleStartedAt)
-        ensureRegistered()
+    fun shutdown() {
+        logger.info("Mac engine daemon shutdown requested.")
+        runCatching { telegramCommandJob?.cancel() }
+        runCatching {
+            holdingsResearchInFlightByPair.values.forEach { it.cancel() }
+            holdingsResearchInFlightByPair.clear()
+            holdingsResearchLastAttemptAtByPair.clear()
+            holdingsResearchFirstSeenAtByPair.clear()
+        }
+        runCatching { autonomousAiReviewJob?.cancel() }
+        runCatching { telegramCommandScope.cancel() }
+        runCatching { holdingsResearchScope.cancel() }
+        runCatching { autonomousAiReviewScope.cancel() }
+    }
 
-        val now = Clock.System.now()
-        val jakartaDate = jakartaNowDate(now)
-        val peerBotStates = listOf("kidax", "kibot", "kinance")
+    suspend fun syncOnce() = coroutineScope {
+        val cycleStartedAt = clock.now()
+        markPipelineStage("MARKER: ENTER_SYNC_LOOP")
+        try {
+            // [TRINITY HEARTBEAT] Record this bot's heartbeat
+            heartbeatMonitor.recordHeartbeat(
+                botName = config.controlPlane.botId.value.lowercase(),
+                timestamp = cycleStartedAt
+            )
+            
+            // [TRINITY HEALTH CHECK] Check for dead bots every 30 seconds
+            checkDeadBots(cycleStartedAt)
+            
+            // [STALL DETECTION] Check if no trades for >1 hour
+            checkTradingStall(cycleStartedAt)
+            
+            pollLeadLagUdpCommands(cycleStartedAt)
+            maybeEmitTrinityHeartbeat(cycleStartedAt)
+            pruneLeadLagTelemetry(cycleStartedAt)
+            ensureRegistered()
+
+            markPipelineStage("MARKER: AFTER_CONTROL_PLANE_SETUP")
+            logger.info("DEAD_ZONE_TRACE: entering dead zone after control-plane setup")
+            val now = clock.now()
+            val jakartaDate = jakartaNowDate(now)
+            logger.info("DEAD_ZONE_TRACE: checking local balance / peer state cache")
+            val peerBotStates = listOf("kidax", "kibot", "kinance")
             .associateWith { peerId ->
                 if (peerId.equals(config.controlPlane.botId.value, ignoreCase = true)) {
                     null
@@ -3519,258 +4027,339 @@ class MacEngineDaemon(
                     }
                 }
             }
-        val botState = (readControlPlane<BotStateSnapshot?>(null) {
-            controlPlane.fetchBotState(config.controlPlane.botId)
-        } ?: fallbackBotState(now))
-        var lease = readControlPlane<EngineLeaseSnapshot?>(null) {
-            runCatching { controlPlane.fetchLease(config.controlPlane.botId) }.getOrNull()
-        }
-        lease = ensureLeaseLockdownOwnership(now, lease)
-        lastObservedLeaseTerm = lease?.term ?: botState.currentTerm
-        val devices = refreshDevices(now)
-        val dailyRisk = refreshDailyRisk(now, jakartaDate)
-        val equityHistory = refreshEquityHistory(now)
-        val commands = refreshPendingCommands(now)
-        val weeklyReview = refreshWeeklyReview(now)
-        lastSuccessfulControlPlaneAt = now
+            latestPeerBotStates = peerBotStates
+            lastKnownHealthyPeerBotStates = lastKnownHealthyPeerBotStates + peerBotStates
+                .filterValues { peerState ->
+                    peerState != null &&
+                        peerState.desiredState != BotDesiredState.OFF &&
+                        peerState.effectiveState != BotEffectiveState.STOPPED &&
+                        peerState.syncHealth != SyncHealth.BROKEN
+                }
+                .mapValues { it.value!! }
+            logger.info("DEAD_ZONE_TRACE: fetching local bot state snapshot")
+            val botState = (readControlPlane<BotStateSnapshot?>(null) {
+                controlPlane.fetchBotState(config.controlPlane.botId)
+            } ?: fallbackBotState(now))
+            logger.info("DEAD_ZONE_TRACE: fetching lease snapshot")
+            var lease = readControlPlane<EngineLeaseSnapshot?>(null) {
+                runCatching { controlPlane.fetchLease(config.controlPlane.botId) }.getOrNull()
+            }
+            if (lease == null) {
+                logger.warn("DEAD_ZONE_TRACE: lease snapshot is null, continuing with fallback state")
+            }
+            lease = ensureLeaseLockdownOwnership(now, lease)
+            lastObservedLeaseTerm = lease?.term ?: botState.currentTerm
+            logger.info("DEAD_ZONE_TRACE: refreshing devices / risk / equity / commands / weekly review")
+            val devices = refreshDevices(now)
+            val dailyRisk = refreshDailyRisk(now, jakartaDate)
+            val equityHistory = refreshEquityHistory(now)
+            val commands = refreshPendingCommands(now)
+            val weeklyReview = refreshWeeklyReview(now)
+            lastSuccessfulControlPlaneAt = now
 
-        val (exchangeReachable, exchangePingMs) = probeExchange(now)
-        val displayPingMs = recordDisplayPing(
-            now = now,
-            exchangeReachable = exchangeReachable,
-            rawPingMs = exchangePingMs,
-        )
-        val healthWarnings = mutableListOf<String>()
-        val reportOnlyMode = config.shadowMode || !config.enableLiveExecution
-        if (!exchangeReachable && !reportOnlyMode) {
-            healthWarnings += "Exchange unreachable or credentials not configured."
-        }
-        if (dailyRisk?.hardStopTriggered == true) {
-            healthWarnings += "Daily hard stop is active."
-        }
-        if ((displayPingMs ?: 0L) >= entryBlockLatencyMs) {
-            healthWarnings += "Exchange latency is heavy."
-        }
+            logger.info("DEAD_ZONE_TRACE: probing market reachability and orderbook cache")
+            val (exchangeReachable, exchangePingMs) = probeExchange(now)
+            val displayPingMs = recordDisplayPing(
+                now = now,
+                exchangeReachable = exchangeReachable,
+                rawPingMs = exchangePingMs,
+            )
+            val healthWarnings = mutableListOf<String>()
+            val reportOnlyMode = config.shadowMode || !config.enableLiveExecution
+            if (!exchangeReachable && !reportOnlyMode) {
+                healthWarnings += "Exchange unreachable or credentials not configured."
+            }
+            if (dailyRisk?.hardStopTriggered == true) {
+                healthWarnings += "Daily hard stop is active."
+            }
+            if ((displayPingMs ?: 0L) >= entryBlockLatencyMs) {
+                healthWarnings += "Exchange latency is heavy."
+            }
 
-        var leaseAfterCommands = lease
-        var botStateAfterCommands = botState
+            var leaseAfterCommands = lease
+            var botStateAfterCommands = botState
 
-        commands.forEach { command ->
-            val result = handleCommand(command, leaseAfterCommands, botStateAfterCommands)
-            if (result != null) {
-                leaseAfterCommands = readControlPlane(leaseAfterCommands) {
+            logger.info("DEAD_ZONE_TRACE: applying pending commands / sync processing")
+            commands.forEach { command ->
+                val result = handleCommand(command, leaseAfterCommands, botStateAfterCommands)
+                if (result != null) {
+                    leaseAfterCommands = readControlPlane(leaseAfterCommands) {
+                        controlPlane.fetchLease(config.controlPlane.botId)
+                    }
+                    botStateAfterCommands = readControlPlane<BotStateSnapshot?>(null) {
+                        controlPlane.fetchBotState(config.controlPlane.botId)
+                    } ?: botStateAfterCommands
+                    if (result.isOperationalHealthWarning()) {
+                        healthWarnings += result
+                    }
+                }
+            }
+            commandsFetchedAt = now
+            val trinityHeartbeatBrakeReason = enforceTrinityHeartbeatBrake(now)
+            if (trinityHeartbeatBrakeReason != null) {
+                healthWarnings += trinityHeartbeatBrakeReason
+            }
+
+            logger.info("DEAD_ZONE_TRACE: building local health / syncing flags")
+            val localHealth = buildLocalHealth(
+                exchangeReachable = exchangeReachable,
+                warnings = healthWarnings,
+                feedLatencyMs = displayPingMs ?: exchangePingMs,
+                marketFeedHealthy = exchangeReachable,
+                reportOnlyMode = reportOnlyMode,
+            )
+            val masterBeforeTakeover = leaseAfterCommands.isHeldBy(config.device.deviceId, now)
+            val standbyShouldYieldBeforeTakeover = shouldYieldToPrimary(botStateAfterCommands, leaseAfterCommands, now)
+
+            logger.info("DEAD_ZONE_TRACE: takeover / release gate evaluation")
+            if (
+                botStateAfterCommands.desiredState == BotDesiredState.ON &&
+                !masterBeforeTakeover &&
+                !standbyShouldYieldBeforeTakeover &&
+                !isInReleaseCooldown(now)
+            ) {
+                maybeTakeOver(
+                    now = now,
+                    botState = botStateAfterCommands,
+                    lease = leaseAfterCommands,
+                    localHealth = localHealth,
+                )
+            } else if (standbyShouldYieldBeforeTakeover && masterBeforeTakeover) {
+                writeControlPlane("release-lease-standby-yield") {
+                    controlPlane.releaseLease(
+                        botId = config.controlPlane.botId,
+                        deviceId = config.device.deviceId,
+                        term = leaseAfterCommands?.term?.value ?: 0L,
+                        reason = "Standby yielding to active primary heartbeat.",
+                    )
+                }
+                enterReleaseCooldown()
+                appendAuditLog(LogLevel.WARN, "LEASE", "Standby released lease because primary heartbeat is still healthy.")
+            } else if (botStateAfterCommands.desiredState == BotDesiredState.OFF && masterBeforeTakeover) {
+                writeControlPlane("release-lease-desired-off") {
+                    controlPlane.releaseLease(
+                        botId = config.controlPlane.botId,
+                        deviceId = config.device.deviceId,
+                        term = leaseAfterCommands?.term?.value ?: 0L,
+                        reason = "Bot desired state is OFF.",
+                    )
+                }
+                appendAuditLog(LogLevel.INFO, "LEASE", "Mac released master lease because desired state is OFF.")
+            }
+
+                logger.info("DEAD_ZONE_TRACE: re-reading canonical bot/lease snapshots")
+                val initialBotState = (readControlPlane<BotStateSnapshot?>(null) {
+                    controlPlane.fetchBotState(config.controlPlane.botId)
+                } ?: botStateAfterCommands)
+                var initialLease = readControlPlane<EngineLeaseSnapshot?>(null) {
                     controlPlane.fetchLease(config.controlPlane.botId)
                 }
-                botStateAfterCommands = readControlPlane<BotStateSnapshot?>(null) {
-                    controlPlane.fetchBotState(config.controlPlane.botId)
-                } ?: botStateAfterCommands
-                if (result.isOperationalHealthWarning()) {
-                    healthWarnings += result
+                initialLease = ensureLeaseLockdownOwnership(now, initialLease)
+                val standbyShouldYieldAfterCanonicalRead = shouldYieldToPrimary(initialBotState, initialLease, now)
+                if (standbyShouldYieldAfterCanonicalRead && initialLease.isHeldBy(config.device.deviceId, now)) {
+                    initialLease = initialLease?.copy(
+                        currentHolder = initialBotState.activeDeviceId ?: initialLease.currentHolder,
+                    )
+                    logger.warn(
+                        "STANDBY_YIELD: suppressing local master role because active device {} still has fresh heartbeat.",
+                        initialBotState.activeDeviceId?.value ?: "unknown",
+                    )
                 }
-            }
-        }
-        commandsFetchedAt = now
-        val trinityHeartbeatBrakeReason = enforceTrinityHeartbeatBrake(now)
-        if (trinityHeartbeatBrakeReason != null) {
-            healthWarnings += trinityHeartbeatBrakeReason
-        }
-
-        val localHealth = buildLocalHealth(
-            exchangeReachable = exchangeReachable,
-            warnings = healthWarnings,
-            feedLatencyMs = displayPingMs ?: exchangePingMs,
-            marketFeedHealthy = exchangeReachable,
-            reportOnlyMode = reportOnlyMode,
-        )
-        val masterBeforeTakeover = leaseAfterCommands.isHeldBy(config.device.deviceId, now)
-
-        if (
-            botStateAfterCommands.desiredState == BotDesiredState.ON &&
-            !masterBeforeTakeover &&
-            !shouldYieldToPrimary(botStateAfterCommands, now) &&
-            !isInReleaseCooldown(now)
-        ) {
-            maybeTakeOver(
-                now = now,
-                botState = botStateAfterCommands,
-                lease = leaseAfterCommands,
-                localHealth = localHealth,
-            )
-        } else if (botStateAfterCommands.desiredState == BotDesiredState.OFF && masterBeforeTakeover) {
-            writeControlPlane("release-lease-desired-off") {
-                controlPlane.releaseLease(
-                    botId = config.controlPlane.botId,
-                    deviceId = config.device.deviceId,
-                    term = leaseAfterCommands?.term?.value ?: 0L,
-                    reason = "Bot desired state is OFF.",
-                )
-            }
-            appendAuditLog(LogLevel.INFO, "LEASE", "Mac released master lease because desired state is OFF.")
-        }
-
-        val initialBotState = (readControlPlane<BotStateSnapshot?>(null) {
-            controlPlane.fetchBotState(config.controlPlane.botId)
-        } ?: botStateAfterCommands)
-        var initialLease = readControlPlane<EngineLeaseSnapshot?>(null) {
-            controlPlane.fetchLease(config.controlPlane.botId)
-        }
-        initialLease = ensureLeaseLockdownOwnership(now, initialLease)
-        lastObservedLeaseTerm = initialLease?.term ?: initialBotState.currentTerm
-        repository.applyRuntimeState(
-            buildDashboardState(
-                now = now,
-                jakartaDate = jakartaDate,
-                botState = initialBotState,
-                peerBotStates = peerBotStates + (config.controlPlane.botId.value.lowercase() to initialBotState),
-                lease = initialLease,
-                devices = devices,
-                localHealth = localHealth,
-                dailyRisk = dailyRisk,
-                equityHistory = equityHistory,
-                balances = cachedBalances,
-                marketQuotes = emptyList(),
-                strategyCycle = null,
-                weeklyReview = weeklyReview,
-                recentOrders = cachedRecentOrders,
-                supportEval = null,
-                healthDecisionSummary = "Warm-up sync in progress. Exchange and control-plane data are still settling.",
-            ),
-        )
-        val isMaster = initialLease.isHeldBy(config.device.deviceId, now)
-        val balancesDeferred: kotlinx.coroutines.Deferred<List<BalanceSnapshot>>? = if (exchangeReachable) {
-            async { refreshBalances(now) }
-        } else {
-            null
-        }
-        val openOrdersDeferred: kotlinx.coroutines.Deferred<List<com.kibot.shared.models.OrderSnapshot>>? = if (exchangeReachable) {
-            async { refreshOpenOrders(now) }
-        } else {
-            null
-        }
-        val marketQuotesDeferred: kotlinx.coroutines.Deferred<Result<List<com.kibot.shared.models.MarketQuote>>>? = if (exchangeReachable) {
-            async { 
-                logger.debug("[SYNC_ONCE] Starting market quotes fetch from {}", config.exchangeKind)
-                val result = runCatching { exchange.fetchMarketQuotes() }
-                result.onSuccess { quotes ->
-                    logger.debug("[SYNC_ONCE] Fetched {} market quotes from {}", quotes.size, config.exchangeKind)
-                }.onFailure { error ->
-                    logger.error("[SYNC_ONCE] Market quotes fetch failed: {}", error.message, error)
+                lastObservedLeaseTerm = initialLease?.term ?: initialBotState.currentTerm
+                if (initialLease == null &&
+                    config.enableLiveExecution &&
+                    initialBotState.marketRegime == MarketRegime.HIGH_VOLATILITY_MOMENTUM
+                ) {
+                    initialLease = buildMomentumFallbackLease(
+                        now = now,
+                        botState = initialBotState,
+                        source = "initial",
+                    )
+                    logger.warn(
+                        "LIFECYCLE_BYPASS: using synthetic initial lease because control-plane lease was null in HIGH_VOLATILITY_MOMENTUM; botId={} term={}",
+                        config.controlPlane.botId.value,
+                        initialLease?.term?.value ?: -1L,
+                    )
                 }
-                result
-            }
-        } else {
-            null
-        }
-        // Use withTimeoutOrNull to prevent indefinite blocking if exchange hangs
-        val awaitTimeoutMs = 15000L  // 15 second timeout for exchange requests
-        val resolvedBalances = balancesDeferred?.let { 
-            withTimeoutOrNull(awaitTimeoutMs) { it.await() } 
-        } ?: cachedBalances
-        val resolvedOpenOrders = openOrdersDeferred?.let { 
-            withTimeoutOrNull(awaitTimeoutMs) { it.await() } 
-        } ?: cachedOpenOrders
-        val rawMarketQuotes = marketQuotesDeferred?.let {
-            withTimeoutOrNull(awaitTimeoutMs) { it.await() }
-        }?.fold(
-            onSuccess = { it },
-            onFailure = { error ->
-                healthWarnings += "Market quote feed fetch failed: ${error.message ?: "unknown"}"
-                emptyList()
-            },
-        ).orEmpty()
-        val resolvedMarketQuotes = enrichRuntimeMarketQuotes(
-            now = now,
-            marketQuotes = rawMarketQuotes,
-            balances = resolvedBalances,
-            openOrders = resolvedOpenOrders,
-        )
-        if (resolvedMarketQuotes.isNotEmpty()) {
-            lastNonEmptyMarketQuotesAt = now
-            updateLeadLagMicroPulseSnapshots(now, resolvedMarketQuotes)
-            updateOrderBookSpoofRadar(now, resolvedMarketQuotes)
-        }
-        val recentQuoteFreshEnough = lastNonEmptyMarketQuotesAt?.let { lastHealthyAt ->
-            (now - lastHealthyAt).inWholeSeconds <= 90
-        } ?: false
-        val marketFeedHealthy = resolvedMarketQuotes.isNotEmpty() ||
-            recentQuoteFreshEnough ||
-            (exchangeReachable && config.exchangeKind == ExchangeKind.BINANCE_SPOT)
-        if (exchangeReachable && resolvedMarketQuotes.isEmpty() && !marketFeedHealthy) {
-            healthWarnings += "Market quote feed kosong."
-        }
-        val finalHealth = buildLocalHealth(
-            exchangeReachable = exchangeReachable,
-            warnings = healthWarnings,
-            feedLatencyMs = displayPingMs ?: exchangePingMs,
-            marketFeedHealthy = marketFeedHealthy,
-            reportOnlyMode = reportOnlyMode,
-        )
-        val healthDecision = healthAdvisor.evaluate(finalHealth)
-        val adaptiveAiPolicy = if (config.enableExecutionAiAssist) refreshAdaptiveAiPolicy(now) else null
-        val aiSupportEvaluation = if (config.enableExecutionAiAssist && isMaster && resolvedMarketQuotes.isNotEmpty()) {
-            val shortlist = strategyOrchestrator.shortlistForSupport(resolvedMarketQuotes)
-            aiSupportCoordinator?.evaluate(
-                candidates = shortlist,
-                now = now,
-            )
-        } else {
-            null
-        }
-        val aiSupportHints = aiSupportEvaluation?.let { evaluation ->
-            if (evaluation.usedNetwork) {
-                appendAuditLog(LogLevel.INFO, "AI_SUPPORT", "REQUEST")
-            }
-            evaluation.hints
-        }.orEmpty()
-        val leadLagHints = leadLagSupportHints(
-            now = now,
-            marketQuotes = resolvedMarketQuotes,
-        )
-        val effectiveAiSupportHints = mergeAiSupportHints(
-            liveHints = aiSupportHints,
-            adaptivePolicy = adaptiveAiPolicy,
-        ) + leadLagHints
-        val recentPersistedOrders = if (isMaster && exchangeReachable) {
-            refreshRecentOrders(now)
-        } else {
-            cachedRecentOrders
-        }
-        val derivedDailyRisk = deriveDailyRiskSnapshot(
-            now = now,
-            previous = dailyRisk,
-            balances = resolvedBalances,
-            marketQuotes = resolvedMarketQuotes,
-            recentOrders = recentPersistedOrders,
-        ) ?: dailyRisk
-        val freeIdrBalance = resolvedBalances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }
-            ?.free?.toDoubleOrZero() ?: 0.0
-        val activeEngineDecision = activeEngineDecisionForCallout(now = now, freeIdr = freeIdrBalance)
-        val strategyCycle = if (resolvedMarketQuotes.isNotEmpty()) {
-            val baseCycle = strategyOrchestrator.analyzeWithContext(
-                botId = config.controlPlane.botId,
+                val previousDashboardState = repository.state.value
+                val shouldPublishWarmupSnapshot =
+                    previousDashboardState.scanUniverseCount <= 0 &&
+                        previousDashboardState.holdingsDetailed.isEmpty() &&
+                        previousDashboardState.exchangePingValueMs == null
+                if (shouldPublishWarmupSnapshot) {
+                    repository.applyRuntimeState(
+                        buildDashboardState(
+                            now = now,
+                            jakartaDate = jakartaDate,
+                            botState = initialBotState,
+                            peerBotStates = peerBotStates + (config.controlPlane.botId.value.lowercase() to initialBotState),
+                            lease = initialLease,
+                            devices = devices,
+                            localHealth = localHealth,
+                            dailyRisk = dailyRisk,
+                            equityHistory = equityHistory,
+                            balances = cachedBalances,
+                            marketQuotes = emptyList(),
+                            strategyCycle = null,
+                            weeklyReview = weeklyReview,
+                            recentOrders = cachedRecentOrders,
+                            supportEval = null,
+                            healthDecisionSummary = "Warm-up sync in progress. Exchange and control-plane data are still settling.",
+                            upstreamMarker = lastPipelineMarkerLabel,
+                        ),
+                    )
+                }
+                logger.info("DEAD_ZONE_TRACE: preparing exchange fetches")
+                val isMaster = initialLease.isHeldBy(config.device.deviceId, now) && !standbyShouldYieldAfterCanonicalRead
+                val balancesDeferred: kotlinx.coroutines.Deferred<List<BalanceSnapshot>>? = if (exchangeReachable) {
+                    async { refreshBalances(now) }
+                } else {
+                    null
+                }
+                val openOrdersDeferred: kotlinx.coroutines.Deferred<List<com.kibot.shared.models.OrderSnapshot>>? = if (exchangeReachable) {
+                    async { refreshOpenOrders(now) }
+                } else {
+                    null
+                }
+                val marketQuotesDeferred: kotlinx.coroutines.Deferred<Result<List<com.kibot.shared.models.MarketQuote>>>? = if (exchangeReachable) {
+                    async {
+                        logger.debug("[SYNC_ONCE] Starting market quotes fetch from {}", config.exchangeKind)
+                        val result = runCatching { exchange.fetchMarketQuotes() }
+                        result.onSuccess { quotes ->
+                            logger.debug("[SYNC_ONCE] Fetched {} market quotes from {}", quotes.size, config.exchangeKind)
+                        }.onFailure { error ->
+                            logger.error("[SYNC_ONCE] Market quotes fetch failed: {}", error.message, error)
+                        }
+                        result
+                    }
+                } else {
+                    null
+                }
+                // Use withTimeoutOrNull to prevent indefinite blocking if exchange hangs
+                val awaitTimeoutMs = 15000L  // 15 second timeout for exchange requests
+                logger.info("DEAD_ZONE_TRACE: awaiting balances / open orders / market quotes")
+                val resolvedBalances = balancesDeferred?.let {
+                    withTimeoutOrNull(awaitTimeoutMs) { it.await() }
+                } ?: cachedBalances
+                val resolvedOpenOrders = openOrdersDeferred?.let {
+                    withTimeoutOrNull(awaitTimeoutMs) { it.await() }
+                } ?: cachedOpenOrders
+                val rawMarketQuotes = marketQuotesDeferred?.let {
+                    withTimeoutOrNull(awaitTimeoutMs) { it.await() }
+                }?.fold(
+                    onSuccess = { it },
+                    onFailure = { error ->
+                        healthWarnings += "Market quote feed fetch failed: ${error.message ?: "unknown"}"
+                        emptyList()
+                    },
+                ).orEmpty()
+                logger.info("DEAD_ZONE_TRACE: enriching runtime market quotes")
+                val resolvedMarketQuotes = enrichRuntimeMarketQuotes(
+                    now = now,
+                    marketQuotes = rawMarketQuotes,
                 balances = resolvedBalances,
                 openOrders = resolvedOpenOrders,
-                dailyRisk = derivedDailyRisk,
-                health = finalHealth,
-                marketQuotes = resolvedMarketQuotes,
-                pairSupportHints = effectiveAiSupportHints,
-                weeklySummary = weeklyReview,
-                aiSoftAuditOnly = aiSupportEvaluation?.blockedReason != null,
-                selectionContextOverride = activeEngineDecision?.selectionContext,
             )
-            applyPursuitPolicy(
-                cycle = baseCycle,
-                adaptiveAiPolicy = adaptiveAiPolicy,
-                balances = resolvedBalances,
-                marketQuotes = resolvedMarketQuotes,
-                now = now,
-            )
-        } else {
-            null
-        }
-        
-        // [CAPITAL ALLOCATION] Initialize or update 70/30 capital manager
-        val totalEquityIdr = estimatePortfolioValue(resolvedBalances, resolvedMarketQuotes)
+                if (resolvedMarketQuotes.isNotEmpty()) {
+                    lastNonEmptyMarketQuotesAt = now
+                    updateLeadLagMicroPulseSnapshots(now, resolvedMarketQuotes)
+                    updateOrderBookSpoofRadar(now, resolvedMarketQuotes)
+                }
+                val recentQuoteFreshEnough = lastNonEmptyMarketQuotesAt?.let { lastHealthyAt ->
+                    (now - lastHealthyAt).inWholeSeconds <= 90
+                } ?: false
+                val marketFeedHealthy = resolvedMarketQuotes.isNotEmpty() ||
+                    recentQuoteFreshEnough ||
+                    (exchangeReachable && config.exchangeKind == ExchangeKind.BINANCE_SPOT)
+                if (exchangeReachable && resolvedMarketQuotes.isEmpty() && !marketFeedHealthy) {
+                    healthWarnings += "Market quote feed kosong."
+                }
+                logger.info("DEAD_ZONE_TRACE: market health resolved feedHealthy={} exchangeReachable={} warnings={}", marketFeedHealthy, exchangeReachable, healthWarnings.size)
+                val finalHealth = buildLocalHealth(
+                    exchangeReachable = exchangeReachable,
+                    warnings = healthWarnings,
+                    feedLatencyMs = displayPingMs ?: exchangePingMs,
+                    marketFeedHealthy = marketFeedHealthy,
+                    reportOnlyMode = reportOnlyMode,
+                )
+                markPipelineStage("MARKER: BEFORE_OWNERSHIP_CHECK")
+                markPipelineStage("MARKER: BEFORE_HOLDINGS_EVAL")
+                logger.info("DEAD_ZONE_TRACE: reached holdings evaluation handoff")
+                val healthDecision = healthAdvisor.evaluate(finalHealth)
+                val adaptiveAiPolicy = if (config.enableExecutionAiAssist) refreshAdaptiveAiPolicy(now) else null
+                val aiSupportEvaluation = if (config.enableExecutionAiAssist && isMaster && resolvedMarketQuotes.isNotEmpty()) {
+                    val shortlist = strategyOrchestrator.shortlistForSupport(resolvedMarketQuotes)
+                    aiSupportCoordinator?.evaluate(
+                        candidates = shortlist,
+                        now = now,
+                    )
+                } else {
+                    null
+                }
+                val aiSupportHints = aiSupportEvaluation?.let { evaluation ->
+                    if (evaluation.usedNetwork) {
+                        appendAuditLog(LogLevel.INFO, "AI_SUPPORT", "REQUEST")
+                    }
+                    evaluation.hints
+                }.orEmpty()
+                val leadLagHints = leadLagSupportHints(
+                    now = now,
+                    marketQuotes = resolvedMarketQuotes,
+                )
+                val effectiveAiSupportHints = mergeAiSupportHints(
+                    liveHints = aiSupportHints,
+                    adaptivePolicy = adaptiveAiPolicy,
+                ) + leadLagHints
+                val recentPersistedOrders = if (isMaster && exchangeReachable) {
+                    refreshRecentOrders(now)
+                } else {
+                    cachedRecentOrders
+                }
+                val derivedDailyRisk = deriveDailyRiskSnapshot(
+                    now = now,
+                    previous = dailyRisk,
+                    balances = resolvedBalances,
+                    marketQuotes = resolvedMarketQuotes,
+                    recentOrders = recentPersistedOrders,
+	                ) ?: dailyRisk
+	                val referenceQuoteAsset = exchangeExecutionConfig(config.exchangeKind).referenceQuoteAsset
+	                val referenceQuoteAssetLower = referenceQuoteAsset.lowercase()
+	                val freeQuoteBalance = resolvedBalances.firstOrNull { it.asset.equals(referenceQuoteAsset, ignoreCase = true) }
+	                    ?.free?.toDoubleOrZero()
+	                    ?: 0.0
+	                val activeEngineDecision = activeEngineDecisionForCallout(now = now, freeIdr = freeQuoteBalance)
+                val strategyCycle = if (resolvedMarketQuotes.isNotEmpty()) {
+                    val baseCycle = strategyOrchestrator.analyzeWithContext(
+                        botId = config.controlPlane.botId,
+                        balances = resolvedBalances,
+                        openOrders = resolvedOpenOrders,
+                        dailyRisk = derivedDailyRisk,
+                        health = finalHealth,
+                        marketQuotes = resolvedMarketQuotes,
+                        pairSupportHints = effectiveAiSupportHints,
+                        weeklySummary = weeklyReview,
+                        aiSoftAuditOnly = aiSupportEvaluation?.blockedReason != null,
+                        selectionContextOverride = activeEngineDecision?.selectionContext,
+                    )
+                    applyPursuitPolicy(
+                        cycle = baseCycle,
+                        adaptiveAiPolicy = adaptiveAiPolicy,
+                        balances = resolvedBalances,
+                        marketQuotes = resolvedMarketQuotes,
+                        now = now,
+                    )
+                } else {
+                    null
+                }
+                if (strategyCycle != null && resolvedMarketQuotes.isNotEmpty()) {
+                    refreshLocalLearningSnapshot(
+                        now = now,
+                        cycle = strategyCycle,
+                        managedPositions = latestManagedPositionsForAi.takeIf { it.isNotEmpty() } ?: emptyList(),
+                        marketQuotes = resolvedMarketQuotes,
+                    )
+                }
+	        val totalEquityIdr = estimatePortfolioValue(resolvedBalances, resolvedMarketQuotes)
         
         // [DAILY PNL AUTO-RESET] Check if midnight WIB crossed — reset baseline
         maybeAutoResetDailyPnl(totalEquityIdr.toDoubleOrZero())
@@ -3778,10 +4367,13 @@ class MacEngineDaemon(
         if (capitalAllocationManager == null && totalEquityIdr.toDoubleOrZero() > 0) {
             capitalAllocationManager = CapitalAllocationManager(
                 totalCapitalIdr = totalEquityIdr.toDoubleOrZero(),
-                stableRotationPercent = 0.70,
-                aggressivePercent = 0.30
+                stableRotationPercent = config.stableCapitalAllocationPercent,
+                aggressivePercent = config.aggressiveCapitalAllocationPercent,
             )
-            repository.noteStatus("[CAPITAL ALLOCATION] Initialized 70/30 split with Rp${formatDecimal(totalEquityIdr.toDoubleOrZero(), 0)}")
+            repository.noteStatus(
+                "[CAPITAL ALLOCATION] Initialized ${formatDecimal(config.stableCapitalAllocationPercent * 100.0, 0)}/" +
+                    "${formatDecimal(config.aggressiveCapitalAllocationPercent * 100.0, 0)} split with Rp${formatDecimal(totalEquityIdr.toDoubleOrZero(), 0)}",
+            )
         }
         
         // UPDATE CAPITAL ALLOCATION: Pass both free balance AND total equity for proper 70/30 calculation
@@ -3811,42 +4403,46 @@ class MacEngineDaemon(
             logger.info("[ANOMALY_DETECTION] Dynamic anomaly coins (volume >2.5x): $dynamicAnomalyCoins")
         }
         
-        try {
-            resolvedBalances.forEach { balance ->
-                val coinTotal = (balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero())
-                if (!balance.asset.equals("idr", ignoreCase = true) && coinTotal > 0) {
-                    // This coin is held, calculate its value
-                    val coinName = balance.asset.lowercase()
-                    val relevantQuote = resolvedMarketQuotes.firstOrNull { it.pairId.value == "${coinName}_idr" }
-                    val midPrice = relevantQuote?.midPrice?.toDoubleOrZero() ?: 1.0
-                    val coinValueIdr = (coinTotal * midPrice)
-                    
-                    holdingsDebugLog += "${coinName}=${coinValueIdr.toLong()} "
-                    
-                    // Classify into bucket using DYNAMIC anomaly detection
-                    if (coinName in dynamicAnomalyCoins) {
-                        aggressiveHoldingsIdr += coinValueIdr  // Volume anomaly = aggressive (30%)
-                    } else {
-                        stableHoldingsIdr += coinValueIdr  // Normal = stable (70%)
-                    }
-                }
-            }
-        } catch (ex: Exception) {
-            logger.error("[HOLDINGS_CALC_ERROR] ${ex.message}", ex)
-        }
+	        try {
+	            resolvedBalances.forEach { balance ->
+	                val coinTotal = (balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero())
+	                val normalizedAsset = balance.asset.lowercase()
+	                if (coinTotal <= 0) return@forEach
+	                if (normalizedAsset == referenceQuoteAssetLower) return@forEach
+
+	                val pairKey = "${normalizedAsset}_${referenceQuoteAssetLower}"
+	                val relevantQuote = resolvedMarketQuotes.firstOrNull { it.pairId.value == pairKey }
+	                val midPrice = relevantQuote?.midPrice?.toDoubleOrZero() ?: 1.0
+	                val coinValueIdr = (coinTotal * midPrice)
+	                if (coinValueIdr < dustHoldingsIgnoreMinValueIdr) return@forEach
+
+	                holdingsDebugLog += "${normalizedAsset}=${coinValueIdr.toLong()} "
+
+	                val rememberedBucket = positionBucketTypeByPair[pairKey]?.uppercase()
+	                val classifyAggressive =
+	                    rememberedBucket == "AGGRESSIVE" ||
+	                        normalizedAsset in dynamicAnomalyCoins
+	                if (classifyAggressive) {
+	                    aggressiveHoldingsIdr += coinValueIdr  // Volume anomaly = aggressive (30%)
+	                } else {
+	                    stableHoldingsIdr += coinValueIdr  // Normal = stable (70%)
+	                }
+	            }
+	        } catch (ex: Exception) {
+	            logger.error("[HOLDINGS_CALC_ERROR] ${ex.message}", ex)
+	        }
         
         if (holdingsDebugLog.isNotEmpty() || stableHoldingsIdr > 0 || aggressiveHoldingsIdr > 0) {
             logger.info("[HOLDINGS_CALC] stable=${stableHoldingsIdr.toLong()} aggressive=${aggressiveHoldingsIdr.toLong()} holdings: $holdingsDebugLog")
         }
         
-        // UPDATE CAPITAL ALLOCATION: Pass ZERO holdings so deployed capital reflects actual allocation
-        // Holdings are reported for diagnostics only, not for capital tracking
-        capitalAllocationManager?.updateFreeCapital(
-            freeIdrBalance, 
-            totalEquityIdr.toDoubleOrZero(),
-            0.0,  // Don't count holdings as deployed - they're part of total equity already
-            0.0   // Only track capital allocated for NEW entries
-        )
+	        // UPDATE CAPITAL ALLOCATION: use live holdings so the 70/30 sleeves reflect actual deployed capital.
+	        capitalAllocationManager?.updateFreeCapital(
+	            freeQuoteBalance,
+	            totalEquityIdr.toDoubleOrZero(),
+	            stableHoldingsIdr,
+	            aggressiveHoldingsIdr,
+	        )
         
         // DEBUG: Log capital allocation status
         val capStatus = capitalAllocationManager?.getStatus()
@@ -3933,44 +4529,77 @@ class MacEngineDaemon(
             cachedDailyRiskDate = jakartaDate
             dailyRiskFetchedAt = now
         }
-        if (isMaster && runtimeLease != null && strategyCycle != null) {
+        val executableMinNotional = minimumLiveNotionalForExchange().coerceAtLeast(dustHoldingsIgnoreMinValueIdr)
+        val forceMomentumSideEffects = config.enableLiveExecution &&
+            strategyCycle != null &&
+            resolvedMarketQuotes.isNotEmpty() &&
+            resolveAllocatableIdr(strategyCycle, resolvedBalances) >= executableMinNotional
+        val leaseForSideEffects = runtimeLease ?: if (forceMomentumSideEffects) {
+            buildMomentumFallbackLease(
+                now = now,
+                botState = runtimeBotState,
+                source = "side-effects",
+            )
+        } else {
+            null
+        }
+        logger.info(
+            "SIDE_EFFECTS_GATE: isMaster={} forceMomentumSideEffects={} strategyCyclePresent={} runtimeLeasePresent={}",
+            isMaster,
+            forceMomentumSideEffects,
+            strategyCycle != null,
+            runtimeLease != null,
+        )
+        if ((isMaster || forceMomentumSideEffects) && leaseForSideEffects != null && strategyCycle != null) {
             runCatching {
-                maybeDispatchLeadLagCallout(
-                    now = now,
-                    lease = runtimeLease,
-                    cycle = strategyCycle,
-                    marketQuotes = resolvedMarketQuotes,
+                val sideEffectsTimeoutMs = if (forceMomentumSideEffects) 180_000L else 20_000L
+                logger.info(
+                    "SIDE_EFFECTS_TIMEOUT: forceMomentumSideEffects={} timeoutMs={}",
+                    forceMomentumSideEffects,
+                    sideEffectsTimeoutMs,
                 )
-                effectiveWeeklyReview = maybePublishWeeklyLearningSummary(
-                    now = now,
-                    cycle = strategyCycle,
-                    marketQuotes = resolvedMarketQuotes,
-                    currentWeeklyReview = weeklyReview,
-                    recentOrders = effectiveRecentOrders,
-                )
-                publishAnalysisIfNeeded(
-                    now = now,
-                    lease = runtimeLease,
-                    cycle = strategyCycle,
-                )
-                maybeManageLiveTrading(
-                    now = now,
-                    lease = runtimeLease,
-                    cycle = strategyCycle,
-                    weeklyReview = effectiveWeeklyReview,
-                    health = finalHealth,
-                    balances = resolvedBalances,
-                    marketQuotes = resolvedMarketQuotes,
-                    recentOrders = effectiveRecentOrders,
-                    aiSoftAuditOnly = aiSupportEvaluation?.blockedReason != null,
-                )
-                publishLearningSignalsIfNeeded(
-                    now = now,
-                    cycle = strategyCycle,
-                    weeklyReview = effectiveWeeklyReview,
-                    aiBlockedReason = aiSupportEvaluation?.blockedReason,
-                    aiUsedNetwork = aiSupportEvaluation?.usedNetwork == true,
-                )
+                val completed = withTimeoutOrNull(sideEffectsTimeoutMs) {
+                    maybeManageLiveTrading(
+                        now = now,
+                        lease = leaseForSideEffects,
+                        cycle = strategyCycle,
+                        weeklyReview = effectiveWeeklyReview,
+                        health = finalHealth,
+                        balances = resolvedBalances,
+                        marketQuotes = resolvedMarketQuotes,
+                        recentOrders = effectiveRecentOrders,
+                        aiSoftAuditOnly = aiSupportEvaluation?.blockedReason != null,
+                    )
+                    maybeDispatchLeadLagCallout(
+                        now = now,
+                        lease = leaseForSideEffects,
+                        cycle = strategyCycle,
+                        marketQuotes = resolvedMarketQuotes,
+                    )
+                    effectiveWeeklyReview = maybePublishWeeklyLearningSummary(
+                        now = now,
+                        cycle = strategyCycle,
+                        marketQuotes = resolvedMarketQuotes,
+                        currentWeeklyReview = weeklyReview,
+                        recentOrders = effectiveRecentOrders,
+                    )
+                    publishAnalysisIfNeeded(
+                        now = now,
+                        lease = leaseForSideEffects,
+                        cycle = strategyCycle,
+                    )
+                    publishLearningSignalsIfNeeded(
+                        now = now,
+                        cycle = strategyCycle,
+                        weeklyReview = effectiveWeeklyReview,
+                        aiBlockedReason = aiSupportEvaluation?.blockedReason,
+                        aiUsedNetwork = aiSupportEvaluation?.usedNetwork == true,
+                    )
+                    true
+                } ?: false
+                if (!completed) {
+                    error("Master side-effects timed out after ${sideEffectsTimeoutMs / 1000}s")
+                }
             }.onFailure { error ->
                 healthWarnings += "Master execution degraded: ${error.message ?: "unknown"}"
                 appendAuditLog(
@@ -3986,6 +4615,21 @@ class MacEngineDaemon(
                 controlPlane.fetchLease(config.controlPlane.botId)
             }
             runtimeLease = ensureLeaseLockdownOwnership(now, runtimeLease)
+            if (runtimeLease == null &&
+                config.enableLiveExecution &&
+                strategyCycle?.marketSnapshot?.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM
+            ) {
+                runtimeLease = buildMomentumFallbackLease(
+                    now = now,
+                    botState = runtimeBotState,
+                    source = "runtime",
+                )
+                logger.warn(
+                    "LIFECYCLE_BYPASS: using synthetic runtime lease because control-plane lease fetch was null in HIGH_VOLATILITY_MOMENTUM; botId={} term={}",
+                    config.controlPlane.botId.value,
+                    runtimeLease?.term?.value ?: -1L,
+                )
+            }
             lastObservedLeaseTerm = runtimeLease?.term ?: runtimeBotState.currentTerm
         }
 
@@ -4028,6 +4672,7 @@ class MacEngineDaemon(
                 } else {
                     healthDecision.reasons.joinToString(" ")
                 },
+                upstreamMarker = lastPipelineMarkerLabel,
             ),
         )
         maybeNotifyOperatorAlert(
@@ -4054,6 +4699,13 @@ class MacEngineDaemon(
             lastControlPlaneHeartbeatAt = now
         }
         flushNonCriticalControlPlaneBuffer(now = now)
+        } catch (error: Throwable) {
+            lastPipelineMarkerLabel = "SYNC_ONCE_CRASHED"
+            lastRejectedReasonLabel = "SYNC_ONCE_CRASHED: ${error.message ?: error::class.simpleName ?: "unknown"}"
+            lastRejectedReasonAt = cycleStartedAt
+            logger.error("SYNC_ONCE_CRASHED: ", error)
+            repository.noteStatus("SYNC_ONCE_CRASHED: ${error.message ?: "unknown"}")
+        }
     }
 
     private suspend fun ensureRegistered() {
@@ -4083,7 +4735,7 @@ class MacEngineDaemon(
     ): String? {
         return when (command.commandType) {
             CommandType.REQUEST_TAKEOVER -> {
-                if (lease.isHeldBy(config.device.deviceId, Clock.System.now())) {
+                if (lease.isHeldBy(config.device.deviceId, clock.now())) {
                     enterReleaseCooldown()
                     controlPlane.releaseLease(
                         botId = config.controlPlane.botId,
@@ -4102,13 +4754,13 @@ class MacEngineDaemon(
 
             CommandType.FORCE_SAFE_TAKEOVER -> {
                 val outcome = maybeTakeOver(
-                    now = Clock.System.now(),
+                    now = clock.now(),
                     botState = botState,
                     lease = lease,
                     localHealth = buildLocalHealth(
                         exchangeReachable = runCatching { exchange.ping() }.getOrDefault(false),
                         warnings = listOf("Force safe takeover requested."),
-                        supabaseReachable = isControlPlaneReachable(Clock.System.now()),
+                        supabaseReachable = isControlPlaneReachable(clock.now()),
                         marketFeedHealthy = false,
                     ),
                 )
@@ -4124,7 +4776,7 @@ class MacEngineDaemon(
             }
 
             CommandType.RELEASE_CONTROL -> {
-                if (lease.isHeldBy(config.device.deviceId, Clock.System.now())) {
+                if (lease.isHeldBy(config.device.deviceId, clock.now())) {
                     enterReleaseCooldown()
                     controlPlane.releaseLease(
                         botId = config.controlPlane.botId,
@@ -4140,7 +4792,7 @@ class MacEngineDaemon(
 
             CommandType.SYNC_NOW -> {
                 controlPlane.updateCommandStatus(command.commandId, CommandStatus.SUCCEEDED)
-                handleLeadLagPayload(command.payloadJson, Clock.System.now())
+                handleLeadLagPayload(command.payloadJson, clock.now())
                     ?: "Manual sync command handled."
             }
 
@@ -4173,6 +4825,48 @@ class MacEngineDaemon(
         }
     }
 
+    private fun startTelegramCommandPolling() {
+        val poller = telegramCommandPoller ?: return
+        if (telegramCommandJob?.isActive == true) return
+        telegramCommandJob = telegramCommandScope.launch {
+            poller.loop { command ->
+                runCatching {
+                    handleTelegramCommand(command)
+                }.onFailure { error ->
+                    logger.warn("Telegram command handling failed: {}", error.message ?: "unknown")
+                }
+            }
+        }
+    }
+
+    private suspend fun handleTelegramCommand(command: TelegramCommand) {
+        val currentState = repository.state.value
+        when (command) {
+            TelegramCommand.Status -> {
+                telegramNotifier.sendMessage(
+                    buildString {
+                        appendLine("🚀 Trinity Status")
+                        appendLine("━━━━━━")
+                        appendLine("KiBot    ${normalizeTelegramNodeStatus(currentState.kibotNodeStatus)}")
+                        appendLine("KiDax    ${normalizeTelegramNodeStatus(currentState.kidaxNodeStatus)}")
+                        append("KiNance  ${normalizeTelegramNodeStatus(currentState.kinanceNodeStatus)}")
+                    }.trimEnd()
+                )
+                repository.noteStatus("Telegram /status requested.")
+            }
+            TelegramCommand.Pause -> {
+                controlPlane.setDesiredState(config.controlPlane.botId, BotDesiredState.OFF)
+                telegramNotifier.sendMessage("⏸️ Pause accepted")
+                repository.noteStatus("Telegram /pause -> desired state OFF.")
+            }
+            TelegramCommand.Resume -> {
+                controlPlane.setDesiredState(config.controlPlane.botId, BotDesiredState.ON)
+                telegramNotifier.sendMessage("▶️ Resume accepted")
+                repository.noteStatus("Telegram /resume -> desired state ON.")
+            }
+        }
+    }
+
     private suspend fun maybeTakeOver(
         now: Instant,
         botState: BotStateSnapshot,
@@ -4180,11 +4874,9 @@ class MacEngineDaemon(
         localHealth: EngineHealthSnapshot,
     ): Boolean {
         if (lease?.conflictDetected == true && botState.desiredState == BotDesiredState.ON) {
-            val forcedLease = controlPlane.acquireLease(
-                botId = config.controlPlane.botId,
-                deviceId = config.device.deviceId,
-                ttlSeconds = config.leaseTtlSeconds,
-            )
+            val forcedLease = tryAcquireLeaseOrNull(
+                reason = "conflict-force-acquire",
+            ) ?: return false
             lastObservedLeaseTerm = forcedLease.term
             activateConflictRecoveryHold(now, forcedLease.term)
             appendAuditLog(
@@ -4233,7 +4925,7 @@ class MacEngineDaemon(
             .take(12)
         val fills = reconciliationPairs
             .flatMap { pairId ->
-                runCatching { exchange.fetchRecentFills(pairId, limit = 20) }.getOrDefault(emptyList())
+                runCatching { exchange.fetchRecentFills(pairId, limit = 40) }.getOrDefault(emptyList())
             }
         val reconciliation = reconciliationService.reconcile(
             portfolio = PortfolioSnapshot(
@@ -4268,11 +4960,9 @@ class MacEngineDaemon(
             reconciliation.state == ReconciliationState.CLEAN &&
             localHealth.status != HealthStatus.CRITICAL
         ) {
-            val recoveredLease = controlPlane.acquireLease(
-                botId = config.controlPlane.botId,
-                deviceId = config.device.deviceId,
-                ttlSeconds = config.leaseTtlSeconds,
-            )
+            val recoveredLease = tryAcquireLeaseOrNull(
+                reason = "conflict-recovery-reacquire",
+            ) ?: return false
             lastObservedLeaseTerm = recoveredLease.term
             activateConflictRecoveryHold(now, recoveredLease.term)
             appendAuditLog(
@@ -4301,25 +4991,24 @@ class MacEngineDaemon(
                             }
                         }
                     }.distinct().joinToString(" ")
-                    controlPlane.markConflictSafeMode(
-                        botId = config.controlPlane.botId,
-                        reason = failSafeReason,
-                    )
-                    appendAuditLog(
-                        level = LogLevel.ERROR,
-                        category = "FAILOVER",
-                        message = "Fail-safe takeover block triggered: $failSafeReason",
-                    )
+	                    controlPlane.markConflictSafeMode(
+	                        botId = config.controlPlane.botId,
+	                        reason = failSafeReason,
+	                    )
+	                    recordForcedSafeMode(now, failSafeReason)
+	                    appendAuditLog(
+	                        level = LogLevel.ERROR,
+	                        category = "FAILOVER",
+	                        message = "Fail-safe takeover block triggered: $failSafeReason",
+	                    )
                 }
             }
             return false
         }
 
-        val acquiredLease = controlPlane.acquireLease(
-            botId = config.controlPlane.botId,
-            deviceId = config.device.deviceId,
-            ttlSeconds = config.leaseTtlSeconds,
-        )
+        val acquiredLease = tryAcquireLeaseOrNull(
+            reason = "safe-reconciliation-acquire",
+        ) ?: return false
         lastObservedLeaseTerm = acquiredLease.term
 
         appendAuditLog(
@@ -4328,6 +5017,51 @@ class MacEngineDaemon(
             message = "Mac acquired master lease term ${acquiredLease.term.value} after safe reconciliation.",
         )
         return true
+    }
+
+    private suspend fun tryAcquireLeaseOrNull(reason: String): EngineLeaseSnapshot? {
+        return runCatching {
+            controlPlane.acquireLease(
+                botId = config.controlPlane.botId,
+                deviceId = config.device.deviceId,
+                ttlSeconds = config.leaseTtlSeconds,
+            )
+        }.onFailure { error ->
+            val message = error.message.orEmpty()
+            if (message.contains("Lease is still held by another device", ignoreCase = true)) {
+                logger.info(
+                    "LEASE_CONTENTION: skipping acquireLease for bot={} reason={} because another device still holds the lease.",
+                    config.controlPlane.botId.value,
+                    reason,
+                )
+            } else {
+                logger.warn(
+                    "LEASE_ACQUIRE_FAILED: bot={} reason={} message={}",
+                    config.controlPlane.botId.value,
+                    reason,
+                    message,
+                )
+                val currentState = repository.state.value
+                val localFirstBypass =
+                    config.enableLiveExecution &&
+                        config.exchangeKind == ExchangeKind.INDODAX &&
+                        lastExchangeReachable &&
+                        !isControlPlaneReachable(clock.now()) &&
+                        currentState.marketRegime.equals("HIGH_VOLATILITY_MOMENTUM", ignoreCase = true)
+                if (localFirstBypass) {
+                    logger.warn(
+                        "LEASE_LOCAL_FIRST_BYPASS: synthetic lease used for bot={} reason={} while control-plane stale but local exchange path healthy.",
+                        config.controlPlane.botId.value,
+                        reason,
+                    )
+                    return buildMomentumFallbackLease(
+                        now = clock.now(),
+                        botState = fallbackBotState(clock.now()),
+                        source = "lease-acquire-$reason",
+                    )
+                }
+            }
+        }.getOrNull()
     }
 
     private suspend fun handleLeadLagPayload(payloadJson: String?, now: Instant): String? {
@@ -4879,6 +5613,12 @@ class MacEngineDaemon(
         if (lastCheck != null && (now - lastCheck).inWholeSeconds < 30) return
         
         val alerts = heartbeatMonitor.checkDeadBots(now)
+            .filterNot { alert ->
+                // NEVER_SEEN is too noisy in the current mesh because peer liveness is derived
+                // from control-plane state and UDP heartbeats, not only from this monitor map.
+                // Treat only real timeout alerts as actionable.
+                alert.reason == "NEVER_SEEN"
+            }
         lastDeadBotCheckAt = now
         
         if (alerts.isNotEmpty()) {
@@ -4913,15 +5653,54 @@ class MacEngineDaemon(
             config.leadLagUdpHeartbeatTimeoutMillis * 2L,
             config.leadLagUdpHeartbeatIntervalMillis * 4L,
         )
+        val controlPlaneGraceMs = maxOf(
+            config.leadLagUdpHeartbeatTimeoutMillis * 10L,
+            600_000L,
+        )
         val uptimeMs = (now - daemonStartedAt).inWholeMilliseconds
         if (uptimeMs < graceMs) return null
+            val controlPlaneFallbackPeers = mutableListOf<String>()
         val stalePeers = expectedBots.mapNotNull { botId ->
             val seenAt = lastTrinityHeartbeatByBotId[botId]
+            val peerState = latestPeerBotStates[botId] ?: lastKnownHealthyPeerBotStates[botId]
+            val peerHeartbeatAgeMs = peerState?.lastHeartbeatAt?.let { maxOf((now - it).inWholeMilliseconds, 0L) }
+            val peerLooksHealthy = peerState != null &&
+                peerState.desiredState != BotDesiredState.OFF &&
+                peerState.effectiveState != BotEffectiveState.STOPPED &&
+                peerState.syncHealth != SyncHealth.BROKEN
+            val peerControlPlaneTrusted = peerLooksHealthy && (
+                peerHeartbeatAgeMs == null ||
+                    peerHeartbeatAgeMs <= controlPlaneGraceMs ||
+                    peerState.syncHealth == SyncHealth.HEALTHY ||
+                    peerState.effectiveState == BotEffectiveState.RUNNING
+                )
             if (seenAt == null) {
-                "$botId:no_heartbeat"
+                if (peerControlPlaneTrusted) {
+                    controlPlaneFallbackPeers += if (peerHeartbeatAgeMs != null) {
+                        "$botId:${peerHeartbeatAgeMs}ms"
+                    } else {
+                        "$botId:cp_state"
+                    }
+                    null
+                } else {
+                    "$botId:no_heartbeat"
+                }
             } else {
                 val ageMs = (now - seenAt).inWholeMilliseconds
-                if (ageMs > config.leadLagUdpHeartbeatTimeoutMillis) "$botId:${ageMs}ms" else null
+                if (ageMs > config.leadLagUdpHeartbeatTimeoutMillis) {
+                    if (peerControlPlaneTrusted) {
+                        controlPlaneFallbackPeers += if (peerHeartbeatAgeMs != null) {
+                            "$botId:udp=${ageMs}ms cp=${peerHeartbeatAgeMs}ms"
+                        } else {
+                            "$botId:udp=${ageMs}ms cp=state"
+                        }
+                        null
+                    } else {
+                        "$botId:${ageMs}ms"
+                    }
+                } else {
+                    null
+                }
             }
         }
         if (stalePeers.isEmpty()) {
@@ -4935,6 +5714,21 @@ class MacEngineDaemon(
                     message = "Trinity heartbeat recovered; safe mode cleared.",
                 )
             }
+            if (controlPlaneFallbackPeers.isNotEmpty()) {
+                repository.noteStatus(
+                    "Trinity UDP mesh lagging, but control-plane peers still fresh: ${controlPlaneFallbackPeers.joinToString(", ")}.",
+                )
+            }
+            return null
+        }
+        if (config.device.role == DeviceRole.STANDBY) {
+            val advisory = "Standby heartbeat advisory: ${stalePeers.joinToString(", ")}. Lanjut sinkron lokal tanpa takeover."
+            repository.noteStatus(advisory)
+            appendAuditLog(
+                level = LogLevel.WARN,
+                category = "TRINITY_HEARTBEAT",
+                message = advisory,
+            )
             return null
         }
         val reason = "Trinity heartbeat timeout: ${stalePeers.joinToString(", ")}. Suspend new entries, biarkan trailing lokal mengurus exit."
@@ -4973,7 +5767,8 @@ class MacEngineDaemon(
             if (msgType != "ACTIVE_POSITIONS") return false
             if (config.exchangeKind != ExchangeKind.BINANCE_SPOT) return false
             val positionsNode = root["positions"]?.jsonArray ?: return false
-            kidaxActivePositionsByPair.clear()
+            val seenAt = clock.now()
+            val nextPositions = linkedMapOf<String, ActivePositionWire>()
             positionsNode.forEach { node ->
                 val obj = node.jsonObject
                 val pairId = obj["pairId"]?.jsonPrimitive?.contentOrNull?.lowercase()?.trim().orEmpty()
@@ -4987,7 +5782,18 @@ class MacEngineDaemon(
                     quantity = obj["quantity"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.0,
                     notionalIdr = obj["notionalIdr"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.0,
                 )
-                kidaxActivePositionsByPair[pairId] = wire
+                nextPositions[pairId] = wire
+                holdingsResearchFirstSeenAtByPair.putIfAbsent(pairId, seenAt)
+            }
+            kidaxActivePositionsByPair.clear()
+            kidaxActivePositionsByPair.putAll(nextPositions)
+            val activePairs = nextPositions.keys
+            holdingsResearchFirstSeenAtByPair.keys.removeIf { it !in activePairs }
+            holdingsResearchLastAttemptAtByPair.keys.removeIf { it !in activePairs }
+            holdingsResearchEmergencyDumpSentAtByPair.keys.removeIf { it !in activePairs }
+            holdingsResearchInFlightByPair.entries.removeIf { (pairKey, job) ->
+                val shouldRemove = pairKey !in activePairs && job.isCompleted
+                shouldRemove
             }
             true
         }.getOrDefault(false)
@@ -5027,6 +5833,326 @@ class MacEngineDaemon(
         }.getOrDefault(false)
     }
 
+    private fun isKiBotManagerNode(): Boolean = config.controlPlane.botId.value.equals("kibot", ignoreCase = true)
+
+    private fun holdingResearchTargetBotId(): BotId = config.leadLagTargetBotId ?: BotId("kidax")
+
+    private fun formatHoldingMinutes(minutes: Long): String = when {
+        minutes >= 1440L -> "${minutes / 1440L} hari"
+        minutes >= 60L -> "${minutes / 60L} jam"
+        else -> "$minutes menit"
+    }
+
+    private fun collectHoldingResearchTargets(
+        now: Instant,
+        managedPositions: List<com.kibot.core.ManagedPosition> = latestManagedPositionsForAi,
+    ): List<HoldingResearchTarget> {
+        val localTargets = managedPositions.mapNotNull { position ->
+            val pairId = position.pairId.value.lowercase()
+            holdingsResearchFirstSeenAtByPair.putIfAbsent(pairId, position.openedAt)
+            HoldingResearchTarget(
+                pairId = pairId,
+                assetSymbol = position.pairId.pairAssets().baseAsset.uppercase(),
+                pnlPct = position.unrealizedPnlPct,
+                pnlIdr = position.unrealizedPnlIdr.toDoubleOrZero(),
+            )
+        }
+        if (localTargets.isNotEmpty()) return localTargets
+        val udpTargets = kidaxActivePositionsByPair.values.map { holding ->
+            HoldingResearchTarget(
+                pairId = holding.pairId,
+                assetSymbol = holding.pairId.substringBefore('_').uppercase(),
+                pnlPct = holding.pnlPct,
+                pnlIdr = holding.pnlIdr,
+            )
+        }
+        if (udpTargets.isNotEmpty()) return udpTargets
+        return fetchKidaxLocalHoldingTargets(now)
+    }
+
+    private fun fetchKidaxLocalHoldingTargets(now: Instant): List<HoldingResearchTarget> {
+        if (!isKiBotManagerNode()) return emptyList()
+        return runCatching {
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:8787/api/state"))
+                .timeout(Duration.ofSeconds(2))
+                .header("Accept", "application/json")
+                .GET()
+                .build()
+            val response = indodaxHistoryHttpClient.send(request, HttpResponse.BodyHandlers.ofString())
+            if (response.statusCode() !in 200..299) return@runCatching emptyList<HoldingResearchTarget>()
+            val root = json.parseToJsonElement(response.body()).jsonObject
+            val holdings = root["holdingsDetailed"]?.jsonArray.orEmpty()
+            holdings.mapNotNull { node ->
+                val obj = node.jsonObject
+                val assetCode = obj["assetCode"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                if (assetCode.isBlank()) return@mapNotNull null
+                val pairId = "${assetCode.lowercase()}_idr"
+                holdingsResearchFirstSeenAtByPair.putIfAbsent(pairId, now)
+                HoldingResearchTarget(
+                    pairId = pairId,
+                    assetSymbol = assetCode.uppercase(),
+                    pnlPct = parsePercentLabel(obj["pnlPctLabel"]?.jsonPrimitive?.contentOrNull),
+                    pnlIdr = parseMonetaryLabel(obj["pnlIdrLabel"]?.jsonPrimitive?.contentOrNull ?: ""),
+                )
+            }
+        }.getOrElse { emptyList() }
+    }
+
+    private fun maybeScheduleAsyncHoldingsResearch(
+        now: Instant,
+        managedPositions: List<com.kibot.core.ManagedPosition>,
+    ) {
+        if (aiSupportCoordinator == null) return
+        val holdings = collectHoldingResearchTargets(now, managedPositions)
+        if (holdings.isEmpty()) return
+
+        holdings.forEach { holding ->
+            val pairKey = holding.pairId.lowercase()
+            val existingJob = holdingsResearchInFlightByPair[pairKey]
+            if (existingJob != null && existingJob.isActive) return@forEach
+            if (existingJob != null && existingJob.isCompleted) {
+                holdingsResearchInFlightByPair.remove(pairKey, existingJob)
+            }
+            val lastAttemptAt = holdingsResearchLastAttemptAtByPair[pairKey]
+            if (lastAttemptAt != null && (now - lastAttemptAt) < holdingsResearchInterval) return@forEach
+
+            val job = holdingsResearchScope.launch {
+                val startedAt = clock.now()
+                holdingsResearchLastAttemptAtByPair[pairKey] = startedAt
+                runCatching {
+                    val firstSeenAt = holdingsResearchFirstSeenAtByPair[pairKey] ?: startedAt
+                    val holdingMinutes = ((startedAt.toEpochMilliseconds() - firstSeenAt.toEpochMilliseconds()).coerceAtLeast(0L) / 60_000L)
+                    val decision = aiSupportCoordinator.researchHolding(
+                        HoldingResearchRequest(
+                            pairId = holding.pairId,
+                            assetSymbol = holding.assetSymbol,
+                            holdingMinutes = holdingMinutes,
+                            pnlPct = holding.pnlPct,
+                            pnlIdr = holding.pnlIdr,
+                        ),
+                    )
+                    if (decision == null) {
+                        logger.warn(
+                            "[HOLDINGS_RESEARCH] no decision returned for {}",
+                            holding.pairId,
+                        )
+                        appendAuditLog(
+                            level = LogLevel.WARN,
+                            category = "HOLDINGS_RESEARCH",
+                            message = "AI holdings research tidak mengembalikan keputusan untuk ${holding.pairId}.",
+                        )
+                        return@runCatching
+                    }
+
+                    appendAuditLog(
+                        level = LogLevel.INFO,
+                        category = "HOLDINGS_RESEARCH",
+                        message = "AI holdings research ${holding.pairId} ${formatHoldingMinutes(holdingMinutes)} pnl=${formatDecimal(holding.pnlPct, 2)}% -> ${decision.action.name}.",
+                    )
+                    logger.info(
+                        "[HOLDINGS_RESEARCH] pair={} age={} pnl={} action={}",
+                        holding.pairId,
+                        formatHoldingMinutes(holdingMinutes),
+                        formatDecimal(holding.pnlPct, 2),
+                        decision.action.name,
+                    )
+
+                    if (decision.action != HoldingResearchAction.EMERGENCY_DUMP) return@runCatching
+
+                    val lastDumpAt = holdingsResearchEmergencyDumpSentAtByPair[pairKey]
+                    if (lastDumpAt != null && (startedAt - lastDumpAt) < holdingsResearchEmergencyCooldown) return@runCatching
+
+                    markPipelineStage("MARKER: AI_HOLDINGS_EMERGENCY_DUMP")
+                    val dispatched = dispatchHoldingResearchEmergencyDump(
+                        now = startedAt,
+                        holding = holding,
+                        holdingMinutes = holdingMinutes,
+                        rawAiResponse = decision.rawResponse,
+                    )
+                    if (dispatched) {
+                        holdingsResearchEmergencyDumpSentAtByPair[pairKey] = startedAt
+                    }
+                }.onFailure {
+                    logger.warn(
+                        "[HOLDINGS_RESEARCH] failed for {}: {}",
+                        holding.pairId,
+                        it.message ?: "unknown error",
+                    )
+                    appendAuditLog(
+                        level = LogLevel.WARN,
+                        category = "HOLDINGS_RESEARCH",
+                        message = "AI holdings research gagal untuk ${holding.pairId}: ${it.message ?: "unknown error"}.",
+                    )
+                }
+            }
+            holdingsResearchInFlightByPair[pairKey] = job
+        }
+    }
+
+    private suspend fun dispatchHoldingResearchEmergencyDump(
+        now: Instant,
+        holding: HoldingResearchTarget,
+        holdingMinutes: Long,
+        rawAiResponse: String,
+    ): Boolean {
+        val sentAtMs = now.toEpochMilliseconds()
+        val payload = LeadLagCalloutPayload(
+            traceId = "ai-hold-${holding.pairId.lowercase()}-$sentAtMs",
+            msgType = "EMERGENCY_VETO_SELL",
+            senderBotId = config.controlPlane.botId.value,
+            pairId = holding.pairId,
+            trend = "REVERSAL",
+            detectedAtEpochMs = sentAtMs,
+            confidence = 0.96,
+            expectedNetPct = kotlin.math.abs(holding.pnlPct).coerceAtLeast(0.10),
+            shortTermReturnPct = 0.0,
+            mediumTermReturnPct = 0.0,
+            tradeActivityScore = 0.0,
+            forceRotation = true,
+            sentAtEpochMs = sentAtMs,
+            expiresAtEpochMs = sentAtMs + 15_000L,
+            payload = buildJsonObject {
+                put("reason", "AI_HOLDINGS_RESEARCH")
+                put("asset_symbol", holding.assetSymbol)
+                put("holding_minutes", holdingMinutes)
+                put("pnl_pct", holding.pnlPct)
+                put("pnl_idr", holding.pnlIdr)
+                put("ai_response", rawAiResponse.take(220))
+            },
+        )
+        val payloadJson = json.encodeToString(payload)
+        val (dispatched, viaUdp) = dispatchLeadLagPayloadWithFallback(
+            payloadJson = payloadJson,
+            targetBotId = holdingResearchTargetBotId(),
+        )
+        if (dispatched) {
+            val note = "AI minta buang ${holding.pairId} sekarang (${formatHoldingMinutes(holdingMinutes)}, ${formatDecimal(holding.pnlPct, 2)}%)."
+            logger.warn(
+                "[HOLDINGS_RESEARCH] emergency dump dispatched for {} via manager signal",
+                holding.pairId,
+            )
+            repository.noteStatus(note)
+            appendAuditLog(
+                level = LogLevel.ERROR,
+                category = "HOLDINGS_RESEARCH",
+                message = if (viaUdp) {
+                    "$note Emergency dump dikirim via UDP ke ${holdingResearchTargetBotId().value}."
+                } else {
+                    "$note Emergency dump fallback queue ke ${holdingResearchTargetBotId().value}."
+                },
+            )
+        }
+        return dispatched
+    }
+
+    private fun maybeScheduleAutonomousAiReview(
+        now: Instant,
+        cycle: com.kibot.core.StrategyCycleResult,
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        managedPositions: List<com.kibot.core.ManagedPosition>,
+        recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
+    ) {
+        if (!config.enableExecutionAiAssist || aiSupportCoordinator == null) return
+        val lastReviewAt = lastAutonomousAiReviewAt
+        if (lastReviewAt != null && (now - lastReviewAt) < autonomousAiReviewInterval) return
+        val existingJob = autonomousAiReviewJob
+        if (existingJob != null && existingJob.isActive) return
+
+        val shortlist = strategyOrchestrator.shortlistForSupport(
+            marketQuotes = marketQuotes,
+            maxCandidates = config.aiSupportConfig?.maxCandidates ?: 6,
+        )
+        if (shortlist.isEmpty() && managedPositions.isEmpty()) return
+
+        val weeklyReview = cachedWeeklyReview ?: liveLearningReviewBuilder.build(
+            botId = config.controlPlane.botId,
+            now = now,
+            cycle = cycle,
+            marketQuotes = marketQuotes,
+            recentOrders = recentOrders,
+        )
+
+        autonomousAiReviewJob = autonomousAiReviewScope.launch {
+            val startedAt = clock.now()
+            lastAutonomousAiReviewAt = startedAt
+            val aiEvaluation = withTimeoutOrNull(
+                (config.aiSupportConfig?.timeoutMillis ?: 15_000L) + 1_000L,
+            ) {
+                runCatching {
+                    aiSupportCoordinator.evaluate(shortlist, startedAt)
+                }.onFailure { error ->
+                    logger.warn("AUTONOMOUS_AI_REVIEW failed to fetch AI hints: {}", error.message)
+                }.getOrNull()
+            }.also { evaluation ->
+                if (evaluation == null) {
+                    logger.warn("AUTONOMOUS_AI_REVIEW timed out or fell back to local-only policy.")
+                }
+            }
+
+            val dailyPnlPct = cycle.dailyRisk.openingEquityIdr.toDoubleOrZero()
+                .takeIf { it > 0.0 }
+                ?.let { opening ->
+                    (cycle.dailyRisk.currentEquityIdr.toDoubleOrZero() - opening) / opening * 100.0
+                } ?: 0.0
+
+            val output = AutonomousAiReviewBuilder.build(
+                input = AutonomousAiReviewInput(
+                    now = startedAt,
+                    botId = config.controlPlane.botId.value,
+                    topCandidate = cycle.topCandidate,
+                    marketRegime = cycle.marketSnapshot.regime,
+                    freeIdr = resolveAllocatableIdr(cycle, balances),
+                    dailyPnlPct = dailyPnlPct,
+                    holdings = managedPositions,
+                    aiHints = aiEvaluation?.hints.orEmpty(),
+                    aiUsedNetwork = aiEvaluation?.usedNetwork == true,
+                    aiBlockedReason = aiEvaluation?.blockedReason
+                        ?: if (aiEvaluation == null) "network_unavailable_local_heuristic" else null,
+                    recentTrades = tradeLedger.getRecentTrades(limit = 24),
+                    learningSnapshot = cachedLocalLearningSnapshot,
+                ),
+                adaptivePolicyPath = config.adaptiveAiPolicyPath.toAbsolutePath().toString(),
+            )
+
+            persistAutonomousAiReview(output, startedAt)
+        }
+    }
+
+    private fun persistAutonomousAiReview(
+        output: AutonomousAiReviewOutput,
+        now: Instant,
+    ) {
+        runCatching {
+            val adaptivePath = config.adaptiveAiPolicyPath
+            val parent = adaptivePath.parent ?: return@runCatching
+            Files.createDirectories(parent)
+            Files.writeString(
+                adaptivePath,
+                json.encodeToString(AdaptiveAiPolicyFile.serializer(), output.policy),
+            )
+            val summaryPath = parent.resolve("summary.json")
+            Files.writeString(
+                summaryPath,
+                json.encodeToString(AutonomousAiSummaryFile.serializer(), output.summary),
+            )
+            cachedAdaptiveAiPolicy = AdaptiveAiPolicyLoader(adaptivePath).loadOrNull(now)
+            adaptiveAiPolicyFetchedAt = now
+            aiRuntimeProviderStatusLabel = output.runtimeLabel
+            aiRuntimeProviderStatusAt = now
+            repository.noteStatus("Adaptive AI review 30 menit aktif: ${output.runtimeLabel}.")
+            logger.info(
+                "[AUTONOMOUS_AI_REVIEW] bot={} topPolicyPairs={} runtime={}",
+                config.controlPlane.botId.value,
+                output.policy.focusPairs.joinToString(","),
+                output.runtimeLabel,
+            )
+        }.onFailure { error ->
+            logger.warn("Failed to persist autonomous AI review: {}", error.message)
+        }
+    }
+
     private fun handleTrinityHeartbeatPayload(payload: String, now: Instant): Boolean {
         return runCatching {
             val heartbeat = json.decodeFromString<TrinityHeartbeatPayload>(payload)
@@ -5041,11 +6167,13 @@ class MacEngineDaemon(
 
     private fun shouldYieldToPrimary(
         botState: BotStateSnapshot,
+        lease: EngineLeaseSnapshot?,
         now: Instant,
     ): Boolean {
         if (config.device.role != DeviceRole.STANDBY) return false
         val activeDeviceId = botState.activeDeviceId ?: return false
         if (activeDeviceId == config.device.deviceId) return false
+        if (lease != null && now >= lease.expiresAt) return false
         val lastHeartbeatAt = botState.lastHeartbeatAt ?: return false
         val heartbeatAgeMs = now.toEpochMilliseconds() - lastHeartbeatAt.toEpochMilliseconds()
         val graceWindowMs = (config.leaseTtlSeconds * 1_000L) + 8_000L
@@ -5058,14 +6186,14 @@ class MacEngineDaemon(
     }
 
     private fun enterReleaseCooldown() {
-        releaseCooldownUntil = Clock.System.now().plus((config.leaseTtlSeconds + 12).seconds)
+        releaseCooldownUntil = clock.now().plus((config.leaseTtlSeconds + 12).seconds)
     }
 
     private fun buildLocalHealth(
         exchangeReachable: Boolean,
         warnings: List<String>,
         feedLatencyMs: Long? = null,
-        supabaseReachable: Boolean = isControlPlaneReachable(Clock.System.now()),
+        supabaseReachable: Boolean = isControlPlaneReachable(clock.now()),
         marketFeedHealthy: Boolean = exchangeReachable,
         reportOnlyMode: Boolean = false,
     ): EngineHealthSnapshot {
@@ -5145,7 +6273,7 @@ class MacEngineDaemon(
             return lastExchangeReachable to lastExchangePingMs
         }
         val publicPingUrl = when (config.exchangeKind) {
-            ExchangeKind.BINANCE_SPOT -> "${config.binanceClientConfig.publicBaseUrl}/api/v3/ping"
+            ExchangeKind.BINANCE_SPOT -> config.binanceClientConfig.publicRestUrl("ping")
             ExchangeKind.INDODAX -> "${config.indodaxClientConfig.publicBaseUrl}/ticker/btcidr"
         }
         val publicPingStartedAtNs = System.nanoTime()
@@ -5198,8 +6326,15 @@ class MacEngineDaemon(
             connection.connectTimeout = 3000
             connection.readTimeout = 3000
             connection.requestMethod = "GET"
-            connection.setRequestProperty("User-Agent", "KiBot/1.0 (+https://kibot.local)")
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             connection.setRequestProperty("Accept", "application/json,text/plain,*/*")
+            connection.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+            connection.setRequestProperty("Sec-Fetch-Dest", "document")
+            connection.setRequestProperty("Sec-Fetch-Mode", "navigate")
+            connection.setRequestProperty("Sec-Fetch-Site", "none")
+            connection.setRequestProperty("Cache-Control", "max-age=0")
+            connection.setRequestProperty("Origin", "https://indodax.com")
+            connection.setRequestProperty("Referer", "https://indodax.com/")
             connection.instanceFollowRedirects = true
             connection.connect()
             connection.responseCode in 200..299
@@ -5329,6 +6464,7 @@ class MacEngineDaemon(
         }
         // ALWAYS merge local orders to preserve entry price history for holdings display
         val localOrders = loadLocalPositionState().orders
+        val localFirstCutoff = now.minus(3.days)
         cachedRecentOrders = if (fetchedOrders.isEmpty() && localOrders.isNotEmpty()) {
             if (!localRecoveryFallbackAnnounced) {
                 localRecoveryFallbackAnnounced = true
@@ -5342,11 +6478,17 @@ class MacEngineDaemon(
             }
             localOrders
         } else {
-            // Always merge local orders even if API returned some orders
-            // This ensures we have full entry price history for all held positions
+            val localRecentOrders = localOrders.filter { it.updatedAt >= localFirstCutoff }
+            val localRecentKeys = localRecentOrders.flatMap { listOf(it.orderId.value, it.clientOrderId.value) }.toSet()
+            val remoteArchiveOrders = fetchedOrders.filter { it.updatedAt < localFirstCutoff }
+            val remoteRecentSupplement = fetchedOrders.filter { order ->
+                order.updatedAt >= localFirstCutoff &&
+                    order.orderId.value !in localRecentKeys &&
+                    order.clientOrderId.value !in localRecentKeys
+            }
             mergeRecentOrders(
-                base = fetchedOrders,
-                updates = localOrders,
+                base = remoteArchiveOrders + remoteRecentSupplement,
+                updates = localRecentOrders,
             )
         }
         recentOrdersFetchedAt = now
@@ -5367,7 +6509,7 @@ class MacEngineDaemon(
         if (!shouldRefresh) return cachedRecentFills
         cachedRecentFills = pairIds.flatMap { pairId ->
             withTimeoutOrNull(8_000L) {
-                runCatching { exchange.fetchRecentFills(pairId, limit = 12) }.getOrDefault(emptyList())
+                runCatching { exchange.fetchRecentFills(pairId, limit = 40) }.getOrDefault(emptyList())
             } ?: emptyList()
         }
         recentFillsFetchedAt = now
@@ -5434,14 +6576,85 @@ class MacEngineDaemon(
         recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
         aiSoftAuditOnly: Boolean = false,
     ) {
-        if (!config.enableLiveExecution) return
-        // FIXED: Accept both "main" and "kidax" as execution owners for Indodax
-        val validBotIds = listOf("main", "kidax")
-        val isExecutionOwner = config.exchangeKind == ExchangeKind.INDODAX &&
-            validBotIds.any { config.controlPlane.botId.value.equals(it, ignoreCase = true) }
-        if (!isExecutionOwner) {
-            logger.warn("[LIVE_TRADING] Bot ID '${config.controlPlane.botId.value}' is not an execution owner. Valid IDs: $validBotIds")
+        val botId = config.controlPlane.botId.value.trim().lowercase()
+        val validBotIds = when (config.exchangeKind) {
+            ExchangeKind.INDODAX -> listOf("main", "kidax", "kibot")
+            ExchangeKind.BINANCE_SPOT -> listOf("main", "kinance", "kibot")
+        }
+        logger.info(
+            "OWNERSHIP_AUDIT: Current BotID={}, isOwner={}, activeIDs={}",
+            config.controlPlane.botId.value,
+            validBotIds.any { botId.equals(it, ignoreCase = true) },
+            validBotIds,
+        )
+        if (!config.enableLiveExecution) {
+            val reason = "EXIT_DETECTED: live execution disabled"
+            logger.warn(reason)
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
             return
+        }
+        val activeControlPlaneState = runCatching { lease.term.value }.getOrNull()
+        logger.debug(
+            "MARKER: BEFORE_OWNERSHIP_CHECK botId={} activeControlPlaneState={} regime={}",
+            botId,
+            activeControlPlaneState,
+            cycle.marketSnapshot.regime,
+        )
+        val leaseOwnershipMatches = activeControlPlaneState
+            ?.toString()
+            ?.lowercase()
+            ?.split("|", ",", ";", " ")
+            ?.map { it.trim() }
+            ?.any { it == botId }
+            ?: false
+        var isExecutionOwner = validBotIds.any { botId.equals(it, ignoreCase = true) } || leaseOwnershipMatches
+        if (botId == "kibot") {
+            isExecutionOwner = true
+        }
+        logger.info(
+            "OWNERSHIP_DECISION: botId={} ownerByList={} ownerByLease={} finalOwner={}",
+            botId,
+            validBotIds.any { botId.equals(it, ignoreCase = true) },
+            leaseOwnershipMatches,
+            isExecutionOwner,
+        )
+        if (leaseOwnershipMatches) {
+            logger.info(
+                "[LIVE_TRADING] ownership recovered from lease term. botId={} activeControlPlaneState={}",
+                botId,
+                activeControlPlaneState,
+            )
+        }
+        val forceOwnershipBypass = botId == "kidax" &&
+            cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM
+        if (forceOwnershipBypass) {
+            isExecutionOwner = true
+        }
+        if (!isExecutionOwner && !forceOwnershipBypass && botId != "kibot") {
+            logger.warn("[LIVE_TRADING] Bot ID '{}' is not an execution owner. Valid IDs: {}", config.controlPlane.botId.value, validBotIds)
+            maybeScheduleAutonomousAiReview(
+                now = now,
+                cycle = cycle,
+                balances = balances,
+                marketQuotes = marketQuotes,
+                managedPositions = latestManagedPositionsForAi.takeIf { it.isNotEmpty() } ?: emptyList(),
+                recentOrders = recentOrders,
+            )
+            val backupCandidate = cycle.selectedSignal?.pairId?.value ?: cycle.topCandidate?.value ?: cycle.rankedPairs.firstOrNull()?.pairId?.value ?: "-"
+            repository.noteStatus("Backup advisor aktif: ownership tertutup, kandidat cadangan $backupCandidate tetap dianalisis.")
+            val reason = "SYNC_ONCE_ABORTED: ownership gate closed botId=$botId activeControlPlaneState=$activeControlPlaneState regime=${cycle.marketSnapshot.regime}"
+            logger.warn(reason)
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            return
+        }
+        if (!isExecutionOwner && forceOwnershipBypass) {
+            logger.warn(
+                "[LIVE_TRADING] HARD-BYPASS ownership gate for kidax in HIGH_VOLATILITY_MOMENTUM. botId={} activeControlPlaneState={}",
+                botId,
+                activeControlPlaneState,
+            )
         }
         refreshProtectiveState(now)
         refreshIndodaxFocusUniverse(now)
@@ -5450,8 +6663,8 @@ class MacEngineDaemon(
         updateDustQuarantine(balances = balances, marketQuotes = marketQuotes)
         updateHyperAggressivePulseSnapshots(now = now, marketQuotes = marketQuotes)
         val hyperAggressiveTracker = evaluateHyperAggressiveTracker(now = now, dailyRisk = cycle.dailyRisk)
-        val freeIdr = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
-        val isCapitalFullyDeployed = freeIdr <= 1000.0  // Less than 1K free
+        val freeIdr = resolveIdrFreeBalance(balances)
+        val isCapitalFullyDeployed = freeIdr < minimumLiveNotionalForExchange().coerceAtLeast(dustHoldingsIgnoreMinValueIdr)
         val stallState = tradingStallDetector.getState()
         val stallRecoveryActive = stallState.stallMinutes >= 120L
         
@@ -5530,9 +6743,17 @@ class MacEngineDaemon(
             rankedPairs = cycle.rankedPairs,
             now = now,
         )
+        latestManagedPositionsForAi = managedPositions
+        refreshLocalLearningSnapshot(
+            now = now,
+            cycle = cycle,
+            managedPositions = managedPositions,
+            marketQuotes = marketQuotes,
+        )
         persistLocalPositionState(
             now = now,
             recentOrders = stabilizedOrders,
+            recentFills = cachedRecentFills,
             managedPositions = managedPositions,
         )
         maybeBroadcastActivePositions(
@@ -5541,6 +6762,17 @@ class MacEngineDaemon(
             managedPositions = managedPositions,
             marketQuotes = marketQuotes,
         )
+        markPipelineStage("MARKER: EVALUATING_ACTIVE_HOLDINGS")
+        maybeScheduleAsyncHoldingsResearch(now, managedPositions)
+        maybeScheduleAutonomousAiReview(
+            now = now,
+            cycle = cycle,
+            balances = balances,
+            marketQuotes = marketQuotes,
+            managedPositions = managedPositions,
+            recentOrders = stabilizedOrders,
+        )
+        markPipelineStage("MARKER: EVALUATING_EXIT_BRANCH")
         val localTrailingSnapshots = captureLocalTrailingSnapshots(
             managedPositions = managedPositions,
             balances = balances,
@@ -5603,6 +6835,14 @@ class MacEngineDaemon(
             activeOrders = activePersistedOrders,
             balances = balances,
             cycle = cycle,
+            marketQuotes = marketQuotes,
+        )
+        val absoluteLossProtectionExit = planAbsoluteLossProtectionExit(
+            now = now,
+            managedPositions = managedPositions,
+            activeOrders = activePersistedOrders,
+            cycle = cycle,
+            marketQuotes = marketQuotes,
         )
         val crashHardStopExit = planCrashHardStopExit(
             managedPositions = managedPositions,
@@ -5631,12 +6871,15 @@ class MacEngineDaemon(
             hungry = hyperAggressiveTracker.hungry,
             marketQuotes = marketQuotes,
         )
-        val exitDecision = emergencyGarbageExit ?: barbarianMaxHoldExit ?: hardTimeoutExit ?: opportunityCostExit ?: emergencyLiquidityExit ?: crashHardStopExit ?: localAutonomyTrailingExit ?: forcedSellExit ?: hyperAggressiveTrailingExit ?: hyperAggressiveRotationExit ?: leadLagTrailingExit ?: adaptiveCoordinator.planExit(
+        val exitDecision = emergencyGarbageExit ?: absoluteLossProtectionExit ?: barbarianMaxHoldExit ?: hardTimeoutExit ?: opportunityCostExit ?: emergencyLiquidityExit ?: crashHardStopExit ?: localAutonomyTrailingExit ?: forcedSellExit ?: hyperAggressiveTrailingExit ?: hyperAggressiveRotationExit ?: leadLagTrailingExit ?: adaptiveCoordinator.planExit(
             now = now,
             cycle = cycle,
             managedPositions = managedPositions,
             activeOrders = activePersistedOrders,
         ) ?: cleanupRotationExit
+        exitDecision?.let {
+            markPipelineStage("MARKER: EXIT_BRANCH_${it.reason.name}")
+        }
         val filteredExitDecision = exitDecision?.takeUnless { decision ->
             val pairKey = decision.executionPlan.signal.pairId.value.lowercase()
             if (!dustQuarantinePairs.contains(pairKey) && pairKey !in garbageNukePairs) return@takeUnless false
@@ -5685,7 +6928,8 @@ class MacEngineDaemon(
                 existingPersistedOrders = preparedActiveOrders,
                 exchange = exchange,
                 controlPlane = controlPlane,
-                bypassLeaseValidation = false,
+                bypassLeaseValidation = shouldBypassEmergencyExitGuards(filteredExitDecision),
+                bypassSamePairOrderCheck = shouldBypassEmergencyExitGuards(filteredExitDecision),
             )
             result.order?.let {
                 cachedRecentOrders = mergeRecentOrders(stabilizedOrders, listOf(it))
@@ -5760,20 +7004,100 @@ class MacEngineDaemon(
                     )
                     
                     // [TELEGRAM NOTIFICATION] Send profit alert to Telegram
-                    if (netProfit > 0) {
-                        val profitPct = if (buyPrice != null && buyPrice > 0.0) {
-                            (netProfit / ((buyPrice * (sellQty ?: 0.0)))) * 100.0
-                        } else {
-                            0.0
-                        }
-                        telegramNotifier.sendProfitAlert(
-                            pair = pairKey,
-                            engineType = bucketType ?: "UNKNOWN",
-                            profitPct = profitPct,
-                            profitIdr = netProfit,
-                            bucketType = bucketType ?: "UNKNOWN",
+                    val sellPnlPct = if (buyPrice != null && buyPrice > 0.0 && (sellQty ?: 0.0) > 0.0) {
+                        (netProfit / (buyPrice * (sellQty ?: 0.0))) * 100.0
+                    } else {
+                        null
+                    }
+                    if (netProfit < 0) {
+                        lossPreventionSystem.recordLoss(
+                            com.kibot.core.LossEvent(
+                                pairId = pairKey,
+                                timestamp = now.toEpochMilliseconds(),
+                                lossIdr = kotlin.math.abs(netProfit),
+                                lossPct = kotlin.math.abs(sellPnlPct ?: 0.0),
+                                entryPrice = buyPrice ?: 0.0,
+                                exitPrice = sellPrice ?: 0.0,
+                                holdMinutes = ((exitAt.toEpochMilliseconds() - filteredExitDecision.position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 60_000.0),
+                                reason = filteredExitDecision.message,
+                            ),
                         )
                     }
+                    telegramNotifier.sendExecutionSellAlert(
+                        pair = pairKey,
+                        reason = filteredExitDecision.message,
+                        pnlIdr = netProfit,
+                        pnlPct = sellPnlPct,
+                    )
+                    val exitQuote = marketQuotes.firstOrNull { it.pairId == filteredExitDecision.executionPlan.signal.pairId }
+                    val entryExpectedPrice = filteredExitDecision.position.averageEntryPrice.toDoubleOrZero()
+                        .takeIf { it > 0.0 }
+                        ?: buyPrice
+                        ?: 0.0
+                    val exitExpectedPrice = filteredExitDecision.executionPlan.limitPrice?.toDoubleOrZero()
+                        ?.takeIf { it > 0.0 }
+                        ?: filteredExitDecision.executionPlan.signal.entryPrice?.toDoubleOrZero()
+                        ?.takeIf { it > 0.0 }
+                        ?: exitQuote?.bestBid?.toDoubleOrZero()
+                        ?.takeIf { it > 0.0 }
+                        ?: sellPrice
+                        ?: 0.0
+                    val entrySlippageIdr = if (entryExpectedPrice > 0.0 && buyPrice != null) {
+                        kotlin.math.abs(buyPrice - entryExpectedPrice) * (sellQty ?: requestedSellQty.coerceAtLeast(0.0))
+                    } else {
+                        0.0
+                    }
+                    val exitSlippageIdr = if (exitExpectedPrice > 0.0 && sellPrice != null) {
+                        kotlin.math.abs(sellPrice - exitExpectedPrice) * (sellQty ?: requestedSellQty.coerceAtLeast(0.0))
+                    } else {
+                        0.0
+                    }
+                    tradeLedger.recordTrade(
+                        pair = pairKey,
+                        strategy = if (wasAggressiveTrade) {
+                            com.kibot.core.PositionStrategy.ANOMALY
+                        } else {
+                            com.kibot.core.PositionStrategy.STABLE
+                        },
+                        entryPrice = buyPrice ?: 0.0,
+                        exitPrice = sellPrice ?: 0.0,
+                        quantity = sellQty ?: requestedSellQty.coerceAtLeast(0.0),
+                        entryFeeIdr = estimatedFees / 2.0,
+                        exitFeeIdr = estimatedFees / 2.0,
+                        slippageIdr = entrySlippageIdr + exitSlippageIdr,
+                        netProfitIdr = netProfit,
+                        netProfitPct = sellPnlPct ?: 0.0,
+                        holdMinutes = ((exitAt.toEpochMilliseconds() - filteredExitDecision.position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 60_000.0),
+                        exitReason = filteredExitDecision.message,
+                        timestamp = now,
+                    )
+                    localLearningMemoryStore.recordTrade(
+                        LearningTradeEvent(
+                            timestampUtc = now.toString(),
+                            pairId = pairKey,
+                            bucketType = if (wasAggressiveTrade) "AGGRESSIVE" else "STABLE",
+                            orderType = smartRoutedExitPlan.orderType.name,
+                            entryExpectedPrice = entryExpectedPrice,
+                            entryRealizedPrice = buyPrice ?: entryExpectedPrice,
+                            exitExpectedPrice = exitExpectedPrice,
+                            exitRealizedPrice = sellPrice ?: exitExpectedPrice,
+                            spreadPctAtEntry = exitQuote?.spreadPct ?: 0.0,
+                            spreadPctAtExit = exitQuote?.spreadPct ?: 0.0,
+                            entrySlippagePct = if (entryExpectedPrice > 0.0 && buyPrice != null) {
+                                kotlin.math.abs(buyPrice - entryExpectedPrice) / entryExpectedPrice * 100.0
+                            } else {
+                                0.0
+                            },
+                            exitSlippagePct = if (exitExpectedPrice > 0.0 && sellPrice != null) {
+                                kotlin.math.abs(sellPrice - exitExpectedPrice) / exitExpectedPrice * 100.0
+                            } else {
+                                0.0
+                            },
+                            netProfitPct = sellPnlPct ?: 0.0,
+                            holdMinutes = ((exitAt.toEpochMilliseconds() - filteredExitDecision.position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 60_000.0),
+                            exitReason = filteredExitDecision.message,
+                        ),
+                    )
                     
                     // Cleanup tracking
                     positionBucketTypeByPair.remove(pairKey)
@@ -5884,7 +7208,18 @@ class MacEngineDaemon(
                     )
                 }
             }
-            if (!continueToEntryAfterExit) return
+            if (!continueToEntryAfterExit) {
+                if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM) {
+                    logger.warn(
+                        "ENTRY_BYPASS: continueToEntryAfterExit=false but bypassed in HIGH_VOLATILITY_MOMENTUM; freeIdr={} holdings={}",
+                        formatDecimal(resolveAllocatableIdr(cycle, balances), 0),
+                        managedPositions.size,
+                    )
+                    continueToEntryAfterExit = true
+                } else {
+                    return
+                }
+            }
         }
         val directHyperEntrySubmitted = maybeSubmitDirectHyperAggressiveEntry(
             now = now,
@@ -5898,6 +7233,17 @@ class MacEngineDaemon(
             hyperTargets = hyperTargets,
         )
         if (directHyperEntrySubmitted) return
+        markPipelineStage("MARKER: ENTER_ENTRY_BRANCH")
+        val emergencyBypassSubmitted = maybeSubmitEmergencyBypassEntry(
+            now = now,
+            lease = lease,
+            cycle = cycle,
+            balances = balances,
+            marketQuotes = marketQuotes,
+            activePersistedOrders = activePersistedOrders,
+            managedPositions = managedPositions,
+        )
+        if (emergencyBypassSubmitted) return
 
         val syntheticHyperEntry = if (hyperAggressiveTracker.hungry && hyperTargets.isNotEmpty()) {
             buildHyperAggressiveSyntheticEntryPlan(
@@ -5909,12 +7255,48 @@ class MacEngineDaemon(
         } else {
             null
         }
-        val candidateExecutionPlans = (listOfNotNull(syntheticHyperEntry) + cycle.entryExecutionPlans)
-            .ifEmpty { listOfNotNull(cycle.executionPlan) }
-        if (candidateExecutionPlans.isEmpty()) {
-            // EMERGENCY OVERRIDE: If stalled and no candidates, FORCE scalping entry
-            val emergencyForceEntry = isEmergencyOverrideActive(now)
+	        val forcedParallelMomentumEntry = buildParallelMomentumSyntheticEntryPlan(
+	            now = now,
+	            cycle = cycle,
+	            balances = balances,
+	            marketQuotes = marketQuotes,
+	            managedPositions = managedPositions,
+	            activeOrders = activePersistedOrders,
+	        )
+	        var candidateExecutionPlans = (listOfNotNull(syntheticHyperEntry, forcedParallelMomentumEntry) + cycle.entryExecutionPlans)
+	            .distinctBy { it.signal.pairId.value.lowercase() to it.side }
+	            .ifEmpty { listOfNotNull(cycle.executionPlan) }
+	        if (candidateExecutionPlans.isEmpty()) {
+	            // EMERGENCY OVERRIDE: If stalled and no candidates, FORCE scalping entry
+	            val emergencyForceEntry = isEmergencyOverrideActive(now)
             logger.warn("[ENTRY_DEBUG] No candidates, emergencyForce=$emergencyForceEntry, config.exchangeKind=${config.exchangeKind}")
+            val topRanked = cycle.rankedPairs.firstOrNull()
+            if (topRanked != null) {
+                logger.warn(
+                    "[ENTRY_DEBUG_DETAIL] topRanked={} allowed={} rankingScore={} oppScore={} edgeScore={} reasons={}",
+                    topRanked.pairId.value,
+                    topRanked.allowed,
+                    formatDecimal(topRanked.rankingScore, 3),
+                    formatDecimal(topRanked.marketOpportunityScore, 3),
+                    formatDecimal(topRanked.feeAdjustedEdgeScore, 3),
+                    topRanked.rejectionReasons.take(3).joinToString(" | "),
+                )
+            } else {
+                logger.warn("[ENTRY_DEBUG_DETAIL] rankedPairs is empty")
+            }
+            logger.warn(
+                "[ENTRY_DEBUG_DETAIL] entrySignals={} entryExecutionPlans={} allowNewEntries={} suggestedBudget={}",
+                cycle.entrySignals.size,
+                cycle.entryExecutionPlans.size,
+                cycle.deploymentPlan.allowNewEntries,
+                formatDecimal(cycle.deploymentPlan.suggestedPerPositionBudgetIdr, 4),
+            )
+            logger.warn(
+                "[ENTRY_DEBUG_DETAIL] healthTradingAllowed={} riskAllowNewEntries={} riskReasons={}",
+                cycle.healthDecision.tradingAllowed,
+                cycle.riskDecision.allowNewEntries,
+                cycle.riskDecision.reasons.take(2).joinToString(" | "),
+            )
             
             if (config.exchangeKind == ExchangeKind.INDODAX) {
                 val dynamicVipSubmitted = maybeSubmitDynamicVipEntry(
@@ -5957,17 +7339,70 @@ class MacEngineDaemon(
                 }
             }
             
-            // Only return if NOT emergency - if emergency, keep trying
-            if (!emergencyForceEntry) {
-                logWhyNotBuy(now, "entry", "no_chart_history_candidate")
+	            // If we still have no candidates, try a conservative bootstrap entry based on the top candidate.
+	            val bootstrapEntry = if (!emergencyForceEntry) {
+	                buildBootstrapEntryPlan(
+	                    now = now,
+	                    cycle = cycle,
+	                    balances = balances,
+	                    marketQuotes = marketQuotes,
+	                    managedPositions = managedPositions,
+	                    activeOrders = activePersistedOrders,
+	                )
+	            } else {
+	                null
+	            }
+	            if (bootstrapEntry != null) {
+	                candidateExecutionPlans = listOf(bootstrapEntry)
+	            } else {
+	                // Only return if NOT emergency - if emergency, keep trying
+	                if (!emergencyForceEntry) {
+	                    val preferredPair = preferredParallelMomentumPair(
+	                        cycle = cycle,
+	                        managedPositions = managedPositions,
+	                        activeOrders = activePersistedOrders,
+	                    )
+	                    logWhyNotBuy(
+	                        now,
+	                        preferredPair?.value ?: "entry",
+	                        if (preferredPair != null) "parallel_target_not_promoted(${preferredPair.value})" else "no_chart_history_candidate",
+	                    )
+	                }
+	                return
+	            }
+	        }
+        val heartbeatSafeModeReason = trinityHeartbeatSafeModeReason
+        if (heartbeatSafeModeReason != null) {
+            val allocatableIdr = resolveAllocatableIdr(cycle, balances)
+            val confidenceFloor = cycle.selectedSignal?.confidence
+                ?: cycle.rankedPairs.firstOrNull()?.rankingScore
+                ?: 0.0
+            val canBypassInControlledTrend = cycle.marketSnapshot.regime == MarketRegime.HEALTHY_UPTREND &&
+                confidenceFloor >= 0.86 &&
+                allocatableIdr >= minimumLiveNotionalForExchange().coerceAtLeast(dustHoldingsIgnoreMinValueIdr)
+            if (
+                (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM &&
+                    allocatableIdr >= minimumLiveNotionalForExchange().coerceAtLeast(dustHoldingsIgnoreMinValueIdr)) ||
+                    canBypassInControlledTrend
+            ) {
+                logger.warn(
+                    "HEARTBEAT_SAFE_MODE_BYPASS: regime={} reason={} freeIdr={} confidence={} -> continue entry evaluation",
+                    cycle.marketSnapshot.regime,
+                    heartbeatSafeModeReason,
+                    formatDecimal(allocatableIdr, 0),
+                    formatDecimal(confidenceFloor, 3),
+                )
+            } else {
+                logWhyNotBuy(now, "entry", "trinity_heartbeat_safe_mode")
+                return
             }
-            return
-        }
-        if (trinityHeartbeatSafeModeReason != null) {
-            logWhyNotBuy(now, "entry", "trinity_heartbeat_safe_mode")
-            return
         }
         val hyperAggressivePriorityPair = superSexyTarget ?: sexyMomentumTargets.firstOrNull()
+        logger.info(
+            "EXECUTION_TRACE: About to prioritize candidate set. topCandidate={} executionPlans={}",
+            cycle.topCandidate?.value ?: "-",
+            candidateExecutionPlans.size,
+        )
         val prioritizedExecutionPlans = if (leadLagPriorityPair != null || hyperAggressivePriorityPair != null) {
             candidateExecutionPlans.sortedByDescending {
                 val leadLagScore = if (leadLagPriorityPair != null && it.signal.pairId == leadLagPriorityPair) 2 else 0
@@ -5985,11 +7420,39 @@ class MacEngineDaemon(
         }
         val entryManagedPositions = managedPositions
         val activeBuyOrders = activePersistedOrders.filter { it.side == com.kibot.shared.models.OrderSide.BUY }
-        val availableEntrySlots = (
+        val baselineEntrySlots = (
             cycle.deploymentPlan.maxActivePositions -
                 entryManagedPositions.size -
                 activeBuyOrders.size
             ).coerceAtLeast(0)
+        val handoffCandidate = prioritizedExecutionPlans.firstOrNull()?.signal?.pairId ?: cycle.topCandidate
+        logger.info(
+            "EXECUTION_TRACE: Handoff received. Candidate: {}, SlotAvailable: {}",
+            handoffCandidate?.value ?: "-",
+            baselineEntrySlots,
+        )
+        if (handoffCandidate == null && cycle.topCandidate != null) {
+            logger.warn("EXECUTION_ABORT: Candidate lost during handoff!")
+            lastRejectedReasonLabel = "EXECUTION_ABORT: Candidate lost during handoff!"
+            lastRejectedReasonAt = now
+        }
+        if (config.exchangeKind == ExchangeKind.INDODAX &&
+            cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM &&
+            resolveAllocatableIdr(cycle, balances) >= minimumLiveNotionalForExchange().coerceAtLeast(dustHoldingsIgnoreMinValueIdr) &&
+            baselineEntrySlots <= 0
+        ) {
+            logger.warn(
+                "EXECUTION_TRACE: forcing slot reuse in momentum regime; activePositions={} activeBuyOrders={} freeIdr={}",
+                entryManagedPositions.size,
+                activeBuyOrders.size,
+                formatDecimal(resolveAllocatableIdr(cycle, balances), 0),
+            )
+        }
+        val dynamicFreeCashEntrySlots = dynamicParallelEntrySlots(cycle, balances)
+        val availableEntrySlots = maxOf(
+            baselineEntrySlots,
+            dynamicFreeCashEntrySlots,
+        )
         
         // CRITICAL: Check emergency override FIRST before slot calculation blocks entry
         val earlyEmergencyOverride = isEmergencyOverrideActive(now)
@@ -6015,6 +7478,7 @@ class MacEngineDaemon(
         var workingOrders = activePersistedOrders
         var submittedCount = 0
         var lastBlockedReason: String? = null
+        var lastBlockedPair: String? = null
         prioritizedExecutionPlans.forEach { candidatePlan ->
             if (submittedCount >= effectiveBatchLimit) return@forEach
             
@@ -6024,6 +7488,7 @@ class MacEngineDaemon(
             if (!emergencyBypass) {
                 entryBlockedByProtectiveBrake(now, candidatePlan.signal.pairId)?.let { blockedReason ->
                     lastBlockedReason = blockedReason
+                    lastBlockedPair = candidatePlan.signal.pairId.value
                     return@forEach
                 }
             } else {
@@ -6033,6 +7498,7 @@ class MacEngineDaemon(
             if (workingOrders.any { it.pairId == candidatePlan.signal.pairId }) {
                 if (!emergencyBypass) {
                     lastBlockedReason = "Entry ${candidatePlan.signal.pairId.value} ditunda karena pair yang sama masih punya order aktif."
+                    lastBlockedPair = candidatePlan.signal.pairId.value
                     return@forEach
                 }
             }
@@ -6041,11 +7507,13 @@ class MacEngineDaemon(
                 entryBlockedByPortfolioState(
                     cycle = cycle,
                     executionPlan = candidatePlan,
+                    balances = balances,
                     managedPositions = managedPositions,
                     activeOrders = workingOrders,
                     leadLagPriorityPair = leadLagPriorityPair,
                 )?.let { blockedReason ->
                     lastBlockedReason = blockedReason
+                    lastBlockedPair = candidatePlan.signal.pairId.value
                     return@forEach
                 }
             } else {
@@ -6059,6 +7527,7 @@ class MacEngineDaemon(
             )
             routedEntry.blockedReason?.let { blockedReason ->
                 lastBlockedReason = blockedReason
+                lastBlockedPair = candidatePlan.signal.pairId.value
                 return@forEach
             }
             routedEntry.message?.let { note ->
@@ -6097,6 +7566,7 @@ class MacEngineDaemon(
                 marketQuotes = marketQuotes,
             ) ?: run {
                 lastBlockedReason = "Entry ${candidatePlan.signal.pairId.value} ditunda karena gagal memenuhi minimum order venue."
+                lastBlockedPair = candidatePlan.signal.pairId.value
                 return@forEach
             }
             val antiKoinMahalBlocked = entryBlockedByAntiKoinMahal(
@@ -6106,6 +7576,7 @@ class MacEngineDaemon(
             )
             if (antiKoinMahalBlocked != null) {
                 lastBlockedReason = antiKoinMahalBlocked
+                lastBlockedPair = candidatePlan.signal.pairId.value
                 return@forEach
             }
             val capitalMismatchBlocked = entryBlockedByCapitalMismatch(
@@ -6115,6 +7586,7 @@ class MacEngineDaemon(
             )
             if (capitalMismatchBlocked != null) {
                 lastBlockedReason = capitalMismatchBlocked
+                lastBlockedPair = candidatePlan.signal.pairId.value
                 return@forEach
             }
             val blueChipBlocked = entryBlockedByBlueChipVolume(
@@ -6123,6 +7595,7 @@ class MacEngineDaemon(
             )
             if (blueChipBlocked != null) {
                 lastBlockedReason = blueChipBlocked
+                lastBlockedPair = candidatePlan.signal.pairId.value
                 return@forEach
             }
             val shortFlatChartBlocked = entryBlockedByShortFlatChart(
@@ -6130,6 +7603,7 @@ class MacEngineDaemon(
             )
             if (shortFlatChartBlocked != null) {
                 lastBlockedReason = shortFlatChartBlocked
+                lastBlockedPair = candidatePlan.signal.pairId.value
                 return@forEach
             }
             if (superSexyTarget != null && effectiveExecutionPlan.signal.pairId == superSexyTarget) {
@@ -6204,6 +7678,7 @@ class MacEngineDaemon(
             )
             if (slippageGuardFailure != null) {
                 lastBlockedReason = slippageGuardFailure
+                lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
                 return@forEach
             }
             effectiveExecutionPlan = enforceMaxSpreadCapForMarketBuy(
@@ -6211,6 +7686,7 @@ class MacEngineDaemon(
                 marketQuotes = marketQuotes,
             ) ?: run {
                 lastBlockedReason = "spread_cap_enforcement_failed"
+                lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
                 return@forEach
             }
             effectiveExecutionPlan = routeByChartAnalyzer(
@@ -6218,6 +7694,7 @@ class MacEngineDaemon(
                 marketQuotes = marketQuotes,
             ) ?: run {
                 lastBlockedReason = "chart_analyzer_vetoed_entry"
+                lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
                 return@forEach
             }
             effectiveExecutionPlan = routeByAntiSpoofRadar(
@@ -6226,6 +7703,7 @@ class MacEngineDaemon(
                 now = now,
             ) ?: run {
                 lastBlockedReason = "anti_spoof_radar_blocked_entry"
+                lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
                 return@forEach
             }
             effectiveExecutionPlan = routeByDepthGuard(
@@ -6236,14 +7714,38 @@ class MacEngineDaemon(
                 executionPlan = effectiveExecutionPlan,
                 marketQuotes = marketQuotes,
             )
+            effectiveExecutionPlan = routeByLearningExecutionPolicy(
+                executionPlan = effectiveExecutionPlan,
+                marketQuotes = marketQuotes,
+                now = now,
+            ) ?: run {
+                lastBlockedReason = "learning_policy_blocked_entry"
+                lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
+                return@forEach
+            }
 
+            val pairScopedParallelEntry = shouldEnablePairScopedParallelEntry(
+                cycle = cycle,
+                balances = balances,
+                pairId = effectiveExecutionPlan.signal.pairId,
+                managedPositions = managedPositions,
+            )
+            if (hasPerSymbolExecutionLease(effectiveExecutionPlan.signal.pairId, now)) {
+                lastBlockedReason = "per_symbol_execution_lease_active"
+                lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
+                return@forEach
+            }
             val submissionLease = ensureLeaseLockdownOwnership(now, lease) ?: lease
+            val pairScopedLeaseBypass = pairScopedParallelEntry &&
+                !submissionLease.isHeldBy(config.device.deviceId, now) &&
+                (submissionLease.currentHolder == null || submissionLease.currentHolder == config.device.deviceId)
             // EMERGENCY FIX: Bypass lease check if stalled >30min - trading is more important than lease sync
             val bypassLeaseForEmergency = earlyEmergencyOverride && !submissionLease.isHeldBy(config.device.deviceId, now)
             if (bypassLeaseForEmergency) {
                 logger.warn("[EMERGENCY_OVERRIDE] Bypassing lease check for ${effectiveExecutionPlan.signal.pairId.value} - stall recovery priority!")
-            } else if (!submissionLease.isHeldBy(config.device.deviceId, now)) {
+            } else if (!pairScopedLeaseBypass && !submissionLease.isHeldBy(config.device.deviceId, now)) {
                 lastBlockedReason = "Lease belum dipegang ${config.device.deviceId.value}; menunggu sinkron holder aktif."
+                lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
                 return@forEach
             }
             
@@ -6257,44 +7759,60 @@ class MacEngineDaemon(
                 if (it > 0) it else effectiveExecutionPlan.signal.entryPrice?.toDoubleOrZero() ?: 1.0
             }
             val budgetNeeded = effectiveExecutionPlan.quantity.toDoubleOrZero() * limitPriceVal
-            // FIX: Turunkan minimum notional dari 20K → 12K untuk micro account
-            if (budgetNeeded < 12_000.0) {
-                logger.warn("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: below minimum buy notional (need=${formatDecimal(budgetNeeded, 0)} < min=12000)")
-                lastBlockedReason = "Minimum buy notional is 12,000 IDR"
-                return@forEach
-            }
             
             // Get allocation from capital manager
-            val allocResult = capitalAllocationManager?.allocate(isAnomalyCoin, budgetNeeded)
+            val freeIdr = resolveAllocatableIdr(cycle, balances)
+            val currentPosCount = managedPositions.count { it.currentValueIdr.toDoubleOrZero() >= dustHoldingsIgnoreMinValueIdr }
+            val allocResult = capitalAllocationManager?.allocate(
+                isAnomalyCoin = isAnomalyCoin,
+                requestedAmountIdr = budgetNeeded,
+                totalFreeIdr = freeIdr,
+                currentPositionCount = currentPosCount
+            )
             if (allocResult == null || allocResult.allocatedIdr <= 0.0) {
                 logger.error("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: allocation denied (allocated=${allocResult?.allocatedIdr ?: 0})")
                 lastBlockedReason = "Capital allocation REJECTED: bucket insufficient for ${effectiveExecutionPlan.signal.pairId.value}"
+                lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
+                return@forEach
+            }
+            val minimumLiveNotional = minimumLiveNotionalForExchange()
+            if (allocResult.allocatedIdr < minimumLiveNotional) {
+                logger.warn("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: below venue minimum after allocation (allocated=${formatDecimal(allocResult.allocatedIdr, 0)} < min=${formatDecimal(minimumLiveNotional, 0)})")
+                lastBlockedReason = "Venue minimum order is ${formatDecimal(minimumLiveNotional, 0)} IDR"
+                lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
                 return@forEach
             }
             
             // Check per-coin limit (ADAPTIVE based on account size)
             val totalEquity = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
             val perCoinLimit = getAdaptivePerCoinLimit(totalEquity)
-            if (budgetNeeded > perCoinLimit) {
-                logger.error("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: exceeds adaptive limit (need=${formatDecimal(budgetNeeded, 0)} > limit=${formatDecimal(perCoinLimit, 0)})")
-                lastBlockedReason = "Position size ${formatDecimal(budgetNeeded, 0)} IDR exceeds adaptive per-coin limit (${formatDecimal(perCoinLimit, 0)} IDR)"
+            if (allocResult.bucketType != "MICRO_POOL" && allocResult.allocatedIdr > perCoinLimit) {
+                logger.error("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: exceeds adaptive limit (allocated=${formatDecimal(allocResult.allocatedIdr, 0)} > limit=${formatDecimal(perCoinLimit, 0)})")
+                lastBlockedReason = "Position size ${formatDecimal(allocResult.allocatedIdr, 0)} IDR exceeds adaptive per-coin limit (${formatDecimal(perCoinLimit, 0)} IDR)"
+                lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
                 return@forEach
             }
             
-            logger.info("[CAPITAL_OK] ${effectiveExecutionPlan.signal.pairId.value}: allocated=${formatDecimal(allocResult.allocatedIdr, 0)} IDR from ${if(isAnomalyCoin) "AGGRESSIVE(30%)" else "STABLE(70%)"} bucket")
+            logger.info("[CAPITAL_OK] ${effectiveExecutionPlan.signal.pairId.value}: allocated=${formatDecimal(allocResult.allocatedIdr, 0)} IDR from ${allocResult.bucketType} bucket${if (allocResult.positionRole != null) " role=${allocResult.positionRole}" else ""}")
             
             // Use allocated budget, not requested
             val finalQuantity = (allocResult.allocatedIdr / limitPriceVal).coerceAtLeast(0.00000001)
-            val finalExecutionPlan = effectiveExecutionPlan.copy(
+            val finalExecutionPlan = applyNewsAgileEntryScaling(
+                executionPlan = effectiveExecutionPlan.copy(
                 quantity = DecimalValue.fromDouble(finalQuantity)
+                ),
+                balances = balances,
+                marketQuotes = marketQuotes,
             )
             
             if (isHoldingLimitReached(balances = balances, marketQuotes = marketQuotes, maxHoldings = 10)) {
                 logger.warn("[CAPITAL_BLOCKED] holdings limit reached (max=10) for entry ${effectiveExecutionPlan.signal.pairId.value}")
                 lastBlockedReason = "Holding limit reached: max 10 concurrent positions >=20k"
+                lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
                 return@forEach
             }
 
+            acquirePerSymbolExecutionLease(effectiveExecutionPlan.signal.pairId, now)
             val result = liveExecutionCoordinator.submitEntry(
                 botId = config.controlPlane.botId,
                 deviceId = config.device.deviceId,
@@ -6303,7 +7821,7 @@ class MacEngineDaemon(
                 existingPersistedOrders = workingOrders,
                 exchange = exchange,
                 controlPlane = controlPlane,
-                bypassLeaseValidation = earlyEmergencyOverride,
+                bypassLeaseValidation = earlyEmergencyOverride || pairScopedLeaseBypass,
             )
             result.order?.let {
                 workingOrders = mergeRecentOrders(workingOrders, listOf(it)).filter { snapshot ->
@@ -6335,6 +7853,14 @@ class MacEngineDaemon(
                 val pairKey = effectiveExecutionPlan.signal.pairId.value.lowercase()
                 udpExecutionPrewarmByPair.remove(pairKey)
                 partialTakeProfitExecutedByPair[pairKey] = false
+                
+                // Reset peak tracking for new entry - critical for proper trailing stop
+                val entryPrice = effectiveExecutionPlan.signal.entryPrice?.toDoubleOrZero()
+                    ?.takeIf { it > 0 } ?: effectiveExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0
+                if (entryPrice > 0) {
+                    resetPeakTrackingForNewEntry(effectiveExecutionPlan.signal.pairId, entryPrice)
+                }
+                
                 val entryAt = now
                 if (activeEngineDecision?.engineId == "barbarian_anomaly" &&
                     activeEngineDecision.pairId == effectiveExecutionPlan.signal.pairId
@@ -6370,6 +7896,13 @@ class MacEngineDaemon(
                     leadLagEntrySubmittedAtByPair[pairKey] = entryAt
                     val receiveToEntryMs = receivedAt?.let { (entryAt - it).inWholeMilliseconds }?.coerceAtLeast(0L)
                     val endToEndMs = sentAtMs?.let { (entryAt.toEpochMilliseconds() - it).coerceAtLeast(0L) }
+                    (endToEndMs ?: receiveToEntryMs)?.takeIf { it > 0L }?.let { latencyMs ->
+                        localLearningMemoryStore.recordLeadLagObservation(
+                            pairId = effectiveExecutionPlan.signal.pairId.value,
+                            now = entryAt,
+                            delayMs = latencyMs,
+                        )
+                    }
                     appendAuditLog(
                         level = LogLevel.INFO,
                         category = "LEAD_LAG",
@@ -6417,22 +7950,118 @@ class MacEngineDaemon(
                     result.clientOrderId?.value ?: "-",
                 )
                 lastAnalysisPublishedAt = now
-            } else if (result.failSafeTriggered) {
-                controlPlane.markConflictSafeMode(
-                    botId = config.controlPlane.botId,
-                    reason = result.message.ifBlank { "Submit order ambigu; engine masuk safe mode." },
-                )
-                logger.error("Live order submit became ambiguous, safe mode triggered.")
-                return
             } else {
-                lastBlockedReason = result.message
+                releasePerSymbolExecutionLease(effectiveExecutionPlan.signal.pairId)
+	                if (result.failSafeTriggered) {
+	                    val safeReason = result.message.ifBlank { "Submit order ambigu; engine masuk safe mode." }
+	                    controlPlane.markConflictSafeMode(
+	                        botId = config.controlPlane.botId,
+	                        reason = safeReason,
+	                    )
+	                    recordForcedSafeMode(now, safeReason)
+	                    logger.error("Live order submit became ambiguous, safe mode triggered.")
+	                    return
+	                } else {
+                    lastBlockedReason = result.message
+                    lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
+                }
             }
         }
 
         if (submittedCount == 0 && !lastBlockedReason.isNullOrBlank()) {
-            logWhyNotBuy(now, "entry", lastBlockedReason.orEmpty().replace('\n', ' '))
+            logWhyNotBuy(now, lastBlockedPair ?: "entry", lastBlockedReason.orEmpty().replace('\n', ' '))
+        }
+        if (submittedCount == 0 && lastBlockedReason.isNullOrBlank()) {
+            val preferredPair = preferredParallelMomentumPair(
+                cycle = cycle,
+                managedPositions = entryManagedPositions,
+                activeOrders = workingOrders,
+            )
+            logWhyNotBuy(
+                now,
+                preferredPair?.value ?: "entry",
+                if (preferredPair != null) "parallel_candidate_not_promoted_to_submit(${preferredPair.value})" else "parallel_candidate_not_promoted_to_submit",
+            )
         }
         if (submittedCount == 0 && config.exchangeKind == ExchangeKind.INDODAX) {
+            logger.info(
+                "EXECUTION_TRACE: entering forced submission branch topCandidate={} priorityPair={}",
+                cycle.topCandidate?.value ?: "-",
+                preferredParallelMomentumPair(
+                    cycle = cycle,
+                    managedPositions = entryManagedPositions,
+                    activeOrders = workingOrders,
+                )?.value ?: "-",
+            )
+            val forcedParallelSubmitted = buildParallelMomentumSyntheticEntryPlan(
+                now = now,
+                cycle = cycle,
+                balances = balances,
+                marketQuotes = marketQuotes,
+                managedPositions = entryManagedPositions,
+                activeOrders = workingOrders,
+            )?.let { forcedPlan ->
+                val forcedCycle = cycle.copy(
+                    entryExecutionPlans = listOf(forcedPlan),
+                    executionPlan = forcedPlan,
+                )
+                val submitted = maybeSubmitDynamicVipEntry(
+                    now = now,
+                    lease = lease,
+                    cycle = forcedCycle,
+                    balances = balances,
+                    marketQuotes = marketQuotes,
+                    activePersistedOrders = workingOrders,
+                    managedPositions = entryManagedPositions,
+                    forceEmergencyBypass = earlyEmergencyOverride,
+                )
+                if (submitted) {
+                    true
+                } else {
+                    val scalpingSubmitted = maybeSubmitLightScalpingEntry(
+                        now = now,
+                        lease = lease,
+                        cycle = forcedCycle,
+                        balances = balances,
+                        marketQuotes = marketQuotes,
+                        activePersistedOrders = workingOrders,
+                        managedPositions = entryManagedPositions,
+                        forceEmergencyBypass = earlyEmergencyOverride,
+                    )
+                    if (!scalpingSubmitted) {
+                        logWhyNotBuy(now, forcedPlan.signal.pairId.value, "parallel_force_submit_path_failed")
+                    }
+                    scalpingSubmitted
+                }
+            } == true
+            if (forcedParallelSubmitted) {
+                logger.info("[EXECUTION_BUY] pair=parallel_momentum reason=forced_promotion_after_main_loop")
+                return
+            }
+            logger.info(
+                "EXECUTION_TRACE: entering dynamic vip submission post-main-loop candidate={} slots={}",
+                cycle.topCandidate?.value ?: "-",
+                baselineEntrySlots,
+            )
+            val dynamicVipSubmitted = maybeSubmitDynamicVipEntry(
+                now = now,
+                lease = lease,
+                cycle = cycle,
+                balances = balances,
+                marketQuotes = marketQuotes,
+                activePersistedOrders = workingOrders,
+                managedPositions = entryManagedPositions,
+                forceEmergencyBypass = earlyEmergencyOverride,
+            )
+            if (dynamicVipSubmitted) {
+                logger.info("[EXECUTION_BUY] pair=dynamic_vip reason=fallback_after_main_loop")
+                return
+            }
+            logger.info(
+                "EXECUTION_TRACE: entering fallback light scalping post-main-loop candidate={} slots={}",
+                cycle.topCandidate?.value ?: "-",
+                baselineEntrySlots,
+            )
             val scalpingSubmitted = maybeSubmitLightScalpingEntry(
                 now = now,
                 lease = lease,
@@ -6544,7 +8173,7 @@ class MacEngineDaemon(
         if (lastAt != null && (now - lastAt).inWholeMilliseconds < 3_000L) return
         val managedByPair = managedPositions.associateBy { it.pairId.value.lowercase() }
         val quoteByPair = marketQuotes.associateBy { it.pairId.value.lowercase() }
-        val idrFree = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
+        val idrFree = resolveIdrFreeBalance(balances)
         val wires = balances
             .asSequence()
             .filterNot { it.asset.equals(referenceQuoteAsset(), ignoreCase = true) }
@@ -6565,7 +8194,7 @@ class MacEngineDaemon(
                 val pnlIdr = managed?.unrealizedPnlIdr?.toDoubleOrZero()
                     ?: (currentPrice - entryPrice) * quantity
                 val notional = currentPrice * quantity
-                if (notional < dustUiHideMinValueIdr) return@mapNotNull null
+                if (notional < dustHoldingsIgnoreMinValueIdr) return@mapNotNull null
                 ActivePositionWire(
                     pairId = pairKey,
                     entryPrice = entryPrice,
@@ -6718,29 +8347,39 @@ class MacEngineDaemon(
             if (it > 0) it else normalizedSynthetic.signal.entryPrice?.toDoubleOrZero() ?: 1.0
         }
         val budget2 = normalizedSynthetic.quantity.toDoubleOrZero() * limitPrice2
-        if (budget2 < 20_000.0) {
-            logger.warn("[CAPITAL_BLOCKED] BUY_MOMENTUM ${normalizedSynthetic.signal.pairId.value}: below minimum buy notional (need=${formatDecimal(budget2, 0)} < min=20000)")
-            logWhyNotBuy(now, normalizedSynthetic.signal.pairId.value, "minimum_notional_20k")
-            return false
-        }
         if (isHoldingLimitReached(balances = balances, marketQuotes = marketQuotes, maxHoldings = 10)) {
             logger.warn("[CAPITAL_BLOCKED] BUY_MOMENTUM holdings limit reached (max=10)")
             return false
         }
-        val allocResult2 = capitalAllocationManager?.allocate(isAnomaly2, budget2)
+        val allocResult2 = capitalAllocationManager?.allocate(
+            isAnomalyCoin = isAnomaly2,
+            requestedAmountIdr = budget2,
+            totalFreeIdr = resolveAllocatableIdr(cycle, balances),
+            currentPositionCount = managedPositions.count { it.currentValueIdr.toDoubleOrZero() >= dustHoldingsIgnoreMinValueIdr }
+        )
         if (allocResult2 == null || allocResult2.allocatedIdr <= 0.0) {
             logger.error("[CAPITAL_BLOCKED] BUY_MOMENTUM ${normalizedSynthetic.signal.pairId.value}: allocation denied")
             logWhyNotBuy(now, normalizedSynthetic.signal.pairId.value, "capital_allocation_rejected")
             return false
         }
+        val minimumLiveNotional2 = minimumLiveNotionalForExchange()
+        if (allocResult2.allocatedIdr < minimumLiveNotional2) {
+            logger.warn("[CAPITAL_BLOCKED] BUY_MOMENTUM ${normalizedSynthetic.signal.pairId.value}: below venue minimum after allocation")
+            logWhyNotBuy(now, normalizedSynthetic.signal.pairId.value, "minimum_notional_${formatDecimal(minimumLiveNotional2, 0)}")
+            return false
+        }
         val totalEq2 = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
         val limit2 = getAdaptivePerCoinLimit(totalEq2)
-        if (budget2 > limit2) {
+        if (allocResult2.bucketType != "MICRO_POOL" && allocResult2.allocatedIdr > limit2) {
             logger.error("[CAPITAL_BLOCKED] BUY_MOMENTUM ${normalizedSynthetic.signal.pairId.value}: exceeds adaptive limit")
             return false
         }
         val finalQty2 = (allocResult2.allocatedIdr / limitPrice2).coerceAtLeast(0.00000001)
-        val finalPlan2 = normalizedSynthetic.copy(quantity = DecimalValue.fromDouble(finalQty2))
+        val finalPlan2 = applyNewsAgileEntryScaling(
+            executionPlan = normalizedSynthetic.copy(quantity = DecimalValue.fromDouble(finalQty2)),
+            balances = balances,
+            marketQuotes = marketQuotes,
+        )
         
         val result = liveExecutionCoordinator.submitEntry(
             botId = config.controlPlane.botId,
@@ -6789,24 +8428,66 @@ class MacEngineDaemon(
         forceEmergencyBypass: Boolean = false,
     ): Boolean {
         if (config.exchangeKind != ExchangeKind.INDODAX) return false
-        if (globalCooldownUntil?.let { now < it } == true) return false
+        markPipelineStage("MARKER: ENTER_SUBMISSION_LOGIC")
+        logger.info(
+            "ENTER_SUBMISSION_LOGIC: regime={} freeIdr={} slotHint={}",
+            cycle.marketSnapshot.regime,
+            formatDecimal(resolveAllocatableIdr(cycle, balances), 0),
+            cycle.executionPlan?.signal?.pairId?.value ?: cycle.selectedSignal?.pairId?.value ?: cycle.topCandidate?.value ?: "-",
+        )
+        val pairScopedParallelEntry = shouldEnableMomentumCadenceBypass(cycle, balances)
+        val momentumVolumeFloorIdr = if (pairScopedParallelEntry) 20_000_000.0 else config.aListMinVolumeIdr
+        if (globalCooldownUntil?.let { now < it } == true) {
+            val reason = "SUBMISSION_ABORTED: global_cooldown_active"
+            logger.warn(reason)
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            return false
+        }
         val rotationExitInFlight = hasRotationExitInFlight(
             managedPositions = managedPositions,
             activePersistedOrders = activePersistedOrders,
         )
-        if (managedPositions.isNotEmpty() && !rotationExitInFlight) return false
+        if (managedPositions.isNotEmpty() && !rotationExitInFlight && !pairScopedParallelEntry) {
+            if (cycle.marketSnapshot.regime != MarketRegime.HIGH_VOLATILITY_MOMENTUM) {
+                val reason = "SUBMISSION_ABORTED: existing_holding_without_momentum_bypass"
+                lastRejectedReasonLabel = reason
+                lastRejectedReasonAt = now
+                logWhyNotBuy(now, "baseline", "existing_holding_without_momentum_bypass")
+                logger.warn(reason)
+                return false
+            }
+            markPipelineStage("MARKER: ENTER_ENTRY_BRANCH")
+        }
         val activeBuy = hasActiveBuyLock(
             now = now,
             activePersistedOrders = activePersistedOrders,
             pairId = null,
         )
-        if (activeBuy) return false
-        val idrFree = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
-        if (idrFree < 10_500.0) return false
+        if (activeBuy && !pairScopedParallelEntry) {
+            if (cycle.marketSnapshot.regime != MarketRegime.HIGH_VOLATILITY_MOMENTUM) {
+                val reason = "SUBMISSION_ABORTED: active_buy_lock"
+                lastRejectedReasonLabel = reason
+                lastRejectedReasonAt = now
+                logWhyNotBuy(now, "baseline", "active_buy_lock")
+                logger.warn(reason)
+                return false
+            }
+            markPipelineStage("MARKER: ENTER_ENTRY_BRANCH")
+        }
+        val idrFree = resolveIdrFreeBalance(balances)
+        if (idrFree < 10_500.0) {
+            val reason = "SUBMISSION_ABORTED: insufficient_free_idr(${formatDecimal(idrFree, 0)})"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            logWhyNotBuy(now, "baseline", "insufficient_free_idr(${formatDecimal(idrFree, 0)})")
+            logger.warn(reason)
+            return false
+        }
         val vipCandidates = marketQuotes
             .asSequence()
             .filter { it.pairId.pairAssets().quoteAsset.equals("idr", ignoreCase = true) }
-            .filter { estimateQuoteVolumeIdr(it, marketQuotes) >= config.aListMinVolumeIdr }
+            .filter { estimateQuoteVolumeIdr(it, marketQuotes) >= momentumVolumeFloorIdr }
             .filter { it.midPrice.toDoubleOrZero() > 0.0 }
             .filter { it.spreadPct <= 3.0 }
             .filter { it.estimatedSlippagePct <= 2.4 }
@@ -6834,36 +8515,91 @@ class MacEngineDaemon(
                     volumeBoost
             }
             .toList()
-        val targetQuote = vipCandidates.firstOrNull() ?: return false
+        val preferredPairId = cycle.executionPlan?.signal?.pairId
+            ?: cycle.selectedSignal?.pairId
+            ?: cycle.topCandidate
+        val targetQuote = preferredPairId
+            ?.let { preferred -> vipCandidates.firstOrNull { it.pairId == preferred } }
+            ?: vipCandidates.firstOrNull()
+            ?: run {
+            val reason = "SUBMISSION_ABORTED: no_dynamic_vip_target"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            logWhyNotBuy(
+                now = now,
+                pair = "baseline",
+                reason = "no_dynamic_vip_candidate(volume_floor=${formatDecimal(momentumVolumeFloorIdr, 0)})",
+            )
+            logger.warn(reason)
+            return false
+        }
+        logger.info("EVALUATING_CANDIDATE: {}", targetQuote.pairId.value)
         val projectedNetPct = projectedEntryNetPct(
             quote = targetQuote,
             assumeTaker = true,
         )
         if (projectedNetPct <= dynamicVipMinProjectedNetPct) {
+            val reason = "SUBMISSION_ABORTED: projected_net_too_low(${formatDecimal(projectedNetPct, 2)}%)"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
             logWhyNotBuy(
                 now = now,
                 pair = targetQuote.pairId.value,
                 reason = "dynamic_vip_net_projection_too_low(${formatDecimal(projectedNetPct, 2)}%)",
             )
+            logger.warn(reason)
             return false
         }
         entryBlockedByProtectiveBrake(now, targetQuote.pairId)?.let { blocked ->
+            val reason = "SUBMISSION_ABORTED: protective_brake($blocked)"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
             logWhyNotBuy(now, targetQuote.pairId.value, blocked)
+            logger.warn(reason)
             return false
         }
         val pairScore = cycle.rankedPairs.firstOrNull { it.pairId == targetQuote.pairId }?.rankingScore ?: 0.60
         val reservedFeeBuffer = maxOf(300.0, idrFree * 0.012)
         val spendableBudgetIdr = (idrFree - reservedFeeBuffer).coerceAtLeast(0.0)
+        val minLiveNotionalIdr = minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)
+        val allInEligible = cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM
         if (spendableBudgetIdr < 10_500.0) {
+            val reason = "SUBMISSION_ABORTED: insufficient_post_buffer_idr(${formatDecimal(spendableBudgetIdr, 0)})"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
             logWhyNotBuy(
                 now = now,
                 pair = targetQuote.pairId.value,
                 reason = "insufficient_idr_after_buffer(${formatDecimal(spendableBudgetIdr, 0)})",
             )
+            logger.warn(reason)
             return false
         }
-        val budgetIdr = spendableBudgetIdr
-        val bestAsk = targetQuote.bestAsk.toDoubleOrZero().takeIf { it > 0.0 } ?: return false
+        var budgetIdr = spendableBudgetIdr
+        if (budgetIdr < minLiveNotionalIdr && allInEligible) {
+            budgetIdr = idrFree
+            logger.warn(
+                "SUBMISSION_ABORTED: budget below venue minimum, all-in bypass engaged freeIdr={} minOrder={}",
+                formatDecimal(idrFree, 0),
+                formatDecimal(minLiveNotionalIdr, 0),
+            )
+        }
+        logger.info(
+            "TRADE_MATH: Balance={}, MinOrder={}, Buffer={}, FinalAmount={}",
+            formatDecimal(idrFree, 0),
+            formatDecimal(minLiveNotionalIdr, 0),
+            formatDecimal(reservedFeeBuffer, 0),
+            formatDecimal(budgetIdr, 0),
+        )
+        val bestAsk = targetQuote.bestAsk.toDoubleOrZero().takeIf { it > 0.0 }
+            ?: run {
+                val reason = "SUBMISSION_ABORTED: stale_or_missing_ask_price"
+                lastRejectedReasonLabel = reason
+                lastRejectedReasonAt = now
+                logger.warn(reason)
+                logWhyNotBuy(now, targetQuote.pairId.value, "missing_best_ask")
+                return false
+            }
         val bestBid = targetQuote.bestBid.toDoubleOrZero().takeIf { it > 0.0 } ?: bestAsk
         val useMarketOrder = isDynamicVipActive(targetQuote.pairId, now) &&
             targetQuote.shortTermReturnPct >= dynamicVipMarketEntryShortTermMinPct &&
@@ -6871,6 +8607,13 @@ class MacEngineDaemon(
             targetQuote.estimatedSlippagePct <= dynamicVipMarketEntryMaxSlippagePct
         val refPrice = if (useMarketOrder) bestAsk else bestBid
         val quantity = (budgetIdr / refPrice).coerceAtLeast(0.00000001)
+        logger.info(
+            "TRADE_MATH: candidate={} qty={} refPrice={} orderType={}",
+            targetQuote.pairId.value,
+            quantity,
+            formatDecimal(refPrice, 0),
+            if (useMarketOrder) "MARKET" else "LIMIT",
+        )
         val executionPlan = com.kibot.shared.models.ExecutionPlan(
             signal = com.kibot.shared.models.StrategySignal(
                 pairId = targetQuote.pairId,
@@ -6903,11 +8646,21 @@ class MacEngineDaemon(
             pairRankingScore = pairScore,
             speculativePocket = false,
         )
-        var normalized = normalizeExecutionPlanForVenue(executionPlan, marketQuotes) ?: return false
+        var normalized = normalizeExecutionPlanForVenue(executionPlan, marketQuotes) ?: run {
+            val reason = "SUBMISSION_ABORTED: venue_normalization_failed"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            logger.warn(reason)
+            return false
+        }
         normalized = routeByChartAnalyzer(
             executionPlan = normalized,
             marketQuotes = marketQuotes,
         ) ?: run {
+            val reason = "SUBMISSION_ABORTED: chart_guard_blocked_dynamic_vip"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            logger.warn(reason)
             logWhyNotBuy(now, targetQuote.pairId.value, "chart_guard_blocked_dynamic_vip")
             return false
         }
@@ -6917,6 +8670,10 @@ class MacEngineDaemon(
             marketQuotes = marketQuotes,
         )
         if (slippageGuardFailure != null) {
+            val reason = "SUBMISSION_ABORTED: $slippageGuardFailure"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            logger.warn(reason)
             logWhyNotBuy(now, targetQuote.pairId.value, slippageGuardFailure)
             return false
         }
@@ -6928,11 +8685,26 @@ class MacEngineDaemon(
             executionPlan = normalized,
             marketQuotes = marketQuotes,
         )
+        normalized = routeByLearningExecutionPolicy(
+            executionPlan = normalized,
+            marketQuotes = marketQuotes,
+            now = now,
+        ) ?: run {
+            val reason = "SUBMISSION_ABORTED: learning_policy_blocked_dynamic_vip"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            logger.warn(reason)
+            return false
+        }
         entryBlockedByAntiKoinMahal(
             executionPlan = normalized,
             balances = balances,
             marketQuotes = marketQuotes,
         )?.let { blocked ->
+            val reason = "SUBMISSION_ABORTED: $blocked"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            logger.warn(reason)
             logWhyNotBuy(now, targetQuote.pairId.value, blocked)
             return false
         }
@@ -6941,6 +8713,10 @@ class MacEngineDaemon(
             balances = balances,
             marketQuotes = marketQuotes,
         )?.let { blocked ->
+            val reason = "SUBMISSION_ABORTED: $blocked"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            logger.warn(reason)
             logWhyNotBuy(now, targetQuote.pairId.value, blocked)
             return false
         }
@@ -6948,18 +8724,27 @@ class MacEngineDaemon(
             executionPlan = normalized,
             marketQuotes = marketQuotes,
         )?.let { blocked ->
+            val reason = "SUBMISSION_ABORTED: $blocked"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            logger.warn(reason)
             logWhyNotBuy(now, targetQuote.pairId.value, blocked)
             return false
         }
         entryBlockedByShortFlatChart(
             executionPlan = normalized,
         )?.let { blocked ->
+            val reason = "SUBMISSION_ABORTED: $blocked"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
             logWhyNotBuy(now, targetQuote.pairId.value, blocked)
+            logger.warn(reason)
             return false
         }
         
         // [CAPITAL ALLOCATION CHECK] - 3rd entry point (DYNAMIC_VIP)
         // When emergency bypass is active, skip capital allocation layer entirely
+        var allocationBucket3 = "UNKNOWN"
         val finalPlan3 = if (forceEmergencyBypass) {
             logger.error("[EMERGENCY_OVERRIDE] BYPASSING capital allocation checks for DYNAMIC_VIP ${normalized.signal.pairId.value}")
             normalized
@@ -6969,42 +8754,145 @@ class MacEngineDaemon(
                 if (it > 0) it else normalized.signal.entryPrice?.toDoubleOrZero() ?: 1.0
             }
             val budget3 = normalized.quantity.toDoubleOrZero() * limitPrice3
-            if (budget3 < 20_000.0) {
-                logger.warn("[CAPITAL_BLOCKED] DYNAMIC_VIP ${normalized.signal.pairId.value}: below minimum buy notional (need=${formatDecimal(budget3, 0)} < min=20000)")
-                logWhyNotBuy(now, targetQuote.pairId.value, "minimum_notional_20k")
-                return false
-            }
             if (isHoldingLimitReached(balances = balances, marketQuotes = marketQuotes, maxHoldings = 10)) {
-                logger.warn("[CAPITAL_BLOCKED] DYNAMIC_VIP holdings limit reached (max=10)")
-                return false
+                if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM) {
+                    logger.warn(
+                        "[CAPITAL_OVERRIDE] DYNAMIC_VIP holdings limit reached but momentum bypass is active for {}",
+                        targetQuote.pairId.value,
+                    )
+                } else {
+                    logger.warn("[CAPITAL_BLOCKED] DYNAMIC_VIP holdings limit reached (max=10)")
+                    val reason = "SUBMISSION_ABORTED: slot_full"
+                    lastRejectedReasonLabel = reason
+                    lastRejectedReasonAt = now
+                    logWhyNotBuy(now, targetQuote.pairId.value, "slot_full")
+                    return false
+                }
             }
-            val allocResult3 = capitalAllocationManager?.allocate(isAnomaly3, budget3)
+            val allocResult3 = capitalAllocationManager?.allocate(
+                isAnomalyCoin = isAnomaly3,
+                requestedAmountIdr = budget3,
+                totalFreeIdr = resolveAllocatableIdr(cycle, balances),
+                currentPositionCount = managedPositions.count { it.currentValueIdr.toDoubleOrZero() >= dustHoldingsIgnoreMinValueIdr }
+            )
             if (allocResult3 == null || allocResult3.allocatedIdr <= 0.0) {
                 logger.error("[CAPITAL_BLOCKED] DYNAMIC_VIP ${normalized.signal.pairId.value}: allocation denied")
+                val reason = "SUBMISSION_ABORTED: capital_allocation_rejected"
+                lastRejectedReasonLabel = reason
+                lastRejectedReasonAt = now
+                logger.warn(reason)
                 logWhyNotBuy(now, targetQuote.pairId.value, "capital_allocation_rejected")
                 return false
             }
+            allocationBucket3 = allocResult3.bucketType
+            val minimumLiveNotional3 = minimumLiveNotionalForExchange()
+            if (allocResult3.allocatedIdr < minimumLiveNotional3) {
+                if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM) {
+                    logger.warn(
+                        "[CAPITAL_OVERRIDE] DYNAMIC_VIP below venue minimum but momentum bypass is active for {}",
+                        targetQuote.pairId.value,
+                    )
+                    allocationBucket3 = "MICRO_POOL"
+                } else {
+                    logger.warn("[CAPITAL_BLOCKED] DYNAMIC_VIP ${normalized.signal.pairId.value}: below venue minimum after allocation")
+                    val reason = "SUBMISSION_ABORTED: below_venue_minimum"
+                    lastRejectedReasonLabel = reason
+                    lastRejectedReasonAt = now
+                    logger.warn(reason)
+                    logWhyNotBuy(now, targetQuote.pairId.value, "minimum_notional_${formatDecimal(minimumLiveNotional3, 0)}")
+                    return false
+                }
+            }
             val totalEq3 = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
             val limit3 = getAdaptivePerCoinLimit(totalEq3)
-            if (budget3 > limit3) {
-                logger.error("[CAPITAL_BLOCKED] DYNAMIC_VIP ${normalized.signal.pairId.value}: exceeds adaptive limit")
-                return false
+            if (allocResult3.bucketType != "MICRO_POOL" && allocResult3.allocatedIdr > limit3) {
+                if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM) {
+                    logger.warn(
+                        "[CAPITAL_OVERRIDE] DYNAMIC_VIP exceeds adaptive limit but momentum bypass is active for {}",
+                        targetQuote.pairId.value,
+                    )
+                    allocationBucket3 = "MICRO_POOL"
+                } else {
+                    logger.error("[CAPITAL_BLOCKED] DYNAMIC_VIP ${normalized.signal.pairId.value}: exceeds adaptive limit")
+                    val reason = "SUBMISSION_ABORTED: adaptive_limit_exceeded"
+                    lastRejectedReasonLabel = reason
+                    lastRejectedReasonAt = now
+                    logger.warn(reason)
+                    return false
+                }
             }
             val finalQty3 = (allocResult3.allocatedIdr / limitPrice3).coerceAtLeast(0.00000001)
-            normalized.copy(quantity = DecimalValue.fromDouble(finalQty3))
+            applyNewsAgileEntryScaling(
+                executionPlan = normalized.copy(quantity = DecimalValue.fromDouble(finalQty3)),
+                balances = balances,
+                marketQuotes = marketQuotes,
+            )
         }
         
-        val result = liveExecutionCoordinator.submitEntry(
-            botId = config.controlPlane.botId,
-            deviceId = config.device.deviceId,
-            term = lease.term,
-            executionPlan = finalPlan3,
-            existingPersistedOrders = activePersistedOrders,
-            exchange = exchange,
-            controlPlane = controlPlane,
-            bypassLeaseValidation = isEmergencyOverrideActive(now),
+        if (hasPerSymbolExecutionLease(targetQuote.pairId, now)) {
+            if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)) {
+                logger.warn("LEASE_OVERRIDE: per-symbol execution lease bypassed for {} in momentum regime", targetQuote.pairId.value)
+            } else {
+                val reason = "SUBMISSION_ABORTED: per_symbol_execution_lease_active"
+                lastRejectedReasonLabel = reason
+                lastRejectedReasonAt = now
+                logger.warn(reason)
+                logWhyNotBuy(now, targetQuote.pairId.value, "per_symbol_execution_lease_active")
+                return false
+            }
+        }
+        val pairScopedLeaseBypassCandidate = shouldEnablePairScopedParallelEntry(
+            cycle = cycle,
+            balances = balances,
+            pairId = targetQuote.pairId,
+            managedPositions = managedPositions,
         )
+        val submissionLease = ensureLeaseLockdownOwnership(now, lease) ?: lease
+        val bypassLeaseForEmergency = forceEmergencyBypass || allocationBucket3 == "MICRO_POOL" || (
+            pairScopedLeaseBypassCandidate &&
+                !submissionLease.isHeldBy(config.device.deviceId, now) &&
+                (submissionLease.currentHolder == null || submissionLease.currentHolder == config.device.deviceId)
+            )
+        if (!bypassLeaseForEmergency && !submissionLease.isHeldBy(config.device.deviceId, now)) {
+            if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)) {
+                logger.warn("LEASE_OVERRIDE: lease_not_held bypassed for {} in momentum regime", targetQuote.pairId.value)
+            } else {
+                val reason = "SUBMISSION_ABORTED: lease_not_held_dynamic_vip"
+                lastRejectedReasonLabel = reason
+                lastRejectedReasonAt = now
+                logger.warn(reason)
+                logWhyNotBuy(now, targetQuote.pairId.value, "lease_not_held_dynamic_vip")
+                return false
+            }
+        }
+        acquirePerSymbolExecutionLease(targetQuote.pairId, now)
+        val result = try {
+            logger.info("MARKER: SUBMITTING_LIVE_ORDER_TO_EXCHANGE pair={}", targetQuote.pairId.value)
+            liveExecutionCoordinator.submitEntry(
+                botId = config.controlPlane.botId,
+                deviceId = config.device.deviceId,
+                term = submissionLease.term,
+                executionPlan = finalPlan3,
+                existingPersistedOrders = activePersistedOrders,
+                exchange = exchange,
+                controlPlane = controlPlane,
+                bypassLeaseValidation = bypassLeaseForEmergency,
+            )
+        } catch (e: Throwable) {
+            logger.error("ORDER_PREP_CRASH: Gagal membangun request order!", e)
+            val reason = "ORDER_PREP_CRASH: ${e.message ?: e::class.simpleName ?: "unknown"}"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            releasePerSymbolExecutionLease(targetQuote.pairId)
+            return false
+        }
         if (!result.submitted) {
+            releasePerSymbolExecutionLease(targetQuote.pairId)
+            logger.warn(
+                "[ENTRY_SUBMIT_FAILED] DYNAMIC_VIP pair={} message={}",
+                targetQuote.pairId.value,
+                result.message,
+            )
             logWhyNotBuy(now, targetQuote.pairId.value, result.message)
             return false
         }
@@ -7013,6 +8901,8 @@ class MacEngineDaemon(
             cachedRecentOrders = mergeRecentOrders(cachedRecentOrders, listOf(it))
             recentOrdersFetchedAt = now
         }
+        // Reset peak tracking for new entry
+        resetPeakTrackingForNewEntry(targetQuote.pairId, targetQuote.bestBid.toDoubleOrZero())
         logger.info(
             "[EXECUTION_BUY] pair={} reason=dynamic_vip mode={} budgetIdr={}",
             targetQuote.pairId.value,
@@ -7033,6 +8923,8 @@ class MacEngineDaemon(
         forceEmergencyBypass: Boolean = false,
     ): Boolean {
         if (config.exchangeKind != ExchangeKind.INDODAX) return false
+        val pairScopedParallelEntry = shouldEnableMomentumCadenceBypass(cycle, balances)
+        val momentumVolumeFloorIdr = if (pairScopedParallelEntry) 20_000_000.0 else config.aListMinVolumeIdr
         if (globalCooldownUntil?.let { now < it } == true) {
             logWhyNotBuy(now, "baseline", "GLOBAL_COOLDOWN_ACTIVE sampai ${formatJktTime(globalCooldownUntil!!)}")
             return false
@@ -7041,7 +8933,7 @@ class MacEngineDaemon(
             managedPositions = managedPositions,
             activePersistedOrders = activePersistedOrders,
         )
-        if (managedPositions.isNotEmpty() && !rotationExitInFlight) {
+        if (managedPositions.isNotEmpty() && !rotationExitInFlight && !pairScopedParallelEntry) {
             logWhyNotBuy(now, "baseline", "existing_managed_positions")
             return false
         }
@@ -7050,11 +8942,11 @@ class MacEngineDaemon(
             activePersistedOrders = activePersistedOrders,
             pairId = null,
         )
-        if (activeBuy) {
+        if (activeBuy && !pairScopedParallelEntry) {
             logWhyNotBuy(now, "baseline", "active_buy_order_exists")
             return false
         }
-        val idrFree = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
+        val idrFree = resolveAllocatableIdr(cycle, balances)
         if (idrFree < 10_500.0) {
             logWhyNotBuy(now, "baseline", "insufficient_idr_free(${formatDecimal(idrFree, 0)})")
             return false
@@ -7062,7 +8954,7 @@ class MacEngineDaemon(
         val baselineCandidates = marketQuotes
             .asSequence()
             .filter { it.pairId.pairAssets().quoteAsset.equals("idr", ignoreCase = true) }
-            .filter { estimateQuoteVolumeIdr(it, marketQuotes) >= config.aListMinVolumeIdr }
+            .filter { estimateQuoteVolumeIdr(it, marketQuotes) >= momentumVolumeFloorIdr }
             .filter { it.spreadPct <= 2.8 }
             .filter { it.estimatedSlippagePct <= 2.2 }
             .filter { it.midPrice.toDoubleOrZero() > 0.0 }
@@ -7074,7 +8966,12 @@ class MacEngineDaemon(
                 idrFree > 150_000.0 || affordabilityRatio >= 4.0
             }
             .toList()
-        val targetQuote = baselineCandidates
+        val preferredPairId = cycle.executionPlan?.signal?.pairId
+            ?: cycle.selectedSignal?.pairId
+            ?: cycle.topCandidate
+        val targetQuote = preferredPairId
+            ?.let { preferred -> baselineCandidates.firstOrNull { it.pairId == preferred } }
+            ?: baselineCandidates
             .asSequence()
             .filter { it.shortTermReturnPct >= -0.60 }
             .sortedByDescending {
@@ -7095,7 +8992,7 @@ class MacEngineDaemon(
                 }
                 .firstOrNull()
             ?: run {
-                logWhyNotBuy(now, "baseline", "no_liquid_baseline_candidate")
+                logWhyNotBuy(now, "baseline", "no_liquid_baseline_candidate(volume_floor=${formatDecimal(momentumVolumeFloorIdr, 0)})")
                 return false
             }
         val projectedNetPct = projectedEntryNetPct(
@@ -7204,6 +9101,10 @@ class MacEngineDaemon(
             executionPlan = normalized,
         )
         if (shortFlatChartBlocked != null) {
+            val reason = "SUBMISSION_ABORTED: $shortFlatChartBlocked"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            logger.warn(reason)
             logWhyNotBuy(now, targetQuote.pairId.value, shortFlatChartBlocked)
             return false
         }
@@ -7211,9 +9112,21 @@ class MacEngineDaemon(
             executionPlan = normalized,
             marketQuotes = marketQuotes,
         )
+        normalized = routeByLearningExecutionPolicy(
+            executionPlan = normalized,
+            marketQuotes = marketQuotes,
+            now = now,
+        ) ?: run {
+            val reason = "SUBMISSION_ABORTED: learning_policy_blocked_light_scalping"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            logger.warn(reason)
+            return false
+        }
         
         // [CAPITAL ALLOCATION CHECK] - 4th entry point (LIGHT_SCALPING)
         // When emergency bypass is active, skip capital allocation layer entirely
+        var allocationBucket4 = "UNKNOWN"
         val finalPlan4 = if (forceEmergencyBypass) {
             logger.error("[EMERGENCY_OVERRIDE] BYPASSING capital allocation checks for LIGHT_SCALPING ${normalized.signal.pairId.value}")
             normalized
@@ -7223,52 +9136,151 @@ class MacEngineDaemon(
                 if (it > 0) it else normalized.signal.entryPrice?.toDoubleOrZero() ?: 1.0
             }
             val budget4 = normalized.quantity.toDoubleOrZero() * limitPrice4
-            if (budget4 < 20_000.0) {
-                logger.warn("[CAPITAL_BLOCKED] LIGHT_SCALPING ${normalized.signal.pairId.value}: below minimum buy notional (need=${formatDecimal(budget4, 0)} < min=20000)")
-                return false
+            val slotIndex = if (managedPositions.isEmpty()) 0 else managedPositions.size
+            if (slotIndex < 0 && cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM) {
+                logger.warn("SLOT_OVERRIDE: slotIndex={} -> forcing slot 1 for {}", slotIndex, targetQuote.pairId.value)
             }
-            if (isHoldingLimitReached(balances = balances, marketQuotes = marketQuotes, maxHoldings = 10)) {
+            if (isHoldingLimitReached(balances = balances, marketQuotes = marketQuotes, maxHoldings = 10) &&
+                !(cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange().coerceAtLeast(20_000.0))
+            ) {
                 logger.warn("[CAPITAL_BLOCKED] LIGHT_SCALPING holdings limit reached (max=10)")
+                val reason = "SUBMISSION_ABORTED: slot_full"
+                lastRejectedReasonLabel = reason
+                lastRejectedReasonAt = now
+                logger.warn(reason)
                 return false
             }
-            val allocResult4 = capitalAllocationManager?.allocate(isAnomaly4, budget4)
+            val allocResult4 = capitalAllocationManager?.allocate(
+                isAnomalyCoin = isAnomaly4,
+                requestedAmountIdr = budget4,
+                totalFreeIdr = resolveAllocatableIdr(cycle, balances),
+                currentPositionCount = managedPositions.count { it.currentValueIdr.toDoubleOrZero() >= dustHoldingsIgnoreMinValueIdr }
+            )
+            logger.info(
+                "[ALLOC_DEBUG] LIGHT_SCALPING pair={} freeIdr={} requested={} allocated={} bucket={} msg={}",
+                normalized.signal.pairId.value,
+                formatDecimal(resolveAllocatableIdr(cycle, balances), 0),
+                formatDecimal(budget4, 0),
+                formatDecimal(allocResult4?.allocatedIdr ?: 0.0, 0),
+                allocResult4?.bucketType ?: "-",
+                allocResult4?.rebalanceMessage ?: "-",
+            )
             if (allocResult4 == null || allocResult4.allocatedIdr <= 0.0) {
                 logger.error("[CAPITAL_BLOCKED] LIGHT_SCALPING ${normalized.signal.pairId.value}: allocation denied")
+                val reason = "SUBMISSION_ABORTED: capital_allocation_rejected"
+                lastRejectedReasonLabel = reason
+                lastRejectedReasonAt = now
+                logger.warn(reason)
                 logWhyNotBuy(now, targetQuote.pairId.value, "capital_allocation_rejected")
                 return false
             }
+            allocationBucket4 = allocResult4.bucketType
+            val minimumLiveNotional4 = minimumLiveNotionalForExchange()
+            if (allocResult4.allocatedIdr < minimumLiveNotional4) {
+                if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM) {
+                    logger.warn(
+                        "ALL_IN_BYPASS: final allocation {} below minOrder {}, escalating to all free IDR {}",
+                        formatDecimal(allocResult4.allocatedIdr, 0),
+                        formatDecimal(minimumLiveNotional4, 0),
+                        formatDecimal(idrFree, 0),
+                    )
+                    allocationBucket4 = "MICRO_POOL"
+                } else {
+                    logger.warn("[CAPITAL_BLOCKED] LIGHT_SCALPING ${normalized.signal.pairId.value}: below venue minimum after allocation")
+                    val reason = "SUBMISSION_ABORTED: below_venue_minimum"
+                    lastRejectedReasonLabel = reason
+                    lastRejectedReasonAt = now
+                    logger.warn(reason)
+                    logWhyNotBuy(now, targetQuote.pairId.value, "minimum_notional_${formatDecimal(minimumLiveNotional4, 0)}")
+                    return false
+                }
+            }
             val totalEq4 = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
             val limit4 = getAdaptivePerCoinLimit(totalEq4)
-            if (budget4 > limit4) {
+            if (allocResult4.bucketType != "MICRO_POOL" && allocResult4.allocatedIdr > limit4) {
                 logger.error("[CAPITAL_BLOCKED] LIGHT_SCALPING ${normalized.signal.pairId.value}: exceeds adaptive limit")
                 return false
             }
             val finalQty4 = (allocResult4.allocatedIdr / limitPrice4).coerceAtLeast(0.00000001)
-            normalized.copy(quantity = DecimalValue.fromDouble(finalQty4))
+            applyNewsAgileEntryScaling(
+                executionPlan = normalized.copy(quantity = DecimalValue.fromDouble(finalQty4)),
+                balances = balances,
+                marketQuotes = marketQuotes,
+            )
         }
         
-        val result = liveExecutionCoordinator.submitEntry(
-            botId = config.controlPlane.botId,
-            deviceId = config.device.deviceId,
-            term = lease.term,
-            executionPlan = finalPlan4,
-            existingPersistedOrders = activePersistedOrders,
-            exchange = exchange,
-            controlPlane = controlPlane,
-            bypassLeaseValidation = isEmergencyOverrideActive(now),
-        )
+        if (hasPerSymbolExecutionLease(targetQuote.pairId, now)) {
+            if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)) {
+                logger.warn("LEASE_OVERRIDE: per-symbol execution lease bypassed for {} in momentum regime", targetQuote.pairId.value)
+            } else {
+                val reason = "SUBMISSION_ABORTED: per_symbol_execution_lease_active"
+                lastRejectedReasonLabel = reason
+                lastRejectedReasonAt = now
+                logger.warn(reason)
+                logWhyNotBuy(now, targetQuote.pairId.value, "per_symbol_execution_lease_active")
+                return false
+            }
+        }
+        val submissionLease = ensureLeaseLockdownOwnership(now, lease) ?: lease
+        val bypassLeaseForEmergency = forceEmergencyBypass || allocationBucket4 == "MICRO_POOL" || pairScopedParallelEntry
+        if (!bypassLeaseForEmergency && !submissionLease.isHeldBy(config.device.deviceId, now)) {
+            if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)) {
+                logger.warn("LEASE_OVERRIDE: lease_not_held bypassed for {} in momentum regime", targetQuote.pairId.value)
+            } else {
+                val reason = "SUBMISSION_ABORTED: lease_not_held_light_scalping"
+                lastRejectedReasonLabel = reason
+                lastRejectedReasonAt = now
+                logger.warn(reason)
+                logWhyNotBuy(now, targetQuote.pairId.value, "lease_not_held_light_scalping")
+                return false
+            }
+        }
+        acquirePerSymbolExecutionLease(targetQuote.pairId, now)
+        val result = try {
+            logger.info("MARKER: SUBMITTING_LIVE_ORDER_TO_EXCHANGE pair={}", targetQuote.pairId.value)
+            liveExecutionCoordinator.submitEntry(
+                botId = config.controlPlane.botId,
+                deviceId = config.device.deviceId,
+                term = submissionLease.term,
+                executionPlan = finalPlan4,
+                existingPersistedOrders = activePersistedOrders,
+                exchange = exchange,
+                controlPlane = controlPlane,
+                bypassLeaseValidation = bypassLeaseForEmergency,
+            )
+        } catch (e: Throwable) {
+            logger.error("ORDER_PREP_CRASH: Gagal membangun request order!", e)
+            val reason = "ORDER_PREP_CRASH: ${e.message ?: e::class.simpleName ?: "unknown"}"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            releasePerSymbolExecutionLease(targetQuote.pairId)
+            return false
+        }
         if (result.submitted) {
             result.order?.let {
                 cachedRecentOrders = mergeRecentOrders(cachedRecentOrders, listOf(it))
                 recentOrdersFetchedAt = now
             }
+            // Reset peak tracking for new entry
+            resetPeakTrackingForNewEntry(targetQuote.pairId, targetQuote.bestBid.toDoubleOrZero())
             logger.info(
                 "[EXECUTION_BUY] pair={} reason=baseline_scalping budgetIdr={}",
                 targetQuote.pairId.value,
                 formatDecimal(budgetIdr, 0),
             )
+        } else {
+            releasePerSymbolExecutionLease(targetQuote.pairId)
         }
         if (!result.submitted) {
+            logger.warn(
+                "[ENTRY_SUBMIT_FAILED] LIGHT_SCALPING pair={} message={}",
+                targetQuote.pairId.value,
+                result.message,
+            )
+            val reason = "SUBMISSION_ABORTED: ${result.message}"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            logger.warn(reason)
             logWhyNotBuy(now, targetQuote.pairId.value, result.message)
         }
         return result.submitted
@@ -7544,10 +9556,10 @@ class MacEngineDaemon(
             leadLagTrailingPeakBidByPair[pairKey] = peak
             val entryPx = position.averageEntryPrice.toDoubleOrZero().coerceAtLeast(0.0000001)
             val gainPct = ((peak - entryPx) / entryPx) * 100.0
-            val dynamicTrailingStopPct = dynamicTrailingStopPct(gainPct, currentBid)
+            val dynamicTrailingStopPct = dynamicTrailingStopPct(gainPct, currentBid, position.pairId)
             val armed = peak >= (entryPx * (1.0 + (leadLagTrailingArmMinGainPct / 100.0)))
             if (!armed) return@firstOrNull false
-            val trailingFloor = peak * (1.0 - (dynamicTrailingStopPct / 100.0))
+            val trailingFloor = calculateProfitLockedFloor(entryPx, peak, gainPct, dynamicTrailingStopPct)
             val noSellOrder = activeByPair[position.pairId].orEmpty().none { it.side == com.kibot.shared.models.OrderSide.SELL }
             currentBid <= trailingFloor && noSellOrder
         }?.let { position ->
@@ -7594,6 +9606,7 @@ class MacEngineDaemon(
     private fun entryBlockedByPortfolioState(
         cycle: com.kibot.core.StrategyCycleResult,
         executionPlan: com.kibot.shared.models.ExecutionPlan,
+        balances: List<BalanceSnapshot>,
         managedPositions: List<com.kibot.core.ManagedPosition>,
         activeOrders: List<com.kibot.shared.models.OrderSnapshot>,
         leadLagPriorityPair: com.kibot.shared.models.PairId?,
@@ -7604,6 +9617,14 @@ class MacEngineDaemon(
         if (samePairExposure != null && samePairExposure.unrealizedPnlPct < 0.20) {
             return "Masih pegang ${executionPlan.signal.pairId.value} dan posisinya belum cukup hijau, jadi bot tidak averaging dulu."
         }
+
+        val pairScopedParallelEntry = shouldEnablePairScopedParallelEntry(
+            cycle = cycle,
+            balances = balances,
+            pairId = executionPlan.signal.pairId,
+            managedPositions = managedPositions,
+        )
+        if (pairScopedParallelEntry) return null
 
         val slotsAreFull = managedPositions.size >= cycle.deploymentPlan.maxActivePositions.coerceAtLeast(1)
 
@@ -7718,28 +9739,41 @@ class MacEngineDaemon(
                             if (it > 0) it else slicedChasePlan.signal.entryPrice?.toDoubleOrZero() ?: 1.0
                         }
                         val budget5 = slicedChasePlan.quantity.toDoubleOrZero() * limitPrice5
-                        if (budget5 < 20_000.0) {
-                            logger.warn("[CAPITAL_BLOCKED] ORDER_CHASE ${slicedChasePlan.signal.pairId.value}: below minimum buy notional (need=${formatDecimal(budget5, 0)} < min=20000)")
-                            logWhyNotBuy(now, order.pairId.value, "minimum_notional_20k")
-                            return@forEach
-                        }
                         if (isHoldingLimitReached(balances = balances, marketQuotes = quoteByPair.values.toList(), maxHoldings = 10)) {
                             logger.warn("[CAPITAL_BLOCKED] ORDER_CHASE holdings limit reached (max=10)")
                             return@forEach
                         }
-                        val allocResult5 = capitalAllocationManager?.allocate(isAnomaly5, budget5)
+                        val allocResult5 = capitalAllocationManager?.allocate(
+                            isAnomalyCoin = isAnomaly5,
+                            requestedAmountIdr = budget5,
+                            totalFreeIdr = resolveAllocatableIdr(cycle, balances),
+                            currentPositionCount = cycle.portfolio.positions.count {
+                                it.state != com.kibot.shared.models.PositionState.CLOSED &&
+                                    (it.quantity.toDoubleOrZero() * it.averageEntryPrice.toDoubleOrZero()) >= dustHoldingsIgnoreMinValueIdr
+                            }
+                        )
                         if (allocResult5 == null || allocResult5.allocatedIdr <= 0.0) {
                             logger.error("[CAPITAL_BLOCKED] ORDER_CHASE ${slicedChasePlan.signal.pairId.value}: allocation denied")
                             logWhyNotBuy(now, order.pairId.value, "capital_allocation_rejected")
                         } else {
+                            val minimumLiveNotional5 = minimumLiveNotionalForExchange()
+                            if (allocResult5.allocatedIdr < minimumLiveNotional5) {
+                                logger.warn("[CAPITAL_BLOCKED] ORDER_CHASE ${slicedChasePlan.signal.pairId.value}: below venue minimum after allocation")
+                                logWhyNotBuy(now, order.pairId.value, "minimum_notional_${formatDecimal(minimumLiveNotional5, 0)}")
+                                return@forEach
+                            }
                             val totalEq5 = cycle.portfolio.totalEquityIdr.toDoubleOrZero()
                             val limit5 = getAdaptivePerCoinLimit(totalEq5)
-                            if (budget5 > limit5) {
+                            if (allocResult5.bucketType != "MICRO_POOL" && allocResult5.allocatedIdr > limit5) {
                                 logger.error("[CAPITAL_BLOCKED] ORDER_CHASE ${slicedChasePlan.signal.pairId.value}: exceeds adaptive limit")
                                 logWhyNotBuy(now, order.pairId.value, "position_size_limit_exceeded")
                             } else {
                                 val finalQty5 = (allocResult5.allocatedIdr / limitPrice5).coerceAtLeast(0.00000001)
-                                val finalPlan5 = slicedChasePlan.copy(quantity = DecimalValue.fromDouble(finalQty5))
+                                val finalPlan5 = applyNewsAgileEntryScaling(
+                                    executionPlan = slicedChasePlan.copy(quantity = DecimalValue.fromDouble(finalQty5)),
+                                    balances = balances,
+                                    marketQuotes = marketQuotes,
+                                )
                                 
                                 val chaseResult = liveExecutionCoordinator.submitEntry(
                                     botId = config.controlPlane.botId,
@@ -7875,7 +9909,8 @@ class MacEngineDaemon(
                             existingPersistedOrders = recentOrders,
                             exchange = exchange,
                             controlPlane = controlPlane,
-                            bypassLeaseValidation = isEmergencyOverrideActive(now),
+                            bypassLeaseValidation = true,
+                            bypassSamePairOrderCheck = true,
                         )
                         if (dumpResult.submitted) {
                             appendAuditLog(
@@ -8036,7 +10071,7 @@ class MacEngineDaemon(
             controlPlane.appendLog(
                 botId = config.controlPlane.botId,
                 record = AuditLogRecord(
-                    recordedAt = Clock.System.now(),
+                    recordedAt = clock.now(),
                     level = level,
                     category = normalizedCategory,
                     deviceId = config.device.deviceId,
@@ -8093,7 +10128,7 @@ class MacEngineDaemon(
         healthDecision: com.kibot.core.EntryHealthDecision,
     ): BotEffectiveState {
         if (botState.desiredState == BotDesiredState.OFF) return BotEffectiveState.STOPPED
-        val leaseHeld = lease.isHeldBy(config.device.deviceId, Clock.System.now())
+        val leaseHeld = lease.isHeldBy(config.device.deviceId, clock.now())
         return when {
             healthDecision.tradingAllowed -> BotEffectiveState.RUNNING
             leaseHeld -> BotEffectiveState.DEGRADED
@@ -8108,13 +10143,9 @@ class MacEngineDaemon(
         topCandidate: String?,
     ) {
         if (!config.telegramAlertsEnabled) return
-        val alertState = when {
-            botState.effectiveState == BotEffectiveState.SAFE_MODE || botState.syncHealth == SyncHealth.BROKEN || localHealth.status == HealthStatus.CRITICAL -> "critical"
-            botState.effectiveState == BotEffectiveState.DEGRADED || botState.syncHealth == SyncHealth.DEGRADED || localHealth.status == HealthStatus.WARNING -> "degraded"
-            else -> "healthy"
-        }
-        val previous = lastOperatorAlertStateKey
-        if (previous == alertState) return
+        val isFatal = botState.effectiveState == BotEffectiveState.SAFE_MODE ||
+            botState.syncHealth == SyncHealth.BROKEN ||
+            localHealth.status == HealthStatus.CRITICAL
         val candidateText = topCandidate?.takeIf { it.isNotBlank() && it != "-" } ?: "none"
         val botName = config.controlPlane.botId.value.uppercase()
         val issueText = repository.state.value.healthSummary
@@ -8126,32 +10157,36 @@ class MacEngineDaemon(
             ?.replace(Regex("\\s+"), " ")
             ?.takeIf { it.isNotBlank() }
             ?: "ada gangguan di engine"
-        val candidateLine = if (candidateText == "none") {
-            "Belum ada kandidat yang layak."
-        } else {
-            "Lagi mantau: $candidateText"
+        if (!isFatal) {
+            pendingFatalAlertSince = null
+            pendingFatalAlertKey = null
+            fatalAlertSentForCurrentIncident = false
+            lastOperatorAlertStateKey = null
+            return
         }
-        val message = when (alertState) {
-            "critical" -> """
-                🚨 $botName lagi bermasalah
-                $candidateLine
-                Intinya: $issueText
-            """.trimIndent()
-
-            "degraded" -> """
-                ⚠️ $botName lagi kurang fit
-                $candidateLine
-                Catatan: $issueText
-            """.trimIndent()
-
-            else -> """
-                ✅ $botName udah aman lagi
-                $candidateLine
-                Update: ${formatUpdatedLabel(now)}
-            """.trimIndent()
+        val incidentKey = "$botName|$issueText"
+        if (pendingFatalAlertKey != incidentKey) {
+            pendingFatalAlertKey = incidentKey
+            pendingFatalAlertSince = now
+            fatalAlertSentForCurrentIncident = false
+            return
+        }
+        val pendingSince = pendingFatalAlertSince ?: now
+        if ((now - pendingSince).inWholeMilliseconds < config.telegramFatalAlertDebounceMillis) return
+        if (fatalAlertSentForCurrentIncident) return
+        val candidateLine = if (candidateText == "none") {
+            "No safe candidate"
+        } else {
+            "Last: $candidateText"
+        }
+        val message = buildString {
+            appendLine("🚨 $botName down")
+            appendLine(candidateLine)
+            append("Issue: ${issueText.take(90)}")
         }
         telegramAlertNotifier.send(message)
-        lastOperatorAlertStateKey = alertState
+        fatalAlertSentForCurrentIncident = true
+        lastOperatorAlertStateKey = incidentKey
     }
 
     private fun buildDashboardState(
@@ -8171,6 +10206,7 @@ class MacEngineDaemon(
         recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
         supportEval: com.kibot.aisupport.GeminiSupportEvaluation?,
         healthDecisionSummary: String,
+        upstreamMarker: String,
     ): com.kibot.macengine.state.MacDashboardState {
         val heartbeatInstant = botState.lastHeartbeatAt ?: lease?.lastHeartbeatAt
         val filteredRadarPairs = buildDisplayRadarPairs(
@@ -8209,11 +10245,89 @@ class MacEngineDaemon(
         val pnlTodayPctLabel = openingEquity
             ?.let { formatSignedPercent(pnlToday / it) }
             ?: "+0.0%"
+        val pnlTodayPct = openingEquity
+            ?.takeIf { it > 0.0 }
+            ?.let { (pnlToday / it) * 100.0 }
+            ?: 0.0
+        val pnlCircuit = evaluatePnlCircuit(pnlTodayPct)
+        val localPositionState = loadLocalPositionState()
+        val localManagedPositionByPair = localPositionState.managedPositions.associateBy { it.pairId.lowercase() }
+        val effectiveRecentFills = buildList {
+            addAll(cachedRecentFills)
+            val existingFillIds = cachedRecentFills.map { it.fillId.value }.toMutableSet()
+            localPositionState.recentFills.forEach { fill ->
+                if (existingFillIds.add(fill.fillId.value)) add(fill)
+            }
+        }
+        val recentFillPriceByOrderId = effectiveRecentFills
+            .groupBy { it.orderId.value }
+            .mapValues { (_, fills) ->
+                val totalQty = fills.sumOf { it.quantity.toDoubleOrZero() }.coerceAtLeast(0.0)
+                if (totalQty <= 0.0) 0.0
+                else fills.sumOf { it.quantity.toDoubleOrZero() * it.price.toDoubleOrZero() } / totalQty
+            }
+        val recentFillHistoryByPairSide = effectiveRecentFills
+            .groupBy { "${it.pairId.value.lowercase()}|${it.side.name}" }
+            .mapValues { (_, fills) -> fills.sortedBy { it.executedAt.toEpochMilliseconds() } }
+        val localOrderByCompositeKey = localPositionState.orders.associateBy { "${it.orderId.value}|${it.clientOrderId.value}|${it.pairId.value.lowercase()}|${it.side.name}" }
+        fun resolvedOrderQuantity(order: com.kibot.shared.models.OrderSnapshot): Double {
+            val fillQty = effectiveRecentFills
+                .filter { it.orderId.value == order.orderId.value && it.side == order.side }
+                .sumOf { it.quantity.toDoubleOrZero() }
+            return max(fillQty, max(order.executedQuantity.toDoubleOrZero(), order.originalQuantity.toDoubleOrZero()))
+        }
+        fun nearestPairSideFillPrice(order: com.kibot.shared.models.OrderSnapshot): Double? {
+            val pairSideKey = "${order.pairId.value.lowercase()}|${order.side.name}"
+            val targetEpochMs = order.updatedAt.toEpochMilliseconds()
+            return recentFillHistoryByPairSide[pairSideKey]
+                ?.minByOrNull { fill -> abs(fill.executedAt.toEpochMilliseconds() - targetEpochMs) }
+                ?.price
+                ?.toDoubleOrZero()
+                ?.takeIf { it > 0.0 }
+        }
+        fun resolvedOrderPrice(order: com.kibot.shared.models.OrderSnapshot): Double {
+            val direct = order.price.toDoubleOrZero().coerceAtLeast(0.0)
+            if (direct > 0.0) return direct
+            val byFill = recentFillPriceByOrderId[order.orderId.value]?.takeIf { it > 0.0 }
+            if (byFill != null) return byFill
+            val byPairSideFill = nearestPairSideFillPrice(order)
+            if (byPairSideFill != null) return byPairSideFill
+            val localCompositeKey = "${order.orderId.value}|${order.clientOrderId.value}|${order.pairId.value.lowercase()}|${order.side.name}"
+            val localOrderPrice = localOrderByCompositeKey[localCompositeKey]?.price?.toDoubleOrZero()?.takeIf { it > 0.0 }
+            if (localOrderPrice != null) return localOrderPrice
+            val localPositionAvg = localManagedPositionByPair[order.pairId.value.lowercase()]?.averageEntryPrice?.toDoubleOrNull()?.takeIf { it > 0.0 }
+            if (order.side == com.kibot.shared.models.OrderSide.BUY && localPositionAvg != null) return localPositionAvg
+            return 0.0
+        }
+        val fillDerivedAvgEntryByPair = mutableMapOf<String, Pair<Double, Double>>()
+        effectiveRecentFills
+            .sortedBy { it.executedAt }
+            .forEach { fill ->
+                val pair = fill.pairId.value.lowercase()
+                val quantity = fill.quantity.toDoubleOrZero()
+                val price = fill.price.toDoubleOrZero()
+                if (quantity <= 0.0 || price <= 0.0) return@forEach
+                when (fill.side) {
+                    com.kibot.shared.models.OrderSide.BUY -> {
+                        val (prevQty, prevAvg) = fillDerivedAvgEntryByPair[pair] ?: (0.0 to price)
+                        val nextQty = prevQty + quantity
+                        val nextAvg = if (nextQty > 0.0) ((prevQty * prevAvg) + (quantity * price)) / nextQty else price
+                        fillDerivedAvgEntryByPair[pair] = nextQty to nextAvg
+                    }
+                    com.kibot.shared.models.OrderSide.SELL -> {
+                        val (heldQty, avgEntry) = fillDerivedAvgEntryByPair[pair] ?: (0.0 to 0.0)
+                        if (avgEntry > 0.0) {
+                            val nextQty = (heldQty - quantity).coerceAtLeast(0.0)
+                            fillDerivedAvgEntryByPair[pair] = nextQty to avgEntry
+                        }
+                    }
+                }
+            }
         val avgEntryByPair = mutableMapOf<String, Pair<Double, Double>>() // pair -> qty, avg entry
         recentOrders.sortedBy { it.updatedAt }.forEach { order ->
             val pair = order.pairId.value.lowercase()
-            val quantity = max(order.executedQuantity.toDoubleOrZero(), order.originalQuantity.toDoubleOrZero())
-            val price = order.price.toDoubleOrZero().coerceAtLeast(0.0)
+            val quantity = resolvedOrderQuantity(order)
+            val price = resolvedOrderPrice(order)
             if (quantity <= 0.0 || price <= 0.0) return@forEach
             when (order.side.name.uppercase()) {
                 "BUY" -> {
@@ -8238,7 +10352,7 @@ class MacEngineDaemon(
                 if (quantity <= 0.0) return@mapNotNull null
                 val valuedIdr = balance.totalValueInIdr?.toDoubleOrZero()
                     ?: quoteAssetReferencePrice(balance.asset, marketQuotes)?.let { it * quantity }
-                if (valuedIdr != null && valuedIdr < dustUiHideMinValueIdr) return@mapNotNull null
+                if (valuedIdr != null && valuedIdr < dustHoldingsIgnoreMinValueIdr) return@mapNotNull null
                 "${balance.asset.uppercase()}: ${formatDecimal(quantity, 6)}"
             }
         val holdingsDetailed = balances
@@ -8249,10 +10363,12 @@ class MacEngineDaemon(
                 val assetCode = balance.asset.uppercase()
                 val valuedIdr = balance.totalValueInIdr?.toDoubleOrZero()
                     ?: quoteAssetReferencePrice(balance.asset, marketQuotes)?.let { it * quantity }
-                if (valuedIdr != null && valuedIdr < dustUiHideMinValueIdr) return@mapNotNull null
+                if (valuedIdr != null && valuedIdr < dustHoldingsIgnoreMinValueIdr) return@mapNotNull null
                 val assetValueIdr = valuedIdr ?: 0.0
                 val pairKey = "${balance.asset.lowercase()}_${referenceQuoteAsset()}".lowercase()
-                val avgEntry = avgEntryByPair[pairKey]?.second ?: 0.0
+                val avgEntry = avgEntryByPair[pairKey]?.second
+                    ?: localManagedPositionByPair[pairKey]?.averageEntryPrice?.toDoubleOrNull()
+                    ?: 0.0
                 val currentPrice = quoteAssetReferencePrice(balance.asset, marketQuotes)?.takeIf { it > 0.0 } ?: 0.0
                 val pnlIdr = if (avgEntry > 0.0 && currentPrice > 0.0) {
                     (currentPrice - avgEntry) * quantity
@@ -8267,8 +10383,8 @@ class MacEngineDaemon(
                     assetLabel = displayAssetLabel(balance.asset),
                     quantityLabel = "${formatDecimal(quantity, 8)} $assetCode",
                     valueIdrLabel = if (valuedIdr != null) formatMonetary(assetValueIdr) else "~",
-                    entryPriceLabel = formatMonetary(avgEntry),
-                    currentPriceLabel = if (currentPrice > 0.0) formatMonetary(currentPrice) else "~",
+                    entryPriceLabel = formatExecutionPrice(avgEntry),
+                    currentPriceLabel = formatExecutionPrice(currentPrice),
                     pnlIdrLabel = formatSignedMonetary(pnlIdr),
                     pnlPctLabel = formatSignedPercent(pnlPct / 100.0),
                 )
@@ -8292,7 +10408,7 @@ class MacEngineDaemon(
         }
         val trailingFloors = localAutonomyTrailingFloorByPair.values
             .filter { snapshot ->
-                (localExposureByPair[snapshot.pair.value.lowercase()] ?: 0.0) >= dustUiHideMinValueIdr
+                (localExposureByPair[snapshot.pair.value.lowercase()] ?: 0.0) >= dustHoldingsIgnoreMinValueIdr
             }
             .sortedBy { snapshot ->
                 val denominator = snapshot.floorPrice.takeIf { it > 0.0 } ?: 0.0000001
@@ -8306,10 +10422,10 @@ class MacEngineDaemon(
                 }
                 com.kibot.macengine.state.MacTrailingFloorDetail(
                     pair = snapshot.pair.value.lowercase(),
-                    entryPriceLabel = formatMonetary(snapshot.entryPrice),
-                    peakPriceLabel = formatMonetary(snapshot.peakPrice),
-                    trailingFloorLabel = formatMonetary(snapshot.floorPrice),
-                    currentBidLabel = formatMonetary(snapshot.currentBid),
+                    entryPriceLabel = formatExecutionPrice(snapshot.entryPrice),
+                    peakPriceLabel = formatExecutionPrice(snapshot.peakPrice),
+                    trailingFloorLabel = formatExecutionPrice(snapshot.floorPrice),
+                    currentBidLabel = formatExecutionPrice(snapshot.currentBid),
                     dropFromPeakPctLabel = formatSignedPercent(-(dropPctFromPeak / 100.0)),
                     armed = snapshot.armed,
                 )
@@ -8345,18 +10461,25 @@ class MacEngineDaemon(
                 else -> "degraded"
             }
         }
-        val remoteLeaseConflict = lease?.conflictDetected == true && lease.currentHolder != config.device.deviceId
-        val statusMessage = when {
-            botState.effectiveState == BotEffectiveState.SAFE_MODE ->
-                "🛡️ Safe mode - waiting for clean conditions"
-            localHealth.status == HealthStatus.CRITICAL ->
-                "⚠️ Server problem: ${localHealth.warnings.firstOrNull().orEmpty()}".trim()
+	        val remoteLeaseConflict = lease?.conflictDetected == true && lease.currentHolder != config.device.deviceId
+	        val latestRecentOrder = recentOrders.maxByOrNull { it.updatedAt.toEpochMilliseconds() }
+	        val latestRecentOrderAgeMs = latestRecentOrder?.let { (now - it.updatedAt).inWholeMilliseconds } ?: Long.MAX_VALUE
+	        val shouldSurfaceRecentOrder = latestRecentOrder != null && latestRecentOrderAgeMs <= 15 * 60 * 1000L
+	        val explicitRejectedReason = lastRejectedReasonForState(now)
+	        val forcedSafeModeActive = forcedSafeModeAt?.let { (now - it).inWholeMilliseconds <= 10.minutes.inWholeMilliseconds } == true
+	        val baseStatusMessage = when {
+	            forcedSafeModeActive ->
+	                "🛡️ Safe mode - ${forcedSafeModeReason ?: "waiting for clean conditions"}"
+	            botState.effectiveState == BotEffectiveState.SAFE_MODE ->
+	                "🛡️ Safe mode - waiting for clean conditions"
+	            localHealth.status == HealthStatus.CRITICAL ->
+	                "⚠️ Server problem: ${localHealth.warnings.firstOrNull().orEmpty()}".trim()
             // Recently bought or selling
-            recentOrders.isNotEmpty() -> {
-                val lastOrder = recentOrders.last()
+            shouldSurfaceRecentOrder -> {
+                val lastOrder = latestRecentOrder!!
                 val pair = lastOrder.pairId.value.uppercase()
-                val qty = formatDecimal(max(lastOrder.executedQuantity.toDoubleOrZero(), lastOrder.originalQuantity.toDoubleOrZero()), 4)
-                val price = formatMonetary(lastOrder.price.toDoubleOrZero())
+                val qty = formatDecimal(resolvedOrderQuantity(lastOrder), 4)
+                val price = formatExecutionPrice(resolvedOrderPrice(lastOrder))
                 when (lastOrder.side.name.uppercase()) {
                     "BUY" -> "📥 Bought $qty $pair @ $price"
                     "SELL" -> "📤 Sold $qty $pair @ $price"
@@ -8372,44 +10495,64 @@ class MacEngineDaemon(
             }
             // Looking for entry
             topCandidate != "-" && scanUniverseCount > 0 ->
-                "🔍 Scanning $topCandidate (analyzing $scanUniverseCount pairs)"
+                if (explicitRejectedReason.isNotBlank()) {
+                    "🔍 Scanning $topCandidate ($scanUniverseCount pairs) • $explicitRejectedReason"
+                } else {
+                    "🔍 Scanning $topCandidate (analyzing $scanUniverseCount pairs)"
+                }
             scanUniverseCount > 0 ->
                 "👀 Scanning market ($scanUniverseCount pairs in queue)"
-            // Idle/syncing
-            else -> "⏱️ Waiting for good entry opportunity"
+	            // Idle/syncing
+	            else -> "⏱️ Waiting for good entry opportunity"
+	        }
+        val statusMessage = if (pnlCircuit.level == "NORMAL") {
+            baseStatusMessage
+        } else {
+            "🧯 ${pnlCircuit.level}: ${pnlCircuit.operatorAction} • $baseStatusMessage"
         }
         val avgBuyByPair = mutableMapOf<String, Pair<Double, Double>>() // pair -> held qty, avg buy
         val recentOrderCards = recentOrders
             .sortedBy { it.updatedAt }
             .map { order ->
                 val pair = order.pairId.value.lowercase()
-                val quantity = max(order.executedQuantity.toDoubleOrZero(), order.originalQuantity.toDoubleOrZero())
-                val price = order.price.toDoubleOrZero().coerceAtLeast(0.0)
+                val quantity = resolvedOrderQuantity(order)
+                val price = resolvedOrderPrice(order)
                 val side = order.side.name.uppercase()
+                val orderType = order.orderType.name.uppercase()
                 var pnlIdrLabel = ""
                 var pnlPctLabel = ""
+                var entryPriceLabel = ""
+                var exitPriceLabel = ""
+                var outcomeLabel = ""
                 val detail = when {
-                    quantity <= 0.0 || price <= 0.0 -> "${formatDecimal(quantity, 8)} @ ${formatMonetary(price)}"
+                    quantity <= 0.0 || price <= 0.0 -> "${formatDecimal(quantity, 8)} @ ~ • $orderType"
                     side == "BUY" -> {
                         val (prevQty, prevAvg) = avgBuyByPair[pair] ?: (0.0 to price)
                         val nextQty = prevQty + quantity
                         val nextAvg = if (nextQty > 0.0) ((prevQty * prevAvg) + (quantity * price)) / nextQty else price
                         avgBuyByPair[pair] = nextQty to nextAvg
-                        "${formatDecimal(quantity, 8)} @ ${formatMonetary(price)}"
+                        entryPriceLabel = formatExecutionPrice(price)
+                        "${formatDecimal(quantity, 8)} @ ${formatExecutionPrice(price)} • $orderType"
                     }
                     side == "SELL" -> {
-                        val (heldQty, avgBuy) = avgBuyByPair[pair] ?: (0.0 to 0.0)
+                        val (heldQty, avgBuy) = avgBuyByPair[pair]
+                            ?: fillDerivedAvgEntryByPair[pair]
+                            ?: (0.0 to 0.0)
                         val estimatedPnl = if (avgBuy > 0.0) (price - avgBuy) * quantity else 0.0
+                        entryPriceLabel = if (avgBuy > 0.0) formatExecutionPrice(avgBuy) else ""
+                        exitPriceLabel = formatExecutionPrice(price)
                         val outcome = when {
                             avgBuy <= 0.0 -> "PnL n/a"
                             estimatedPnl >= 0.0 -> {
                                 pnlIdrLabel = formatSignedMonetary(estimatedPnl)
                                 pnlPctLabel = if (avgBuy > 0.0 && quantity > 0.0) formatSignedPercent((estimatedPnl / (avgBuy * quantity)) * 100.0) else "+0.0%"
+                                outcomeLabel = "Untung"
                                 "Untung ${formatSignedMonetary(estimatedPnl)}"
                             }
                             else -> {
                                 pnlIdrLabel = formatSignedMonetary(estimatedPnl)
                                 pnlPctLabel = if (avgBuy > 0.0 && quantity > 0.0) formatSignedPercent((estimatedPnl / (avgBuy * quantity)) * 100.0) else "+0.0%"
+                                outcomeLabel = "Rugi"
                                 "Rugi ${formatSignedMonetary(estimatedPnl)}"
                             }
                         }
@@ -8417,16 +10560,20 @@ class MacEngineDaemon(
                         if (avgBuy > 0.0) {
                             avgBuyByPair[pair] = nextHeldQty to avgBuy
                         }
-                        "${formatDecimal(quantity, 8)} @ ${formatMonetary(price)} • $outcome"
+                        "${formatDecimal(quantity, 8)} @ ${formatExecutionPrice(price)} • $orderType • $outcome"
                     }
-                    else -> "${formatDecimal(quantity, 8)} @ ${formatMonetary(price)}"
+                    else -> "${formatDecimal(quantity, 8)} @ ${formatExecutionPrice(price)} • $orderType"
                 }
                 com.kibot.macengine.state.MacRecentOrder(
                     timestampEpochMs = order.updatedAt.toEpochMilliseconds(),
                     pair = pair,
                     side = order.side.name,
                     status = order.status.name,
+                    orderType = order.orderType.name,
                     detail = detail,
+                    entryPriceLabel = entryPriceLabel,
+                    exitPriceLabel = exitPriceLabel,
+                    outcomeLabel = outcomeLabel,
                     pnlIdrLabel = pnlIdrLabel,
                     pnlPctLabel = pnlPctLabel,
                 )
@@ -8450,50 +10597,100 @@ class MacEngineDaemon(
             targetPursuit = targetPursuit,
             aiProviderSummary = aiSummaryLabel,
         )
-        val weeklyBaseline = resolveReturnBaseline(
+        val rolling7dBaseline = resolveReturnBaseline(
             history = equityHistory,
             currentDate = jakartaDate,
-            rangeStart = startOfWeek(jakartaDate),
-            fallbackEquity = manualResetBaseline ?: portfolioValue,
+            rangeStart = jakartaDate.minus(DatePeriod(days = 6)),
+            fallbackEquity = portfolioValue,
         )
-        val monthlyBaseline = resolveReturnBaseline(
+        val rolling30dBaseline = resolveReturnBaseline(
             history = equityHistory,
             currentDate = jakartaDate,
-            rangeStart = LocalDate(jakartaDate.year, jakartaDate.month, 1),
-            fallbackEquity = manualResetBaseline ?: portfolioValue,
+            rangeStart = jakartaDate.minus(DatePeriod(days = 29)),
+            fallbackEquity = portfolioValue,
         )
         val hasReliablePerformanceHistory =
             holdingsDetailed.isNotEmpty() ||
                 recentOrders.any { it.status == com.kibot.shared.models.OrderStatus.FILLED } ||
                 equityHistory.size >= 3
-        val safeFallbackBaseline = manualResetBaseline ?: portfolioValue
-        val return7dBaseline = if (hasReliablePerformanceHistory) {
-            manualResetBaseline ?: weeklyBaseline
-        } else {
-            safeFallbackBaseline
-        }
+        val safeFallbackBaseline = portfolioValue
+	        val return7dBaseline = if (hasReliablePerformanceHistory) {
+	            rolling7dBaseline
+	        } else {
+	            safeFallbackBaseline
+	        }
         val return7d = portfolioValue - return7dBaseline
         val return7dPct = if (return7dBaseline > 0.0) return7d / return7dBaseline else 0.0
-        val monthlyResetBaseline = if (hasReliablePerformanceHistory) {
-            manualResetBaseline ?: resolveMonthlyReturnBaseline(
-                currentDate = jakartaDate,
-                currentEquity = portfolioValue,
-                fallbackEquity = monthlyBaseline,
-            )
-        } else {
-            safeFallbackBaseline
-        }
-        val return30d = portfolioValue - monthlyResetBaseline
-        val return30dPct = if (monthlyResetBaseline > 0.0) return30d / monthlyResetBaseline else 0.0
+	        val rolling30dResolvedBaseline = if (hasReliablePerformanceHistory) {
+	            rolling30dBaseline
+	        } else {
+	            resolveMonthlyReturnBaseline(
+	                currentDate = jakartaDate,
+	                currentEquity = portfolioValue,
+	                fallbackEquity = safeFallbackBaseline,
+	            )
+	        }
+        val return30d = portfolioValue - rolling30dResolvedBaseline
+        val return30dPct = if (rolling30dResolvedBaseline > 0.0) return30d / rolling30dResolvedBaseline else 0.0
         
         // Calculate cumulative return since bot started (using oldest equity history or manual reset baseline)
         val cumulativeBaseline = if (hasReliablePerformanceHistory) {
-            manualResetBaseline ?: equityHistory.lastOrNull()?.currentEquityIdr?.toDoubleOrZero() ?: portfolioValue
+            equityHistory
+                .minByOrNull { it.date }
+                ?.openingEquityIdr
+                ?.toDoubleOrZero()
+                ?.takeIf { it > 0.0 }
+                ?: equityHistory
+                    .minByOrNull { it.date }
+                    ?.currentEquityIdr
+                    ?.toDoubleOrZero()
+                    ?.takeIf { it > 0.0 }
+                ?: portfolioValue
         } else {
             safeFallbackBaseline
         }
         val cumulativeReturn = portfolioValue - cumulativeBaseline
         val cumulativeReturnPct = if (cumulativeBaseline > 0.0) cumulativeReturn / cumulativeBaseline else 0.0
+        val netWorthHistory = equityHistory
+            .sortedBy { it.date }
+            .map {
+                com.kibot.macengine.state.MacNetWorthPoint(
+                    timestampEpochMs = it.date.atStartOfDayIn(TimeZone.UTC).toEpochMilliseconds(),
+                    valueIdrLabel = formatMonetary(it.currentEquityIdr.toDoubleOrZero()),
+                )
+            }
+            .toMutableList()
+        val currentNetWorthPoint = com.kibot.macengine.state.MacNetWorthPoint(
+            timestampEpochMs = now.toEpochMilliseconds(),
+            valueIdrLabel = formatMonetary(portfolioValue),
+        )
+        if (netWorthHistory.lastOrNull()?.valueIdrLabel != currentNetWorthPoint.valueIdrLabel) {
+            netWorthHistory += currentNetWorthPoint
+        } else if (netWorthHistory.isEmpty()) {
+            netWorthHistory += currentNetWorthPoint
+        }
+        val assetAllocationDetailed = buildList {
+            if (freeIdr > 0.0 && portfolioValue > 0.0) {
+                add(
+                    com.kibot.macengine.state.MacAssetAllocationDetail(
+                        coin = referenceQuoteAsset().uppercase(),
+                        percentageLabel = "${formatDecimal((freeIdr / portfolioValue) * 100.0, 1)}%",
+                        valueIdrLabel = formatMonetary(freeIdr),
+                    )
+                )
+            }
+            holdingsDetailed.forEach { holding ->
+                val holdingValue = (parseMonetaryLabel(holding.valueIdrLabel) ?: 0.0).coerceAtLeast(0.0)
+                if (holdingValue <= 0.0 || portfolioValue <= 0.0) return@forEach
+                add(
+                    com.kibot.macengine.state.MacAssetAllocationDetail(
+                        coin = holding.assetCode.uppercase(),
+                        percentageLabel = "${formatDecimal((holdingValue / portfolioValue) * 100.0, 1)}%",
+                        valueIdrLabel = formatMonetary(holdingValue),
+                    )
+                )
+            }
+        }.sortedByDescending { parseMonetaryLabel(it.valueIdrLabel) }
         
         return com.kibot.macengine.state.MacDashboardState(
             isBotRunning = botState.effectiveState != BotEffectiveState.STOPPED,
@@ -8502,6 +10699,7 @@ class MacEngineDaemon(
             edgeConfidence = strategyCycle?.modeSnapshot?.edgeConfidence?.name ?: botState.edgeConfidence.name,
             marketRegime = strategyCycle?.marketSnapshot?.regime?.name ?: botState.marketRegime.name,
             topCandidate = topCandidate,
+            upstreamMarker = upstreamMarker,
             radarPairs = filteredRadarPairs,
             scanUniverseCount = scanUniverseCount,
             releaseLabel = if (config.releaseLabel.startsWith("#")) config.releaseLabel else "#${config.releaseLabel}",
@@ -8529,13 +10727,16 @@ class MacEngineDaemon(
                 botState.safeModeReason ?: "Safe mode active. Manual review is required."
             } else {
                 listOfNotNull(
+                    "PnL Circuit ${pnlCircuit.level} (${formatSignedPercent(pnlTodayPct / 100.0)}): ${pnlCircuit.operatorAction}",
                     healthDecisionSummary.takeIf { it.isNotBlank() },
+                    explicitRejectedReason.takeIf { it.isNotBlank() },
                     targetPursuit?.takeIf { it.active }?.let {
                         "${it.phase} ${formatDecimal(it.currentProfitPct, 2)}% / 25.00% • urgency ${formatDecimal(it.urgency * 100.0, 0)}% • slot +${it.extraSlots}"
                     },
                     aiSummaryLabel.takeIf { it.isNotBlank() },
                 ).joinToString(" • ")
             },
+            lastRejectedReason = explicitRejectedReason,
             weeklyLearningSummary = weeklyReview?.let {
                 "Week ${it.periodStart} - ${it.periodEnd} • PF ${formatDecimal(it.profitFactor, 2)} • MDD ${formatSignedPercent(it.maximumDrawdownPct)} • no-trade ${(it.noTradeQualityScore * 100).toInt()}% • util ${(it.productiveUtilizationPct * 100).toInt()}%"
             } ?: "Belum ada review mingguan.",
@@ -8558,7 +10759,44 @@ class MacEngineDaemon(
             liveTimeline = liveTimeline,
             recentOrders = recentOrderCards,
             trailingFloors = trailingFloors,
+            netWorthHistory = netWorthHistory,
+            assetAllocationDetailed = assetAllocationDetailed,
         )
+    }
+
+    private data class PnlCircuitDecision(
+        val level: String,
+        val operatorAction: String,
+    )
+
+    private fun evaluatePnlCircuit(pnlTodayPct: Double): PnlCircuitDecision {
+        return when {
+            pnlTodayPct <= -4.0 -> PnlCircuitDecision(
+                level = "LEVEL_3",
+                operatorAction = "Freeze aggressive entries, limit-only recovery, fastest loser rotation.",
+            )
+            pnlTodayPct <= -2.5 -> PnlCircuitDecision(
+                level = "LEVEL_2",
+                operatorAction = "Defensive mode: reduce slots, tighten trailing, blacklist repeated losers.",
+            )
+            pnlTodayPct < 0.0 -> PnlCircuitDecision(
+                level = "LEVEL_1",
+                operatorAction = "Caution mode: prioritize high-trust pairs and break-even protection.",
+            )
+            else -> PnlCircuitDecision(
+                level = "NORMAL",
+                operatorAction = "No emergency brake.",
+            )
+        }
+    }
+
+    private fun normalizeTelegramNodeStatus(value: String): String {
+        return when (value.trim().lowercase()) {
+            "online", "running", "active" -> "RUNNING"
+            "offline", "stopped" -> "STOPPED"
+            "degraded", "broken", "safe_mode", "safe mode" -> "DEGRADED"
+            else -> value.trim().uppercase().ifBlank { "UNKNOWN" }
+        }
     }
 
     private fun relevantFillPairs(
@@ -8602,14 +10840,24 @@ class MacEngineDaemon(
         balances: List<BalanceSnapshot>,
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
     ): DecimalValue {
-        val referenceQuoteIdr = quoteAssetToIdrPrice(referenceQuoteAsset(), marketQuotes) ?: 1.0
-        logger.info("[PORTFOLIO_CALC] referenceQuoteAsset={} rate_to_idr={}", referenceQuoteAsset(), formatDecimal(referenceQuoteIdr, 0))
+        val referenceQuoteAsset = referenceQuoteAsset()
+        // NOTE: Internally we keep "…Idr" fields in the exchange's reference quote units.
+        // - INDODAX: IDR
+        // - BINANCE_SPOT: USDT (or configured quote asset)
+        // Conversion to actual fiat (IDR) is a display concern, not a risk/execution concern.
+        val referenceQuoteIdr = 1.0
+        logger.info(
+            "[PORTFOLIO_CALC] referenceQuoteAsset={} rate_to_idr={}",
+            referenceQuoteAsset,
+            formatDecimal(referenceQuoteIdr, 0),
+        )
         val total = balances.sumOf { balance ->
             val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
             val totalValueInIdr = balance.totalValueInIdr
             val value = when {
                 quantity <= 0.0 -> 0.0
-                balance.asset.equals(referenceQuoteAsset(), ignoreCase = true) -> quantity * referenceQuoteIdr
+                balance.asset.equals("idr", ignoreCase = true) -> quantity
+                balance.asset.equals(referenceQuoteAsset, ignoreCase = true) -> quantity
                 totalValueInIdr != null -> totalValueInIdr.toDoubleOrZero()
                 else -> (quoteAssetReferencePrice(balance.asset, marketQuotes) ?: 0.0) * quantity
             }
@@ -8637,7 +10885,8 @@ class MacEngineDaemon(
         recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
     ): DailyRiskSnapshot? {
         if (balances.isEmpty() || marketQuotes.isEmpty()) return previous
-        val referenceQuoteIdr = quoteAssetToIdrPrice(referenceQuoteAsset(), marketQuotes) ?: 1.0
+        val referenceQuoteAsset = referenceQuoteAsset()
+        val referenceQuoteIdr = 1.0
         val jakartaDate = now.toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
         val filledOrderStatuses = setOf(
             com.kibot.shared.models.OrderStatus.FILLED,
@@ -8653,7 +10902,8 @@ class MacEngineDaemon(
             val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
             when {
                 quantity <= 0.0 -> 0.0
-                balance.asset.equals(referenceQuoteAsset(), ignoreCase = true) -> quantity * referenceQuoteIdr
+                balance.asset.equals("idr", ignoreCase = true) -> quantity
+                balance.asset.equals(referenceQuoteAsset, ignoreCase = true) -> quantity
                 else -> quantity * (quoteAssetReferencePrice(balance.asset, marketQuotes) ?: 0.0)
             }
         }
@@ -8662,7 +10912,8 @@ class MacEngineDaemon(
         val openingEquity = previous?.openingEquityIdr?.toDoubleOrZero()?.takeIf { it > 0.0 } ?: currentEquity
         val totalPnl = currentEquity - openingEquity
         val hasTrackedNonIdrHolding = balances.any { balance ->
-            if (balance.asset.equals(referenceQuoteAsset(), ignoreCase = true)) return@any false
+            if (balance.asset.equals("idr", ignoreCase = true)) return@any false
+            if (balance.asset.equals(referenceQuoteAsset, ignoreCase = true)) return@any false
             val quantity = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
             if (quantity <= 0.0) return@any false
             val value = quantity * (quoteAssetReferencePrice(balance.asset, marketQuotes) ?: 0.0)
@@ -8685,6 +10936,20 @@ class MacEngineDaemon(
         } else {
             0.0
         }
+        val refreshedRiskLadderLevel = when {
+            drawdownPct >= hardLimitPct -> com.kibot.shared.models.RiskLadderLevel.HARD_STOP
+            drawdownPct >= exchangeRiskConfig(config.exchangeKind).stopNewEntriesDrawdownPct ->
+                com.kibot.shared.models.RiskLadderLevel.STOP_NEW_ENTRIES
+            drawdownPct >= exchangeRiskConfig(config.exchangeKind).restrictedEntriesDrawdownPct ->
+                com.kibot.shared.models.RiskLadderLevel.RESTRICTED_NEW_ENTRIES
+            drawdownPct >= exchangeRiskConfig(config.exchangeKind).defensiveDrawdownPct ->
+                com.kibot.shared.models.RiskLadderLevel.DEFENSIVE_MODE
+            drawdownPct >= exchangeRiskConfig(config.exchangeKind).reduceSizeDrawdownPct ->
+                com.kibot.shared.models.RiskLadderLevel.REDUCE_SIZE
+            drawdownPct >= exchangeRiskConfig(config.exchangeKind).warningDrawdownPct ->
+                com.kibot.shared.models.RiskLadderLevel.WARNING
+            else -> com.kibot.shared.models.RiskLadderLevel.NORMAL
+        }
         return DailyRiskSnapshot(
             openingEquityIdr = DecimalValue.fromDouble(openingEquity),
             currentEquityIdr = DecimalValue.fromDouble(currentEquity),
@@ -8693,9 +10958,9 @@ class MacEngineDaemon(
             tradeCount24h = dailyTradeCount,
             drawdownPct = drawdownPct,
             hardDailyLossLimitPct = hardLimitPct,
-            hardStopTriggered = previous?.hardStopTriggered == true || drawdownPct >= hardLimitPct,
-            rebasePending = previous?.rebasePending == true,
-            riskLadderLevel = previous?.riskLadderLevel ?: com.kibot.shared.models.RiskLadderLevel.NORMAL,
+            hardStopTriggered = drawdownPct >= hardLimitPct,
+            rebasePending = previous?.rebasePending == true && drawdownPct >= hardLimitPct,
+            riskLadderLevel = refreshedRiskLadderLevel,
             weeklyDrawdownPct = previous?.weeklyDrawdownPct ?: 0.0,
             lossStreakCount = previous?.lossStreakCount ?: 0,
             performanceDecayDetected = previous?.performanceDecayDetected == true,
@@ -8761,6 +11026,99 @@ class MacEngineDaemon(
         } else null
     }
 
+    private fun resolveIdrFreeBalance(balances: List<BalanceSnapshot>): Double {
+        val direct = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
+        if (direct > 0.0) return direct
+        val quoteAsset = referenceQuoteAsset()
+        val quoteFree = balances.firstOrNull { it.asset.equals(quoteAsset, ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
+        if (quoteFree > 0.0) return quoteFree
+        val total = balances
+            .sumOf { it.totalValueInIdr?.toDoubleOrZero() ?: 0.0 }
+            .coerceAtLeast(0.0)
+        return if (total > 0.0) total else 0.0
+    }
+
+    private fun resolveAllocatableIdrFromBalances(balances: List<BalanceSnapshot>): Double {
+        val direct = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
+        if (direct > 0.0) return direct
+        val totalIdr = balances.sumOf { it.totalValueInIdr?.toDoubleOrZero() ?: 0.0 }.coerceAtLeast(0.0)
+        if (totalIdr > 0.0) return totalIdr
+        val quoteAsset = referenceQuoteAsset()
+        val quoteFree = balances.firstOrNull { it.asset.equals(quoteAsset, ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
+        if (quoteFree <= 0.0) return 0.0
+        return quoteFree.coerceAtLeast(0.0)
+    }
+
+    private fun resolveAllocatableIdr(
+        cycle: com.kibot.core.StrategyCycleResult,
+        balances: List<BalanceSnapshot>,
+    ): Double {
+        val directIdr = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
+        if (directIdr > 0.0) return directIdr
+        val quoteAsset = referenceQuoteAsset()
+        val quoteFree = balances.firstOrNull { it.asset.equals(quoteAsset, ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
+        if (quoteFree > 0.0) return quoteFree
+        val stateFree = parseMonetaryLabel(repository.state.value.freeIdrLabel) ?: 0.0
+        if (stateFree > 0.0) return stateFree
+        val localStateFree = parseMonetaryLabel(
+            repository.state.value.assetAllocationDetailed
+                .firstOrNull { it.coin.equals(quoteAsset, ignoreCase = true) }
+                ?.valueIdrLabel
+                ?: "",
+        )
+            ?: 0.0
+        if (localStateFree > 0.0) return localStateFree
+        return 0.0
+    }
+
+    private fun dynamicParallelEntrySlots(
+        cycle: com.kibot.core.StrategyCycleResult,
+        balances: List<BalanceSnapshot>,
+    ): Int {
+        if (config.exchangeKind != ExchangeKind.INDODAX) return 0
+        val freeIdr = resolveAllocatableIdr(cycle, balances)
+        return CapitalAllocationManager.calculateDynamicAdditionalSlots(freeIdr)
+    }
+
+    private fun shouldEnableMomentumCadenceBypass(
+        cycle: com.kibot.core.StrategyCycleResult,
+        balances: List<BalanceSnapshot>,
+    ): Boolean {
+        return config.exchangeKind == ExchangeKind.INDODAX &&
+            cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM &&
+            dynamicParallelEntrySlots(cycle, balances) > 0
+    }
+
+    private fun shouldEnablePairScopedParallelEntry(
+        cycle: com.kibot.core.StrategyCycleResult,
+        balances: List<BalanceSnapshot>,
+        pairId: PairId,
+        managedPositions: List<com.kibot.core.ManagedPosition>,
+    ): Boolean {
+        if (!shouldEnableMomentumCadenceBypass(cycle, balances)) return false
+        return managedPositions.none { it.pairId == pairId }
+    }
+
+    private fun hasPerSymbolExecutionLease(
+        pairId: PairId,
+        now: Instant,
+    ): Boolean {
+        val lockedUntil = perSymbolExecutionLeaseUntilByPair[pairId.value.lowercase()] ?: return false
+        return now < lockedUntil
+    }
+
+    private fun acquirePerSymbolExecutionLease(
+        pairId: PairId,
+        now: Instant,
+    ) {
+        perSymbolExecutionLeaseUntilByPair[pairId.value.lowercase()] =
+            now.plus(dynamicMultiSlotPerSymbolLeaseMs.milliseconds)
+    }
+
+    private fun releasePerSymbolExecutionLease(pairId: PairId) {
+        perSymbolExecutionLeaseUntilByPair.remove(pairId.value.lowercase())
+    }
+
     private fun jakartaNowDate(now: Instant): kotlinx.datetime.LocalDate {
         return now.toLocalDateTime(TimeZone.of("Asia/Jakarta")).date
     }
@@ -8806,6 +11164,20 @@ class MacEngineDaemon(
         }
     }
 
+    private fun formatExecutionPrice(value: Double): String {
+        if (value <= 0.0) return "~"
+        return if (referenceQuoteAsset().equals("idr", ignoreCase = true)) {
+            when {
+                value >= 1_000.0 -> formatIdr(value)
+                value >= 100.0 -> "Rp${formatDecimal(value, 1)}"
+                value >= 1.0 -> "Rp${formatDecimal(value, 2)}"
+                else -> "Rp${formatDecimal(value, 6)}"
+            }
+        } else {
+            "${formatDecimal(value, 6)} ${referenceQuoteAsset().uppercase()}"
+        }
+    }
+
     private fun formatSignedMonetary(value: Double): String {
         if (kotlin.math.abs(value) < 0.0005) return "+${formatMonetary(0.0)}"
         val prefix = if (value >= 0.0) "+" else "-"
@@ -8818,6 +11190,16 @@ class MacEngineDaemon(
         } else {
             label.substringBefore(" ").replace(",", "").toDoubleOrNull()
         }
+    }
+
+    private fun parsePercentLabel(label: String?): Double {
+        if (label.isNullOrBlank()) return 0.0
+        return label
+            .replace("%", "")
+            .replace("+", "")
+            .trim()
+            .toDoubleOrNull()
+            ?: 0.0
     }
 
     private fun referenceQuoteAsset(): String = when (config.exchangeKind) {
@@ -9064,7 +11446,7 @@ class MacEngineDaemon(
         val runtimeLabel = aiRuntimeProviderStatusLabel
         val runtimeAt = aiRuntimeProviderStatusAt
         if (runtimeLabel != null && runtimeAt != null) {
-            val ageMs = (Clock.System.now().toEpochMilliseconds() - runtimeAt.toEpochMilliseconds()).coerceAtLeast(0L)
+            val ageMs = (clock.now().toEpochMilliseconds() - runtimeAt.toEpochMilliseconds()).coerceAtLeast(0L)
             if (ageMs <= 3_600_000L) {
                 return runtimeLabel
             }
@@ -9191,9 +11573,9 @@ class MacEngineDaemon(
                 riskLadderLevel = cycle.modeSnapshot.riskLadderLevel,
                 pairRankingScore = score,
                 speculativePocket = true,
-            ),
-        )
-    }
+                ),
+            )
+        }
 
     private fun activeEngineDecisionForCallout(now: Instant, freeIdr: Double): EngineSignalDecision? {
         val callout = activeLeadLagCallout ?: return null
@@ -9251,6 +11633,139 @@ class MacEngineDaemon(
         return loaded
     }
 
+    private fun executionLearningHints(): AdaptiveAiExecutionHints {
+        val policyHints = cachedAdaptiveAiPolicy?.executionHints ?: AdaptiveAiExecutionHints()
+        val learning = cachedLocalLearningSnapshot
+        fun mergePairs(vararg lists: List<PairId>): List<PairId> =
+            lists.asSequence().flatMap { it.asSequence() }.distinctBy { it.value.lowercase() }.toList()
+        fun mergeStrings(vararg lists: List<String>): List<String> =
+            lists.asSequence().flatMap { it.asSequence() }.map { it.trim() }.filter { it.isNotBlank() }.distinct().toList()
+        return AdaptiveAiExecutionHints(
+            rotateNowPairs = mergePairs(policyHints.rotateNowPairs, learning.rotateNowPairs.map(::PairId)),
+            holdLongerPairs = mergePairs(policyHints.holdLongerPairs, learning.holdLongerPairs.map(::PairId)),
+            temporaryBlacklistPairs = mergePairs(policyHints.temporaryBlacklistPairs, learning.temporaryBlacklistPairs.map(::PairId)),
+            forceLimitPairs = mergePairs(policyHints.forceLimitPairs, learning.forceLimitPairs.map(::PairId)),
+            forceMarketPairs = mergePairs(policyHints.forceMarketPairs, learning.forceMarketPairs.map(::PairId)),
+            tightTrailingPairs = mergePairs(policyHints.tightTrailingPairs, learning.tightenTrailingPairs.map(::PairId)),
+            concentrationPair = policyHints.concentrationPair,
+            avoidPairFamilies = mergeStrings(policyHints.avoidPairFamilies),
+            replacementHints = policyHints.replacementHints.distinctBy { "${it.cutPair.value.lowercase()}->${it.replacePair.value.lowercase()}" },
+            learningNotes = mergeStrings(policyHints.learningNotes, learning.notes),
+        )
+    }
+
+    private fun refreshLocalLearningSnapshot(
+        now: Instant,
+        cycle: com.kibot.core.StrategyCycleResult,
+        managedPositions: List<com.kibot.core.ManagedPosition>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    ): LocalLearningSnapshot {
+        val trackedPairs = buildSet {
+            addAll(managedPositions.map { it.pairId.value.lowercase() })
+            cycle.topCandidate?.value?.lowercase()?.let(::add)
+            cycle.executionPlan?.signal?.pairId?.value?.lowercase()?.let(::add)
+            addAll(cycle.rankedPairs.take(learningComputeProfile().maxTrackedPairs).map { it.pairId.value.lowercase() })
+        }
+        val spoofedPairs = spoofSuspiciousUntilByPair.entries
+            .filter { (_, until) -> until > now }
+            .map { it.key.lowercase() }
+            .toSet()
+        localLearningMemoryStore.observeMarketQuotes(
+            now = now,
+            marketQuotes = marketQuotes,
+            trackedPairs = trackedPairs,
+            spoofedPairs = spoofedPairs,
+        )
+        val dailyPnlPct = cycle.dailyRisk.openingEquityIdr.toDoubleOrZero()
+            .takeIf { it > 0.0 }
+            ?.let { opening ->
+                ((cycle.dailyRisk.currentEquityIdr.toDoubleOrZero() - opening) / opening) * 100.0
+            } ?: 0.0
+        return localLearningMemoryStore.snapshot(
+            now = now,
+            dailyPnlPct = dailyPnlPct,
+            holdings = managedPositions,
+            computeProfile = learningComputeProfile(),
+        ).also { cachedLocalLearningSnapshot = it }
+    }
+
+    private fun learningComputeProfile(): LearningComputeProfile {
+        return when {
+            config.device.role == DeviceRole.STANDBY -> LearningComputeProfile(
+                monteCarloScenarioCount = 48,
+                monteCarloHorizonTrades = 4,
+                maxTrackedPairs = 10,
+            )
+            config.exchangeKind == ExchangeKind.INDODAX && config.device.role == DeviceRole.PRIMARY -> LearningComputeProfile(
+                monteCarloScenarioCount = 160,
+                monteCarloHorizonTrades = 8,
+                maxTrackedPairs = 24,
+            )
+            config.exchangeKind == ExchangeKind.INDODAX -> LearningComputeProfile(
+                monteCarloScenarioCount = 96,
+                monteCarloHorizonTrades = 6,
+                maxTrackedPairs = 16,
+            )
+            else -> LearningComputeProfile(
+                monteCarloScenarioCount = 72,
+                monteCarloHorizonTrades = 5,
+                maxTrackedPairs = 14,
+            )
+        }
+    }
+
+    private fun routeByLearningExecutionPolicy(
+        executionPlan: com.kibot.shared.models.ExecutionPlan,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        now: Instant,
+    ): com.kibot.shared.models.ExecutionPlan? {
+        if (executionPlan.side != com.kibot.shared.models.OrderSide.BUY) return executionPlan
+        val hints = executionLearningHints()
+        val risk = cachedLocalLearningSnapshot.risk
+        val pairId = executionPlan.signal.pairId
+        val pairKey = pairId.value.lowercase()
+        if (pairId in hints.temporaryBlacklistPairs) {
+            val reason = "learning_blacklist_active"
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            logWhyNotBuy(now, pairKey, reason)
+            return null
+        }
+        val quote = marketQuotes.firstOrNull { it.pairId == pairId } ?: return executionPlan
+        return when {
+            risk.ruinProbability >= 0.38 &&
+                executionPlan.orderType == com.kibot.shared.models.OrderType.MARKET &&
+                pairId !in hints.forceMarketPairs -> {
+                val limitPrice = quote.bestBid.toDoubleOrZero().takeIf { it > 0.0 }
+                    ?: quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 }
+                    ?: return executionPlan
+                executionPlan.copy(
+                    orderType = com.kibot.shared.models.OrderType.LIMIT,
+                    limitPrice = DecimalValue.fromDouble(limitPrice),
+                    postOnlyPreferred = true,
+                )
+            }
+            pairId in hints.forceLimitPairs -> {
+                val limitPrice = quote.bestBid.toDoubleOrZero().takeIf { it > 0.0 }
+                    ?: quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 }
+                    ?: return executionPlan
+                executionPlan.copy(
+                    orderType = com.kibot.shared.models.OrderType.LIMIT,
+                    limitPrice = DecimalValue.fromDouble(limitPrice),
+                    postOnlyPreferred = true,
+                )
+            }
+            pairId in hints.forceMarketPairs &&
+                quote.spreadPct <= 1.10 &&
+                quote.estimatedSlippagePct <= 1.20 -> executionPlan.copy(
+                orderType = com.kibot.shared.models.OrderType.MARKET,
+                limitPrice = null,
+                postOnlyPreferred = false,
+            )
+            else -> executionPlan
+        }
+    }
+
     private fun mergeAiSupportHints(
         liveHints: List<com.kibot.shared.models.AiPairSupportHint>,
         adaptivePolicy: AdaptiveAiPolicy?,
@@ -9258,7 +11773,7 @@ class MacEngineDaemon(
         val adaptiveHints = adaptivePolicy?.pairHints.orEmpty()
         if (liveHints.isEmpty() && adaptiveHints.isEmpty()) return emptyList()
         val rankingScale = adaptivePolicy?.adjustments?.rankingBiasScale ?: 1.0
-        val executionHints = adaptivePolicy?.executionHints ?: AdaptiveAiExecutionHints()
+        val executionHints = executionLearningHints()
         return (liveHints + adaptiveHints)
             .groupBy { it.pairId }
             .map { (pairId, hints) ->
@@ -9272,6 +11787,8 @@ class MacEngineDaemon(
                 }
                 val cautionBonus = when {
                     executionHints.replacementHints.any { it.cutPair == pairId } -> 0.04
+                    pairId in executionHints.temporaryBlacklistPairs -> 0.06
+                    pairId in executionHints.forceLimitPairs -> 0.025
                     pairId.belongsToAvoidFamily(executionHints.avoidPairFamilies) -> 0.03
                     else -> 0.0
                 }
@@ -9722,13 +12239,13 @@ class MacEngineDaemon(
             watchdog.budgetBoostFloor,
             (
             pursuit.budgetBoostMultiplier *
-                (1.0 + aiAdjustments.budgetBoostMultiplierDelta.coerceIn(0.0, 0.35)) +
+                (1.0 + aiAdjustments.budgetBoostMultiplierDelta.coerceIn(-0.35, 0.35)) +
                 (repeatedHourlyPenalty * 0.04) +
                 (repeatedCheckpointPenalty * 0.06)
-            ).coerceIn(1.0, 2.0)
+            ).coerceIn(0.74, 2.0)
         )
         val boostedBudget = (cycle.deploymentPlan.suggestedPerPositionBudgetIdr * budgetBoostMultiplier)
-            .coerceAtLeast(cycle.deploymentPlan.suggestedPerPositionBudgetIdr)
+            .coerceAtLeast(minimumLiveNotionalForExchange())
         val openPositions = cycle.portfolio.positions.count { it.state != com.kibot.shared.models.PositionState.CLOSED }
         val candidates = cycle.deploymentPlan.candidates
         val actionProfile = when {
@@ -9758,7 +12275,7 @@ class MacEngineDaemon(
         val boostedReservePct = (
             cycle.deploymentPlan.targetCashReservePct -
                 pursuit.reserveReliefPct -
-                aiAdjustments.reserveReliefPctDelta.coerceIn(0.0, 0.08) -
+                aiAdjustments.reserveReliefPctDelta.coerceIn(-0.06, 0.08) -
                 (repeatedCheckpointPenalty * 0.01) -
                 (if (executionHints.concentrationPair != null) 0.005 else 0.0)
             ).coerceIn(highConvictionReserveFloor, cycle.deploymentPlan.targetCashReservePct.coerceAtLeast(highConvictionReserveFloor))
@@ -9797,12 +12314,12 @@ class MacEngineDaemon(
         val riskHeadroomCeiling = cycle.riskDecision.maxAllowedAdditionalPositions.coerceAtLeast(0)
         val baselineHeadroom = (cycle.deploymentPlan.maxActivePositions - openPositions).coerceAtLeast(0)
         val requestedSlotHeadroom = (
-            baselineHeadroom +
+                baselineHeadroom +
                 minOf(pursuit.extraSlots, hourlyEnforcementHeadroom) +
                 hourlyEnforcementHeadroom +
-                aiAdjustments.extraSlotsDelta.coerceIn(0, 2) +
+                aiAdjustments.extraSlotsDelta.coerceIn(-2, 2) +
                 (if (watchdog.forceRotation) 1 else 0)
-            ).coerceAtLeast(baselineHeadroom)
+            ).coerceAtLeast(0)
         val opportunityQualifiedHeadroom = qualifiedAdditionalHeadroom(
             candidates = candidates,
             openPositions = openPositions,
@@ -9845,7 +12362,7 @@ class MacEngineDaemon(
             candidates = candidates,
             concentrationBoostPct = pursuit.concentrationBoostPct +
                 concentrationPressureStep +
-                aiAdjustments.allocationFocusPctDelta.coerceIn(0.0, 0.16) +
+                aiAdjustments.allocationFocusPctDelta.coerceIn(-0.08, 0.16) +
                 (if (watchdog.forceConcentration) 0.06 else 0.0),
             profitWindowOpen = pursuit.profitWindowOpen,
             concentrationPair = executionHints.concentrationPair,
@@ -9853,7 +12370,7 @@ class MacEngineDaemon(
         )
         val finalConcentrationBoostPct = pursuit.concentrationBoostPct +
             concentrationPressureStep +
-            aiAdjustments.allocationFocusPctDelta.coerceIn(0.0, 0.16) +
+            aiAdjustments.allocationFocusPctDelta.coerceIn(-0.08, 0.16) +
             (if (watchdog.forceConcentration) 0.06 else 0.0)
 
         val updatedDeploymentPlan = cycle.deploymentPlan.copy(
@@ -9993,7 +12510,19 @@ class MacEngineDaemon(
             secondStrong -> 2
             else -> 1
         }
-        return minOf(availableEntrySlots, aggressiveBatchTarget, candidateExecutionPlans.size)
+        val momentumBypassTarget = if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM) {
+            minOf(availableEntrySlots, candidateExecutionPlans.size, 3).coerceAtLeast(1)
+        } else {
+            0
+        }
+        return if (momentumBypassTarget > 0) {
+            maxOf(
+                minOf(availableEntrySlots, aggressiveBatchTarget, candidateExecutionPlans.size),
+                momentumBypassTarget,
+            )
+        } else {
+            minOf(availableEntrySlots, aggressiveBatchTarget, candidateExecutionPlans.size)
+        }
     }
 
     private fun qualifiedAdditionalHeadroom(
@@ -10157,6 +12686,349 @@ class MacEngineDaemon(
         )
     }
 
+    private fun preferredParallelMomentumPair(
+        cycle: com.kibot.core.StrategyCycleResult,
+        managedPositions: List<com.kibot.core.ManagedPosition>,
+        activeOrders: List<com.kibot.shared.models.OrderSnapshot>,
+    ): PairId? {
+        val blockedPairs = managedPositions.map { it.pairId }.toMutableSet()
+        blockedPairs += activeOrders
+            .filter { it.status in activeOrderStatuses }
+            .map { it.pairId }
+        val selected = cycle.selectedSignal?.pairId
+        if (selected != null && selected !in blockedPairs) return selected
+        val topCandidate = cycle.topCandidate
+        if (topCandidate != null && topCandidate !in blockedPairs) return topCandidate
+        return cycle.rankedPairs
+            .asSequence()
+            .filter { it.allowed }
+            .map { it.pairId }
+            .firstOrNull { it !in blockedPairs }
+    }
+
+	    private fun buildParallelMomentumSyntheticEntryPlan(
+	        now: Instant,
+	        cycle: com.kibot.core.StrategyCycleResult,
+	        balances: List<BalanceSnapshot>,
+	        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+	        managedPositions: List<com.kibot.core.ManagedPosition>,
+	        activeOrders: List<com.kibot.shared.models.OrderSnapshot>,
+	    ): com.kibot.shared.models.ExecutionPlan? {
+        if (config.exchangeKind != ExchangeKind.INDODAX) return null
+        if (!shouldEnableMomentumCadenceBypass(cycle, balances)) return null
+        val preferredPair = preferredParallelMomentumPair(
+            cycle = cycle,
+            managedPositions = managedPositions,
+            activeOrders = activeOrders,
+        ) ?: run {
+            logWhyNotBuy(now, "entry", "parallel_momentum_target_missing")
+            return null
+        }
+        val quote = marketQuotes.firstOrNull { it.pairId == preferredPair } ?: run {
+            logWhyNotBuy(now, preferredPair.value, "parallel_momentum_quote_missing")
+            return null
+        }
+        val bestAsk = quote.bestAsk.toDoubleOrZero().takeIf { it > 0.0 }
+            ?: quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 }
+            ?: run {
+                logWhyNotBuy(now, preferredPair.value, "parallel_momentum_missing_best_ask")
+                return null
+            }
+        val bestBid = quote.bestBid.toDoubleOrZero().takeIf { it > 0.0 } ?: bestAsk
+        if (quote.spreadPct > 1.0) {
+            logWhyNotBuy(now, preferredPair.value, "parallel_momentum_spread_gt_1pct(${formatDecimal(quote.spreadPct, 2)})")
+            return null
+        }
+        if (quote.bidDepthTop5Idr.toDoubleOrZero() <= 0.0 || quote.askDepthTop5Idr.toDoubleOrZero() <= 0.0) {
+            logWhyNotBuy(now, preferredPair.value, "parallel_momentum_orderbook_empty")
+            return null
+        }
+        if (quote.estimatedSlippagePct > 1.2) {
+            logWhyNotBuy(now, preferredPair.value, "parallel_momentum_slippage_too_high(${formatDecimal(quote.estimatedSlippagePct, 2)})")
+            return null
+        }
+        val freeIdr = resolveAllocatableIdr(cycle, balances)
+        val minLiveNotionalIdr = minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)
+        if (freeIdr < minLiveNotionalIdr) {
+            logWhyNotBuy(now, preferredPair.value, "parallel_momentum_insufficient_idr(${formatDecimal(freeIdr, 0)})")
+            return null
+        }
+        val budgetIdr = minOf(
+            freeIdr * 0.50,
+            cycle.deploymentPlan.suggestedPerPositionBudgetIdr.coerceAtLeast(minLiveNotionalIdr),
+        ).coerceAtLeast(minLiveNotionalIdr)
+        if (budgetIdr > freeIdr) {
+            logWhyNotBuy(now, preferredPair.value, "parallel_momentum_budget_exceeds_cash(${formatDecimal(budgetIdr, 0)}>${formatDecimal(freeIdr, 0)})")
+            return null
+        }
+        val useMarketOrder =
+            quote.shortTermReturnPct >= dynamicVipMarketEntryShortTermMinPct &&
+                quote.spreadPct <= 1.0 &&
+                quote.estimatedSlippagePct <= 1.0
+        val refPrice = if (useMarketOrder) bestAsk else bestBid
+        val quantity = (budgetIdr / refPrice).coerceAtLeast(0.00000001)
+        val projectedNetPct = projectedEntryNetPct(
+            quote = quote,
+            assumeTaker = useMarketOrder,
+        )
+        if (projectedNetPct <= -0.10) {
+            logWhyNotBuy(now, preferredPair.value, "parallel_momentum_net_projection_too_low(${formatDecimal(projectedNetPct, 2)}%)")
+            return null
+        }
+        val pairScore = cycle.rankedPairs.firstOrNull { it.pairId == preferredPair }
+        return com.kibot.shared.models.ExecutionPlan(
+            signal = com.kibot.shared.models.StrategySignal(
+                pairId = preferredPair,
+                signalType = com.kibot.shared.models.StrategySignalType.BREAKOUT_ENTRY,
+                confidence = (pairScore?.rankingScore ?: cycle.selectedSignal?.confidence ?: 0.64).coerceIn(0.48, 0.98),
+                rationale = listOf(
+                    "Parallel momentum promotion aktif: free IDR masih cukup dan pair lolos spread/orderbook.",
+                ),
+                entryPrice = DecimalValue.fromDouble(refPrice),
+                takeProfitPrice = null,
+                stopPrice = null,
+                setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION,
+                horizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
+                pairTier = com.kibot.shared.models.PairTier.TIER_B,
+                speculativePocket = false,
+                marketRegime = cycle.marketSnapshot.regime,
+                edgeConfidence = cycle.modeSnapshot.edgeConfidence,
+                expectedHoldingHours = 0.75,
+                expectedNetProfitabilityPct = maxOf(projectedNetPct, 0.18),
+            ),
+            side = com.kibot.shared.models.OrderSide.BUY,
+            orderType = if (useMarketOrder) com.kibot.shared.models.OrderType.MARKET else com.kibot.shared.models.OrderType.LIMIT,
+            quantity = DecimalValue.fromDouble(quantity),
+            limitPrice = if (useMarketOrder) null else DecimalValue.fromDouble(bestBid),
+            quoteBudget = DecimalValue.fromDouble(budgetIdr),
+            postOnlyPreferred = !useMarketOrder,
+            expectedNetEdgePct = maxOf(projectedNetPct, 0.18),
+            botMode = cycle.modeSnapshot.mode,
+            riskLadderLevel = cycle.modeSnapshot.riskLadderLevel,
+            pairRankingScore = (pairScore?.rankingScore ?: 0.64).coerceAtLeast(0.48),
+            speculativePocket = false,
+	        )
+	    }
+
+	    private fun buildBootstrapEntryPlan(
+	        now: Instant,
+	        cycle: com.kibot.core.StrategyCycleResult,
+	        balances: List<BalanceSnapshot>,
+	        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+	        managedPositions: List<com.kibot.core.ManagedPosition>,
+	        activeOrders: List<com.kibot.shared.models.OrderSnapshot>,
+	    ): com.kibot.shared.models.ExecutionPlan? {
+	        if (!cycle.modeSnapshot.tradingAllowed || !cycle.deploymentPlan.allowNewEntries) return null
+	        if (cycle.marketSnapshot.regime == MarketRegime.BREAKDOWN_PANIC) return null
+
+	        val preferredPair = preferredParallelMomentumPair(
+	            cycle = cycle,
+	            managedPositions = managedPositions,
+	            activeOrders = activeOrders,
+	        ) ?: return null
+	        val quote = marketQuotes.firstOrNull { it.pairId == preferredPair } ?: return null
+	        if (quote.spreadPct > 2.0) return null
+	        if (quote.estimatedSlippagePct > 1.8) return null
+	        if (quote.bidDepthTop5Idr.toDoubleOrZero() <= 0.0 || quote.askDepthTop5Idr.toDoubleOrZero() <= 0.0) return null
+
+	        val freeIdr = resolveAllocatableIdr(cycle, balances)
+	        val minLiveNotionalIdr = minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)
+	        if (freeIdr < minLiveNotionalIdr) return null
+
+	        val bestBid = quote.bestBid.toDoubleOrZero().takeIf { it > 0.0 }
+	            ?: quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 }
+	            ?: return null
+	        val budgetIdr = minOf(
+	            freeIdr * 0.25,
+	            cycle.deploymentPlan.suggestedPerPositionBudgetIdr.coerceAtLeast(minLiveNotionalIdr),
+	        )
+	            .coerceAtLeast(minLiveNotionalIdr)
+	        if (budgetIdr > freeIdr) return null
+	        val quantity = (budgetIdr / bestBid).coerceAtLeast(0.00000001)
+	        val pairScore = cycle.rankedPairs.firstOrNull { it.pairId == preferredPair }
+	        val projectedNetPct = projectedEntryNetPct(quote = quote, assumeTaker = false)
+	        if (projectedNetPct <= -0.10) return null
+
+	        return com.kibot.shared.models.ExecutionPlan(
+	            signal = com.kibot.shared.models.StrategySignal(
+	                pairId = preferredPair,
+	                signalType = com.kibot.shared.models.StrategySignalType.BREAKOUT_ENTRY,
+	                confidence = (pairScore?.rankingScore ?: cycle.selectedSignal?.confidence ?: 0.62).coerceIn(0.48, 0.98),
+	                rationale = listOf(
+	                    "Bootstrap entry aktif: tidak ada entry plan dari orchestrator, tapi kandidat utama lolos spread/depth.",
+	                ),
+	                entryPrice = DecimalValue.fromDouble(bestBid),
+	                takeProfitPrice = null,
+	                stopPrice = null,
+	                setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION,
+	                horizon = pairScore?.preferredHorizon ?: com.kibot.shared.models.TradingHorizon.TACTICAL,
+	                pairTier = pairScore?.pairTier ?: com.kibot.shared.models.PairTier.TIER_B,
+	                speculativePocket = false,
+	                marketRegime = cycle.marketSnapshot.regime,
+	                edgeConfidence = cycle.modeSnapshot.edgeConfidence,
+	                expectedHoldingHours = 0.75,
+	                expectedNetProfitabilityPct = maxOf(projectedNetPct, 0.18),
+	            ),
+	            side = com.kibot.shared.models.OrderSide.BUY,
+	            orderType = com.kibot.shared.models.OrderType.LIMIT,
+	            quantity = DecimalValue.fromDouble(quantity),
+	            limitPrice = DecimalValue.fromDouble(bestBid),
+	            quoteBudget = DecimalValue.fromDouble(budgetIdr),
+	            postOnlyPreferred = true,
+	            expectedNetEdgePct = maxOf(projectedNetPct, 0.18),
+	            botMode = cycle.modeSnapshot.mode,
+	            riskLadderLevel = cycle.modeSnapshot.riskLadderLevel,
+	            pairRankingScore = (pairScore?.rankingScore ?: 0.62).coerceAtLeast(0.48),
+	            speculativePocket = false,
+	        )
+	    }
+
+    private suspend fun maybeSubmitEmergencyBypassEntry(
+        now: Instant,
+        lease: EngineLeaseSnapshot,
+        cycle: com.kibot.core.StrategyCycleResult,
+        balances: List<BalanceSnapshot>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        activePersistedOrders: List<com.kibot.shared.models.OrderSnapshot>,
+        managedPositions: List<com.kibot.core.ManagedPosition>,
+    ): Boolean {
+        if (config.exchangeKind != ExchangeKind.INDODAX) return false
+        if (cycle.marketSnapshot.regime != MarketRegime.HIGH_VOLATILITY_MOMENTUM) return false
+        val freeIdr = resolveAllocatableIdr(cycle, balances)
+        if (freeIdr < minimumLiveNotionalForExchange()) return false
+        val bypassPair = preferredParallelMomentumPair(
+            cycle = cycle,
+            managedPositions = managedPositions,
+            activeOrders = activePersistedOrders,
+        ) ?: run {
+            logWhyNotBuy(now, "entry", "emergency_bypass_no_target")
+            return false
+        }
+        val quote = marketQuotes.firstOrNull { it.pairId == bypassPair } ?: run {
+            logWhyNotBuy(now, bypassPair.value, "emergency_bypass_missing_quote")
+            return false
+        }
+        if (quote.spreadPct > 1.0) {
+            logWhyNotBuy(now, bypassPair.value, "emergency_bypass_rejected_spread_gt_1pct(${formatDecimal(quote.spreadPct, 2)})")
+            return false
+        }
+        if (quote.bidDepthTop5Idr.toDoubleOrZero() <= 0.0 || quote.askDepthTop5Idr.toDoubleOrZero() <= 0.0) {
+            logWhyNotBuy(now, bypassPair.value, "emergency_bypass_orderbook_empty")
+            return false
+        }
+        markPipelineStage("MARKER: EMERGENCY_BYPASS_ELIGIBLE")
+        if (managedPositions.any { it.pairId == bypassPair }) {
+            logWhyNotBuy(now, bypassPair.value, "emergency_bypass_same_pair_already_held")
+            return false
+        }
+        if (activePersistedOrders.any { it.status in activeOrderStatuses && it.pairId == bypassPair }) {
+            logWhyNotBuy(now, bypassPair.value, "emergency_bypass_active_order_exists")
+            return false
+        }
+        val allocatedIdr = minOf(freeIdr * 0.5, freeIdr)
+            .coerceAtLeast(minimumLiveNotionalForExchange().coerceAtLeast(20_000.0))
+        if (allocatedIdr > freeIdr) {
+            logWhyNotBuy(now, bypassPair.value, "emergency_bypass_allocated_exceeds_cash(${formatDecimal(allocatedIdr, 0)}>${formatDecimal(freeIdr, 0)})")
+            return false
+        }
+        val bestAsk = quote.bestAsk.toDoubleOrZero().takeIf { it > 0.0 }
+            ?: quote.midPrice.toDoubleOrZero().takeIf { it > 0.0 }
+            ?: run {
+                logWhyNotBuy(now, bypassPair.value, "emergency_bypass_missing_best_ask")
+                return false
+            }
+        val quantity = (allocatedIdr / bestAsk).coerceAtLeast(0.00000001)
+        val pairScore = cycle.rankedPairs.firstOrNull { it.pairId == bypassPair }?.rankingScore ?: 0.62
+        val executionPlan = com.kibot.shared.models.ExecutionPlan(
+            signal = com.kibot.shared.models.StrategySignal(
+                pairId = bypassPair,
+                signalType = com.kibot.shared.models.StrategySignalType.BREAKOUT_ENTRY,
+                confidence = pairScore.coerceIn(0.50, 0.98),
+                rationale = listOf("Emergency bypass pipeline aktif: secondary entry dikirim langsung dari runtime."),
+                entryPrice = DecimalValue.fromDouble(bestAsk),
+                takeProfitPrice = null,
+                stopPrice = null,
+                setupType = com.kibot.shared.models.SetupType.LIGHT_BREAKOUT_CONTINUATION,
+                horizon = com.kibot.shared.models.TradingHorizon.TACTICAL,
+                pairTier = com.kibot.shared.models.PairTier.TIER_B,
+                speculativePocket = false,
+                marketRegime = cycle.marketSnapshot.regime,
+                edgeConfidence = cycle.modeSnapshot.edgeConfidence,
+                expectedHoldingHours = 0.75,
+                expectedNetProfitabilityPct = maxOf(projectedEntryNetPct(quote, assumeTaker = true), 0.15),
+            ),
+            side = com.kibot.shared.models.OrderSide.BUY,
+            orderType = com.kibot.shared.models.OrderType.MARKET,
+            quantity = DecimalValue.fromDouble(quantity),
+            limitPrice = null,
+            quoteBudget = DecimalValue.fromDouble(allocatedIdr),
+            postOnlyPreferred = false,
+            expectedNetEdgePct = maxOf(projectedEntryNetPct(quote, assumeTaker = true), 0.15),
+            botMode = cycle.modeSnapshot.mode,
+            riskLadderLevel = cycle.modeSnapshot.riskLadderLevel,
+            pairRankingScore = pairScore,
+            speculativePocket = false,
+        )
+        val normalized = normalizeExecutionPlanForVenue(executionPlan, marketQuotes) ?: run {
+            logWhyNotBuy(now, bypassPair.value, "emergency_bypass_failed_minimum_notional")
+            return false
+        }
+        val capitalMismatch = entryBlockedByCapitalMismatch(
+            executionPlan = normalized,
+            balances = balances,
+            marketQuotes = marketQuotes,
+        )
+        if (capitalMismatch != null) {
+            logWhyNotBuy(now, bypassPair.value, capitalMismatch)
+            return false
+        }
+        if (hasPerSymbolExecutionLease(bypassPair, now)) {
+            logWhyNotBuy(now, bypassPair.value, "per_symbol_execution_lease_active")
+            return false
+        }
+        val submissionLease = ensureLeaseLockdownOwnership(now, lease) ?: lease
+        val bypassLeaseValidation = true
+        if (!submissionLease.isHeldBy(config.device.deviceId, now)) {
+            logWhyNotBuy(now, bypassPair.value, "emergency_bypass_lease_not_held")
+            logger.warn(
+                "EMERGENCY BYPASS: forcing lease validation bypass for {} despite lease mismatch; holder={} term={}",
+                bypassPair.value,
+                submissionLease.currentHolder?.value ?: "-",
+                submissionLease.term.value,
+            )
+        }
+        lastRejectedReasonLabel = "BYPASS_ENGAGED_NO_REJECT"
+        lastRejectedReasonAt = now
+        logger.info(
+            "EMERGENCY BYPASS TRIGGERED: Directly submitting buy order for {} with {} IDR",
+            bypassPair.value,
+            formatDecimal(allocatedIdr, 0),
+        )
+        acquirePerSymbolExecutionLease(bypassPair, now)
+        val result = liveExecutionCoordinator.submitEntry(
+            botId = config.controlPlane.botId,
+            deviceId = config.device.deviceId,
+            term = submissionLease.term,
+            executionPlan = normalized,
+            existingPersistedOrders = activePersistedOrders,
+            exchange = exchange,
+            controlPlane = controlPlane,
+            bypassLeaseValidation = bypassLeaseValidation,
+        )
+        if (!result.submitted) {
+            releasePerSymbolExecutionLease(bypassPair)
+            logWhyNotBuy(now, bypassPair.value, "emergency_bypass_submit_failed(${result.message})")
+            return false
+        }
+        result.order?.let {
+            cachedRecentOrders = mergeRecentOrders(cachedRecentOrders, listOf(it))
+            recentOrdersFetchedAt = now
+        }
+        resetPeakTrackingForNewEntry(bypassPair, bestAsk)
+        logger.info("[EXECUTION_BUY] pair={} reason=emergency_bypass_direct_submit budgetIdr={}", bypassPair.value, formatDecimal(allocatedIdr, 0))
+        return true
+    }
+
     private fun normalizeExecutionPlanForVenue(
         executionPlan: com.kibot.shared.models.ExecutionPlan,
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
@@ -10176,7 +13048,7 @@ class MacEngineDaemon(
             ?: 0.0
         if (refPrice <= 0.0) return null
 
-        val minNotionalIdr = 25_000.0  // Increase from 10,250 to 25,000 IDR (Indodax actual minimum)
+        val minNotionalIdr = minimumLiveNotionalForExchange()
         val currentBudgetIdr = executionPlan.quoteBudget?.toDoubleOrZero()
             ?: (executionPlan.quantity.toDoubleOrZero() * refPrice)
         if (currentBudgetIdr < minNotionalIdr) return null
@@ -10204,13 +13076,10 @@ class MacEngineDaemon(
             ?: marketQuotes.firstOrNull { it.pairId == pair }?.bestAsk?.toDoubleOrZero()
             ?: return "Entry ${pair.value} ditunda karena harga referensi belum tersedia."
         if (pricePerCoin <= 0.0) return "Entry ${pair.value} ditunda karena harga referensi tidak valid."
-        val freeIdr = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }
-            ?.free
-            ?.toDoubleOrZero()
-            ?: 0.0
+        val freeIdr = resolveAllocatableIdrFromBalances(balances)
         if (config.antiKoinMahalUseBudgetCheck) {
             val budgetIdr = executionPlan.quoteBudget?.toDoubleOrZero() ?: freeIdr
-            val minOrderIdr = 10_000.0
+            val minOrderIdr = minimumLiveNotionalForExchange()
             if (budgetIdr < minOrderIdr && freeIdr < minOrderIdr) {
                 return "Anti-Koin Mahal block ${pair.value}: budget Rp${formatDecimal(budgetIdr, 0)} dan saldo Rp${formatDecimal(freeIdr, 0)} < minimum order Rp${formatDecimal(minOrderIdr, 0)}."
             }
@@ -10243,10 +13112,7 @@ class MacEngineDaemon(
             return "Capital mismatch block ${pair.value}: harga referensi tidak valid."
         }
 
-        val freeIdr = balances.firstOrNull { it.asset.equals("idr", ignoreCase = true) }
-            ?.free
-            ?.toDoubleOrZero()
-            ?: 0.0
+        val freeIdr = resolveAllocatableIdrFromBalances(balances)
         val totalEquityIdr = balances.sumOf { it.totalValueInIdr?.toDoubleOrZero() ?: 0.0 }
         val lowCapital = totalEquityIdr in 0.0000001..150_000.0 || freeIdr in 0.0000001..150_000.0
         if (!lowCapital) return null
@@ -10630,6 +13496,7 @@ class MacEngineDaemon(
                 deviceId = config.device.deviceId.value,
                 observedAtEpochMs = 0L,
                 orders = emptyList(),
+                recentFills = emptyList(),
                 managedPositions = emptyList(),
             )
         }
@@ -10640,6 +13507,7 @@ class MacEngineDaemon(
                 deviceId = config.device.deviceId.value,
                 observedAtEpochMs = 0L,
                 orders = emptyList(),
+                recentFills = emptyList(),
                 managedPositions = emptyList(),
             )
             json.decodeFromString<LocalPositionStateSnapshot>(Files.readString(path))
@@ -10650,6 +13518,7 @@ class MacEngineDaemon(
                 deviceId = config.device.deviceId.value,
                 observedAtEpochMs = 0L,
                 orders = emptyList(),
+                recentFills = emptyList(),
                 managedPositions = emptyList(),
             )
         }
@@ -10658,6 +13527,7 @@ class MacEngineDaemon(
     private fun persistLocalPositionState(
         now: Instant,
         recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
+        recentFills: List<com.kibot.shared.models.FillSnapshot>,
         managedPositions: List<com.kibot.core.ManagedPosition>,
     ) {
         if (!config.localPositionStateEnabled) return
@@ -10665,7 +13535,12 @@ class MacEngineDaemon(
             botId = config.controlPlane.botId.value,
             deviceId = config.device.deviceId.value,
             observedAtEpochMs = now.toEpochMilliseconds(),
-            orders = recentOrders.takeLast(80),
+            orders = recentOrders
+                .filter { it.updatedAt >= now.minus(3.days) }
+                .takeLast(400),
+            recentFills = recentFills
+                .filter { it.executedAt >= now.minus(3.days) }
+                .takeLast(800),
             managedPositions = managedPositions.map { position ->
                 LocalManagedPositionState(
                     pairId = position.pairId.value,
@@ -10754,13 +13629,30 @@ class MacEngineDaemon(
         val pursuit = dailyTargetPursuitBrain.evaluate(
             cycle = cycle,
             adaptiveAiPolicy = cachedAdaptiveAiPolicy,
-            now = Clock.System.now(),
+            now = clock.now(),
         )
         val enforcementMemory = targetEnforcementMemory
         val adjustments = cachedAdaptiveAiPolicy?.adjustments
-        val executionHints = cachedAdaptiveAiPolicy?.executionHints ?: AdaptiveAiExecutionHints()
+        val executionHints = executionLearningHints()
+        val learningSnapshot = cachedLocalLearningSnapshot
+        val risk = learningSnapshot.risk
         if (adjustments == null && !pursuit.active && executionHints.replacementHints.isEmpty()) return tradeAutomationCoordinator
         val aiAdjustments = adjustments ?: AdaptiveAiAdjustments()
+        val realTimeCaution = when {
+            risk.ruinProbability >= 0.35 -> 0.26
+            risk.bootstrapConditionalVar95Pct <= -3.5 -> 0.18
+            risk.maxDrawdownPct >= 6.0 -> 0.15
+            learningSnapshot.dailyAggressionBias <= -0.18 -> 0.22
+            learningSnapshot.dailyAggressionBias <= -0.08 -> 0.12
+            learningSnapshot.hourlyAggressionMultiplier <= 0.80 -> 0.10
+            learningSnapshot.hourlyAggressionMultiplier <= 0.90 -> 0.05
+            else -> 0.0
+        }
+        val realTimeWinnerRunBoost = when {
+            learningSnapshot.dailyAggressionBias >= 0.10 && learningSnapshot.hourlyAggressionMultiplier >= 1.08 -> 0.05
+            learningSnapshot.dailyAggressionBias >= 0.05 -> 0.02
+            else -> 0.0
+        }
         val repeatedHourlyPenalty = enforcementMemory.consecutiveHourlyMisses.coerceIn(0, 4)
         val repeatedCheckpointPenalty = enforcementMemory.consecutiveCheckpointMisses.coerceIn(0, 3)
         val aiReplacementPressure = if (executionHints.replacementHints.isNotEmpty()) 0.08 else 0.0
@@ -10776,21 +13668,21 @@ class MacEngineDaemon(
                 .coerceIn(0.04, 0.10),
             maxStaleLossPctForTimeExit = (defaults.maxStaleLossPctForTimeExit + 0.08 + (repeatedHourlyPenalty * 0.04) + (repeatedCheckpointPenalty * 0.06))
                 .coerceIn(0.10, 0.42),
-            partialTakeProfitMinPnlPct = (defaults.partialTakeProfitMinPnlPct + aiAdjustments.partialTakeProfitPnlDelta + pursuit.partialTakeProfitPnlDelta)
+            partialTakeProfitMinPnlPct = (defaults.partialTakeProfitMinPnlPct + aiAdjustments.partialTakeProfitPnlDelta + pursuit.partialTakeProfitPnlDelta - realTimeCaution - if (risk.bootstrapConditionalVar95Pct <= -3.0) 0.18 else 0.0)
                 .coerceIn(1.80, 2.8),
-            minMeaningfulNonEmergencyExitProfitPct = (defaults.minMeaningfulNonEmergencyExitProfitPct + aiAdjustments.meaningfulExitProfitDelta + pursuit.meaningfulExitProfitDelta - (repeatedHourlyPenalty * 0.03) - (repeatedCheckpointPenalty * 0.05))
+            minMeaningfulNonEmergencyExitProfitPct = (defaults.minMeaningfulNonEmergencyExitProfitPct + aiAdjustments.meaningfulExitProfitDelta + pursuit.meaningfulExitProfitDelta - (repeatedHourlyPenalty * 0.03) - (repeatedCheckpointPenalty * 0.05) - (realTimeCaution * 0.35) - if (risk.maxDrawdownPct >= 5.0) 0.06 else 0.0)
                 .coerceIn(0.75, 0.95),
-            breakoutWinnerRunMinPnlPct = (defaults.breakoutWinnerRunMinPnlPct + aiAdjustments.winnerRunPnlDelta + pursuit.winnerRunPnlDelta)
+            breakoutWinnerRunMinPnlPct = (defaults.breakoutWinnerRunMinPnlPct + aiAdjustments.winnerRunPnlDelta + pursuit.winnerRunPnlDelta + realTimeWinnerRunBoost - (realTimeCaution * 0.30))
                 .coerceIn(0.60, 1.2),
-            speculativeWinnerRunMinPnlPct = (defaults.speculativeWinnerRunMinPnlPct + aiAdjustments.winnerRunPnlDelta + pursuit.winnerRunPnlDelta)
+            speculativeWinnerRunMinPnlPct = (defaults.speculativeWinnerRunMinPnlPct + aiAdjustments.winnerRunPnlDelta + pursuit.winnerRunPnlDelta + realTimeWinnerRunBoost - (realTimeCaution * 0.35))
                 .coerceIn(1.10, 1.8),
-            staleUnderwaterKillMinAgeHours = (defaults.staleUnderwaterKillMinAgeHours - (repeatedHourlyPenalty * 0.03) - (repeatedCheckpointPenalty * 0.04) - aiReplacementPressure)
+            staleUnderwaterKillMinAgeHours = (defaults.staleUnderwaterKillMinAgeHours - (repeatedHourlyPenalty * 0.03) - (repeatedCheckpointPenalty * 0.04) - aiReplacementPressure - (realTimeCaution * 0.40))
                 .coerceAtLeast(0.50),
-            staleUnderwaterKillMinScoreGap = (defaults.staleUnderwaterKillMinScoreGap - (repeatedHourlyPenalty * 0.01) - (repeatedCheckpointPenalty * 0.015) - (aiReplacementPressure * 0.10))
+            staleUnderwaterKillMinScoreGap = (defaults.staleUnderwaterKillMinScoreGap - (repeatedHourlyPenalty * 0.01) - (repeatedCheckpointPenalty * 0.015) - (aiReplacementPressure * 0.10) - (realTimeCaution * 0.04))
                 .coerceIn(0.05, 0.10),
-            staleUnderwaterKillMinNetUpgradePct = (defaults.staleUnderwaterKillMinNetUpgradePct - (repeatedHourlyPenalty * 0.06) - (repeatedCheckpointPenalty * 0.08) - (aiReplacementPressure * 0.9))
+            staleUnderwaterKillMinNetUpgradePct = (defaults.staleUnderwaterKillMinNetUpgradePct - (repeatedHourlyPenalty * 0.06) - (repeatedCheckpointPenalty * 0.08) - (aiReplacementPressure * 0.9) - (realTimeCaution * 0.55))
                 .coerceIn(1.10, 1.30),
-            tacticalStaleMaxAgeHours = (defaults.tacticalStaleMaxAgeHours - (repeatedHourlyPenalty * 0.25) - (repeatedCheckpointPenalty * 0.40) - (aiReplacementPressure * 4.0))
+            tacticalStaleMaxAgeHours = (defaults.tacticalStaleMaxAgeHours - (repeatedHourlyPenalty * 0.25) - (repeatedCheckpointPenalty * 0.40) - (aiReplacementPressure * 4.0) - (realTimeCaution * 1.2))
                 .coerceIn(1.0, defaults.tacticalStaleMaxAgeHours),
         )
         return TradeAutomationCoordinator(config = adjusted)
@@ -10830,7 +13722,7 @@ class MacEngineDaemon(
             deviceId = config.device.deviceId.value,
             monthKey = currentMonthKey,
             anchorEquityIdr = currentEquity,
-            observedAtEpochMs = kotlinx.datetime.Clock.System.now().toEpochMilliseconds(),
+            observedAtEpochMs = clock.now().toEpochMilliseconds(),
         )
         monthlyPnlAnchor = snapshot
         persistMonthlyPnlAnchor(snapshot)
@@ -10882,7 +13774,7 @@ class MacEngineDaemon(
             botId = config.controlPlane.botId.value,
             deviceId = config.device.deviceId.value,
             anchorEquityIdr = currentEquity,
-            observedAtEpochMs = kotlinx.datetime.Clock.System.now().toEpochMilliseconds(),
+            observedAtEpochMs = clock.now().toEpochMilliseconds(),
             reason = reason,
         )
         pnlResetAnchor = snapshot
@@ -10897,7 +13789,7 @@ class MacEngineDaemon(
      */
     private fun maybeAutoResetDailyPnl(currentEquity: Double) {
         if (currentEquity <= 0.0) return
-        val jakartaNow = kotlinx.datetime.Clock.System.now()
+        val jakartaNow = clock.now()
             .toLocalDateTime(TimeZone.of("Asia/Jakarta"))
         val todayDateStr = jakartaNow.date.toString()  // e.g., "2026-04-07"
         
@@ -10922,7 +13814,7 @@ class MacEngineDaemon(
             botId = config.controlPlane.botId.value,
             deviceId = config.device.deviceId.value,
             anchorEquityIdr = currentEquity,
-            observedAtEpochMs = kotlinx.datetime.Clock.System.now().toEpochMilliseconds(),
+            observedAtEpochMs = clock.now().toEpochMilliseconds(),
             reason = "daily_auto_reset_midnight",
         )
         pnlResetAnchor = snapshot
@@ -11024,6 +13916,7 @@ class MacEngineDaemon(
         private const val instantAnomalyShortReturnRelaxFactor = 0.65
         private const val instantAnomalyConfidenceRelax = 0.16
         private const val dustUiHideMinValueIdr = 1_000.0
+        private const val dustHoldingsIgnoreMinValueIdr = 20_000.0
         private const val autonomousResolverIntervalMs = 5_000L
         private const val autonomousResolverStaleOrderMs = 10_000L
         private const val depthGuardMaxTopBookImpactPct = 0.30
@@ -11059,6 +13952,7 @@ class MacEngineDaemon(
         private const val leadLagTrailingStopPct = 1.5
         private const val leadLagTrailingArmMinGainPct = 0.8
         private const val leaseLockdownRetryCooldownMs = 5_000L
+        private const val dynamicMultiSlotPerSymbolLeaseMs = 12_000L
         private const val hardStopLossPct = -3.5
         private const val sinBinHours = 3
         private const val crashGuardWindowMinutes = 15
@@ -11066,8 +13960,8 @@ class MacEngineDaemon(
         private const val globalCooldownMinutes = 30
         private const val dustQuarantineMinValueIdr = 10_500.0
         private const val dustQuarantineReleaseMinValueIdr = 11_000.0
-        private const val emergencyLiquidityMinIdr = 10_000.0
-        private const val opportunityLiquidationMinIdr = 10_000.0
+        private const val emergencyLiquidityMinIdr = 20_000.0
+        private const val opportunityLiquidationMinIdr = 20_000.0
         private const val garbageNukeMinNotionalIdr = 5_000.0
         private const val hyperAggressiveTargetDailyPct = 25.0
         private const val hyperAggressiveSexyWindowMs = 60_000L
