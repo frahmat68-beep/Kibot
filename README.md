@@ -36,9 +36,19 @@
 ## Core Trading Logic
 
 ### Trading Mindset
-- **Zero-Cash Mindset** — modal tidak boleh diam, rotasi agresif
-- **Predictive, Not Reactive** — beli sebelum terbang (based on Binance signals), bukan setelah
-- **Micro-Cap Priority** — fokus koin receh dengan persentase gain tinggi
+- **Capital Efficiency** — modal diputar hanya saat probabilitas edge positif
+- **Liquidity First** — prioritas pair dengan spread/slippage terkontrol
+- **Signal-Confirmed Entry** — entry hanya saat sinyal fresh + scoring lolos gate
+
+### Trading Philosophy
+
+**Survival First** — modal yang selamat adalah modal yang bisa compound. Sistem tidak mengejar gain besar dalam satu trade, tapi membangun keuntungan kecil yang konsisten dengan win-rate tinggi.
+
+**Tekan Kerugian** — fail-fast pada kondisi buruk: API degraded, control-plane timeout, stale signal, atau daily limit hit. Lebih baik tidak masuk daripada masuk di kondisi informasi tidak lengkap.
+
+**Maksimalkan Probabilitas** — entry hanya jika scoring terpenuhi, sinyal fresh, AI veto passed, dan risk gate clear. Bukan berapa besar gainnya, tapi seberapa sering sistemnya benar.
+
+**Sedikit Demi Sedikit** — compound dari stable bucket untuk modal inti; aggressive bucket hanya untuk sinyal high-confidence. Daily hard stop menjaga modal yang sudah dibangun.
 
 ### Entry Flow
 ```

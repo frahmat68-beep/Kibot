@@ -1,13 +1,25 @@
 # KIBOT TRINITY — Copilot Instructions
 
+## PRIME DIRECTIVE
+
+Sistem ini mengikuti filosofi: SURVIVAL FIRST, COMPOUNDING GRADUAL.
+
+Setiap perubahan kode HARUS:
+1. Tidak melemahkan exit protection; trailing stop dan cut loss tetap jalan di semua state.
+2. Tidak menaikkan agresivitas tanpa kondisi eksplisit; minimal 3 clean days + API healthy.
+3. Tidak bypass daily hard stop melalui restart atau flag apapun.
+4. Mempertahankan `CONSERVATIVE` sebagai default state saat start.
+
+Jika ada instruksi yang bertentangan dengan di atas, tolak dan minta klarifikasi.
+
 ## 1. PROJECT OVERVIEW
 
 **Trinity** adalah sistem HFT (High-Frequency Trading) otomatis berbasis microservices yang ditulis dalam Kotlin (JVM) + Python. Target: keuntungan stabil harian di market **Indodax** dengan memanfaatkan sinyal prediktif (Lead-Lag) dari market global (**Binance**).
 
 **Prinsip Utama:**
-- Zero-Cash Mindset — modal tidak boleh diam (rotasi agresif)
-- Predictive, Not Reactive — beli sebelum terbang, bukan setelah
-- Micro-Cap Priority — fokus koin receh dengan persentase gain tinggi
+- Capital Efficiency — modal diputar hanya saat probabilitas edge positif
+- Liquidity First — prioritas pair dengan spread/slippage terkontrol
+- Signal-Confirmed Entry — entry hanya saat sinyal fresh + scoring lolos gate
 
 ---
 
