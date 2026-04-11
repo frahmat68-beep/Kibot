@@ -512,6 +512,31 @@ def _reconcile_daily_guard_day_rollover() -> None:
         _save_gate_state()
     _resume_new_entries("new day rollover")
 
+def _ensure_hard_stop_consistency() -> None:
+    """Clear stale hard-stop flags when the stored PnL no longer breaches today's limit."""
+    try:
+        daily_pnl_pct = _daily_guard_state.get("daily_pnl_pct")
+        if daily_pnl_pct is None:
+            return
+        daily_pnl_pct = float(daily_pnl_pct)
+    except Exception:
+        return
+    limit = -abs(DAILY_LOSS_LIMIT_PCT)
+    if not bool(_daily_guard_state.get("hard_stopped")) and not bool(_gate_state.get("daily_hard_stop")):
+        return
+    # If we are not breaching the limit anymore for the current day, treat previous hard-stop as stale.
+    if daily_pnl_pct > limit:
+        _daily_guard_state["hard_stopped"] = False
+        _daily_guard_state["triggered_at"] = ""
+        _daily_guard_state["reset_at"] = ""
+        _daily_guard_state["reason"] = ""
+        _save_daily_guard_state()
+        _gate_state["daily_hard_stop"] = False
+        _gate_state["daily_hard_stop_reason"] = ""
+        _gate_state["daily_hard_stop_reset_at"] = ""
+        _save_gate_state()
+        _resume_new_entries("hard stop cleared (pnl recovered/new day)")
+
 
 def _trigger_daily_hard_stop(current_equity: float | None, daily_pnl_pct: float) -> None:
     reset_at = _next_wib_midnight_iso()
@@ -615,6 +640,7 @@ def _health_gate_loop() -> None:
             else:
                 _record_control_plane_failure("kinance_unhealthy")
             _check_daily_loss_limit()
+            _ensure_hard_stop_consistency()
         except Exception as error:
             print(f"[KIBOT][HEALTH][ERROR] gate loop failed reason={error}", flush=True)
         _shutdown_event.wait(API_HEALTH_CHECK_INTERVAL_SEC)
@@ -2395,6 +2421,7 @@ def main() -> None:
     _ensure_env()
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
     _reconcile_daily_guard_day_rollover()
+    _ensure_hard_stop_consistency()
     _write_json_file(PROVIDER_STATE_PATH, _provider_runtime_state)
     _save_pair_cooldown_state()
     _save_gate_state()
