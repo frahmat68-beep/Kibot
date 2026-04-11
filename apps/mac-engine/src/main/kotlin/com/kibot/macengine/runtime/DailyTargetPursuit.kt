@@ -5,11 +5,13 @@ import com.kibot.shared.models.DecimalValue
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 
 data class DailyTargetPursuitConfig(
     val targetProfitPct: Double = 25.0,
+    val dailyLossLimitPct: Double = 2.0,
     val hourlyEvaluationCadenceHours: Double = 1.0,
     val threeHourCheckpointPct: Double = 10.0,
     val checkpointCadenceHours: Double = 3.0,
@@ -171,6 +173,44 @@ class DailyTargetPursuitBrain(
                     )
             ) &&
             cycle.dailyRisk.givebackPct <= 0.10
+        val dailyLossBreached = controllerProfitPct <= -abs(config.dailyLossLimitPct)
+        if (dailyLossBreached) {
+            return DailyTargetPursuit(
+                phase = "HARD_STOPPED",
+                currentProfitPct = effectiveProfitPct,
+                progressPct = progressPct,
+                targetGapPct = targetGapPct,
+                urgency = 0.0,
+                hourlyWindowIndex = hourlyEvaluationWindow,
+                hourlyMissed = hourlyMissed,
+                hourlyMissCount = hourlyMissCount,
+                hourlyShortfallPct = hourlyShortfallPct,
+                hourlyEscalationLevel = hourlyEscalationLevel,
+                checkpointWindowIndex = completedCheckpointWindow,
+                checkpointMissed = checkpointMissed,
+                checkpointShortfallPct = checkpointShortfallPct,
+                checkpointEscalationLevel = checkpointEscalationLevel,
+                forcedReplan = false,
+                profitWindowOpen = false,
+                targetSatisfied = false,
+                overdriveAllowed = false,
+                budgetBoostMultiplier = 1.0,
+                reserveReliefPct = 0.0,
+                executionBoostMultiplier = 1.0,
+                extraSlots = 0,
+                concentrationBoostPct = 0.0,
+                rotationAgeHoursDelta = 0.0,
+                rotationScoreGapDelta = 0.0,
+                partialTakeProfitPnlDelta = 0.0,
+                winnerRunPnlDelta = 0.0,
+                meaningfulExitProfitDelta = 0.0,
+                rationale = listOf(
+                    "Daily loss limit breached: ${formatPct(config.dailyLossLimitPct)}.",
+                    "Entry suspended until WIB midnight.",
+                    "Exit protection remains active.",
+                ),
+            )
+        }
         val overdriveAllowed = targetSatisfied &&
             (
                 topCandidateQuality >= 0.84 ||
