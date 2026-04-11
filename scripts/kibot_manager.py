@@ -536,7 +536,8 @@ def _check_daily_loss_limit(current_equity: float | None = None) -> None:
 
 
 def _bootstrap_daily_guard_from_kidax() -> None:
-    if bool(_daily_guard_state.get("hard_stopped")) and _daily_guard_state.get("reset_at"):
+    # Only bootstrap missing context; do not re-trigger hard stops from external labels.
+    if _daily_guard_state.get("start_of_day_equity") is not None and _daily_guard_state.get("current_equity") is not None:
         return
     try:
         response = requests.get("http://127.0.0.1:8787/api/state", timeout=2)
@@ -559,8 +560,7 @@ def _bootstrap_daily_guard_from_kidax() -> None:
                 daily_pnl_pct = float(match.group(1))
             except Exception:
                 daily_pnl_pct = None
-    if daily_pnl_pct is None:
-        return
+    # daily_pnl_pct is best-effort; never used to force a hard stop in bootstrap.
 
     current_equity = None
     for key in ("totalValueIdr", "portfolioValueIdr", "total_value_idr"):
@@ -575,17 +575,12 @@ def _bootstrap_daily_guard_from_kidax() -> None:
         if current_equity is not None and current_equity > 0.0:
             break
 
-    if _daily_guard_state.get("date") != datetime.now(timezone.utc).date().isoformat():
-        _refresh_daily_guard_from_equity(current_equity)
-    if daily_pnl_pct <= -abs(DAILY_LOSS_LIMIT_PCT):
-        if not _daily_guard_state.get("hard_stopped"):
-            _trigger_daily_hard_stop(current_equity, daily_pnl_pct)
-        elif not _daily_guard_state.get("daily_pnl_pct"):
-            _daily_guard_state["daily_pnl_pct"] = daily_pnl_pct
-            _daily_guard_state["current_equity"] = current_equity
-            _save_daily_guard_state()
-        if _gate_state.get("mode") != "CONSERVATIVE":
-            _set_conservative_mode("daily loss limit bootstrap")
+    # Seed the daily guard for the current WIB date so hard stop evaluation uses local equity, not external labels.
+    _refresh_daily_guard_from_equity(current_equity)
+    if daily_pnl_pct is not None and _daily_guard_state.get("daily_pnl_pct") is None:
+        _daily_guard_state["daily_pnl_pct"] = daily_pnl_pct
+        _daily_guard_state["current_equity"] = current_equity
+        _save_daily_guard_state()
 
 
 def _health_gate_loop() -> None:
