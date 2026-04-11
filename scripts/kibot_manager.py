@@ -741,11 +741,28 @@ def _write_runtime_note(*, force: bool = False) -> None:
         "host_bind": f"{UDP_BIND_HOST}:{UDP_BIND_PORT}",
         "kidax_target": f"{KIDAX_UDP_HOST}:{KIDAX_UDP_PORT}" if KIDAX_UDP_HOST else "",
         "kinance_target": f"{KINANCE_UDP_HOST}:{KINANCE_UDP_PORT}" if KINANCE_UDP_HOST else "",
+        "system_state": str(_gate_state.get("entry_state") or "HEALTHY"),
+        "trading_mode": str(_gate_state.get("mode") or "CONSERVATIVE"),
+        "api_fail_streak": _api_fail_streak,
+        "control_plane_healthy": _control_plane_healthy,
+        "daily_hard_stop": bool(_daily_guard_state.get("hard_stopped") or _gate_state.get("daily_hard_stop")),
+        "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+        "daily_hard_stop_reset_at": _gate_state.get("daily_hard_stop_reset_at") or _daily_guard_state.get("reset_at"),
         "ai_router_enabled": AI_ROUTER_ENABLED,
         "ai_provider_order": _iter_ai_provider_order(),
         "ai_provider_last_status": dict(_ai_provider_last_status),
         "provider_runtime_state": _provider_runtime_state,
         "tracked_active_positions": sorted(_active_positions_cache.keys()),
+        "pair_memory_preview": {
+            pair_id: {
+                "trade_count": int(memory.get("trade_count") or 0),
+                "win_rate_now": round(_get_pair_win_rate_now(pair_id), 3),
+                "avg_slippage_pct": round(_get_pair_avg_slippage(pair_id, fallback=0.0), 4),
+                "cooldown": _is_pair_on_cooldown(pair_id),
+                "fake_pump_count": int(memory.get("fake_pump_count") or 0),
+            }
+            for pair_id, memory in list(_pair_memory.items())[:10]
+        },
         "pair_cooldowns": _pair_cooldown_state,
         "veto_metrics": _veto_metrics,
         "sector_count": len(_last_sector_map),
