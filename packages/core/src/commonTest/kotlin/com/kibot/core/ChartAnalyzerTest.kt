@@ -35,7 +35,7 @@ class ChartAnalyzerTest {
         assertTrue(assessment.entryScore > 0.65)
         assertTrue(assessment.breakEvenMovePct > 0.0)
         assertTrue(assessment.softTakeProfitPct > assessment.breakEvenMovePct)
-        assertEquals(ChartAnalyzer.PreferredOrderType.MARKET, assessment.preferredOrderType)
+        assertEquals(ChartAnalyzer.PreferredOrderType.LIMIT_MID, assessment.preferredOrderType)
         assertTrue(assessment.vetoReasons.isEmpty())
     }
 

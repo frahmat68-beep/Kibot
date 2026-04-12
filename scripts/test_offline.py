@@ -3,9 +3,14 @@ import os
 import random
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+try:
+    import kibot_manager as manager
+except Exception:
+    manager = None
 from kibot_learning_engine import (
     LearningEngine,
     PairStats,
@@ -62,6 +67,33 @@ for _ in range(20):
         engine.record_trade("eth_idr", -0.008, True)
 check("engine kelly positive", engine.kelly_size("eth_idr") > 0)
 check("engine kelly capped", engine.kelly_size("eth_idr") <= 0.12)
+
+if manager is not None:
+    check("effective fee pct sane", 0.0004 < manager._effective_fee_pct() < 0.0055)
+
+    with patch("kibot_manager.requests.get") as mocked_get:
+        mocked_response = MagicMock()
+        mocked_response.raise_for_status.return_value = None
+        mocked_response.json.return_value = {"totalEquityIdr": 84_000}
+        mocked_get.return_value = mocked_response
+        check("minimum capital blocks tiny equity", not manager._check_minimum_capital())
+
+    with patch("kibot_manager.requests.get") as mocked_get:
+        mocked_response = MagicMock()
+        mocked_response.raise_for_status.return_value = None
+        mocked_response.json.return_value = {"totalEquityIdr": 500_000}
+        mocked_get.return_value = mocked_response
+        check("minimum capital allows viable equity", manager._check_minimum_capital())
+
+    what_if = manager._simulate_what_if(
+        pair_id="btc_idr",
+        entry_price=100.0,
+        budget_idr=84_000.0,
+        spread_pct=0.01,
+        slippage_pct=0.02,
+    )
+    check("what-if exposes fee round trip", what_if["fee_round_trip_pct"] > 0.0)
+    check("what-if skips when net negative", what_if["recommendation"] == "SKIP")
 
 detector = VWAPRegimeDetector()
 bullish = [{"close": 100 + i, "high": 101 + i, "low": 99 + i, "volume": 2000} for i in range(15)]

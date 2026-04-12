@@ -33,6 +33,16 @@ _last_daily_guard_check_at = 0.0
 _learning_engine = None
 _regime_detector = None
 _learning_enabled = False
+_metrics: Dict[str, float | int] = {
+    "market_orders_today": 0,
+    "limit_orders_today": 0,
+    "entries_blocked_hard_stop": 0,
+    "entries_blocked_learn_gate": 0,
+    "entries_blocked_whatif": 0,
+    "fee_bleed_est_idr": 0.0,
+    "whatif_skips_today": 0,
+    "whatif_enters_today": 0,
+}
 
 
 def _load_dotenv_if_exists() -> None:
@@ -83,6 +93,18 @@ def _load_json_file(path: Path, default: Any) -> Any:
 def _write_json_file(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _metric_inc(name: str, amount: int = 1) -> None:
+    current = _metrics.get(name, 0)
+    if isinstance(current, (int, float)):
+        _metrics[name] = current + amount
+
+
+def _metric_add(name: str, amount: float) -> None:
+    current = _metrics.get(name, 0.0)
+    if isinstance(current, (int, float)):
+        _metrics[name] = float(current) + float(amount)
 
 
 def _safe_isoformat(epoch_seconds: Optional[float] = None) -> str:
@@ -143,6 +165,25 @@ POST_MORTEM_BLACKLIST_ENABLED = os.getenv("KIBOT_POST_MORTEM_BLACKLIST_ENABLED",
 POST_MORTEM_BLACKLIST_MINUTES = int(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_MINUTES", "30"))
 POST_MORTEM_BLACKLIST_NET_LOSS_IDR = float(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_NET_LOSS_IDR", "500"))
 POST_MORTEM_BLACKLIST_PNL_PCT = float(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_PNL_PCT", "-1.0"))
+MINIMUM_VIABLE_CAPITAL_IDR = float(os.getenv("KIBOT_MINIMUM_VIABLE_CAPITAL_IDR", "300000"))
+MINIMUM_POSITION_SIZE_IDR = float(os.getenv("KIBOT_MINIMUM_POSITION_SIZE_IDR", "10000"))
+MAXIMUM_POSITION_SIZE_IDR = float(os.getenv("KIBOT_MAXIMUM_POSITION_SIZE_IDR", "15000"))
+MAXIMUM_ACTIVE_POSITIONS = int(os.getenv("KIBOT_MAXIMUM_ACTIVE_POSITIONS", "2"))
+INDODAX_ALL_IN_TAKER_FEE_PCT = float(os.getenv("KIBOT_INDODAX_ALL_IN_TAKER_FEE_PCT", "0.0055"))
+INDODAX_ALL_IN_MAKER_FEE_PCT = float(os.getenv("KIBOT_INDODAX_ALL_IN_MAKER_FEE_PCT", "0.0004"))
+INDODAX_LIMIT_FILL_RATE = float(os.getenv("KIBOT_INDODAX_LIMIT_FILL_RATE", "0.70"))
+SURVIVAL_MODE = os.getenv("KIBOT_SURVIVAL_MODE", "true").lower() in {"1", "true", "yes", "on"}
+SURVIVAL_MODE_EQUITY_THRESHOLD_IDR = float(os.getenv("KIBOT_SURVIVAL_MODE_EQUITY_THRESHOLD_IDR", "200000"))
+SURVIVAL_ALLOWED_PAIRS = tuple(
+    pair.strip().lower()
+    for pair in os.getenv("KIBOT_SURVIVAL_ALLOWED_PAIRS", "btc_idr,eth_idr,usdt_idr,bnb_idr,sol_idr,xrp_idr").split(",")
+    if pair.strip()
+)
+SURVIVAL_MIN_DAILY_VOLUME_IDR = float(os.getenv("KIBOT_SURVIVAL_MIN_DAILY_VOLUME_IDR", "500000000"))
+SURVIVAL_MAX_SPREAD_PCT = float(os.getenv("KIBOT_SURVIVAL_MAX_SPREAD_PCT", "0.008"))
+SURVIVAL_MAX_SLIPPAGE_PCT = float(os.getenv("KIBOT_SURVIVAL_MAX_SLIPPAGE_PCT", "0.010"))
+SURVIVAL_TARGET_PROFIT_PCT = float(os.getenv("KIBOT_SURVIVAL_TARGET_PROFIT_PCT", "0.025"))
+SURVIVAL_HARD_STOP_PCT = float(os.getenv("KIBOT_SURVIVAL_HARD_STOP_PCT", "0.01"))
 
 
 # === KINANCE HEALTH MONITORING ===
@@ -621,6 +662,7 @@ def _trigger_daily_hard_stop(current_equity: float | None, daily_pnl_pct: float)
     _save_gate_state()
     _suspend_new_entries("daily_loss_limit_hit", daily_hard_stop=True)
     _append_runtime_event("daily_hard_stop", {"daily_pnl_pct": daily_pnl_pct, "reset_at": reset_at})
+    _metric_inc("entries_blocked_hard_stop")
     print(f"[KIBOT][GATE] daily hard stop triggered pnl_pct={daily_pnl_pct:.4f} reset_at={reset_at}", flush=True)
 
 
@@ -644,7 +686,7 @@ def _check_daily_loss_limit(current_equity: float | None = None) -> None:
     _daily_guard_state["current_equity"] = float(current_equity)
     _daily_guard_state["daily_pnl_pct"] = daily_pnl_pct
     _save_daily_guard_state()
-    if daily_pnl_pct <= -abs(DAILY_LOSS_LIMIT_PCT) and not bool(_daily_guard_state.get("hard_stopped")):
+    if daily_pnl_pct <= -abs(_current_daily_loss_limit_pct()) and not bool(_daily_guard_state.get("hard_stopped")):
         _trigger_daily_hard_stop(current_equity, daily_pnl_pct)
 
 
@@ -1499,6 +1541,80 @@ def _estimate_exit_viability(expected_move_pct: float, slippage_pct: float) -> D
     }
 
 
+def _effective_fee_pct() -> float:
+    return (
+        INDODAX_LIMIT_FILL_RATE * INDODAX_ALL_IN_MAKER_FEE_PCT
+        + (1.0 - INDODAX_LIMIT_FILL_RATE) * INDODAX_ALL_IN_TAKER_FEE_PCT
+    )
+
+
+def _get_total_equity_estimate() -> float | None:
+    current_equity = _daily_guard_state.get("current_equity")
+    if isinstance(current_equity, (int, float)) and float(current_equity) > 0:
+        return float(current_equity)
+    for payload_key in ("totalValueIdr", "portfolioValueIdr", "total_value_idr", "balanceIdr", "balance_idr"):
+        value = _daily_guard_state.get(payload_key)
+        if isinstance(value, (int, float)) and float(value) > 0:
+            return float(value)
+    try:
+        response = requests.get("http://127.0.0.1:8787/api/state", timeout=3)
+        response.raise_for_status()
+        data = response.json() or {}
+    except Exception:
+        return None
+    for field in ("totalEquityIdr", "total_equity_idr", "portfolioValueIdr", "portfolio_value_idr", "balanceIdr", "balance_idr", "totalValueIdr", "total_value_idr"):
+        value = data.get(field)
+        if isinstance(value, (int, float)) and float(value) > 0:
+            return float(value)
+        try:
+            cleaned = float(str(value).replace(",", "").strip())
+            if cleaned > 0:
+                return cleaned
+        except Exception:
+            continue
+    return None
+
+
+def _check_minimum_capital() -> bool:
+    equity = _get_total_equity_estimate()
+    if equity is None:
+        print("[KIBOT][CAPITAL][WARN] unable to read equity; allowing entry fail-open", flush=True)
+        return True
+    if equity < MINIMUM_VIABLE_CAPITAL_IDR:
+        print(
+            f"[KIBOT][CAPITAL] equity Rp{equity:,.0f} < minimum Rp{MINIMUM_VIABLE_CAPITAL_IDR:,.0f}; entry suspended",
+            flush=True,
+        )
+        return False
+    return True
+
+
+def _is_survival_mode() -> bool:
+    if not SURVIVAL_MODE:
+        return False
+    equity = _get_total_equity_estimate()
+    if equity is None:
+        return True
+    return equity < SURVIVAL_MODE_EQUITY_THRESHOLD_IDR
+
+
+def _apply_survival_filters(pair_id: str, budget_idr: float, spread_pct: float = 0.0, slippage_pct: float = 0.0) -> tuple[bool, str]:
+    if not _is_survival_mode():
+        return True, "normal_mode"
+    pair_key = str(pair_id or "").lower().strip()
+    if pair_key not in SURVIVAL_ALLOWED_PAIRS:
+        return False, f"survival_mode: {pair_key} not allowed"
+    if budget_idr < MINIMUM_POSITION_SIZE_IDR:
+        return False, f"survival_mode: budget {budget_idr:.0f} below min position {MINIMUM_POSITION_SIZE_IDR:.0f}"
+    if budget_idr > MAXIMUM_POSITION_SIZE_IDR:
+        return False, f"survival_mode: budget {budget_idr:.0f} above max position {MAXIMUM_POSITION_SIZE_IDR:.0f}"
+    if spread_pct > SURVIVAL_MAX_SPREAD_PCT:
+        return False, f"survival_mode: spread {spread_pct:.3%} too wide"
+    if slippage_pct > SURVIVAL_MAX_SLIPPAGE_PCT:
+        return False, f"survival_mode: slippage {slippage_pct:.3%} too high"
+    return True, "ok"
+
+
 def _simulate_what_if(
     *,
     pair_id: str,
@@ -1506,14 +1622,14 @@ def _simulate_what_if(
     budget_idr: float,
     spread_pct: float,
     slippage_pct: float,
-    fee_pct: float = 0.003,
     trailing_stop_pct: float = 0.05,
     target_profit_pct: float = 0.018,
 ) -> Dict[str, Any]:
     historical_slippage = _get_pair_avg_slippage(pair_id, fallback=slippage_pct)
     historical_win_rate = _get_pair_win_rate_now(pair_id)
     effective_slippage = max(float(slippage_pct), float(historical_slippage))
-    round_trip_cost_pct = (max(0.0, spread_pct) / 2.0) + effective_slippage + (fee_pct * 2.0)
+    eff_fee_pct = _effective_fee_pct()
+    round_trip_cost_pct = (max(0.0, spread_pct) / 2.0) + effective_slippage + (eff_fee_pct * 2.0)
     breakeven_move_pct = round_trip_cost_pct
     expected_net_pct = target_profit_pct - round_trip_cost_pct
     max_loss_pct = trailing_stop_pct + round_trip_cost_pct
@@ -1537,6 +1653,7 @@ def _simulate_what_if(
         "budget_idr": budget_idr,
         "expected_net_pct": round(expected_net_pct, 4),
         "breakeven_move_pct": round(breakeven_move_pct, 4),
+        "fee_round_trip_pct": round(eff_fee_pct * 2.0, 4),
         "max_loss_idr": round(max_loss_idr, 0),
         "win_probability": round(historical_win_rate, 3),
         "risk_reward_ratio": round(risk_reward_ratio, 2),
@@ -1544,6 +1661,10 @@ def _simulate_what_if(
         "historical_slippage_pct": round(historical_slippage, 4),
         "effective_slippage_pct": round(effective_slippage, 4),
     }
+
+
+def _current_daily_loss_limit_pct() -> float:
+    return 0.01 if _is_survival_mode() else abs(float(DAILY_LOSS_LIMIT_PCT))
 
 
 def _upsert_trade_history(entry: Dict[str, Any]) -> None:
@@ -1602,6 +1723,11 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
     )
     if _learning_enabled and _learning_engine is not None:
         used_limit_order = str(msg.get("order_type") or msg.get("orderType") or "limit").lower() == "limit"
+        if used_limit_order:
+            _metric_inc("limit_orders_today")
+        else:
+            _metric_inc("market_orders_today")
+            _metric_add("fee_bleed_est_idr", abs(net) * 0.0 + max(300.0, abs(gross) * 0.006))
         _learning_engine.record_trade(pair_id, pnl_pct, used_limit_order=used_limit_order)
     print(
         f"[KIBOT][LEARNING] pair_memory updated pair={pair_id} pnl_pct={pnl_pct:.4f} slippage_pct={slippage_pct:.4f}",
@@ -1828,8 +1954,25 @@ def _check_kinance_health() -> bool:
 
 
 def _process_signal(msg: Dict[str, Any]) -> None:
-    _check_daily_loss_limit()
     msg_type = str(msg.get("msgType") or "").upper()
+
+    try:
+        _check_daily_loss_limit()
+        if _is_hard_stop_active():
+            _metric_inc("entries_blocked_hard_stop")
+            print(
+                f"[KIBOT][BLOCK] Blocking {msg_type} - daily hard stop active",
+                flush=True,
+            )
+            return
+    except Exception as error:
+        _metric_inc("entries_blocked_hard_stop")
+        print(f"[KIBOT][BLOCK] Blocking {msg_type} - hard stop guard failed reason={error}", flush=True)
+        return
+
+    if not _check_minimum_capital():
+        print(f"[KIBOT][BLOCK] Blocking {msg_type} - minimum viable capital not met", flush=True)
+        return
     
     # === HANDLE KINANCE HEARTBEAT ===
     if msg_type == "HEARTBEAT" and msg.get("source") == "kinance":
@@ -1880,9 +2023,11 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     if not pair:
         print(f"[KIBOT][WARN] missing pair in msgType={msg_type}", flush=True)
         return
+
     if msg_type in SAFE_ENTRY_MSG_TYPES and _learning_enabled and _learning_engine is not None:
         allowed, reason = _learning_engine.should_entry(pair)
         if not allowed:
+            _metric_inc("entries_blocked_learn_gate")
             print(f"[KIBOT][LEARN GATE] pair={pair} blocked reason={reason}", flush=True)
             _append_runtime_event(
                 "learning_block",
@@ -1910,8 +2055,20 @@ def _process_signal(msg: Dict[str, Any]) -> None:
                 flush=True,
             )
             if what_if["recommendation"] == "SKIP":
+                _metric_inc("entries_blocked_whatif")
+                _metric_inc("whatif_skips_today")
                 print(f"[KIBOT][BLOCK] Blocking {msg_type} - what-if rejected", flush=True)
                 return
+            _metric_inc("whatif_enters_today")
+        allowed, reason = _apply_survival_filters(
+            pair_id=pair,
+            budget_idr=float(msg.get("budgetIdr") or msg.get("budget_idr") or msg.get("quoteBudgetIdr") or 0.0),
+            spread_pct=spread_pct,
+            slippage_pct=slippage_pct,
+        )
+        if not allowed:
+            print(f"[KIBOT][SURVIVAL] pair={pair} blocked reason={reason}", flush=True)
+            return
     pair_on_cooldown, cooldown_reason = _pair_cooldown_active(pair)
     if pair_on_cooldown and msg_type not in EXIT_MSG_TYPES:
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -2546,6 +2703,36 @@ def _http_state_payload() -> Dict[str, Any]:
             "control_plane_healthy": _control_plane_healthy,
             "pair_memory_count": len(_pair_memory),
             "pairs_on_cooldown": [pair for pair in _pair_memory.keys() if _is_pair_on_cooldown(pair)],
+            "capital_health": {
+                "total_equity_est_idr": _get_total_equity_estimate(),
+                "minimum_viable_idr": MINIMUM_VIABLE_CAPITAL_IDR,
+                "is_capital_sufficient": _check_minimum_capital(),
+                "fee_round_trip_pct": round(_effective_fee_pct() * 2.0, 4),
+                "breakeven_per_trade_pct": round((_effective_fee_pct() * 2.0) + 0.015, 4),
+                "status": (
+                    "VIABLE"
+                    if (_get_total_equity_estimate() or 0.0) >= MINIMUM_VIABLE_CAPITAL_IDR
+                    else f"INSUFFICIENT — add Rp{max(0.0, MINIMUM_VIABLE_CAPITAL_IDR - (_get_total_equity_estimate() or 0.0)):,.0f} more"
+                ),
+            },
+            "metrics": {
+                "market_orders_today": _metrics.get("market_orders_today", 0),
+                "limit_orders_today": _metrics.get("limit_orders_today", 0),
+                "limit_ratio": (
+                    float(_metrics.get("limit_orders_today", 0))
+                    / max(float(_metrics.get("limit_orders_today", 0)) + float(_metrics.get("market_orders_today", 0)), 1.0)
+                ),
+                "fee_bleed_est_idr": _metrics.get("fee_bleed_est_idr", 0.0),
+                "entries_blocked": {
+                    "hard_stop": _metrics.get("entries_blocked_hard_stop", 0),
+                    "learn_gate": _metrics.get("entries_blocked_learn_gate", 0),
+                    "whatif": _metrics.get("entries_blocked_whatif", 0),
+                },
+                "whatif_enter_rate": (
+                    float(_metrics.get("whatif_enters_today", 0))
+                    / max(float(_metrics.get("whatif_enters_today", 0)) + float(_metrics.get("whatif_skips_today", 0)), 1.0)
+                ),
+            },
             "uptime_seconds": int(time.time() - _bot_start_time),
             "checked_at": _safe_isoformat(),
         }
