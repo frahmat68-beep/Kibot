@@ -29,6 +29,7 @@ _shutdown_event = threading.Event()
 _main_socket: Optional[socket.socket] = None
 _http_server: Optional[ThreadingHTTPServer] = None
 _bot_start_time = time.time()
+_last_daily_guard_check_at = 0.0
 
 
 def _load_dotenv_if_exists() -> None:
@@ -109,10 +110,19 @@ POST_MORTEM_API_URL = os.getenv("KIBOT_POST_MORTEM_API_URL", "")
 POST_MORTEM_API_KEY = os.getenv("KIBOT_POST_MORTEM_API_KEY", "")
 POST_MORTEM_MODEL = os.getenv("KIBOT_POST_MORTEM_MODEL", "llama-3.1-8b-instant")
 POST_MORTEM_TIMEOUT_SEC = float(os.getenv("KIBOT_POST_MORTEM_TIMEOUT_SEC", "12"))
-AI_APPROVAL_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_MIN_SCORE", "0.62"))
-AI_APPROVAL_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_MIN_EXPECTED_NET_PCT", "0.18"))
-AI_APPROVAL_INSTANT_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_SCORE", "0.62"))
-AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT", "0.18"))
+AI_APPROVAL_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_MIN_SCORE", "0.65"))
+AI_APPROVAL_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_MIN_EXPECTED_NET_PCT", "0.008"))
+AI_APPROVAL_INSTANT_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_SCORE", "0.55"))
+AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT", "0.005"))
+INDODAX_TAKER_FEE = float(os.getenv("KIBOT_INDODAX_TAKER_FEE", "0.003"))
+INDODAX_MAKER_FEE = float(os.getenv("KIBOT_INDODAX_MAKER_FEE", "0.0015"))
+ROUND_TRIP_TAKER_COST = float(os.getenv("KIBOT_ROUND_TRIP_TAKER_COST", "0.006"))
+ROUND_TRIP_MAKER_COST = float(os.getenv("KIBOT_ROUND_TRIP_MAKER_COST", "0.003"))
+SLIPPAGE_BUFFER = float(os.getenv("KIBOT_SLIPPAGE_BUFFER", "0.002"))
+MIN_GROSS_PROFIT_TARGET = float(os.getenv("KIBOT_MIN_GROSS_PROFIT_TARGET", "0.011"))
+PARTIAL_TP_TRIGGER = float(os.getenv("KIBOT_PARTIAL_TP_TRIGGER", "0.012"))
+PARTIAL_TP_SIZE = float(os.getenv("KIBOT_PARTIAL_TP_SIZE", "0.40"))
+TRAILING_STOP_MIN_PCT = float(os.getenv("KIBOT_TRAILING_STOP_MIN_PCT", "0.015"))
 POST_MORTEM_BLACKLIST_ENABLED = os.getenv("KIBOT_POST_MORTEM_BLACKLIST_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 POST_MORTEM_BLACKLIST_MINUTES = int(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_MINUTES", "30"))
 POST_MORTEM_BLACKLIST_NET_LOSS_IDR = float(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_NET_LOSS_IDR", "500"))
@@ -254,7 +264,7 @@ def _clean_pair_memory() -> None:
     for key in invalid_keys:
         _pair_memory.pop(key, None)
         print(f"[KIBOT][LEARNING] removed invalid pair_memory key='{key}'", flush=True)
-    _save_pair_memory_state()
+    _write_json_file(PAIR_MEMORY_PATH, _pair_memory)
 
 
 _clean_pair_memory()
@@ -352,6 +362,15 @@ def _update_pair_memory(
     if fake_pump:
         memory["fake_pump_count"] = int(memory.get("fake_pump_count") or 0) + 1
     memory["last_updated_at"] = datetime.now(timezone.utc).isoformat()
+    memory["avg_pnl"] = round(
+        ((float(memory.get("avg_pnl") or 0.0) * max(0, int(memory.get("trade_count") or 0) - 1)) + float(pnl_pct))
+        / max(1, int(memory.get("trade_count") or 0)),
+        5,
+    )
+    memory["win_rate_7d"] = round(
+        float(memory.get("win_count") or 0) / max(1, int(memory.get("trade_count") or 0)),
+        5,
+    )
     _pair_memory[pair_key] = memory
     _save_pair_memory_state()
 
@@ -1374,10 +1393,31 @@ def _coingecko_track_record_score(pair: str) -> float:
             return 0.62
         data = response.json() or {}
         coins = data.get("coins") or []
-        return 0.8 if coins else 0.58
+        base_score = 0.8 if coins else 0.58
+        adaptive_penalty = _get_adaptive_score_penalty(pair)
+        return max(0.0, base_score - adaptive_penalty)
     except Exception as error:
         print(f"[KIBOT][WARN] CoinGecko API error pair={pair} reason={error}", flush=True)
         return 0.60
+
+
+def _get_adaptive_score_penalty(pair: str) -> float:
+    memory = _pair_memory.get(pair.lower().strip(), {})
+    trade_count = int(memory.get("trade_count") or 0)
+    if trade_count < 3:
+        return 0.0
+    win_rate = float(memory.get("win_rate_7d") or 0.5)
+    avg_pnl = float(memory.get("avg_pnl") or 0.0)
+    penalty = 0.0
+    if win_rate < 0.30:
+        penalty += 0.20
+    elif win_rate < 0.40:
+        penalty += 0.10
+    elif win_rate < 0.50:
+        penalty += 0.05
+    if avg_pnl < -0.008:
+        penalty += 0.10
+    return min(penalty, 0.30)
 
 
 def _fetch_coingecko_trending() -> list[dict[str, Any]]:
@@ -1767,6 +1807,7 @@ def _check_kinance_health() -> bool:
 
 
 def _process_signal(msg: Dict[str, Any]) -> None:
+    _check_daily_loss_limit()
     msg_type = str(msg.get("msgType") or "").upper()
     
     # === HANDLE KINANCE HEARTBEAT ===
@@ -2606,6 +2647,11 @@ def main() -> None:
                 _process_signal(msg)
             except socket.timeout:
                 # Normal timeout, check shutdown event
+                global _last_daily_guard_check_at
+                now = time.time()
+                if (now - _last_daily_guard_check_at) >= 60.0:
+                    _last_daily_guard_check_at = now
+                    _check_daily_loss_limit()
                 continue
             except OSError as e:
                 if _shutdown_event.is_set():
