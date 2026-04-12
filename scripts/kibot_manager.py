@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
 
@@ -26,6 +27,8 @@ except ImportError:
 _state_lock = threading.RLock()
 _shutdown_event = threading.Event()
 _main_socket: Optional[socket.socket] = None
+_http_server: Optional[ThreadingHTTPServer] = None
+_bot_start_time = time.time()
 
 
 def _load_dotenv_if_exists() -> None:
@@ -63,6 +66,11 @@ def _load_json_file(path: Path, default: Any) -> Any:
 def _write_json_file(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _safe_isoformat(epoch_seconds: Optional[float] = None) -> str:
+    dt = datetime.fromtimestamp(epoch_seconds if epoch_seconds is not None else time.time(), tz=timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
 
 
 def _env_first(*keys: str, default: str = "") -> str:
@@ -361,6 +369,13 @@ def _is_pair_on_cooldown(pair_id: str) -> bool:
         return time.time() < float(cooldown_until)
     except Exception:
         return False
+
+
+def _daily_summary_market_regime() -> str:
+    regime = _gate_state.get("market_regime")
+    if regime:
+        return str(regime)
+    return str(_load_daily_summary().get("market_regime") or "UNKNOWN")
 
 
 def _next_wib_midnight_iso() -> str:
@@ -2407,8 +2422,95 @@ def _signal_handler(signum: int, frame: Any) -> None:
             _main_socket.close()
         except Exception:
             pass
+    global _http_server
+    if _http_server:
+        try:
+            _http_server.shutdown()
+        except Exception:
+            pass
     _append_runtime_event("manager_shutdown", {"signal": sig_name})
     _write_runtime_note(force=True)
+
+
+def _http_state_payload() -> Dict[str, Any]:
+    with _state_lock:
+        return {
+            "ok": True,
+            "service": "kibot-manager",
+            "system_state": str(_gate_state.get("entry_state") or "HEALTHY"),
+            "trading_mode": str(_gate_state.get("mode") or "CONSERVATIVE"),
+            "effectiveState": "RUNNING" if not _entry_state_is_suspended() else "DEGRADED",
+            "tradingAllowed": (not _entry_state_is_suspended()) and not bool(_daily_guard_state.get("hard_stopped")),
+            "marketRegime": _daily_summary_market_regime() if DAILY_SUMMARY_ENABLED else "UNKNOWN",
+            "degradedReason": str(_gate_state.get("reason") or _daily_guard_state.get("reason") or ""),
+            "healthDecision": str(_gate_state.get("reason") or ""),
+            "statusMessage": "Server monitor connected to live feed",
+            "nodeStatus": "active",
+            "hard_stop_active": bool(_daily_guard_state.get("hard_stopped")),
+            "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+            "api_fail_streak": _api_fail_streak,
+            "control_plane_healthy": _control_plane_healthy,
+            "pair_memory_count": len(_pair_memory),
+            "pairs_on_cooldown": [pair for pair in _pair_memory.keys() if _is_pair_on_cooldown(pair)],
+            "uptime_seconds": int(time.time() - _bot_start_time),
+            "checked_at": _safe_isoformat(),
+        }
+
+
+class _ManagerStateHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path.startswith("/api/state"):
+            payload = _http_state_payload()
+            raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_POST(self) -> None:  # noqa: N802
+        if not self.path.startswith("/api/notify"):
+            self.send_response(404)
+            self.end_headers()
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+            payload = json.loads(body or "{}")
+            message = str(payload.get("msg") or "").strip()
+            if message:
+                print(f"[KIBOT][NOTIFY] {message}", flush=True)
+                _append_runtime_event("notify", {"message": message})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}, ensure_ascii=False).encode("utf-8"))
+        except Exception as error:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False).encode("utf-8"))
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+        return
+
+
+def _state_server_loop() -> None:
+    global _http_server
+    bind_host = os.getenv("KIBOT_MANAGER_HTTP_BIND_HOST", "127.0.0.1")
+    bind_port = int(os.getenv("KIBOT_MANAGER_HTTP_BIND_PORT", str(UDP_BIND_PORT)))
+    try:
+        server = ThreadingHTTPServer((bind_host, bind_port), _ManagerStateHandler)
+        _http_server = server
+        print(f"[KIBOT][HTTP] state server listening on {bind_host}:{bind_port}", flush=True)
+        server.serve_forever(poll_interval=0.5)
+    except Exception as error:
+        print(f"[KIBOT][HTTP][ERROR] failed to start state server reason={error}", flush=True)
+    finally:
+        _http_server = None
 
 
 def main() -> None:
@@ -2451,6 +2553,8 @@ def main() -> None:
     health_gate_thread.start()
     ai_review_thread = threading.Thread(target=_ai_batch_review_loop, name="kibot-ai-review-loop", daemon=True)
     ai_review_thread.start()
+    state_server_thread = threading.Thread(target=_state_server_loop, name="kibot-state-server", daemon=True)
+    state_server_thread.start()
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # Allow socket reuse for quick restarts
