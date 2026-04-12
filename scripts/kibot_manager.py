@@ -247,6 +247,19 @@ _daily_guard_state: Dict[str, Any] = _load_json_file(
 _pair_memory: Dict[str, Dict[str, Any]] = _load_json_file(PAIR_MEMORY_PATH, {})
 
 
+def _clean_pair_memory() -> None:
+    invalid_keys = [key for key in _pair_memory.keys() if not key or key.strip().lower() in {"unknown", "null", "none"}]
+    if not invalid_keys:
+        return
+    for key in invalid_keys:
+        _pair_memory.pop(key, None)
+        print(f"[KIBOT][LEARNING] removed invalid pair_memory key='{key}'", flush=True)
+    _save_pair_memory_state()
+
+
+_clean_pair_memory()
+
+
 _provider_runtime_state: Dict[str, Dict[str, Any]] = _load_json_file(PROVIDER_STATE_PATH, {})
 _pair_cooldown_state: Dict[str, Dict[str, Any]] = _load_json_file(STATE_ROOT / "pair_cooldowns.json", {})
 
@@ -308,7 +321,8 @@ def _update_pair_memory(
     cooldown_sec: int = 60 * 60,
 ) -> None:
     pair_key = pair_id.lower().strip()
-    if not pair_key:
+    if not pair_key or pair_key in {"unknown", "null", "none"}:
+        print(f"[KIBOT][LEARNING][WARN] skip invalid pair_id='{pair_id}'", flush=True)
         return
     memory = _pair_memory_for(pair_key)
     if slippage_pct is not None:
@@ -1514,11 +1528,28 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
     gross = float(msg.get("gross_pnl_idr") or 0.0)
     est_cost = float(msg.get("estimated_cost_idr") or 0.0)
     net = gross - est_cost
-    pair_id = str(msg.get("pair") or "unknown").lower().strip()
+    pair_id = str(msg.get("pair") or msg.get("pairId") or "unknown").lower().strip()
+    pnl_pct = float(msg.get("pnl_pct") or msg.get("pnlPct") or 0.0)
+    slippage_pct = float(msg.get("slippage_pct") or 0.0)
+    spread_pct = float(msg.get("spread_pct") or 0.0)
+    actual_latency_ms = float(msg.get("latency_ms") or 0.0)
+    fake_pump = bool(msg.get("fake_pump") or False)
+    _update_pair_memory(
+        pair_id,
+        pnl_pct=pnl_pct,
+        slippage_pct=slippage_pct,
+        spread_pct=spread_pct,
+        actual_latency_ms=actual_latency_ms,
+        fake_pump=fake_pump,
+    )
+    print(
+        f"[KIBOT][LEARNING] pair_memory updated pair={pair_id} pnl_pct={pnl_pct:.4f} slippage_pct={slippage_pct:.4f}",
+        flush=True,
+    )
     try:
         _upsert_trade_history(
             {
-                "pair_id": msg.get("pair", "unknown"),
+                "pair_id": msg.get("pair") or msg.get("pairId") or "unknown",
                 "status": "BOOK_ENTRY",
                 "source_bot": "kibot",
                 "message": json.dumps(
@@ -1543,14 +1574,6 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
             "book_entry",
             {"pair": pair_id, "net_pnl_idr": round(net, 4), "trace_id": msg.get("traceId")},
         )
-        _update_pair_memory(
-            pair_id,
-            pnl_pct=float(msg.get("pnl_pct") or msg.get("pnlPct") or 0.0),
-            slippage_pct=float(msg.get("slippage_pct") or 0.0),
-            spread_pct=float(msg.get("spread_pct") or 0.0),
-            actual_latency_ms=float(msg.get("latency_ms") or 0.0),
-            fake_pump=bool(msg.get("fake_pump") or False),
-        )
         _write_runtime_note()
     except Exception as error:
         print(
@@ -1560,9 +1583,9 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
     if POST_MORTEM_ENABLED and net < 0:
         _update_pair_memory(
             pair_id,
-            pnl_pct=float(msg.get("pnl_pct") or msg.get("pnlPct") or 0.0),
-            slippage_pct=float(msg.get("slippage_pct") or 0.0),
-            spread_pct=float(msg.get("spread_pct") or 0.0),
+            pnl_pct=pnl_pct,
+            slippage_pct=slippage_pct,
+            spread_pct=spread_pct,
             fake_pump=True,
         )
         thread = threading.Thread(
