@@ -21,6 +21,9 @@ captures/
 .tooling/
 .continue/
 .wrapper-bootstrap/
+.venv-kibot/
+.venv/
+venv/
 apps/mac-engine/.env
 apps/mac-engine/bin/
 infra/supabase/.temp/

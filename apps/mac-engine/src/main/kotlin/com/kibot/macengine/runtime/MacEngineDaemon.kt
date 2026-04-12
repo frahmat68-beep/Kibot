@@ -7102,6 +7102,18 @@ class MacEngineDaemon(
                             exitReason = filteredExitDecision.message,
                         ),
                     )
+                    val executionFillQty = sellQty ?: requestedSellQty.coerceAtLeast(0.0)
+                    notifyManagerExecutionFilled(
+                        pairId = pairKey,
+                        entryPrice = buyPrice ?: 0.0,
+                        executedQty = executionFillQty,
+                        budgetIdr = positionEntryCapitalByPair[pairKey] ?: 0.0,
+                        actualSlippagePct = ((entrySlippageIdr + exitSlippageIdr) / maxOf(1.0, (buyPrice ?: 0.0) * executionFillQty)) * 100.0,
+                        entryTimestampMs = filteredExitDecision.position.openedAt.toEpochMilliseconds(),
+                        bucketType = if (wasAggressiveTrade) "AGGRESSIVE" else "STABLE",
+                        pnlIdr = pnlIdr,
+                        pnlPct = sellPnlPct,
+                    )
                     
                     // Cleanup tracking
                     positionBucketTypeByPair.remove(pairKey)
@@ -12199,6 +12211,48 @@ class MacEngineDaemon(
         }.getOrElse {
             logger.warn("Lead-lag UDP send failed: {}", it.message)
             false
+        }
+    }
+
+    private fun notifyManagerExecutionFilled(
+        pairId: String,
+        entryPrice: Double,
+        executedQty: Double,
+        budgetIdr: Double,
+        actualSlippagePct: Double,
+        entryTimestampMs: Long,
+        bucketType: String,
+        pnlIdr: Double? = null,
+        pnlPct: Double? = null,
+    ) {
+        if (!config.leadLagUdpEnabled) return
+        val payload = buildJsonObject {
+            put("msgType", "EXECUTION_FILLED")
+            put("senderBotId", config.controlPlane.botId.value)
+            put("pairId", pairId)
+            put("entryPrice", entryPrice)
+            put("executedQty", executedQty)
+            put("budgetIdr", budgetIdr)
+            put("actualSlippagePct", actualSlippagePct)
+            put("slippage_pct", actualSlippagePct)
+            put("entryTimestamp", entryTimestampMs)
+            put("entry_timestamp", entryTimestampMs)
+            put("bucketType", bucketType)
+            pnlIdr?.let { put("pnlIdr", it); put("pnl_idr", it) }
+            pnlPct?.let { put("pnlPct", it); put("pnl_pct", it) }
+        }.toString()
+
+        runCatching {
+            DatagramSocket().use { socket ->
+                socket.soTimeout = 500
+                val bytes = payload.toByteArray(Charsets.UTF_8)
+                val targetAddress = InetAddress.getByName("127.0.0.1")
+                val packet = DatagramPacket(bytes, bytes.size, targetAddress, 9998)
+                socket.send(packet)
+            }
+            logger.info("[NOTIFY] Sent EXECUTION_FILLED to manager pair={}", pairId)
+        }.onFailure { error ->
+            logger.warn("[NOTIFY] Failed to send EXECUTION_FILLED pair={} reason={}", pairId, error.message)
         }
     }
 
