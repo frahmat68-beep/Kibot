@@ -30,6 +30,9 @@ _main_socket: Optional[socket.socket] = None
 _http_server: Optional[ThreadingHTTPServer] = None
 _bot_start_time = time.time()
 _last_daily_guard_check_at = 0.0
+_learning_engine = None
+_regime_detector = None
+_learning_enabled = False
 
 
 def _load_dotenv_if_exists() -> None:
@@ -54,6 +57,19 @@ def _load_dotenv_if_exists() -> None:
 
 
 _load_dotenv_if_exists()
+
+try:
+    from kibot_learning_engine import get_engine as _get_learning_engine, get_regime_detector as _get_regime_detector
+
+    _learning_engine = _get_learning_engine()
+    _regime_detector = _get_regime_detector()
+    _learning_enabled = True
+    print("[KIBOT][LEARN] mathematical learning engine loaded", flush=True)
+except Exception as _learning_error:
+    _learning_enabled = False
+    _learning_engine = None
+    _regime_detector = None
+    print(f"[KIBOT][LEARN][WARN] learning engine unavailable: {_learning_error}", flush=True)
 
 def _load_json_file(path: Path, default: Any) -> Any:
     try:
@@ -1417,6 +1433,8 @@ def _get_adaptive_score_penalty(pair: str) -> float:
         penalty += 0.05
     if avg_pnl < -0.008:
         penalty += 0.10
+    if _learning_enabled and _learning_engine is not None:
+        penalty += float(_learning_engine.score_penalty(pair))
     return min(penalty, 0.30)
 
 
@@ -1582,6 +1600,9 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
         actual_latency_ms=actual_latency_ms,
         fake_pump=fake_pump,
     )
+    if _learning_enabled and _learning_engine is not None:
+        used_limit_order = str(msg.get("order_type") or msg.get("orderType") or "limit").lower() == "limit"
+        _learning_engine.record_trade(pair_id, pnl_pct, used_limit_order=used_limit_order)
     print(
         f"[KIBOT][LEARNING] pair_memory updated pair={pair_id} pnl_pct={pnl_pct:.4f} slippage_pct={slippage_pct:.4f}",
         flush=True,
@@ -1859,6 +1880,15 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     if not pair:
         print(f"[KIBOT][WARN] missing pair in msgType={msg_type}", flush=True)
         return
+    if msg_type in SAFE_ENTRY_MSG_TYPES and _learning_enabled and _learning_engine is not None:
+        allowed, reason = _learning_engine.should_entry(pair)
+        if not allowed:
+            print(f"[KIBOT][LEARN GATE] pair={pair} blocked reason={reason}", flush=True)
+            _append_runtime_event(
+                "learning_block",
+                {"pair": pair, "reason": reason, "msg_type": msg_type},
+            )
+            return
     if msg_type in SAFE_ENTRY_MSG_TYPES:
         entry_price = float(msg.get("entryPrice") or msg.get("entry_price") or msg.get("price") or 0.0)
         budget_idr = float(msg.get("budgetIdr") or msg.get("budget_idr") or msg.get("quoteBudgetIdr") or 0.0)

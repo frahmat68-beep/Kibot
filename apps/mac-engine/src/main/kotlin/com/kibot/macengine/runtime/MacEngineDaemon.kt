@@ -3370,11 +3370,11 @@ class MacEngineDaemon(
             executionPlan = com.kibot.shared.models.ExecutionPlan(
                 signal = signal,
                 side = com.kibot.shared.models.OrderSide.SELL,
-                orderType = com.kibot.shared.models.OrderType.MARKET,
+                orderType = com.kibot.shared.models.OrderType.LIMIT,
                 quantity = candidate.quantity,
-                limitPrice = null,
+                limitPrice = candidate.currentBidPrice,
                 quoteBudget = null,
-                postOnlyPreferred = false,
+                postOnlyPreferred = true,
                 expectedNetEdgePct = kotlin.math.abs(candidate.unrealizedPnlPct),
                 botMode = cycle.modeSnapshot.mode,
                 riskLadderLevel = cycle.modeSnapshot.riskLadderLevel,
@@ -8617,7 +8617,8 @@ class MacEngineDaemon(
                 return false
             }
         val bestBid = targetQuote.bestBid.toDoubleOrZero().takeIf { it > 0.0 } ?: bestAsk
-        val useMarketOrder = isDynamicVipActive(targetQuote.pairId, now) &&
+        val useMarketOrder = config.exchangeKind != ExchangeKind.INDODAX &&
+            isDynamicVipActive(targetQuote.pairId, now) &&
             targetQuote.shortTermReturnPct >= dynamicVipMarketEntryShortTermMinPct &&
             targetQuote.spreadPct <= dynamicVipMarketEntryMaxSpreadPct &&
             targetQuote.estimatedSlippagePct <= dynamicVipMarketEntryMaxSlippagePct
@@ -9906,11 +9907,11 @@ class MacEngineDaemon(
                         val dumpPlan = com.kibot.shared.models.ExecutionPlan(
                             signal = dumpSignal,
                             side = com.kibot.shared.models.OrderSide.SELL,
-                            orderType = com.kibot.shared.models.OrderType.MARKET,
+                            orderType = com.kibot.shared.models.OrderType.LIMIT,
                             quantity = order.remainingQuantity.takeIf { it.toDoubleOrZero() > 0.0 } ?: order.originalQuantity,
-                            limitPrice = null,
+                            limitPrice = quote?.bestBid ?: order.price,
                             quoteBudget = null,
-                            postOnlyPreferred = false,
+                            postOnlyPreferred = true,
                             expectedNetEdgePct = position.unrealizedPnlPct.coerceAtLeast(0.0),
                             botMode = BotMode.GROWTH,
                             riskLadderLevel = com.kibot.shared.models.RiskLadderLevel.NORMAL,
