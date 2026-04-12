@@ -608,7 +608,7 @@ class ChartAnalyzer(
             exhaustionRiskScore >= 0.66 -> PreferredOrderType.LIMIT_MID
             quote.recentTradeActivityScore >= 0.72 &&
                 quote.orderBookStabilityScore >= 0.70 &&
-                quote.estimatedSlippagePct <= config.marketOrderMaxSlippagePct -> PreferredOrderType.MARKET
+                quote.estimatedSlippagePct <= config.marketOrderMaxSlippagePct -> PreferredOrderType.LIMIT_MID
             else -> PreferredOrderType.LIMIT_MID
         }
     }
