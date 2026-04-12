@@ -286,6 +286,8 @@ _api_fail_streak: int = 0
 _api_health_state: str = "HEALTHY"
 _control_plane_healthy: bool = True
 _control_plane_last_success_at: float = 0.0
+_capital_sufficient_since_at: float = 0.0
+_normal_mode_promotion_grace_sec: float = float(os.getenv("KIBOT_NORMAL_PROMOTION_GRACE_SEC", "1800"))
 _gate_state: Dict[str, Any] = _load_json_file(
     MANAGER_GATE_STATE_PATH,
     {
@@ -747,6 +749,7 @@ def _health_gate_loop() -> None:
                 _record_control_plane_failure("kinance_unhealthy")
             _check_daily_loss_limit()
             _ensure_hard_stop_consistency()
+            _maybe_auto_promote_trading_mode()
         except Exception as error:
             print(f"[KIBOT][HEALTH][ERROR] gate loop failed reason={error}", flush=True)
         _shutdown_event.wait(API_HEALTH_CHECK_INTERVAL_SEC)
@@ -1587,6 +1590,36 @@ def _check_minimum_capital() -> bool:
         )
         return False
     return True
+
+
+def _capital_is_sufficient() -> bool:
+    equity = _get_total_equity_estimate()
+    return equity is not None and equity >= MINIMUM_VIABLE_CAPITAL_IDR
+
+
+def _maybe_auto_promote_trading_mode() -> None:
+    global _capital_sufficient_since_at
+    if bool(_daily_guard_state.get("hard_stopped")):
+        _capital_sufficient_since_at = 0.0
+        _set_conservative_mode("hard stop active")
+        return
+    if not _control_plane_healthy or _api_fail_streak > 0:
+        _capital_sufficient_since_at = 0.0
+        _set_conservative_mode("control plane unhealthy")
+        return
+    if not _capital_is_sufficient():
+        _capital_sufficient_since_at = 0.0
+        _set_conservative_mode("capital insufficient")
+        return
+    if _capital_sufficient_since_at <= 0.0:
+        _capital_sufficient_since_at = time.time()
+    if (time.time() - _capital_sufficient_since_at) < _normal_mode_promotion_grace_sec:
+        _set_conservative_mode("capital sufficient grace period")
+        return
+    if _is_survival_mode():
+        _set_conservative_mode("survival mode active")
+        return
+    _set_normal_mode("capital sufficient and healthy")
 
 
 def _is_survival_mode() -> bool:
