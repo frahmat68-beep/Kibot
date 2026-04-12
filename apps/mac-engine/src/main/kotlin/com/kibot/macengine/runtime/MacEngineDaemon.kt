@@ -12674,7 +12674,7 @@ class MacEngineDaemon(
             baseBudgetIdr * 0.92,
             slotNormalizedBudgetIdr * concentrationMultiplier,
         )
-        val maxPerPositionPct = 0.25  // CRITICAL FIX: 25% max per position (Zero-Cash Mindset)
+        val maxPerPositionPct = 0.25  // Conservative per-position ceiling to preserve diversification
         val ceilingBudgetIdr = deployableCapitalIdr * maxPerPositionPct  // Apply 25% ceiling
         return floorBudgetIdr
             .coerceAtMost(ceilingBudgetIdr.coerceAtLeast(baseBudgetIdr * 0.94))

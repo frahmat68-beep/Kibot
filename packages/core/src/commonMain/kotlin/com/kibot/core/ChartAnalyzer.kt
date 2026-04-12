@@ -208,7 +208,7 @@ class ChartAnalyzer(
                         quote.estimatedSlippagePct > config.maxHealthySlippagePct * 1.10
                     )
             ) {
-                add("Volume harian terlalu kecil untuk rotasi agresif.")
+                add("Volume harian terlalu kecil untuk alokasi tambahan.")
             }
             if (
                 depthIdr > 0.0 &&

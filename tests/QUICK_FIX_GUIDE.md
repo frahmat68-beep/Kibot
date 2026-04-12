@@ -86,7 +86,7 @@ POST_MORTEM_API_URL=https://api.groq.com/openai/v1/chat/completions
 POST_MORTEM_API_KEY=gsk_YOUR_API_KEY_HERE
 POST_MORTEM_MODEL=llama-3.1-8b-instant
 AI_APPROVAL_MIN_SCORE=0.62
-AI_APPROVAL_INSTANT_MIN_SCORE=0.48
+AI_APPROVAL_INSTANT_MIN_SCORE=0.62
 
 # Save and restart manager
 sudo systemctl restart kibot-manager.service
