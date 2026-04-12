@@ -313,8 +313,7 @@ AI_APPROVAL_INSTANT_MIN_SCORE = 0.48
 ```python
 AI_APPROVAL_MIN_SCORE = 0.62           # 62% confidence for normal entry
 AI_APPROVAL_MIN_EXPECTED_NET_PCT = 0.18  # 0.18% min expected net profit
-AI_APPROVAL_INSTANT_MIN_SCORE = 0.48   # 48% for instant entry (emergency)
-AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT = -0.02  # Can accept -0.02% for instant
+# Legacy instant-entry path retired: negative expected net is no longer allowed.
 ```
 
 **Current Impact:**
