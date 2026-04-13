@@ -18,7 +18,7 @@ INSERT INTO dynamic_params (param_key, param_value, description) VALUES
     ('fomo_guard_micro', '{"value": 35.0}', 'FOMO guard for micro-cap coins (<50 IDR)'),
     ('fomo_guard_mid', '{"value": 22.0}', 'FOMO guard for mid-cap coins (50-500 IDR)'),
     ('fomo_guard_big', '{"value": 15.0}', 'FOMO guard for big-cap coins (>500 IDR)'),
-    ('ai_approval_min_score', '{"value": 0.48}', 'Minimum AI approval score'),
+    ('ai_approval_min_score', '{"value": 0.62}', 'Minimum AI approval score'),
     ('ai_approval_min_net_pct', '{"value": 0.08}', 'Minimum expected net profit %')
 ON CONFLICT (param_key) DO NOTHING;
 
