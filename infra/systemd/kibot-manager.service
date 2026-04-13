@@ -13,7 +13,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=KIBOT_MANAGER_STATE_DIR=/home/ubuntu/KiBot/state
 Environment=KIBOT_MANAGER_PROVIDER_STATE_FILE=/home/ubuntu/KiBot/state/ai_provider_state.json
 Environment=KIBOT_MANAGER_RUNTIME_NOTE_FILE=/home/ubuntu/KiBot/state/runtime_note.json
-Environment=KIBOT_MANAGER_HEARTBEAT_INTERVAL_SEC=0.10
+Environment=KIBOT_MANAGER_HEARTBEAT_INTERVAL_SEC=1.0
 Environment=KIBOT_AI_PROVIDER_ORDER=groq,openrouter,cohere,gemini
 Environment=KIBOT_AI_REQUEST_TIMEOUT_SEC=12
 Environment=KIBOT_AI_PROVIDER_DEFAULT_COOLDOWN_SEC=600
