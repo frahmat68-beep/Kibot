@@ -63,7 +63,7 @@
 
 **Tier B**: `bnb_idr`, `enj_idr`, `fun_idr`
 
-**Tier C**: pair lain hanya jika lead-lag sangat kuat dan spread tetap ketat
+**Tier C**: `near_idr`, `hbar_idr`, `link_idr`, `atom_idr`, `avax_idr`, `ton_idr`, `sui_idr`, `pol_idr`, `ldo_idr`, `op_idr`
 
 **Blacklist**: pair Indodax-only tanpa counterpart Binance atau riwayat slippage buruk
 
