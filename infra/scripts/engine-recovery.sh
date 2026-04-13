@@ -30,6 +30,7 @@ if [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]]; then
 fi
 
 log() {
+  mkdir -p "$(dirname "$LOG_FILE")" "$(dirname "$STATE_FILE")"
   echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
 }
 
@@ -140,11 +141,11 @@ check_dashboard() {
 
 start_engine() {
   log "Restarting ${SERVICE_NAME} service"
+  sudo systemctl daemon-reload
   sudo systemctl stop "$SERVICE_NAME" || true
   sudo pkill -f 'gradle.*:apps:mac-engine:run' || true
   sudo pkill -f "$ENGINE_LAUNCHER" || true
   sudo fuser -k "${DASHBOARD_PORT}/tcp" || true
-  sudo systemctl daemon-reload
   sudo systemctl restart "$SERVICE_NAME"
   sleep 8
   if check_engine; then
@@ -168,6 +169,14 @@ restart_with_backoff() {
 
 main() {
   log "=== ${SERVICE_NAME} Recovery Check Started ==="
+  if [[ -n "${ENV_FILE}" && -f "${ENV_FILE}" ]]; then
+    log "Using env file ${ENV_FILE}"
+  fi
+  if [[ ! -x "${ENGINE_LAUNCHER}" ]]; then
+    log "Engine launcher missing or not executable: ${ENGINE_LAUNCHER}"
+    mark_unhealthy
+    exit 1
+  fi
 
   for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     engine_ok=0

@@ -34,6 +34,7 @@ ExecStartPre=-/usr/bin/fuser -k 8787/tcp
 ExecStart=/bin/bash -lc '/usr/bin/java $JAVA_OPTS -jar /home/ubuntu/KiDax/server/mac-engine-all.jar'
 Restart=always
 RestartSec=5
+TimeoutStartSec=120
 TimeoutStopSec=20
 KillSignal=SIGTERM
 SuccessExitStatus=143

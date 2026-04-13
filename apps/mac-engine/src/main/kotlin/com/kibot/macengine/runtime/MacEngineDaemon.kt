@@ -3975,7 +3975,7 @@ class MacEngineDaemon(
                     repository.noteStatus("Daemon sync failed: ${error.message ?: "unknown error"}")
                 }
             }
-            delay(config.pollIntervalMillis)
+            delay(config.pollIntervalMillis.coerceAtMost(2_000L))
         }
     }
 
@@ -4281,7 +4281,7 @@ class MacEngineDaemon(
                 val finalHealth = buildLocalHealth(
                     exchangeReachable = exchangeReachable,
                     warnings = healthWarnings,
-                    feedLatencyMs = displayPingMs ?: exchangePingMs,
+                feedLatencyMs = displayPingMs ?: exchangePingMs,
                     marketFeedHealthy = marketFeedHealthy,
                     reportOnlyMode = reportOnlyMode,
                 )

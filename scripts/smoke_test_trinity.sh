@@ -5,6 +5,8 @@ KIDAX_URL="${KIDAX_URL:-http://127.0.0.1:8787}"
 KINANCE_URL="${KINANCE_URL:-http://127.0.0.1:8788}"
 KIBOT_URL="${KIBOT_URL:-http://127.0.0.1:8789}"
 CURL_BIN="${CURL_BIN:-curl}"
+SSH_HOST="${SSH_HOST:-}"
+SSH_KEY="${SSH_KEY:-}"
 
 fetch_state() {
   local name="$1"
@@ -34,8 +36,21 @@ PY
   rm -f "$tmp_file"
 }
 
+check_service() {
+  local name="$1"
+  if [[ -n "$SSH_HOST" && -n "$SSH_KEY" ]]; then
+    ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "ubuntu@${SSH_HOST}" "systemctl is-active ${name}" 2>/dev/null || echo "inactive"
+  fi
+}
+
 echo "== Trinity Smoke Test =="
 fetch_state "KiDax" "$KIDAX_URL"
 fetch_state "Kinance" "$KINANCE_URL"
 fetch_state "KiBot" "$KIBOT_URL"
+if [[ -n "$SSH_HOST" && -n "$SSH_KEY" ]]; then
+  echo "== Service Status =="
+  echo "kidax-engine: $(check_service kidax-engine)"
+  echo "kinance-engine: $(check_service kinance-engine)"
+  echo "kibot-engine: $(check_service kibot-engine)"
+fi
 echo "== Smoke test selesai =="

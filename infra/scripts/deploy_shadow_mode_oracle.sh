@@ -47,6 +47,54 @@ else
 fi
 
 touch "$ENV_FILE"
+  if grep -q '^BOT_ID=' "$ENV_FILE"; then
+    sed -i 's/^BOT_ID=.*/BOT_ID=kinance/' "$ENV_FILE"
+  else
+    printf '\nBOT_ID=kinance\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^BOT_PROFILE_KEY=' "$ENV_FILE"; then
+    sed -i 's/^BOT_PROFILE_KEY=.*/BOT_PROFILE_KEY=kinance/' "$ENV_FILE"
+  else
+    printf '\nBOT_PROFILE_KEY=kinance\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^MAC_ENGINE_BIND_HOST=' "$ENV_FILE"; then
+    sed -i 's/^MAC_ENGINE_BIND_HOST=.*/MAC_ENGINE_BIND_HOST=0.0.0.0/' "$ENV_FILE"
+  else
+    printf '\nMAC_ENGINE_BIND_HOST=0.0.0.0\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^MAC_ENGINE_PORT=' "$ENV_FILE"; then
+    sed -i 's/^MAC_ENGINE_PORT=.*/MAC_ENGINE_PORT=8788/' "$ENV_FILE"
+  else
+    printf '\nMAC_ENGINE_PORT=8788\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^DEVICE_ID=' "$ENV_FILE"; then
+    sed -i 's/^DEVICE_ID=.*/DEVICE_ID=kinance-oracle-sg/' "$ENV_FILE"
+  else
+    printf '\nDEVICE_ID=kinance-oracle-sg\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^BOT_POLL_INTERVAL_MS=' "$ENV_FILE"; then
+    sed -i 's/^BOT_POLL_INTERVAL_MS=.*/BOT_POLL_INTERVAL_MS=2000/' "$ENV_FILE"
+  else
+    printf '\nBOT_POLL_INTERVAL_MS=2000\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^MAC_DASHBOARD_STATE_POLL_INTERVAL_MS=' "$ENV_FILE"; then
+    sed -i 's/^MAC_DASHBOARD_STATE_POLL_INTERVAL_MS=.*/MAC_DASHBOARD_STATE_POLL_INTERVAL_MS=2000/' "$ENV_FILE"
+  else
+    printf '\nMAC_DASHBOARD_STATE_POLL_INTERVAL_MS=2000\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^MAC_DASHBOARD_LOG_POLL_INTERVAL_MS=' "$ENV_FILE"; then
+    sed -i 's/^MAC_DASHBOARD_LOG_POLL_INTERVAL_MS=.*/MAC_DASHBOARD_LOG_POLL_INTERVAL_MS=5000/' "$ENV_FILE"
+  else
+    printf '\nMAC_DASHBOARD_LOG_POLL_INTERVAL_MS=5000\n' >> "$ENV_FILE"
+  fi
+
   if grep -q '^SHADOW_MODE=' "$ENV_FILE"; then
     sed -i 's/^SHADOW_MODE=.*/SHADOW_MODE=false/' "$ENV_FILE"
   else
@@ -99,6 +147,54 @@ git reset --hard "origin/$BRANCH"
 git clean -fd
 
 touch "$ENV_FILE"
+  if grep -q '^BOT_ID=' "$ENV_FILE"; then
+    sed -i 's/^BOT_ID=.*/BOT_ID=kidax/' "$ENV_FILE"
+  else
+    printf '\nBOT_ID=kidax\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^BOT_PROFILE_KEY=' "$ENV_FILE"; then
+    sed -i 's/^BOT_PROFILE_KEY=.*/BOT_PROFILE_KEY=kidax/' "$ENV_FILE"
+  else
+    printf '\nBOT_PROFILE_KEY=kidax\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^MAC_ENGINE_BIND_HOST=' "$ENV_FILE"; then
+    sed -i 's/^MAC_ENGINE_BIND_HOST=.*/MAC_ENGINE_BIND_HOST=0.0.0.0/' "$ENV_FILE"
+  else
+    printf '\nMAC_ENGINE_BIND_HOST=0.0.0.0\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^MAC_ENGINE_PORT=' "$ENV_FILE"; then
+    sed -i 's/^MAC_ENGINE_PORT=.*/MAC_ENGINE_PORT=8787/' "$ENV_FILE"
+  else
+    printf '\nMAC_ENGINE_PORT=8787\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^DEVICE_ID=' "$ENV_FILE"; then
+    sed -i 's/^DEVICE_ID=.*/DEVICE_ID=kidax-oracle-sg/' "$ENV_FILE"
+  else
+    printf '\nDEVICE_ID=kidax-oracle-sg\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^BOT_POLL_INTERVAL_MS=' "$ENV_FILE"; then
+    sed -i 's/^BOT_POLL_INTERVAL_MS=.*/BOT_POLL_INTERVAL_MS=2000/' "$ENV_FILE"
+  else
+    printf '\nBOT_POLL_INTERVAL_MS=2000\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^MAC_DASHBOARD_STATE_POLL_INTERVAL_MS=' "$ENV_FILE"; then
+    sed -i 's/^MAC_DASHBOARD_STATE_POLL_INTERVAL_MS=.*/MAC_DASHBOARD_STATE_POLL_INTERVAL_MS=2000/' "$ENV_FILE"
+  else
+    printf '\nMAC_DASHBOARD_STATE_POLL_INTERVAL_MS=2000\n' >> "$ENV_FILE"
+  fi
+
+  if grep -q '^MAC_DASHBOARD_LOG_POLL_INTERVAL_MS=' "$ENV_FILE"; then
+    sed -i 's/^MAC_DASHBOARD_LOG_POLL_INTERVAL_MS=.*/MAC_DASHBOARD_LOG_POLL_INTERVAL_MS=5000/' "$ENV_FILE"
+  else
+    printf '\nMAC_DASHBOARD_LOG_POLL_INTERVAL_MS=5000\n' >> "$ENV_FILE"
+  fi
+
   if grep -q '^SHADOW_MODE=' "$ENV_FILE"; then
     sed -i 's/^SHADOW_MODE=.*/SHADOW_MODE=false/' "$ENV_FILE"
   else

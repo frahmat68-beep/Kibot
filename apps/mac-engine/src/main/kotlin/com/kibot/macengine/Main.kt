@@ -19,10 +19,12 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import java.nio.file.Paths
+import java.util.concurrent.atomic.AtomicReference
 
 fun main(args: Array<String>) {
     val logger = LoggerFactory.getLogger("KiBotMac")
@@ -43,15 +45,15 @@ fun main(args: Array<String>) {
         controlPlane = controlPlane,
         config = config,
     )
-    val daemon = MacEngineDaemon(
-        repository = repository,
-        controlPlane = controlPlane,
-        exchange = exchange,
-        config = config,
-        aiSupportCoordinator = config.aiSupportConfig?.let { GeminiSupportCoordinator(it, GeminiSupportClient(it)) },
-    )
 
     if (args.isNotEmpty()) {
+        val daemon = MacEngineDaemon(
+            repository = repository,
+            controlPlane = controlPlane,
+            exchange = exchange,
+            config = config,
+            aiSupportCoordinator = config.aiSupportConfig?.let { GeminiSupportCoordinator(it, GeminiSupportClient(it)) },
+        )
         handleCliCommand(args.first(), repository, daemon, dispatcher, logger)
         return
     }
@@ -60,6 +62,7 @@ fun main(args: Array<String>) {
         logger.error("Mac engine daemon coroutine crashed.", throwable)
     }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + exceptionHandler)
+    val daemonRef = AtomicReference<MacEngineDaemon?>()
     val server = LocalDashboardServer(
         repository = repository,
         commandDispatcher = dispatcher,
@@ -76,9 +79,9 @@ fun main(args: Array<String>) {
         Thread {
             logger.info("Shutting down KiBot mac engine.")
             runBlocking {
-                runCatching { daemon.shutdown() }
+                runCatching { daemonRef.get()?.shutdown() }
                     .onFailure { logger.warn("Failed to cancel daemon scopes on shutdown: {}", it.message) }
-                runCatching { daemon.flushNonCriticalControlPlaneBufferNow() }
+                runCatching { daemonRef.get()?.flushNonCriticalControlPlaneBufferNow() }
                     .onFailure { logger.warn("Failed to flush buffered non-critical control-plane writes on shutdown: {}", it.message) }
             }
             runCatching { server.stop() }
@@ -87,8 +90,21 @@ fun main(args: Array<String>) {
         },
     )
 
-    scope.launch { daemon.run() }
     server.start()
+    scope.launch {
+        val daemon = MacEngineDaemon(
+            repository = repository,
+            controlPlane = controlPlane,
+            exchange = exchange,
+            config = config,
+            aiSupportCoordinator = config.aiSupportConfig?.let { GeminiSupportCoordinator(it, GeminiSupportClient(it)) },
+        )
+        daemonRef.set(daemon)
+        daemon.run()
+    }
+    runBlocking {
+        awaitCancellation()
+    }
 }
 
 private fun handleCliCommand(

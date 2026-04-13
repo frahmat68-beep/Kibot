@@ -38,6 +38,7 @@ StartLimitIntervalSec=300
 StartLimitBurst=10
 OOMPolicy=restart
 LimitNOFILE=65535
+TimeoutStartSec=120
 TimeoutStopSec=20
 KillSignal=SIGTERM
 SuccessExitStatus=143
