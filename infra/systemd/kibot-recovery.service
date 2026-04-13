@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/bin/bash /home/ubuntu/KiDax/kibot-recovery.sh
-Restart=always
+Restart=on-failure
 RestartSec=10
 StandardOutput=journal
 StandardError=journal

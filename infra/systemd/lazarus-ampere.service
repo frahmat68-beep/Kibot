@@ -11,7 +11,7 @@ Environment=PATH=/home/ubuntu/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/l
 Environment=KIBOT_TELEGRAM_BOT_TOKEN=8583424689:AAHRe8drD2hmuyN48RoFv9Me0oXwcXnSoSE
 Environment=KIBOT_TELEGRAM_CHAT_ID=1346696386
 ExecStart=/bin/bash -lc 'cd /home/ubuntu/ampere-hunt && ./lazarus_ampere.sh >> /home/ubuntu/logs/lazarus_ampere.log 2>&1'
-Restart=always
+Restart=on-failure
 RestartSec=20
 
 [Install]
