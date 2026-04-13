@@ -12,7 +12,13 @@ ssh_run() {
   local host="$1"
   local key="$2"
   shift 2
-  ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "ubuntu@${host}" "$@"
+  ssh -i "$key" \
+    -o BatchMode=yes \
+    -o ConnectTimeout=8 \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=2 \
+    -o StrictHostKeyChecking=accept-new \
+    "ubuntu@${host}" "$@"
 }
 
 echo "=== Indodax /api/state ==="

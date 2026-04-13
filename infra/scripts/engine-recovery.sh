@@ -18,7 +18,7 @@ MAX_DELAY_SECONDS="${KIBOT_RECOVERY_MAX_DELAY_SECONDS:-30}"
 EXPECT_LIVE_EXECUTION="${KIBOT_EXPECT_LIVE_EXECUTION:-true}"
 HEALTHCHECK_TIMEOUT_SECONDS="${KIBOT_RECOVERY_HTTP_TIMEOUT_SECONDS:-5}"
 ALLOW_SLOW_PORT_FALLBACK="${KIBOT_RECOVERY_ALLOW_SLOW_PORT_FALLBACK:-false}"
-WARMUP_GRACE_SECONDS="${KIBOT_RECOVERY_WARMUP_GRACE_SECONDS:-90}"
+WARMUP_GRACE_SECONDS="${KIBOT_RECOVERY_WARMUP_GRACE_SECONDS:-180}"
 TELEGRAM_BOT_TOKEN="${KIBOT_TELEGRAM_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
 TELEGRAM_CHAT_ID="${KIBOT_TELEGRAM_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
 
@@ -119,12 +119,18 @@ check_dashboard() {
   local tmp_file
   tmp_file="$(mktemp)"
   if curl -fsS --max-time "$HEALTHCHECK_TIMEOUT_SECONDS" "$HEALTH_URL" > "$tmp_file" && \
-     curl -fsS --max-time "$HEALTHCHECK_TIMEOUT_SECONDS" "$ROOT_URL" >/dev/null && \
-     curl -fsS --max-time "$HEALTHCHECK_TIMEOUT_SECONDS" "$LOGS_URL" >/dev/null; then
+     curl -fsS --max-time "$HEALTHCHECK_TIMEOUT_SECONDS" "$ROOT_URL" >/dev/null; then
     local parsed
     parsed="$(parse_state "$tmp_file")"
     rm -f "$tmp_file"
     log "Dashboard/API is accessible (${parsed})"
+    return 0
+  fi
+  if curl -fsS --max-time "$HEALTHCHECK_TIMEOUT_SECONDS" "$HEALTH_URL" > "$tmp_file"; then
+    local parsed
+    parsed="$(parse_state "$tmp_file")"
+    rm -f "$tmp_file"
+    log "Dashboard/API state endpoint is reachable; logs endpoint may still be warming (${parsed})"
     return 0
   fi
   if [[ "${ALLOW_SLOW_PORT_FALLBACK,,}" == "true" ]] && \

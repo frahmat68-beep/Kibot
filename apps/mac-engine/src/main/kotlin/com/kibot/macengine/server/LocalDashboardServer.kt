@@ -752,7 +752,7 @@ private data class DashboardCommandAuth(
     companion object {
         fun fromEnv(bindHost: String): DashboardCommandAuth {
             val token = System.getenv("KIBOT_DASHBOARD_AUTH_TOKEN")?.trim().orEmpty()
-            val required = !isLoopbackHost(bindHost)
+            val required = token.isNotBlank() && !isLoopbackHost(bindHost)
             val allowlist = System.getenv("KIBOT_DASHBOARD_ALLOWED_IPS")
                 ?: System.getenv("KIBOT_DASHBOARD_ALLOWED_CIDRS")
             val allowedCidrs = allowlist

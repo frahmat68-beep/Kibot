@@ -18,7 +18,13 @@ BRANCH="${BRANCH:-main}"
 
 ssh_run() {
   local key="$1" user="$2" host="$3" port="$4" cmd="$5"
-  ssh -i "$key" -p "$port" -o StrictHostKeyChecking=accept-new "$user@$host" "$cmd"
+  ssh -i "$key" -p "$port" \
+    -o BatchMode=yes \
+    -o ConnectTimeout=8 \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=2 \
+    -o StrictHostKeyChecking=accept-new \
+    "$user@$host" "$cmd"
 }
 
 deploy_kinance() {
@@ -122,10 +128,10 @@ cd "$REPO_ROOT"
 ./gradlew :apps:mac-engine:fatJar -q
 install -m 0644 apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar "$APP_ROOT/server/mac-engine-all.jar"
 
-sudo systemctl daemon-reload
-sudo systemctl restart "$SERVICE_NAME"
-sudo systemctl is-active --quiet "$SERVICE_NAME"
-curl -fsS --retry 10 --retry-delay 2 "http://127.0.0.1:${RUNTIME_PORT}/api/state" >/tmp/kinance-state.json
+sudo -n systemctl daemon-reload
+sudo -n systemctl restart "$SERVICE_NAME"
+sudo -n systemctl is-active --quiet "$SERVICE_NAME"
+curl -fsS --max-time 5 --retry 5 --retry-delay 2 "http://127.0.0.1:${RUNTIME_PORT}/api/state" >/tmp/kinance-state.json
 echo "Kinance state: $(head -c 220 /tmp/kinance-state.json)"
 REMOTE
 }
@@ -137,7 +143,7 @@ set -euo pipefail
 APP_ROOT="/home/ubuntu/KiDax"
 ENV_FILE="/home/ubuntu/KiDax/.env.kidax"
 SERVICE_NAME="kidax-engine"
-RUNTIME_PORT="8787"
+RUNTIME_PORT="8788"
 BRANCH="main"
 
 cd "$APP_ROOT"
@@ -166,9 +172,9 @@ touch "$ENV_FILE"
   fi
 
   if grep -q '^MAC_ENGINE_PORT=' "$ENV_FILE"; then
-    sed -i 's/^MAC_ENGINE_PORT=.*/MAC_ENGINE_PORT=8787/' "$ENV_FILE"
+    sed -i 's/^MAC_ENGINE_PORT=.*/MAC_ENGINE_PORT=8788/' "$ENV_FILE"
   else
-    printf '\nMAC_ENGINE_PORT=8787\n' >> "$ENV_FILE"
+    printf '\nMAC_ENGINE_PORT=8788\n' >> "$ENV_FILE"
   fi
 
   if grep -q '^DEVICE_ID=' "$ENV_FILE"; then
@@ -215,10 +221,10 @@ touch "$ENV_FILE"
 ./gradlew :apps:mac-engine:fatJar -q
 install -m 0644 apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar "$APP_ROOT/server/mac-engine-all.jar"
 
-sudo systemctl daemon-reload
-sudo systemctl restart "$SERVICE_NAME"
-sudo systemctl is-active --quiet "$SERVICE_NAME"
-curl -fsS --retry 10 --retry-delay 2 "http://127.0.0.1:${RUNTIME_PORT}/api/state" >/tmp/kidax-state.json
+sudo -n systemctl daemon-reload
+sudo -n systemctl restart "$SERVICE_NAME"
+sudo -n systemctl is-active --quiet "$SERVICE_NAME"
+curl -fsS --max-time 5 --retry 5 --retry-delay 2 "http://127.0.0.1:${RUNTIME_PORT}/api/state" >/tmp/kidax-state.json
 echo "KiDax state: $(head -c 220 /tmp/kidax-state.json)"
 REMOTE
 }

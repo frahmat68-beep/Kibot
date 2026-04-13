@@ -295,7 +295,6 @@ curl localhost:8788    # Check Kinance health
 * what-if EV gate sebelum entry ✅
 * pair_memory learning ✅
 * AI batch review 6 jam ✅
-* Oracle keepalive (stress-ng 20% CPU) ✅
 * kibot-recovery health-based watchdog ✅
 
 ### Still Pending (non-blocking)
