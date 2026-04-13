@@ -176,7 +176,7 @@ SURVIVAL_MODE = os.getenv("KIBOT_SURVIVAL_MODE", "true").lower() in {"1", "true"
 SURVIVAL_MODE_EQUITY_THRESHOLD_IDR = float(os.getenv("KIBOT_SURVIVAL_MODE_EQUITY_THRESHOLD_IDR", "200000"))
 SURVIVAL_ALLOWED_PAIRS = tuple(
     pair.strip().lower()
-    for pair in os.getenv("KIBOT_SURVIVAL_ALLOWED_PAIRS", "xlm_idr,doge_idr,xrp_idr,trx_idr,ada_idr,bnb_idr,enj_idr,fun_idr").split(",")
+    for pair in os.getenv("KIBOT_SURVIVAL_ALLOWED_PAIRS", "xlm_idr,doge_idr,xrp_idr,trx_idr,ada_idr,bnb_idr,enj_idr,fun_idr,near_idr,hbar_idr,link_idr,atom_idr,avax_idr,ton_idr,sui_idr,pol_idr,ldo_idr,op_idr").split(",")
     if pair.strip()
 )
 SURVIVAL_MIN_DAILY_VOLUME_IDR = float(os.getenv("KIBOT_SURVIVAL_MIN_DAILY_VOLUME_IDR", "500000000"))
@@ -194,6 +194,16 @@ PAIR_CONFIG: Dict[str, Dict[str, Any]] = {
     "bnb_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.025, "max_spread_pct": 0.015, "max_slippage_pct": 0.015},
     "enj_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
     "fun_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "near_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "hbar_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "link_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.025, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "atom_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.025, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "avax_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.025, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "ton_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "sui_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "pol_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "ldo_idr": {"tier": "C", "max_size_idr": 8000.0, "min_target_profit_pct": 0.035, "max_spread_pct": 0.022, "max_slippage_pct": 0.022},
+    "op_idr": {"tier": "C", "max_size_idr": 8000.0, "min_target_profit_pct": 0.035, "max_spread_pct": 0.022, "max_slippage_pct": 0.022},
 }
 
 
