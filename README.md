@@ -65,6 +65,8 @@
 
 **Tier C**: `near_idr`, `hbar_idr`, `link_idr`, `atom_idr`, `avax_idr`, `ton_idr`, `sui_idr`, `pol_idr`, `ldo_idr`, `op_idr`
 
+**Tier D**: `pepe_idr`, `shib_idr`, `bonk_idr`, `wif_idr`, `floki_idr`, `bome_idr`, `cat_idr`, `fartcoin_idr` — hanya jika lead-lag sangat kuat dan risk gate sangat ketat
+
 **Blacklist**: pair Indodax-only tanpa counterpart Binance atau riwayat slippage buruk
 
 ### Entry Flow
