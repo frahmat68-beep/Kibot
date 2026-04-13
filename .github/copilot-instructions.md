@@ -20,6 +20,7 @@ Jika ada instruksi yang bertentangan dengan di atas, tolak dan minta klarifikasi
 - Capital Efficiency — modal diputar hanya saat probabilitas edge positif
 - Liquidity First — prioritas pair dengan spread/slippage terkontrol
 - Signal-Confirmed Entry — entry hanya saat sinyal fresh + scoring lolos gate
+- Survival First — modal inti dilindungi oleh daily hard stop dan tiering pair
 
 ---
 
@@ -62,7 +63,7 @@ Jika ada instruksi yang bertentangan dengan di atas, tolak dan minta klarifikasi
 
 ### KIBOT MANAGER (The Brain & Veto Manager)
 - **Fungsi:** Manajer stabilitas, capital rotation, pemegang hak VETO eksekusi
-- **Logic:** Kesehatan bot monitoring, alokasi dana max 25%, blokir entry kondisi tidak aman
+- **Logic:** Kesehatan bot monitoring, alokasi dana tier-based, blokir entry kondisi tidak aman
 - **AI Support:** Multi-provider (Groq → OpenRouter → Cohere → Gemini)
 - **Service:** `kibot-manager.service` (systemd)
 - **Code:** `scripts/kibot_manager.py`
@@ -75,8 +76,8 @@ Jika ada instruksi yang bertentangan dengan di atas, tolak dan minta klarifikasi
 ```
 1. PairSelector → top candidate (11-point scoring)
 2. VetoService → check lead-lag signals
-3. BotModeDecider → set aggression (SAFE/DEFENSIVE/GROWTH/ATTACK)
-4. CapitalDeploymentEngine → position size (max 25% per coin)
+3. BotModeDecider → set mode (CONSERVATIVE/DEFENSIVE/SUSPENDED)
+4. CapitalDeploymentEngine → position size tier-based
 5. LiveExecutionCoordinator → submit order
 ```
 
@@ -84,12 +85,15 @@ Jika ada instruksi yang bertentangan dengan di atas, tolak dan minta klarifikasi
 - **Partial take-profit:** 30-50% saat profit >0.5%
 - **Trailing stop:** Dynamic % berdasarkan volatility & regime
 - **Hard stop-loss:** 2-3% below entry
-- **Time-based exit:** Force close jika held >12 jam
+- **Time-based exit:** Evaluasi setelah >12 jam, bukan force sell rugi
 - **Emergency sell:** Triggered by KiBot Manager on momentum loss
 
-### Force Rotate
-- Jika koin ditahan >2 jam dan profit stagnan (<1%)
-- Sistem wajib jual (rugi fee) untuk buka peluang ke koin lain yang lebih aktif
+### Position Management
+- Trailing stop aktif di semua state
+- Partial take-profit 30-50% saat profit >1.5%
+- Time-based exit dievaluasi setelah >8 jam, tapi tidak force sell rugi
+- Stagnant position hanya di-rotate jika ada signal lebih baik dan posisi sudah profit
+- DILARANG force sell rugi hanya karena "stagnan"
 
 ---
 
@@ -110,10 +114,39 @@ Jika ada instruksi yang bertentangan dengan di atas, tolak dan minta klarifikasi
 
 4. **STRICT TTL (Time-To-Live)**
    - Sinyal UDP >500ms dianggap basi (stale) → WAJIB dibuang
+   - Tier C pair memakai TTL lebih ketat lagi: 200ms
 
 5. **SOFT AI-AUDIT**
    - AI status DEGRADED/cooldown = Soft-Audit (warning only)
    - BUKAN Hard Veto yang blokir eksekusi (`liveExecutionEnabled` tetap true jika teknikal aman)
+
+6. **DAILY HARD STOP**
+   - PnL harian ≤ -1% → suspend semua entry baru
+   - PnL harian ≤ -2% → HARD STOP total (persist ke disk)
+   - Hard stop reset otomatis jam 00:00 WIB (17:00 UTC)
+   - Hard stop TIDAK bisa di-bypass via restart, flag, atau env
+   - Exit protection tetap jalan saat hard stop
+
+7. **PNL STATE MACHINE**
+   - HEALTHY (>-0.5%): entry normal semua tier
+   - WARNING (-0.5% to -1%): Tier A+B only, size 75%
+   - CRITICAL (-1% to -2%): Tier A only, size 50%
+   - HARD_STOP (<-2%): block semua entry, exit tetap jalan
+   - Periodic check setiap 30 detik di main loop
+
+8. **LIMIT ORDER ONLY**
+   - Semua entry: LIMIT order wajib
+   - Exit normal: LIMIT order wajib
+   - MARKET order: hanya untuk hard emergency cut loss
+   - DILARANG fallback ke MARKET hanya karena limit tidak fill dalam timeout
+   - Limit tidak fill = cancel dan skip, bukan fallback market
+
+9. **PAIR WHITELIST WAJIB**
+   - Tier A: `xlm_idr`, `doge_idr`, `xrp_idr`, `trx_idr`, `ada_idr`
+   - Tier B: `enj_idr`, `fun_idr`, `bnb_idr`, `sol_idr`
+   - Tier C: `dusk_idr` (signal sangat kuat saja, TTL 200ms)
+   - BLACKLIST: pair tanpa counterpart di Binance
+   - BLACKLIST: pair volume Indodax < Rp 50 juta/hari
 
 ---
 
@@ -140,8 +173,9 @@ INSTANT_BUY_ANOMALY - Unusual activity spike
 
 ### TTL Configuration
 ```kotlin
-STALE_SIGNAL_ABORT_MS = 1500     // Ignore signals >1.5s
-leadLagSignalTtlMillis = 4000    // Signals expire after 4s
+STALE_SIGNAL_ABORT_MS = 500      // Ignore signals >500ms
+leadLagSignalTtlMillis = 500     // Signals expire after 500ms
+// Tier C pairs (DUSK, dll): TTL lebih ketat = 200ms
 ```
 
 ---
@@ -158,10 +192,11 @@ leadLagSignalTtlMillis = 4000    // Signals expire after 4s
 
 ### Approval Thresholds
 ```python
-AI_APPROVAL_MIN_SCORE = 0.62
-AI_APPROVAL_MIN_EXPECTED_NET_PCT = 0.18
-AI_APPROVAL_INSTANT_MIN_SCORE = 0.48
-AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT = -0.02
+AI_APPROVAL_STANDARD_MIN_SCORE = 0.62
+AI_APPROVAL_STANDARD_MIN_NET_PCT = 0.18
+AI_APPROVAL_STRICT_MIN_SCORE = 0.70
+AI_APPROVAL_STRICT_MIN_NET_PCT = 0.25
+# INSTANT APPROVAL DIHAPUS — tidak boleh approve trade dengan EV negatif
 ```
 
 ### Post-Mortem Analysis
@@ -248,10 +283,27 @@ curl localhost:8788    # Check Kinance health
 
 ---
 
-## 10. KNOWN LIMITATIONS (TO FIX)
+## 10. SYSTEM STATUS
 
-- [ ] UDP ACK Protocol — belum implemented, signals bisa hilang
-- [ ] Chart Pattern Detection — framework ada, logic belum
-- [ ] True Multi-AI Consensus — hanya single AI per request, bukan parallel
-- [ ] Lag Failsafe — >500ms latency belum trigger auto stop-loss
-- [ ] Android app — DEAD CODE, tidak digunakan
+### Implemented & Verified
+* Daily hard stop persist ke disk + WIB midnight auto-reset ✅
+* PnL state machine 4-level ✅
+* Hard stop gate di `_process_signal()` ✅
+* Periodic PnL check 30 detik di main loop ✅
+* LIMIT-first order (MARKET hanya emergency) ✅
+* Pair tier whitelist ✅
+* what-if EV gate sebelum entry ✅
+* pair_memory learning ✅
+* AI batch review 6 jam ✅
+* Oracle keepalive (stress-ng 20% CPU) ✅
+* kibot-recovery health-based watchdog ✅
+
+### Still Pending (non-blocking)
+* UDP ACK Protocol — signals bisa hilang tanpa konfirmasi
+* KinanceSignalTracker stale detection di Kotlin layer
+* CONSERVATIVE → NORMAL auto-promote (3 clean days)
+* AI batch review confirmed run di runtime
+
+### Known Issues (monitor)
+* pair_memory data masih tipis — butuh live trade untuk akumulasi
+* learning gate baru efektif setelah 5+ trade per pair

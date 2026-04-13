@@ -57,6 +57,28 @@
 * **Instant approval dihapus** — trade EV negatif tidak boleh lolos
 * **AI degraded** = warning only, bukan hard block
 
+## Daily Risk Management
+
+### PnL State Machine
+
+| State | PnL Harian | Action |
+|-------|------------|--------|
+| HEALTHY | > -0.5% | Entry normal semua tier |
+| WARNING | -0.5% to -1% | Tier A+B only, size 75% |
+| CRITICAL | -1% to -2% | Tier A only, size 50% |
+| HARD_STOP | < -2% | Entry blocked, exit active |
+
+Hard stop persist ke disk (`state/daily_guard.json`). Reset otomatis 00:00 WIB. Tidak bisa di-bypass via restart.
+
+### Pair Strategy
+
+| Tier | Pairs | Max Size | Min Target | TTL Signal |
+|------|-------|----------|-----------|-----------|
+| A | xlm, doge, xrp, trx, ada | 20% equity | 2.0% | 500ms |
+| B | enj, fun, bnb, sol | 15% equity | 3.0% | 500ms |
+| C | dusk, dll | 10% equity | 5.0% | 200ms |
+| ❌ | Koin tanpa Binance pair | 0% | - | - |
+
 ### Pair Strategy
 
 **Tier A**: `xlm_idr`, `doge_idr`, `xrp_idr`, `trx_idr`, `ada_idr`
@@ -72,7 +94,7 @@
 ### Entry Flow
 ```
 PairSelector (11-point scoring) → VetoService (lead-lag check) → 
-BotModeDecider (aggression level) → CapitalDeployment (max 25%/coin) → 
+BotModeDecider (CONSERVATIVE / DEFENSIVE / SUSPENDED) → CapitalDeployment (tier-based) → 
 LiveExecution (order submit)
 ```
 
@@ -80,8 +102,14 @@ LiveExecution (order submit)
 - Partial take-profit (30-50% saat profit >0.5%)
 - Trailing stop (dynamic % based on volatility)
 - Hard stop-loss (2-3% below entry)
-- Time-based exit (force close if held >12 hours)
+- Time-based exit (evaluate after >12 hours, bukan force sell rugi)
 - Emergency sell (AI-triggered on momentum loss)
+
+### Oracle Free Tier Protection
+
+* `oracle-keepalive.service`: stress-ng 20% CPU load
+* Mencegah Oracle reclaim instance (threshold: CPU < 20% / 7 hari)
+* Running di kedua server (Indodax + Binance)
 
 ## Modules
 
@@ -159,8 +187,9 @@ ssh ubuntu@<server> 'sudo systemctl restart kidax-engine kinance-engine kibot-ma
 
 ### Health Check
 ```bash
-curl localhost:8787    # KiDax dashboard
-curl localhost:8788    # Kinance dashboard
+curl localhost:8787/api/state    # KiDax full state
+curl localhost:9998/api/state    # Manager full state
+bash scripts/morning_check.sh    # Daily pre-market check
 ```
 
 ## Documentation
