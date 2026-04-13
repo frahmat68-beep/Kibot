@@ -187,8 +187,10 @@ SURVIVAL_MAX_SPREAD_PCT = float(os.getenv("KIBOT_SURVIVAL_MAX_SPREAD_PCT", "0.00
 SURVIVAL_MAX_SLIPPAGE_PCT = float(os.getenv("KIBOT_SURVIVAL_MAX_SLIPPAGE_PCT", "0.010"))
 SURVIVAL_TARGET_PROFIT_PCT = float(os.getenv("KIBOT_SURVIVAL_TARGET_PROFIT_PCT", "0.025"))
 SURVIVAL_HARD_STOP_PCT = float(os.getenv("KIBOT_SURVIVAL_HARD_STOP_PCT", "0.01"))
-CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR", str(MINIMUM_VIABLE_CAPITAL_IDR)))
-CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR", "750000"))
+CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR", "100000"))
+CAPITAL_BUCKET_CONSERVATIVE_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_CONSERVATIVE_THRESHOLD_IDR", str(MINIMUM_VIABLE_CAPITAL_IDR)))
+CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR", "300000"))
+CAPITAL_BUCKET_FULL_EXPANSION_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_FULL_EXPANSION_THRESHOLD_IDR", "750000"))
 
 PAIR_CONFIG: Dict[str, Dict[str, Any]] = {
     "xlm_idr": {"tier": "A", "max_size_idr": 15000.0, "min_target_profit_pct": 0.020, "max_spread_pct": 0.010, "max_slippage_pct": 0.012},
@@ -241,10 +243,27 @@ def _target_profit_pct_for_pair(pair_id: str) -> float:
 def _capital_bucket_tiers(equity_idr: Optional[float] = None) -> List[str]:
     equity = float(equity_idr if equity_idr is not None else (_get_total_equity_estimate() or 0.0))
     if equity < CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR:
+        return ["A", "B", "C", "D"]
+    if equity < CAPITAL_BUCKET_CONSERVATIVE_THRESHOLD_IDR:
         return ["A"]
     if equity < CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR:
         return ["A", "B", "C"]
+    if equity < CAPITAL_BUCKET_FULL_EXPANSION_THRESHOLD_IDR:
+        return ["A", "B", "C", "D"]
     return ["A", "B", "C", "D"]
+
+
+def _capital_risk_multiplier(equity_idr: Optional[float] = None) -> float:
+    equity = float(equity_idr if equity_idr is not None else (_get_total_equity_estimate() or 0.0))
+    if equity < CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR:
+        return 0.35
+    if equity < CAPITAL_BUCKET_CONSERVATIVE_THRESHOLD_IDR:
+        return 0.50
+    if equity < CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR:
+        return 0.70
+    if equity < CAPITAL_BUCKET_FULL_EXPANSION_THRESHOLD_IDR:
+        return 0.85
+    return 1.0
 
 
 # === KINANCE HEALTH MONITORING ===
@@ -1701,6 +1720,7 @@ def _apply_survival_filters(pair_id: str, budget_idr: float, spread_pct: float =
     if pair_key not in SURVIVAL_ALLOWED_PAIRS and pair_cfg.get("tier") not in allowed_tiers:
         return False, f"survival_mode: {pair_key} not allowed"
     max_size_idr = float(pair_cfg.get("max_size_idr") or MAXIMUM_POSITION_SIZE_IDR)
+    max_size_idr *= _capital_risk_multiplier()
     min_target_profit_pct = float(pair_cfg.get("min_target_profit_pct") or SURVIVAL_TARGET_PROFIT_PCT)
     max_spread_pct = float(pair_cfg.get("max_spread_pct") or SURVIVAL_MAX_SPREAD_PCT)
     max_slippage_pct = float(pair_cfg.get("max_slippage_pct") or SURVIVAL_MAX_SLIPPAGE_PCT)
