@@ -25,7 +25,7 @@ Environment=MAC_ENGINE_ENABLE_LAN_ADVERTISE=false
 Environment=KIBOT_LOCAL_POSITION_STATE_ENABLED=true
 Environment=KIBOT_LEAD_LAG_UDP_ENABLED=true
 Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_ENABLED=true
-Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=250
+Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=1000
 Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000
 Environment=KIBOT_HIVE_EXPECTED_BOT_IDS=kidax,kibot
 Environment="JAVA_OPTS=-XX:+UseSerialGC -Xms128m -Xmx300m -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
