@@ -39,18 +39,18 @@ echo "✅ Binance deployment complete"
 echo -e "\n[4/6] Restarting Indodax services..."
 ssh -i "$INDODAX_KEY" ubuntu@$INDODAX_SERVER << 'EOF'
     echo "Reloading daemon..."
-    sudo systemctl daemon-reload
+    sudo -n systemctl daemon-reload
     echo "Stopping KiDax..."
-    sudo systemctl stop kidax-engine || true
+    sudo -n systemctl stop kidax-engine || true
     sleep 2
     echo "Starting KiDax..."
-    sudo systemctl start kidax-engine
+    sudo -n systemctl start kidax-engine
     sleep 3
     systemctl status kidax-engine --no-pager || echo "Status check failed"
     echo "✅ KiDax restarted"
     
     echo "Checking KiBot Manager..."
-    sudo systemctl restart kibot-manager || true
+    sudo -n systemctl restart kibot-manager || true
     sleep 2
     echo "✅ KiBot Manager restarted"
 EOF
@@ -59,12 +59,12 @@ EOF
 echo -e "\n[5/6] Restarting Binance services..."
 ssh -i "$BINANCE_KEY" ubuntu@$BINANCE_SERVER << 'EOF'
     echo "Reloading daemon..."
-    sudo systemctl daemon-reload
+    sudo -n systemctl daemon-reload
     echo "Stopping Kinance..."
-    sudo systemctl stop kinance-engine || true
+    sudo -n systemctl stop kinance-engine || true
     sleep 2
     echo "Starting Kinance..."
-    sudo systemctl start kinance-engine
+    sudo -n systemctl start kinance-engine
     sleep 3
     systemctl status kinance-engine --no-pager || echo "Status check failed"
     echo "✅ Kinance restarted"

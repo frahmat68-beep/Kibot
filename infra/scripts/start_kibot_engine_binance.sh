@@ -84,7 +84,7 @@ Environment=BOT_ANALYSIS_PUBLISH_INTERVAL_MS=600000
 Environment=BOT_STRATEGY_METRICS_PUBLISH_INTERVAL_MS=1800000
 Environment=MAC_DASHBOARD_STATE_POLL_INTERVAL_MS=3000
 Environment=MAC_DASHBOARD_LOG_POLL_INTERVAL_MS=5000
-Environment="JAVA_OPTS=-XX:+UseSerialGC -Xms128m -Xmx384m -XX:MaxMetaspaceSize=96m -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
+Environment="JAVA_OPTS=-XX:+UseSerialGC -Xms96m -Xmx256m -XX:MaxMetaspaceSize=80m -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
 EOF
 
 mkdir -p "$KINANCE_DROPIN_DIR"

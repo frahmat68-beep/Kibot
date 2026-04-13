@@ -1,5 +1,9 @@
 {
     "java.configuration.updateBuildConfiguration": "automatic",
+    "python.defaultInterpreterPath": "/usr/bin/python3",
+    "python.terminal.activateEnvironment": false,
+    "terminal.integrated.env.osx": {},
+    "terminal.integrated.env.linux": {},
     
     "files.exclude": {
         "**/bin/**": true,

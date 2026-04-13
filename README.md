@@ -105,12 +105,6 @@ LiveExecution (order submit)
 - Time-based exit (evaluate after >12 hours, bukan force sell rugi)
 - Emergency sell (AI-triggered on momentum loss)
 
-### Oracle Free Tier Protection
-
-* `oracle-keepalive.service`: stress-ng 20% CPU load
-* Mencegah Oracle reclaim instance (threshold: CPU < 20% / 7 hari)
-* Running di kedua server (Indodax + Binance)
-
 ## Modules
 
 | Module | Description |

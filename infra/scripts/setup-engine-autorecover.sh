@@ -8,7 +8,7 @@ SERVICE_FILE_PATH="${KIBOT_SERVICE_FILE_PATH:-${RUNTIME_ROOT}/infra/systemd/${SE
 DASHBOARD_PORT="${KIBOT_DASHBOARD_PORT:-8787}"
 RECOVERY_SCRIPT_PATH="${KIBOT_RECOVERY_SCRIPT_PATH:-${RUNTIME_ROOT}/engine-recovery.sh}"
 AI_SCRIPT_PATH="${KIBOT_AI_SCRIPT_PATH:-${RUNTIME_ROOT}/scripts/ai_learning_cycle.sh}"
-RECOVERY_INTERVAL_SECONDS="${KIBOT_RECOVERY_INTERVAL_SECONDS:-45}"
+RECOVERY_INTERVAL_SECONDS="${KIBOT_RECOVERY_INTERVAL_SECONDS:-90}"
 RECOVERY_TIMER_NAME="${SERVICE_NAME}-recovery.timer"
 RECOVERY_SERVICE_NAME="${SERVICE_NAME}-recovery.service"
 
@@ -32,7 +32,7 @@ sudo mkdir -p "/etc/systemd/system/${SERVICE_NAME}.service.d"
 sudo rm -f "/etc/systemd/system/${SERVICE_NAME}.service.d/memory-optimize.conf"
 sudo tee "/etc/systemd/system/${SERVICE_NAME}.service.d/00-kibot-memory.conf" >/dev/null <<'EOF'
 [Service]
-Environment="JAVA_OPTS=-XX:+UseSerialGC -Xms128m -Xmx384m -XX:MaxMetaspaceSize=96m -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
+Environment="JAVA_OPTS=-XX:+UseSerialGC -Xms96m -Xmx256m -XX:MaxMetaspaceSize=80m -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
 EOF
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME"
