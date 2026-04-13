@@ -45,6 +45,18 @@ fun main(args: Array<String>) {
         controlPlane = controlPlane,
         config = config,
     )
+    // Dashboard comes up before the daemon loop so a slow bootstrap cannot hide the server.
+    val server = LocalDashboardServer(
+        repository = repository,
+        commandDispatcher = dispatcher,
+        botId = config.controlPlane.botId,
+        host = config.bindHost,
+        port = config.port,
+        androidReleaseDirectory = Paths.get("").toAbsolutePath().resolve(".dist/android/stable"),
+        enableLanAdvertising = config.enableLanAdvertising,
+        statePollIntervalMillis = config.dashboardStatePollIntervalMillis,
+        logPollIntervalMillis = config.dashboardLogPollIntervalMillis,
+    )
 
     if (args.isNotEmpty()) {
         val daemon = MacEngineDaemon(
@@ -63,18 +75,6 @@ fun main(args: Array<String>) {
     }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + exceptionHandler)
     val daemonRef = AtomicReference<MacEngineDaemon?>()
-    val server = LocalDashboardServer(
-        repository = repository,
-        commandDispatcher = dispatcher,
-        botId = config.controlPlane.botId,
-        host = config.bindHost,
-        port = config.port,
-        androidReleaseDirectory = Paths.get("").toAbsolutePath().resolve(".dist/android/stable"),
-        enableLanAdvertising = config.enableLanAdvertising,
-        statePollIntervalMillis = config.dashboardStatePollIntervalMillis,
-        logPollIntervalMillis = config.dashboardLogPollIntervalMillis,
-    )
-
     Runtime.getRuntime().addShutdownHook(
         Thread {
             logger.info("Shutting down KiBot mac engine.")

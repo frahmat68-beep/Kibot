@@ -10768,8 +10768,12 @@ class MacEngineDaemon(
             lastUpdatedEpochMs = now.toEpochMilliseconds(),
             heldAssets = heldAssets,
             holdingsDetailed = holdingsDetailed,
-            exchangePingMs = localHealth.feedLatencyMs?.let { "${it}ms" } ?: "--",
-            exchangePingValueMs = localHealth.feedLatencyMs,
+            exchangePingMs = localHealth.feedLatencyMs
+                ?.takeIf { it in 1..5_000L }
+                ?.let { "${it}ms" }
+                ?: "STALE",
+            exchangePingValueMs = localHealth.feedLatencyMs
+                ?.takeIf { it in 1..5_000L },
             kidaxNodeStatus = peerNodeStatus("kidax"),
             kibotNodeStatus = peerNodeStatus("kibot"),
             kinanceNodeStatus = peerNodeStatus("kinance"),
