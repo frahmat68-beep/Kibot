@@ -176,7 +176,10 @@ SURVIVAL_MODE = os.getenv("KIBOT_SURVIVAL_MODE", "true").lower() in {"1", "true"
 SURVIVAL_MODE_EQUITY_THRESHOLD_IDR = float(os.getenv("KIBOT_SURVIVAL_MODE_EQUITY_THRESHOLD_IDR", "200000"))
 SURVIVAL_ALLOWED_PAIRS = tuple(
     pair.strip().lower()
-    for pair in os.getenv("KIBOT_SURVIVAL_ALLOWED_PAIRS", "xlm_idr,doge_idr,xrp_idr,trx_idr,ada_idr,bnb_idr,enj_idr,fun_idr,near_idr,hbar_idr,link_idr,atom_idr,avax_idr,ton_idr,sui_idr,pol_idr,ldo_idr,op_idr,pepe_idr,shib_idr,bonk_idr,wif_idr,floki_idr,bome_idr,cat_idr,fartcoin_idr").split(",")
+    for pair in os.getenv(
+        "KIBOT_SURVIVAL_ALLOWED_PAIRS",
+        "xlm_idr,doge_idr,xrp_idr,trx_idr,ada_idr,bnb_idr,enj_idr,fun_idr,arb_idr,inj_idr,ondo_idr,wld_idr,tia_idr,ethfi_idr,sol_idr,near_idr,hbar_idr,link_idr,atom_idr,avax_idr,ton_idr,sui_idr,pol_idr,ldo_idr,op_idr,render_idr,grt_idr,lunc_idr,pepe_idr,shib_idr,bonk_idr,wif_idr,floki_idr,bome_idr,cat_idr,fartcoin_idr",
+    ).split(",")
     if pair.strip()
 )
 SURVIVAL_MIN_DAILY_VOLUME_IDR = float(os.getenv("KIBOT_SURVIVAL_MIN_DAILY_VOLUME_IDR", "500000000"))
@@ -184,6 +187,8 @@ SURVIVAL_MAX_SPREAD_PCT = float(os.getenv("KIBOT_SURVIVAL_MAX_SPREAD_PCT", "0.00
 SURVIVAL_MAX_SLIPPAGE_PCT = float(os.getenv("KIBOT_SURVIVAL_MAX_SLIPPAGE_PCT", "0.010"))
 SURVIVAL_TARGET_PROFIT_PCT = float(os.getenv("KIBOT_SURVIVAL_TARGET_PROFIT_PCT", "0.025"))
 SURVIVAL_HARD_STOP_PCT = float(os.getenv("KIBOT_SURVIVAL_HARD_STOP_PCT", "0.01"))
+CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR", str(MINIMUM_VIABLE_CAPITAL_IDR)))
+CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR", "750000"))
 
 PAIR_CONFIG: Dict[str, Dict[str, Any]] = {
     "xlm_idr": {"tier": "A", "max_size_idr": 15000.0, "min_target_profit_pct": 0.020, "max_spread_pct": 0.010, "max_slippage_pct": 0.012},
@@ -194,6 +199,13 @@ PAIR_CONFIG: Dict[str, Dict[str, Any]] = {
     "bnb_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.025, "max_spread_pct": 0.015, "max_slippage_pct": 0.015},
     "enj_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
     "fun_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "arb_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "inj_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "ondo_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "wld_idr": {"tier": "B", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "tia_idr": {"tier": "B", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "ethfi_idr": {"tier": "B", "max_size_idr": 10000.0, "min_target_profit_pct": 0.035, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "sol_idr": {"tier": "B", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
     "near_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
     "hbar_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
     "link_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.025, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
@@ -204,6 +216,9 @@ PAIR_CONFIG: Dict[str, Dict[str, Any]] = {
     "pol_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
     "ldo_idr": {"tier": "C", "max_size_idr": 8000.0, "min_target_profit_pct": 0.035, "max_spread_pct": 0.022, "max_slippage_pct": 0.022},
     "op_idr": {"tier": "C", "max_size_idr": 8000.0, "min_target_profit_pct": 0.035, "max_spread_pct": 0.022, "max_slippage_pct": 0.022},
+    "render_idr": {"tier": "C", "max_size_idr": 8000.0, "min_target_profit_pct": 0.035, "max_spread_pct": 0.022, "max_slippage_pct": 0.022},
+    "grt_idr": {"tier": "C", "max_size_idr": 8000.0, "min_target_profit_pct": 0.035, "max_spread_pct": 0.022, "max_slippage_pct": 0.022},
+    "lunc_idr": {"tier": "C", "max_size_idr": 6000.0, "min_target_profit_pct": 0.040, "max_spread_pct": 0.025, "max_slippage_pct": 0.025},
     "pepe_idr": {"tier": "D", "max_size_idr": 6000.0, "min_target_profit_pct": 0.040, "max_spread_pct": 0.025, "max_slippage_pct": 0.025},
     "shib_idr": {"tier": "D", "max_size_idr": 6000.0, "min_target_profit_pct": 0.040, "max_spread_pct": 0.025, "max_slippage_pct": 0.025},
     "bonk_idr": {"tier": "D", "max_size_idr": 6000.0, "min_target_profit_pct": 0.045, "max_spread_pct": 0.028, "max_slippage_pct": 0.028},
@@ -221,6 +236,15 @@ def _get_pair_config(pair_id: str) -> Dict[str, Any]:
 
 def _target_profit_pct_for_pair(pair_id: str) -> float:
     return float(_get_pair_config(pair_id).get("min_target_profit_pct", SURVIVAL_TARGET_PROFIT_PCT))
+
+
+def _capital_bucket_tiers(equity_idr: Optional[float] = None) -> List[str]:
+    equity = float(equity_idr if equity_idr is not None else (_get_total_equity_estimate() or 0.0))
+    if equity < CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR:
+        return ["A"]
+    if equity < CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR:
+        return ["A", "B", "C"]
+    return ["A", "B", "C", "D"]
 
 
 # === KINANCE HEALTH MONITORING ===
@@ -1673,7 +1697,8 @@ def _apply_survival_filters(pair_id: str, budget_idr: float, spread_pct: float =
         return True, "normal_mode"
     pair_key = str(pair_id or "").lower().strip()
     pair_cfg = _get_pair_config(pair_key)
-    if pair_key not in SURVIVAL_ALLOWED_PAIRS and pair_cfg.get("tier") == "C":
+    allowed_tiers = set(_capital_bucket_tiers())
+    if pair_key not in SURVIVAL_ALLOWED_PAIRS and pair_cfg.get("tier") not in allowed_tiers:
         return False, f"survival_mode: {pair_key} not allowed"
     max_size_idr = float(pair_cfg.get("max_size_idr") or MAXIMUM_POSITION_SIZE_IDR)
     min_target_profit_pct = float(pair_cfg.get("min_target_profit_pct") or SURVIVAL_TARGET_PROFIT_PCT)
@@ -2118,6 +2143,11 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         slippage_pct = float(msg.get("slippagePct") or msg.get("slippage_pct") or 0.0)
         pair_cfg = _get_pair_config(pair)
         target_profit_pct = float(msg.get("targetProfitPct") or msg.get("target_profit_pct") or pair_cfg.get("min_target_profit_pct") or SURVIVAL_TARGET_PROFIT_PCT)
+        capital_bucket = _capital_bucket_tiers()
+        if pair_cfg.get("tier") == "D":
+            target_profit_pct = max(target_profit_pct, 0.04)
+        elif pair_cfg.get("tier") == "C":
+            target_profit_pct = max(target_profit_pct, 0.025)
         if entry_price > 0.0 and budget_idr > 0.0:
             what_if = _simulate_what_if(
                 pair_id=pair,
@@ -2130,7 +2160,7 @@ def _process_signal(msg: Dict[str, Any]) -> None:
             )
             _append_runtime_event("what_if", what_if)
             print(
-                f"[KIBOT][WHATIF] pair={pair} ev={what_if['expected_net_pct']:.4f} rr={what_if['risk_reward_ratio']:.2f} rec={what_if['recommendation']}",
+                f"[KIBOT][WHATIF] pair={pair} tiers={','.join(capital_bucket)} ev={what_if['expected_net_pct']:.4f} rr={what_if['risk_reward_ratio']:.2f} rec={what_if['recommendation']}",
                 flush=True,
             )
             if what_if["recommendation"] == "SKIP":
