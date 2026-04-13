@@ -61,9 +61,9 @@
 
 **Tier A**: `xlm_idr`, `doge_idr`, `xrp_idr`, `trx_idr`, `ada_idr`
 
-**Tier B**: `bnb_idr`, `enj_idr`, `fun_idr`
+**Tier B**: `bnb_idr`, `enj_idr`, `fun_idr`, `arb_idr`, `inj_idr`, `ondo_idr`, `wld_idr`, `tia_idr`, `ethfi_idr`, `sol_idr`
 
-**Tier C**: `near_idr`, `hbar_idr`, `link_idr`, `atom_idr`, `avax_idr`, `ton_idr`, `sui_idr`, `pol_idr`, `ldo_idr`, `op_idr`
+**Tier C**: `near_idr`, `hbar_idr`, `link_idr`, `atom_idr`, `avax_idr`, `ton_idr`, `sui_idr`, `pol_idr`, `ldo_idr`, `op_idr`, `render_idr`, `grt_idr`, `lunc_idr`
 
 **Tier D**: `pepe_idr`, `shib_idr`, `bonk_idr`, `wif_idr`, `floki_idr`, `bome_idr`, `cat_idr`, `fartcoin_idr` — hanya jika lead-lag sangat kuat dan risk gate sangat ketat
 
