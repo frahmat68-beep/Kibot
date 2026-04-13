@@ -71,7 +71,6 @@ mark_unhealthy() {
   previous="$(read_state)"
   if [[ "${previous}" != "unhealthy" ]]; then
     log "Recovery state -> unhealthy"
-    send_telegram "🚨 ${SERVICE_NAME} bermasalah. Auto revive aktif."
     write_state "unhealthy"
   fi
 }
