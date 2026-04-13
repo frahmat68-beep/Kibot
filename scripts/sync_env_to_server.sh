@@ -7,6 +7,8 @@ SSH_KEY="${ROOT_DIR}/ssh-key-2026-03-22.key"
 HOST="${KIBOT_SSH_HOST:-213.35.118.26}"
 USER_NAME="${KIBOT_SSH_USER:-ubuntu}"
 REMOTE_ENV="/home/ubuntu/KiDax/.env.kidax"
+REMOTE_SERVICE="${KIBOT_REMOTE_SERVICE:-kidax-engine}"
+REMOTE_RESTART_DELAY="${KIBOT_REMOTE_RESTART_DELAY:-4}"
 
 if [[ ! -f "${ENV_LOCAL}" ]]; then
   echo "Missing local .env at ${ENV_LOCAL}" >&2
@@ -26,6 +28,13 @@ from pathlib import Path
 
 env_path = Path(".env")
 keys = [
+    "BOT_ID",
+    "BOT_PROFILE_KEY",
+    "MAC_ENGINE_BIND_HOST",
+    "MAC_ENGINE_PORT",
+    "MAC_ENGINE_LAN_SYNC_URL",
+    "DEVICE_ID",
+    "DEVICE_DISPLAY_NAME",
     "INDODAX_API_KEY",
     "INDODAX_API_SECRET",
     "BOT_ENABLE_LIVE_EXECUTION",
@@ -64,9 +73,10 @@ while IFS= read -r line; do
   printf '%s\n' \"\$line\" >> '${REMOTE_ENV}'
 done < /tmp/kibot-env-sync.tmp
 rm -f /tmp/kibot-env-sync.tmp
-sudo systemctl restart kidax-engine
-sleep 4
-systemctl is-active kidax-engine
+sudo systemctl daemon-reload
+sudo systemctl restart '${REMOTE_SERVICE}'
+sleep '${REMOTE_RESTART_DELAY}'
+systemctl is-active '${REMOTE_SERVICE}'
 "
 
 echo "Synced env keys and restarted kidax-engine."

@@ -14,9 +14,26 @@ RECOVERY_SERVICE_NAME="${SERVICE_NAME}-recovery.service"
 
 mkdir -p "${RUNTIME_ROOT}/server"
 mkdir -p "${RUNTIME_ROOT}/bin" "${RUNTIME_ROOT}/lib"
+mkdir -p "${RUNTIME_ROOT}/state"
+
+if [[ ! -f "$SERVICE_FILE_PATH" ]]; then
+  echo "Service file not found: $SERVICE_FILE_PATH" >&2
+  exit 1
+fi
+
+if [[ ! -f "$RECOVERY_SCRIPT_PATH" ]]; then
+  echo "Recovery script not found: $RECOVERY_SCRIPT_PATH" >&2
+  exit 1
+fi
 
 sudo cp "$SERVICE_FILE_PATH" "/etc/systemd/system/${SERVICE_NAME}.service"
 sudo chmod 644 "/etc/systemd/system/${SERVICE_NAME}.service"
+sudo mkdir -p "/etc/systemd/system/${SERVICE_NAME}.service.d"
+sudo rm -f "/etc/systemd/system/${SERVICE_NAME}.service.d/memory-optimize.conf"
+sudo tee "/etc/systemd/system/${SERVICE_NAME}.service.d/00-kibot-memory.conf" >/dev/null <<'EOF'
+[Service]
+Environment="JAVA_OPTS=-XX:+UseSerialGC -Xms128m -Xmx384m -XX:MaxMetaspaceSize=96m -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
+EOF
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME"
 sudo systemctl stop "$SERVICE_NAME" || true
@@ -63,6 +80,8 @@ EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now "${RECOVERY_TIMER_NAME}"
+sudo systemctl restart "$SERVICE_NAME"
+sudo systemctl is-active --quiet "$SERVICE_NAME"
 
 if crontab -l 2>/dev/null | grep -vF "${RECOVERY_SCRIPT_PATH}" | grep -vF "engine-recovery.sh" | sed '/^$/d' | crontab - 2>/dev/null; then
   echo "[ok] existing recovery cron entries removed"

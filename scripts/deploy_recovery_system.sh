@@ -13,12 +13,12 @@ INDODAX_KEY="SSH_INDODAX/ssh-key-2026-03-22.key"
 BINANCE_KEY="SSH_BINANCE/ssh-key-2026-03-27.key"
 
 # Step 1: Build
-echo -e "\n[1/6] Building shadow JAR..."
-./gradlew clean :apps:mac-engine:shadowJar -q || {
+echo -e "\n[1/6] Building mac-engine fat JAR..."
+./gradlew clean :apps:mac-engine:fatJar -q || {
     echo "❌ Build failed!"
     exit 1
 }
-JAR_FILE="apps/mac-engine/build/libs/mac-engine-1.0-SNAPSHOT-all.jar"
+JAR_FILE="apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar"
 if [ ! -f "$JAR_FILE" ]; then
     echo "❌ JAR not found: $JAR_FILE"
     exit 1
@@ -38,6 +38,8 @@ echo "✅ Binance deployment complete"
 # Step 4: Restart Indodax services
 echo -e "\n[4/6] Restarting Indodax services..."
 ssh -i "$INDODAX_KEY" ubuntu@$INDODAX_SERVER << 'EOF'
+    echo "Reloading daemon..."
+    sudo systemctl daemon-reload
     echo "Stopping KiDax..."
     sudo systemctl stop kidax-engine || true
     sleep 2
@@ -56,6 +58,8 @@ EOF
 # Step 5: Restart Binance services
 echo -e "\n[5/6] Restarting Binance services..."
 ssh -i "$BINANCE_KEY" ubuntu@$BINANCE_SERVER << 'EOF'
+    echo "Reloading daemon..."
+    sudo systemctl daemon-reload
     echo "Stopping Kinance..."
     sudo systemctl stop kinance-engine || true
     sleep 2
@@ -71,10 +75,10 @@ echo -e "\n[6/6] Verifying deployment..."
 sleep 5
 
 echo -e "\n📊 KiDax Status:"
-ssh -i "$INDODAX_KEY" ubuntu@$INDODAX_SERVER 'curl -s http://localhost:8787/api/state | python3 -c "import sys, json; d=json.load(sys.stdin); print(f\"  Equity: Rp{d.get(\"portfolioValueIdr\", 0)}\"); print(f\"  Free: Rp{d.get(\"freeIdrLabel\", 0)}\"); print(f\"  Status: {d.get(\"effectiveState\", \"unknown\")}\"); print(f\"  AI: {d.get(\"aiProviderSummary\", \"unknown\")}\")" 2>/dev/null || echo "  (API not yet ready)"'
+ssh -i "$INDODAX_KEY" ubuntu@$INDODAX_SERVER 'curl -fsS http://localhost:8787/api/state | python3 -c "import sys, json; d=json.load(sys.stdin); print(f\"  Equity: Rp{d.get(\"portfolioValueIdr\", 0)}\"); print(f\"  Free: Rp{d.get(\"freeIdrLabel\", 0)}\"); print(f\"  Status: {d.get(\"effectiveState\", \"unknown\")}\"); print(f\"  AI: {d.get(\"aiProviderSummary\", \"unknown\")}\")" 2>/dev/null || echo "  (API not yet ready)"'
 
 echo -e "\n📊 Kinance Status:"
-ssh -i "$BINANCE_KEY" ubuntu@$BINANCE_SERVER 'curl -s http://localhost:8789/api/state | python3 -c "import sys, json; d=json.load(sys.stdin); print(f\"  Status: {d.get(\"effectiveState\", \"unknown\")}\"); print(f\"  Scan Universe: {d.get(\"scanUniverseCount\", 0)}\"); print(f\"  Top Candidate: {d.get(\"topCandidate\", \"N/A\")}\")" 2>/dev/null || echo "  (API not yet ready)"'
+ssh -i "$BINANCE_KEY" ubuntu@$BINANCE_SERVER 'curl -fsS http://localhost:8788/api/state | python3 -c "import sys, json; d=json.load(sys.stdin); print(f\"  Status: {d.get(\"effectiveState\", \"unknown\")}\"); print(f\"  Scan Universe: {d.get(\"scanUniverseCount\", 0)}\"); print(f\"  Top Candidate: {d.get(\"topCandidate\", \"N/A\")}\")" 2>/dev/null || echo "  (API not yet ready)"'
 
 echo -e "\n✅ DEPLOYMENT COMPLETE!"
 echo "======================================"

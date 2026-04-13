@@ -197,7 +197,7 @@ object MacRuntimeConfigLoader {
                 platform = DevicePlatform.MACOS,
                 role = deviceRole,
             ),
-            pollIntervalMillis = optional("BOT_POLL_INTERVAL_MS")?.toLongOrNull() ?: 1_000L,
+            pollIntervalMillis = optional("BOT_POLL_INTERVAL_MS")?.toLongOrNull() ?: 2_000L,
             exchangePingRefreshIntervalMillis = optional("BOT_EXCHANGE_PING_REFRESH_INTERVAL_MS")?.toLongOrNull() ?: 1_200L,
             balanceRefreshIntervalMillis = optional("BOT_BALANCE_REFRESH_INTERVAL_MS")?.toLongOrNull() ?: 1_400L,
             openOrdersRefreshIntervalMillis = optional("BOT_OPEN_ORDERS_REFRESH_INTERVAL_MS")?.toLongOrNull() ?: 1_400L,
@@ -212,7 +212,7 @@ object MacRuntimeConfigLoader {
             shadowMode = optional("SHADOW_MODE")?.equals("true", ignoreCase = true) ?: false,
             enableExecutionAiAssist = optional("BOT_ENABLE_EXECUTION_AI_ASSIST")?.equals("true", ignoreCase = true) ?: true,
             enableLanAdvertising = optional("MAC_ENGINE_ENABLE_LAN_ADVERTISE")?.equals("true", ignoreCase = true) ?: true,
-            dashboardStatePollIntervalMillis = optional("MAC_DASHBOARD_STATE_POLL_INTERVAL_MS")?.toLongOrNull() ?: 5_000L,
+            dashboardStatePollIntervalMillis = optional("MAC_DASHBOARD_STATE_POLL_INTERVAL_MS")?.toLongOrNull() ?: 2_000L,
             dashboardLogPollIntervalMillis = optional("MAC_DASHBOARD_LOG_POLL_INTERVAL_MS")?.toLongOrNull() ?: 5_000L,
             releaseLabel = optional("KIBOT_RELEASE_LABEL")
                 ?: optional("KIBOT_RELEASE_TAG")

@@ -81,8 +81,8 @@ class LocalDashboardServer(
     private val port: Int = 8787,
     private val androidReleaseDirectory: Path,
     private val enableLanAdvertising: Boolean = true,
-    private val statePollIntervalMillis: Long = 15_000L,
-    private val logPollIntervalMillis: Long = 20_000L,
+    private val statePollIntervalMillis: Long = 2_000L,
+    private val logPollIntervalMillis: Long = 5_000L,
 ) {
     private val logger = LoggerFactory.getLogger(LocalDashboardServer::class.java)
     private val lanProbeUrl = detectLanProbeUrl(host, port)
@@ -367,6 +367,7 @@ class LocalDashboardServer(
 
                                 refreshState();
                                 connectStateStream();
+                                setInterval(refreshState, ${statePollIntervalMillis});
 
                                 function setViewMode(mode) {
                                   document.body.dataset.view = mode;
@@ -635,7 +636,7 @@ class LocalDashboardServer(
 
     fun start() {
         lanServiceAdvertiser?.start()
-        server.start(wait = true)
+        server.start()
     }
 
     fun stop() {
