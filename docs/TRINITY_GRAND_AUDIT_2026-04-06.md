@@ -100,7 +100,7 @@ class AlwaysInvestedPolicy(
 ```
 
 **Action Items:**
-1. ✅ Lower `AI_APPROVAL_MIN_SCORE` → 0.48
+1. ✅ Lower `AI_APPROVAL_MIN_SCORE` → 0.62
 2. ✅ Lower `AI_APPROVAL_MIN_EXPECTED_NET_PCT` → 0.08%
 3. ⬜ Implement `AlwaysInvestedPolicy` class
 4. ⬜ Add `FORCE_ENTRY` mode when idle > 30 minutes
@@ -500,7 +500,7 @@ private fun classifyBucket(quote: MarketQuote, score: Double): BucketType {
 
 | Parameter | Current | Recommended | File |
 |-----------|---------|-------------|------|
-| `AI_APPROVAL_MIN_SCORE` | 0.62 | **0.48** | `kibot_manager.py:91` |
+| `AI_APPROVAL_MIN_SCORE` | 0.62 | **0.62** | `kibot_manager.py:91` |
 | `AI_APPROVAL_MIN_EXPECTED_NET_PCT` | 0.18% | **0.08%** | `kibot_manager.py:92` |
 | `FOMO_GUARD_PCT` | 15% | **35%** (micro) | `kibot_manager.py:74` |
 | `STALE_SIGNAL_ABORT_MS` | 1500ms | **3500ms** | `kibot_manager.py:73` |

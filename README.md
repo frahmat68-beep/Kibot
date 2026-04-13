@@ -1,6 +1,6 @@
 # KiBot Trinity
 
-**High-Frequency Trading (HFT) system** berbasis microservices untuk market **Indodax** dengan sinyal prediktif **Lead-Lag** dari market global **Binance**. Sistem berjalan di **Oracle Cloud** (Singapore) dengan arsitektur 3-bot (Trinity).
+**Lead-Lag trading system** berbasis microservices untuk market **Indodax** dengan sinyal prediktif dari market global **Binance**. Sistem berjalan di **Oracle Cloud** (Singapore) dengan arsitektur 3-bot (Trinity).
 
 ## Architecture
 
@@ -50,6 +50,23 @@
 
 **Sedikit Demi Sedikit** — compound dari stable bucket untuk modal inti; aggressive bucket hanya untuk sinyal high-confidence. Daily hard stop menjaga modal yang sudah dibangun.
 
+### AI Approval Thresholds
+
+* **Standard**: score ≥ 0.62, expected net ≥ 0.18%
+* **Strict**: score ≥ 0.70, expected net ≥ 0.25%
+* **Instant approval dihapus** — trade EV negatif tidak boleh lolos
+* **AI degraded** = warning only, bukan hard block
+
+### Pair Strategy
+
+**Tier A**: `xlm_idr`, `doge_idr`, `xrp_idr`, `trx_idr`, `ada_idr`
+
+**Tier B**: `bnb_idr`, `sol_idr`, `enj_idr`, `fun_idr`
+
+**Tier C**: pair lain hanya jika lead-lag sangat kuat dan spread tetap ketat
+
+**Blacklist**: pair Indodax-only tanpa counterpart Binance atau riwayat slippage buruk
+
 ### Entry Flow
 ```
 PairSelector (11-point scoring) → VetoService (lead-lag check) → 
@@ -88,10 +105,6 @@ Multi-provider AI veto system dengan fallback order:
 2. **OpenRouter** — meta-llama/llama-3.1-8b-instruct
 3. **Cohere** — command-r
 4. **Gemini** — gemini-2.0-flash-lite
-
-Approval thresholds:
-- Standard: score ≥ 0.62, expected net ≥ 0.18%
-- Strict: score ≥ 0.70, expected net ≥ 0.25%  # CONSERVATIVE mode
 
 ## Strict Guardrails
 

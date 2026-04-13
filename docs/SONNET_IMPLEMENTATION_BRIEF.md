@@ -23,7 +23,7 @@ Bot trading Trinity **PASIF** dan **MELEWATKAN MARKET** karena threshold terlalu
 |------|-----------|---------|--------|
 | 73 | `STALE_SIGNAL_ABORT_MS` | 1500 | **3500** |
 | 74 | `FOMO_GUARD_PCT` | 15.0 | (dynamic, see Task 2) |
-| 91 | `AI_APPROVAL_MIN_SCORE` | 0.62 | **0.48** |
+| 91 | `AI_APPROVAL_MIN_SCORE` | 0.62 | **0.62** |
 | 92 | `AI_APPROVAL_MIN_EXPECTED_NET_PCT` | 0.18 | **0.08** |
 
 **Caranya:**
@@ -32,7 +32,7 @@ Bot trading Trinity **PASIF** dan **MELEWATKAN MARKET** karena threshold terlalu
 STALE_SIGNAL_ABORT_MS = 3500  # was 1500
 
 # Line 91-92
-AI_APPROVAL_MIN_SCORE = 0.48  # was 0.62
+AI_APPROVAL_MIN_SCORE = 0.62  # standard mode
 AI_APPROVAL_MIN_EXPECTED_NET_PCT = 0.08  # was 0.18
 ```
 
@@ -232,7 +232,7 @@ INSERT INTO dynamic_params (param_key, param_value, description) VALUES
     ('fomo_guard_micro', '{"value": 35.0}', 'FOMO guard for micro-cap coins'),
     ('fomo_guard_mid', '{"value": 22.0}', 'FOMO guard for mid-cap coins'),
     ('fomo_guard_big', '{"value": 15.0}', 'FOMO guard for big-cap coins'),
-    ('ai_approval_min_score', '{"value": 0.48}', 'Minimum AI approval score'),
+    ('ai_approval_min_score', '{"value": 0.62}', 'Minimum AI approval score'),
     ('ai_approval_min_net_pct', '{"value": 0.08}', 'Minimum expected net profit %');
 
 -- Create index for fast lookups
@@ -275,7 +275,7 @@ class DynamicConfigReloader(
         val fomoGuardMicro: Double = 35.0,
         val fomoGuardMid: Double = 22.0,
         val fomoGuardBig: Double = 15.0,
-        val aiApprovalMinScore: Double = 0.48,
+        val aiApprovalMinScore: Double = 0.62,
         val aiApprovalMinNetPct: Double = 0.08,
     )
     
