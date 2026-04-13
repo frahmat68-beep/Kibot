@@ -202,6 +202,12 @@ class MacStateRepository {
         val uptimeMs = nowEpochMs - startedAtEpochMs
         val uptimeText = formatUptime(uptimeMs)
         val prev = _state.value
+        val prevLooksLikePreview =
+            prev.statusMessage == "Server monitor is booting." &&
+                prev.healthSummary.contains("Waiting for live server connection", ignoreCase = true) &&
+                prev.scanUniverseCount == 0 &&
+                prev.portfolioValueIdr == "Rp0" &&
+                prev.totalValueIdr == "Rp0"
         val nextPortfolioValue = parseMonetaryLabel(next.portfolioValueIdr)
         val prevPortfolioValue = parseMonetaryLabel(prev.portfolioValueIdr)
         val quoteFeedLikelyMissing =
@@ -264,27 +270,28 @@ class MacStateRepository {
             looksLikeBootSnapshot || keepPortfolioFallback -> freshPreviousOrders
             else -> emptyList()
         }
+        val preservePreviousRuntime = !prevLooksLikePreview && (looksLikeBootSnapshot || !hasFreshRuntimeSignal)
         _state.value = next.copy(
-            isBotRunning = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.isBotRunning) prev.isBotRunning else next.isBotRunning,
-            effectiveState = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.isBotRunning) prev.effectiveState else next.effectiveState,
-            operatingMode = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.scanUniverseCount > 0) prev.operatingMode else next.operatingMode,
-            edgeConfidence = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.scanUniverseCount > 0) prev.edgeConfidence else next.edgeConfidence,
-            marketRegime = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.scanUniverseCount > 0) prev.marketRegime else next.marketRegime,
-            topCandidate = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.topCandidate != "-") prev.topCandidate else next.topCandidate,
-            radarPairs = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.radarPairs.isNotEmpty()) prev.radarPairs else next.radarPairs,
-            scanUniverseCount = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.scanUniverseCount > 0) prev.scanUniverseCount else next.scanUniverseCount,
-            liveExecutionEnabled = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.isBotRunning) prev.liveExecutionEnabled else next.liveExecutionEnabled,
+            isBotRunning = if (preservePreviousRuntime && prev.isBotRunning) prev.isBotRunning else next.isBotRunning,
+            effectiveState = if (preservePreviousRuntime && prev.isBotRunning) prev.effectiveState else next.effectiveState,
+            operatingMode = if (preservePreviousRuntime && prev.scanUniverseCount > 0) prev.operatingMode else next.operatingMode,
+            edgeConfidence = if (preservePreviousRuntime && prev.scanUniverseCount > 0) prev.edgeConfidence else next.edgeConfidence,
+            marketRegime = if (preservePreviousRuntime && prev.scanUniverseCount > 0) prev.marketRegime else next.marketRegime,
+            topCandidate = if (preservePreviousRuntime && prev.topCandidate != "-") prev.topCandidate else next.topCandidate,
+            radarPairs = if (preservePreviousRuntime && prev.radarPairs.isNotEmpty()) prev.radarPairs else next.radarPairs,
+            scanUniverseCount = if (preservePreviousRuntime && prev.scanUniverseCount > 0) prev.scanUniverseCount else next.scanUniverseCount,
+            liveExecutionEnabled = if (preservePreviousRuntime && prev.isBotRunning) prev.liveExecutionEnabled else next.liveExecutionEnabled,
             portfolioValueIdr = if (keepPortfolioFallback && prev.portfolioValueIdr != "Rp0") prev.portfolioValueIdr else next.portfolioValueIdr,
             totalValueIdr = if (keepPortfolioFallback && prev.totalValueIdr != "Rp0") prev.totalValueIdr else next.totalValueIdr,
             freeIdrLabel = if (keepPortfolioFallback && prev.freeIdrLabel != "Rp0") prev.freeIdrLabel else next.freeIdrLabel,
-            syncHealth = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.syncHealth != "BROKEN") prev.syncHealth else next.syncHealth,
-            healthSummary = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.healthSummary.isNotBlank()) prev.healthSummary else next.healthSummary,
-            statusMessage = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.statusMessage.isNotBlank()) prev.statusMessage else next.statusMessage,
-            exchangePingMs = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.exchangePingMs != "--") prev.exchangePingMs else next.exchangePingMs,
-            exchangePingValueMs = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.exchangePingValueMs != null) prev.exchangePingValueMs else next.exchangePingValueMs,
-            kidaxNodeStatus = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.kidaxNodeStatus != "offline") prev.kidaxNodeStatus else next.kidaxNodeStatus,
-            kibotNodeStatus = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.kibotNodeStatus != "offline") prev.kibotNodeStatus else next.kibotNodeStatus,
-            kinanceNodeStatus = if ((looksLikeBootSnapshot || !hasFreshRuntimeSignal) && prev.kinanceNodeStatus != "offline") prev.kinanceNodeStatus else next.kinanceNodeStatus,
+            syncHealth = if (preservePreviousRuntime && prev.syncHealth != "BROKEN") prev.syncHealth else next.syncHealth,
+            healthSummary = if (preservePreviousRuntime && prev.healthSummary.isNotBlank()) prev.healthSummary else next.healthSummary,
+            statusMessage = if (preservePreviousRuntime && prev.statusMessage.isNotBlank()) prev.statusMessage else next.statusMessage,
+            exchangePingMs = if (preservePreviousRuntime && prev.exchangePingMs != "--") prev.exchangePingMs else next.exchangePingMs,
+            exchangePingValueMs = if (preservePreviousRuntime && prev.exchangePingValueMs != null) prev.exchangePingValueMs else next.exchangePingValueMs,
+            kidaxNodeStatus = if (preservePreviousRuntime && prev.kidaxNodeStatus != "offline") prev.kidaxNodeStatus else next.kidaxNodeStatus,
+            kibotNodeStatus = if (preservePreviousRuntime && prev.kibotNodeStatus != "offline") prev.kibotNodeStatus else next.kibotNodeStatus,
+            kinanceNodeStatus = if (preservePreviousRuntime && prev.kinanceNodeStatus != "offline") prev.kinanceNodeStatus else next.kinanceNodeStatus,
             heldAssets = if ((looksLikeBootSnapshot || keepPortfolioFallback) && prev.heldAssets.isNotEmpty()) prev.heldAssets else next.heldAssets,
             holdingsDetailed = if ((looksLikeBootSnapshot || keepPortfolioFallback) && prev.holdingsDetailed.isNotEmpty()) prev.holdingsDetailed else next.holdingsDetailed,
             lastUpdatedEpochMs = nowEpochMs,
