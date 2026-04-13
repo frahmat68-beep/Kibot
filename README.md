@@ -61,7 +61,7 @@
 
 **Tier A**: `xlm_idr`, `doge_idr`, `xrp_idr`, `trx_idr`, `ada_idr`
 
-**Tier B**: `bnb_idr`, `sol_idr`, `enj_idr`, `fun_idr`
+**Tier B**: `bnb_idr`, `enj_idr`, `fun_idr`
 
 **Tier C**: pair lain hanya jika lead-lag sangat kuat dan spread tetap ketat
 
