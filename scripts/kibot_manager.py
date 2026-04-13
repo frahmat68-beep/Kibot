@@ -43,6 +43,10 @@ _metrics: Dict[str, float | int] = {
     "whatif_skips_today": 0,
     "whatif_enters_today": 0,
 }
+_last_math_review_at = 0.0
+_math_review_last_action = "INIT"
+_math_review_last_reason = ""
+_math_review_trade_journal: list[dict[str, Any]] = []
 
 
 def _load_dotenv_if_exists() -> None:
@@ -105,6 +109,40 @@ def _metric_add(name: str, amount: float) -> None:
     current = _metrics.get(name, 0.0)
     if isinstance(current, (int, float)):
         _metrics[name] = float(current) + float(amount)
+
+
+def _telegram_send(message: str) -> None:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_USER_ID", "").strip()
+    if not token or not chat_id:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": message,
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
+    except Exception as error:
+        print(f"[KIBOT][TELEGRAM][WARN] {error}", flush=True)
+
+
+def _record_trade_result(pair_id: str, *, gross_pnl_pct: float, entry_time: float) -> None:
+    pair_key = pair_id.lower().strip()
+    if not pair_key:
+        pair_key = "unknown"
+    _math_review_trade_journal.append(
+        {
+            "pair": pair_key,
+            "gross_pnl_pct": float(gross_pnl_pct),
+            "entry_time": float(entry_time),
+        }
+    )
+    if len(_math_review_trade_journal) > 500:
+        del _math_review_trade_journal[:-500]
 
 
 def _safe_isoformat(epoch_seconds: Optional[float] = None) -> str:
@@ -855,6 +893,113 @@ def _build_performance_summary() -> Dict[str, Any]:
         "entry_state": str(_gate_state.get("entry_state") or "HEALTHY"),
         "pair_stats": pair_stats,
     }
+
+
+def _hours_until_midnight_wib() -> float:
+    now_utc = datetime.now(timezone.utc)
+    now_wib = now_utc + timedelta(hours=7)
+    midnight_wib = now_wib.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    return max((midnight_wib - now_wib).total_seconds() / 3600.0, 0.0)
+
+
+def _get_trade_metrics_today() -> Dict[str, Any]:
+    trades = list(_math_review_trade_journal)
+    total_trades = len(trades)
+    wins = sum(1 for row in trades if float(row.get("gross_pnl_pct") or 0.0) > 0)
+    losses = total_trades - wins
+    total_gross_pnl = sum(float(row.get("gross_pnl_pct") or 0.0) for row in trades)
+    total_wins = sum(float(row.get("gross_pnl_pct") or 0.0) for row in trades if float(row.get("gross_pnl_pct") or 0.0) > 0)
+    total_losses = sum(abs(float(row.get("gross_pnl_pct") or 0.0)) for row in trades if float(row.get("gross_pnl_pct") or 0.0) <= 0)
+    win_rate = wins / max(total_trades, 1)
+    avg_win = total_wins / max(wins, 1)
+    avg_loss = total_losses / max(losses, 1)
+    ev_per_trade = (win_rate * avg_win) - ((1.0 - win_rate) * avg_loss)
+    profit_factor = total_wins / max(total_losses, 1e-9)
+    return {
+        "total_trades": total_trades,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": win_rate,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "ev_per_trade": ev_per_trade,
+        "profit_factor": profit_factor,
+        "total_gross_pnl": total_gross_pnl,
+    }
+
+
+def _run_math_review() -> Dict[str, Any]:
+    metrics = _get_trade_metrics_today()
+    equity = _get_total_equity_estimate() or 0.0
+    pnl_pct = float(_daily_guard_state.get("daily_pnl_pct") or 0.0)
+    current_loss_idr = abs(min(pnl_pct, 0.0) * equity)
+    hours_left = _hours_until_midnight_wib()
+    avg_trades_per_hour = metrics["total_trades"] / max((time.time() - _bot_start_time) / 3600.0, 0.5)
+    trades_possible = avg_trades_per_hour * hours_left
+    ev_per_trade = float(metrics["ev_per_trade"])
+    if ev_per_trade > 0 and current_loss_idr > 0:
+        trades_to_recover = current_loss_idr / ev_per_trade
+    elif ev_per_trade <= 0:
+        trades_to_recover = float("inf")
+    else:
+        trades_to_recover = 0.0
+
+    if ev_per_trade <= 0 and metrics["total_trades"] >= 3:
+        action = "TIGHTEN_FILTER"
+        reason = f"EV/trade <= 0 after {metrics['total_trades']} trades"
+        _set_conservative_mode("math_review_ev_negative")
+    elif trades_to_recover > trades_possible * 1.5:
+        action = "HARD_STOP"
+        reason = f"Recovery too far: need {trades_to_recover:.1f}, possible {trades_possible:.1f}"
+        _set_conservative_mode("math_review_recovery_impossible")
+    elif trades_to_recover > trades_possible:
+        action = "DEFENSIVE"
+        reason = f"Recovery tight: need {trades_to_recover:.1f}, possible {trades_possible:.1f}"
+    elif metrics["win_rate"] >= 0.60 and ev_per_trade > 0:
+        action = "CONTINUE_OPTIMAL"
+        reason = f"WR={metrics['win_rate']:.0%}, EV/trade=Rp{ev_per_trade:,.0f}"
+        if not bool(_daily_guard_state.get("hard_stopped")) and _api_fail_streak == 0 and _control_plane_healthy:
+            _set_normal_mode("math_review_optimal")
+    else:
+        action = "CONTINUE"
+        reason = f"WR={metrics['win_rate']:.0%}, EV/trade=Rp{ev_per_trade:,.0f}"
+
+    report = (
+        f"📊 30min Math Review\n"
+        f"PnL: {pnl_pct:+.2%} | Trades: {metrics['total_trades']} ({metrics['wins']}W/{metrics['losses']}L)\n"
+        f"WR: {metrics['win_rate']:.0%} | PF: {metrics['profit_factor']:.2f} | EV/trade: Rp{ev_per_trade:+,.0f}\n"
+        f"Hours left: {hours_left:.1f} | Trades possible: {trades_possible:.1f}\n"
+        f"Action: {action}\n"
+        f"Reason: {reason}"
+    )
+    _telegram_send(report)
+    _append_runtime_event(
+        "math_review",
+        {
+            "action": action,
+            "reason": reason,
+            "metrics": metrics,
+            "hours_left": round(hours_left, 2),
+            "trades_possible": round(trades_possible, 2),
+        },
+    )
+    print(f"[KIBOT][MATH_REVIEW] action={action} reason={reason}", flush=True)
+    return {"action": action, "reason": reason, "metrics": metrics}
+
+
+def _math_review_loop() -> None:
+    global _last_math_review_at, _math_review_last_action, _math_review_last_reason
+    while not _shutdown_event.is_set():
+        try:
+            now = time.time()
+            if (now - _last_math_review_at) >= 1800.0:
+                _last_math_review_at = now
+                result = _run_math_review()
+                _math_review_last_action = str(result.get("action") or "UNKNOWN")
+                _math_review_last_reason = str(result.get("reason") or "")
+        except Exception as error:
+            print(f"[KIBOT][MATH_REVIEW][ERROR] {error}", flush=True)
+        _shutdown_event.wait(60.0)
 
 
 def _apply_ai_recommendation(recommendation: Dict[str, Any]) -> None:
@@ -1851,6 +1996,10 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
             _metric_inc("market_orders_today")
             _metric_add("fee_bleed_est_idr", abs(net) * 0.0 + max(300.0, abs(gross) * 0.006))
         _learning_engine.record_trade(pair_id, pnl_pct, used_limit_order=used_limit_order)
+    try:
+        _record_trade_result(pair_id, gross_pnl_pct=pnl_pct, entry_time=float(msg.get("entry_timestamp") or msg.get("timestamp") or time.time()))
+    except Exception as error:
+        print(f"[KIBOT][MATH_REVIEW][WARN] trade record failed pair={pair_id} reason={error}", flush=True)
     print(
         f"[KIBOT][LEARNING] pair_memory updated pair={pair_id} pnl_pct={pnl_pct:.4f} slippage_pct={slippage_pct:.4f}",
         flush=True,
@@ -2862,6 +3011,11 @@ def _http_state_payload() -> Dict[str, Any]:
                     / max(float(_metrics.get("whatif_enters_today", 0)) + float(_metrics.get("whatif_skips_today", 0)), 1.0)
                 ),
             },
+            "math_review": {
+                "last_action": _math_review_last_action,
+                "last_reason": _math_review_last_reason,
+                "trade_journal_count": len(_math_review_trade_journal),
+            },
             "uptime_seconds": int(time.time() - _bot_start_time),
             "checked_at": _safe_isoformat(),
         }
@@ -2963,6 +3117,8 @@ def main() -> None:
     health_gate_thread.start()
     ai_review_thread = threading.Thread(target=_ai_batch_review_loop, name="kibot-ai-review-loop", daemon=True)
     ai_review_thread.start()
+    math_review_thread = threading.Thread(target=_math_review_loop, name="kibot-math-review-loop", daemon=True)
+    math_review_thread.start()
     state_server_thread = threading.Thread(target=_state_server_loop, name="kibot-state-server", daemon=True)
     state_server_thread.start()
     
