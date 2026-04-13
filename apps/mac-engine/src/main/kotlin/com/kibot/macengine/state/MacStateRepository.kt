@@ -197,6 +197,13 @@ class MacStateRepository {
     private val recentOrderRetentionMs = 30 * 60 * 1000L
     private val liveTimelineRetentionMs = 6 * 60 * 60 * 1000L
 
+    private fun isHealthyPingLabel(label: String?): Boolean {
+        if (label.isNullOrBlank() || label == "--") return false
+        val digits = label.filter { it.isDigit() }
+        val pingMs = digits.toLongOrNull() ?: return false
+        return pingMs in 1..5_000L
+    }
+
     fun applyRuntimeState(next: MacDashboardState) {
         val nowEpochMs = Clock.System.now().toEpochMilliseconds()
         val uptimeMs = nowEpochMs - startedAtEpochMs
@@ -287,8 +294,8 @@ class MacStateRepository {
             syncHealth = if (preservePreviousRuntime && prev.syncHealth != "BROKEN") prev.syncHealth else next.syncHealth,
             healthSummary = if (preservePreviousRuntime && prev.healthSummary.isNotBlank()) prev.healthSummary else next.healthSummary,
             statusMessage = if (preservePreviousRuntime && prev.statusMessage.isNotBlank()) prev.statusMessage else next.statusMessage,
-            exchangePingMs = if (preservePreviousRuntime && prev.exchangePingMs != "--") prev.exchangePingMs else next.exchangePingMs,
-            exchangePingValueMs = if (preservePreviousRuntime && prev.exchangePingValueMs != null) prev.exchangePingValueMs else next.exchangePingValueMs,
+            exchangePingMs = if (preservePreviousRuntime && isHealthyPingLabel(prev.exchangePingMs)) prev.exchangePingMs else next.exchangePingMs,
+            exchangePingValueMs = if (preservePreviousRuntime && (prev.exchangePingValueMs ?: Long.MAX_VALUE) in 1..5_000L) prev.exchangePingValueMs else next.exchangePingValueMs,
             kidaxNodeStatus = if (preservePreviousRuntime && prev.kidaxNodeStatus != "offline") prev.kidaxNodeStatus else next.kidaxNodeStatus,
             kibotNodeStatus = if (preservePreviousRuntime && prev.kibotNodeStatus != "offline") prev.kibotNodeStatus else next.kibotNodeStatus,
             kinanceNodeStatus = if (preservePreviousRuntime && prev.kinanceNodeStatus != "offline") prev.kinanceNodeStatus else next.kinanceNodeStatus,
