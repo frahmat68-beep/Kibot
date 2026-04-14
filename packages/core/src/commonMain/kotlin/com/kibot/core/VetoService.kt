@@ -44,13 +44,8 @@ class VetoService {
     }
 
     private fun familyOf(pairId: PairId): String {
-        val base = pairId.value.substringBefore('_').lowercase()
-        return when (base) {
-            in setOf("doge", "shib", "pepe", "floki", "bonk", "wif") -> "meme"
-            in setOf("fet", "agix", "ocean", "render", "tao") -> "ai"
-            in setOf("sol", "ada", "avax", "matic", "arb", "op", "eth", "near", "ont", "trx", "xlm", "plpa", "kaito") -> "l1_l2"
-            in setOf("btc") -> "btc"
-            else -> base
-        }
+        val entry = com.kibot.core.data.CoinUniverse.byIndodax[pairId.value.lowercase()]
+        if (entry != null) return entry.correlationGroup.name.lowercase()
+        return pairId.value.substringBefore('_').lowercase()
     }
 }
