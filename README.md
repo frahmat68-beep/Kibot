@@ -1,4 +1,4 @@
-# KiBot Trinity
+# KiBot Trinity (v5.0)
 
 **Lead-Lag trading system** berbasis microservices untuk market **Indodax** dengan sinyal prediktif dari market global **Binance**. Sistem berjalan di **Oracle Cloud** (Singapore) dengan arsitektur 3-bot (Trinity).
 
@@ -25,170 +25,43 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### The Three Bots
+## Core Trading Logic (v5.0 Overhaul)
 
-| Bot | Language | Function | Port |
-|-----|----------|----------|------|
-| **KINANCE** | Kotlin/JVM | Binance market radar — volume anomaly, order book imbalance, sector lead-lag | 8788 |
-| **KIDAX** | Kotlin/JVM | Indodax executor — slippage calc, fee optimization, trailing stop | 8787 |
-| **KIBOT Manager** | Python | Brain & veto gate — AI consensus, capital rotation, health monitoring | 9998 |
+### 🛡️ Survival-First Mindset
+Sistem tidak lagi menggunakan "Zero-Cash" mindset agresif. Trinity v5.0 fokus pada **modal perlindungan**:
+- **Math-First Decision**: Perhitungan EV (Expected Value) mendahului AI.
+- **Strict Data Retention**: Rolling history TTL (max 100 samples) untuk menjamin performa di server RAM terbatas.
+- **Reliable Symbol Mapping**: Koreksi bug mapping (e.g., `xlm_idr` → `XLMUSDT`) untuk akurasi lead-lag global.
 
-## Core Trading Logic
-
-### Trading Mindset
-- **Capital Efficiency** — modal diputar hanya saat probabilitas edge positif
-- **Liquidity First** — prioritas pair dengan spread/slippage terkontrol
-- **Signal-Confirmed Entry** — entry hanya saat sinyal fresh + scoring lolos gate
-
-### Trading Philosophy
-
-**Survival First** — modal yang selamat adalah modal yang bisa compound. Sistem tidak mengejar gain besar dalam satu trade, tapi membangun keuntungan kecil yang konsisten dengan win-rate tinggi.
-
-**Tekan Kerugian** — fail-fast pada kondisi buruk: API degraded, control-plane timeout, stale signal, atau daily limit hit. Lebih baik tidak masuk daripada masuk di kondisi informasi tidak lengkap.
-
-**Maksimalkan Probabilitas** — entry hanya jika scoring terpenuhi, sinyal fresh, AI veto passed, dan risk gate clear. Bukan berapa besar gainnya, tapi seberapa sering sistemnya benar.
-
-**Sedikit Demi Sedikit** — compound dari stable bucket untuk modal inti; aggressive bucket hanya untuk sinyal high-confidence. Daily hard stop menjaga modal yang sudah dibangun.
-
-### AI Approval Thresholds
-
-* **Standard**: score ≥ 0.62, expected net ≥ 0.18%
-* **Strict**: score ≥ 0.70, expected net ≥ 0.25%
-* **Instant approval dihapus** — trade EV negatif tidak boleh lolos
-* **AI degraded** = warning only, bukan hard block
+### AI Approval Thresholds (Updated)
+Kami telah menaikkan standar kualitas sinyal:
+* **Standard**: score ≥ 0.70, expected net ≥ 0.25%
+* **Strict**: score ≥ 0.80, expected net ≥ 0.40%
+* **Instant approval dilarang total** — semua sinyal wajib melewati Veto Gate.
 
 ## Daily Risk Management
-
-### PnL State Machine
 
 | State | PnL Harian | Action |
 |-------|------------|--------|
 | HEALTHY | > -0.5% | Entry normal semua tier |
-| WARNING | -0.5% to -1% | Tier A+B only, size 75% |
-| CRITICAL | -1% to -2% | Tier A only, size 50% |
-| HARD_STOP | < -2% | Entry blocked, exit active |
-
-Hard stop persist ke disk (`state/daily_guard.json`). Reset otomatis 00:00 WIB. Tidak bisa di-bypass via restart.
-
-### Pair Strategy
-
-| Tier | Pairs | Max Size | Min Target | TTL Signal |
-|------|-------|----------|-----------|-----------|
-| A | xlm, doge, xrp, trx, ada | 20% equity | 2.0% | 500ms |
-| B | enj, fun, bnb, sol | 15% equity | 3.0% | 500ms |
-| C | dusk, dll | 10% equity | 5.0% | 200ms |
-| ❌ | Koin tanpa Binance pair | 0% | - | - |
-
-### Pair Strategy
-
-**Tier A**: `xlm_idr`, `doge_idr`, `xrp_idr`, `trx_idr`, `ada_idr`
-
-**Tier B**: `bnb_idr`, `enj_idr`, `fun_idr`, `arb_idr`, `inj_idr`, `ondo_idr`, `wld_idr`, `tia_idr`, `ethfi_idr`, `sol_idr`
-
-**Tier C**: `near_idr`, `hbar_idr`, `link_idr`, `atom_idr`, `avax_idr`, `ton_idr`, `sui_idr`, `pol_idr`, `ldo_idr`, `op_idr`, `render_idr`, `grt_idr`, `lunc_idr`
-
-**Tier D**: `pepe_idr`, `shib_idr`, `bonk_idr`, `wif_idr`, `floki_idr`, `bome_idr`, `cat_idr`, `fartcoin_idr` — hanya jika lead-lag sangat kuat dan risk gate sangat ketat
-
-**Blacklist**: pair Indodax-only tanpa counterpart Binance atau riwayat slippage buruk
-
-### Entry Flow
-```
-PairSelector (11-point scoring) → VetoService (lead-lag check) → 
-BotModeDecider (CONSERVATIVE / DEFENSIVE / SUSPENDED) → CapitalDeployment (tier-based) → 
-LiveExecution (order submit)
-```
-
-### Exit Flow (Multi-layer)
-- Partial take-profit (30-50% saat profit >0.5%)
-- Trailing stop (dynamic % based on volatility)
-- Hard stop-loss (2-3% below entry)
-- Time-based exit (evaluate after >12 hours, bukan force sell rugi)
-- Emergency sell (AI-triggered on momentum loss)
+| WARNING | -0.5% to -1% | Tier A+B only, size 70% |
+| CRITICAL | -1% to -2% | Tier A only, size 40% |
+| HARD_STOP | < -2% | Entry blocked, reset 00:00 WIB |
 
 ## Modules
 
 | Module | Description |
 |--------|-------------|
-| `apps/mac-engine` | KiDax/Kinance JVM daemon — the actual trading engine |
-| `packages/core` | Shared business logic — RiskEngine, PairSelector, TradeAutomation |
-| `packages/shared-models` | DTOs, enums, serializable payloads |
-| `packages/control-plane` | Supabase integration — auth, lease, commands |
-| `packages/indodax-client` | Indodax REST adapter |
-| `packages/binance-client` | Binance REST adapter |
-| `packages/ai-support` | AI integration — GeminiClient, MultiAIClient |
-| `packages/test-kit` | Test helpers |
-| `scripts/kibot_manager.py` | Python veto daemon (1600+ lines) |
-| `infra/supabase` | SQL migrations, RLS |
-| `infra/systemd` | Service files for Oracle server |
+| `apps/mac-engine` | KiDax/Kinance JVM daemon — Optimized shadow JAR deployment |
+| `scripts/kibot_manager.py` | Python veto daemon v5.0 — Math Review & Data Retention logic |
+| `infra/supabase` | Redacted Security Credentials guide included |
 
-## AI Integration
-
-Multi-provider AI veto system dengan fallback order:
-
-1. **Groq** — llama-3.1-8b-instant
-2. **OpenRouter** — meta-llama/llama-3.1-8b-instruct
-3. **Cohere** — command-r
-4. **Gemini** — gemini-2.0-flash-lite
-
-## Strict Guardrails
-
-**Aturan yang TIDAK BOLEH diubah tanpa instruksi eksplisit:**
-
-1. **NO PANIC SELL ON TIMEOUT** — UDP putus = suspend entry saja, BUKAN market sell
-2. **ADAPTIVE TRAILING STOP** — koin <Rp500 diperlebar (3-5%) untuk hindari noise
-3. **RATIONAL QUARANTINE** — stop-loss = max 15 menit cooldown, bukan berjam-jam
-4. **STRICT TTL** — sinyal UDP >500ms = stale, wajib di-drop
-5. **SOFT AI-AUDIT** — AI degraded = warning only, bukan hard veto
-
-## Infrastructure
-
-### Oracle Free Tier (Singapore)
-- RAM: 1GB
-- CPU: 1/8 OCPU
-- JVM tuning: hemat memori, minimal GC pause
-
-### Systemd Services
+## Quick Start (Deploy)
 ```bash
-sudo systemctl status kidax-engine      # Indodax executor
-sudo systemctl status kinance-engine    # Binance radar
-sudo systemctl status kibot-manager     # Python veto daemon
-```
-
-## Quick Start (Local Development)
-
-1. Install JDK 21
-2. Run `scripts/bootstrap_local.sh` to create local secrets scaffolding
-3. Run `scripts/check_local_setup.sh` to verify setup
-4. Run tests:
-   ```bash
-   ./gradlew :packages:core:jvmTest :packages:indodax-client:jvmTest :apps:mac-engine:test
-   ```
-5. Open project in IntelliJ IDEA
-
-## Deployment
-
-### Deploy to Oracle Server
-```bash
-# Build fat JAR
 ./gradlew :apps:mac-engine:shadowJar
-
-# Copy to server
-scp apps/mac-engine/build/libs/mac-engine-all.jar ubuntu@<server>:/home/ubuntu/KiDax/server/
-
-# Restart services
-ssh ubuntu@<server> 'sudo systemctl restart kidax-engine kinance-engine kibot-manager'
-```
-
-### Health Check
-```bash
-curl localhost:8787/api/state    # KiDax full state
-curl localhost:9998/api/state    # Manager full state
-bash scripts/morning_check.sh    # Daily pre-market check
+scp apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar ubuntu@213.35.118.26:/home/ubuntu/KiDax/server/
 ```
 
 ## Documentation
-
-- [setup.md](docs/setup.md) — Local setup guide
-- [access-and-secrets.md](docs/access-and-secrets.md) — API keys & secrets management
-- [trading-intelligence.md](docs/trading-intelligence.md) — Strategy & scoring logic
-- [.github/copilot-instructions.md](.github/copilot-instructions.md) — AI agent guidelines
+- [audit_remediation_plan.md](.gemini/antigravity/brain/fdf984b9-d1ac-4459-b26d-781000048390/audit_remediation_plan.md) — Solusi Audit Temuan Lengkap.
+- [.github/copilot-instructions.md](.github/copilot-instructions.md) — Trinity v5.0 AI Agent guidelines.
