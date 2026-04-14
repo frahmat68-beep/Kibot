@@ -300,109 +300,148 @@ def analyze_pump_legitimacy(
         reasoning=" | ".join(reasons[:4])
     )
 
-def calculate_bollinger_bands(prices: List[float], window: int = 20, num_std: float = 2.0) -> Tuple[float, float, float]:
-    if len(prices) < window:
-        # Fallback if history is short
-        sma = sum(prices) / len(prices)
-        return sma * 1.05, sma, sma * 0.95
-    
-    recent = prices[-window:]
-    sma = sum(recent) / window
-    variance = sum((x - sma) ** 2 for x in recent) / window
-    std_dev = variance ** 0.5
-    return sma + (num_std * std_dev), sma, sma - (num_std * std_dev)
+import math
 
-def screen_all_pairs() -> List[PumpAnalysis]:
-    """
-    Scans all Indodax pairs and returns high-legitimacy pumps.
-    """
-    print("[KIBOT][SCREENER] Starting full market scan...", flush=True)
+def _fetch_candles_indodax(pair_id: str, tf: int = 15, count: int = 20) -> list[dict]:
+    import urllib.request, json
+    base = pair_id.replace("_idr","").upper()
+    symbol = f"{base}/IDR"
+    now = int(time.time())
+    from_ts = now - (tf * 60 * count)
+    url = (f"https://indodax.com/tradingview/history_v2"
+           f"?symbol={symbol}&tf={tf}&from={from_ts}&to={now}")
     try:
-        # Get Indodax summaries
-        resp = requests.get("https://indodax.com/api/summaries", timeout=15)
-        if resp.status_code != 200:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            data = json.loads(r.read())
+        candles = []
+        times = data.get("t", [])
+        opens = data.get("o", data.get("Open", []))
+        highs = data.get("h", data.get("High", []))
+        lows  = data.get("l", data.get("Low", []))
+        closes = data.get("c", data.get("Close", []))
+        if not times or len(times) == 0:
             return []
-        data = resp.json()
-        tickers = data.get("tickers", {})
-        
-        # Get Binance prices for lead-lag (optional)
-        binance_prices = {}
-        try:
-            b_resp = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=5)
-            if b_resp.status_code == 200:
-                for item in b_resp.json():
-                    binance_prices[item["symbol"]] = float(item["price"])
-        except Exception:
-            pass
-
-        recommended = []
-        for pair_key, t in tickers.items():
-            if not pair_key.endswith("_idr"):
-                continue
-            
-            pair_id = pair_key
-            price_now = float(t.get("last") or t.get("sell") or 0)
-            if price_now <= 0: continue
-            
-            # Update history with TTL (Retention: max 100 samples)
-            if pair_id not in _price_history:
-                _price_history[pair_id] = []
-            _price_history[pair_id].append(price_now)
-            
-            # ROLLING DELETE: Keep last 100 price points to prevent memory bloat
-            if len(_price_history[pair_id]) > 100:
-                _price_history[pair_id] = _price_history[pair_id][-100:]
-            
-            # Basic filters before heavy analysis
-            vol_24h = float(t.get("vol_idr") or 0)
-            if vol_24h < 150_000_000: # Min 150JT IDR volume 24h
-                continue
-            
-            # Bollinger Bands
-            upper, mid, lower = calculate_bollinger_bands(_price_history[pair_id])
-            
-            # Binance lead-lag check
-            base_asset = pair_id.split("_")[0].upper()
-            
-            # FIXED: Ensure we always map to USDT pair on Binance for reliable lead-lag
-            # Audit reported incorrect mapping to IDR sometimes.
-            b_symbol = f"{base_asset}USDT"
-            
-            has_b = b_symbol in binance_prices
-            b_price = binance_prices.get(b_symbol, 0.0)
-            
-            # Mock historical prices for POC (should use _price_history for real)
-            # In real prod, _price_history will build up over time
-            p_1h = _price_history[pair_id][-4] if len(_price_history[pair_id]) >= 4 else price_now
-            p_15m = _price_history[pair_id][-1] if len(_price_history[pair_id]) >= 1 else price_now
-            
-            analysis = analyze_pump_legitimacy(
-                pair_id=pair_id,
-                price_now=price_now,
-                price_24h_ago=price_now * 0.95, # Mock
-                price_1h_ago=p_1h,
-                price_15m_ago=p_15m,
-                volume_24h_idr=vol_24h,
-                volume_1h_idr=vol_24h / 24 * 1.5, # Mock
-                high_24h=float(t.get("high") or price_now),
-                low_24h=float(t.get("low") or price_now),
-                bollinger_upper=upper,
-                bollinger_middle=mid,
-                bollinger_lower=lower,
-                has_binance_pair=has_b,
-                binance_price_change_pct=2.0 if has_b else 0.0 # Mock
-            )
-            
-            if analysis.legitimacy_score >= 55:
-                recommended.append(analysis)
-        
-        # Sort by score
-        recommended.sort(key=lambda x: x.legitimacy_score, reverse=True)
-        return recommended
-        
+        for i in range(len(times)):
+            candles.append({
+                "t": times[i], "o": float(opens[i]),
+                "h": float(highs[i]), "l": float(lows[i]),
+                "c": float(closes[i])
+            })
+        return candles
     except Exception as e:
-        print(f"[KIBOT][SCREENER][ERROR] {e}", flush=True)
+        print(f"[CANDLE] {pair_id}: {e}", flush=True)
         return []
+
+def calculate_bollinger_bands(pair_id: str, period: int = 20, std_dev: float = 2.0) -> dict | None:
+    candles = _fetch_candles_indodax(pair_id, tf=15, count=period + 5)
+    if len(candles) < period:
+        return None
+    closes = [c["c"] for c in candles[-period:]]
+    sma = sum(closes) / period
+    variance = sum((c - sma) ** 2 for c in closes) / period
+    std = math.sqrt(variance)
+    return {
+        "upper": sma + (std_dev * std),
+        "middle": sma,
+        "lower": sma - (std_dev * std),
+        "std": std,
+        "pair": pair_id
+    }
+
+BINANCE_PAIR_MAP = {
+    "btc_idr": "BTCUSDT", "eth_idr": "ETHUSDT",
+    "xlm_idr": "XLMUSDT", "doge_idr": "DOGEUSDT",
+    "xrp_idr": "XRPUSDT", "trx_idr": "TRXUSDT",
+    "ada_idr": "ADAUSDT", "sol_idr": "SOLUSDT",
+    "bnb_idr": "BNBUSDT", "enj_idr": "ENJUSDT",
+    "fun_idr": "FUNUSDT", "dusk_idr": "DUSKUSDT",
+    "pepe_idr": "PEPEUSDT", "floki_idr": "FLOKIUSDT",
+    "bonk_idr": "BONKUSDT", "shib_idr": "SHIBUSDT",
+    "matic_idr": "MATICUSDT",
+}
+
+def get_binance_symbol(indodax_pair: str) -> str | None:
+    explicit = BINANCE_PAIR_MAP.get(indodax_pair.lower())
+    if explicit:
+        return explicit
+    base = indodax_pair.lower().replace("_idr","").replace("_usdt","")
+    return f"{base.upper()}USDT"
+
+_bb_cache = {}
+_screen_cache = []
+_last_screen_time = 0.0
+
+def screen_all_pairs() -> list[dict]:
+    import urllib.request, json
+    
+    INDODAX_TICKERS_URL = "https://indodax.com/api/tickers"
+    try:
+        with urllib.request.urlopen(INDODAX_TICKERS_URL, timeout=10) as r:
+            data = json.loads(r.read())
+        tickers = data.get("tickers", data)
+    except Exception as e:
+        print(f"[SCREEN] Cannot fetch tickers: {e}", flush=True)
+        return []
+    
+    candidates = []
+    for pair_id, ticker in tickers.items():
+        try:
+            if not pair_id.endswith("_idr"): continue
+            
+            vol_24h = float(ticker.get("vol_idr", 0))
+            if vol_24h < 50_000_000: continue
+            
+            price = float(ticker.get("last", 0))
+            high = float(ticker.get("high", price))
+            low = float(ticker.get("low", price))
+            if price <= 0: continue
+            
+            mid_24h = (high + low) / 2
+            pump_24h_pct = (price - low) / max(low, 0.001) * 100
+            if pump_24h_pct > 80: continue
+            
+            binance_sym = get_binance_symbol(pair_id)
+            
+            bb = _bb_cache.get(pair_id)
+            if not bb:
+                bb = calculate_bollinger_bands(pair_id)
+                if bb: _bb_cache[pair_id] = bb
+            
+            bb_pos = 0.5
+            if bb:
+                bb_range = bb["upper"] - bb["lower"]
+                if bb_range > 0: bb_pos = (price - bb["lower"]) / bb_range
+            
+            if bb_pos > 0.92: continue
+            
+            score = 0
+            if vol_24h > 500_000_000: score += 25
+            elif vol_24h > 200_000_000: score += 15
+            else: score += 5
+            
+            position_in_range = (price - low) / max(high - low, 0.001)
+            if position_in_range < 0.4: score += 25
+            elif position_in_range < 0.65: score += 18
+            elif position_in_range < 0.85: score += 8
+            else: score -= 10
+            
+            if bb_pos < 0.5: score += 20
+            elif bb_pos < 0.75: score += 12
+            
+            if binance_sym: score += 10
+            if score < 45: continue
+            
+            candidates.append({
+                "pair_id": pair_id, "score": score, "price": price,
+                "vol_24h": vol_24h, "pump_24h_pct": pump_24h_pct,
+                "position_in_range": position_in_range, "bb_position": bb_pos,
+                "has_binance": bool(binance_sym), "binance_symbol": binance_sym,
+            })
+        except Exception as e:
+            pass
+            
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    return candidates[:15]
 
 @dataclass
 class TrailingConfig:
@@ -4004,6 +4043,74 @@ def _math_review_loop() -> None:
 def _maybe_run_30min_math_review() -> None:
     # Helper for the main wait loop
     run_30min_math_review()
+import urllib.request
+from datetime import datetime, timedelta
+
+DATA_DIR = Path("/home/ubuntu/KiBot/data")
+DATA_DIR.mkdir(exist_ok=True)
+
+def append_trade_to_daily_log(trade: dict):
+    date_wib = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d")
+    log_file = DATA_DIR / f"trades_{date_wib}.json"
+    trades = []
+    if log_file.exists():
+        try:
+            trades = json.loads(log_file.read_text())
+        except:
+            pass
+    trade["logged_at"] = time.time()
+    trades.append(trade)
+    log_file.write_text(json.dumps(trades, indent=2))
+
+def run_daily_data_sync():
+    today_wib = (datetime.utcnow() + timedelta(hours=7)).date()
+    synced, deleted_local = 0, 0
+    for data_file in sorted(DATA_DIR.glob("trades_*.json")):
+        try:
+            date_str = data_file.stem.replace("trades_", "")
+            file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            age_days = (today_wib - file_date).days
+            if 1 <= age_days <= 3:
+                if _sync_trades_to_supabase(data_file):
+                    synced += 1
+            if age_days > 3:
+                data_file.unlink()
+                deleted_local += 1
+        except Exception as e:
+            print(f"[LIFECYCLE] Error {data_file}: {e}", flush=True)
+    _cleanup_supabase_old_data()
+    print(f"[LIFECYCLE] Sync: {synced} files, deleted: {deleted_local} files", flush=True)
+
+def _sync_trades_to_supabase(data_file: Path) -> bool:
+    try:
+        trades = json.loads(data_file.read_text())
+        if not trades: return True
+        url = os.environ.get("SUPABASE_URL", "")
+        key = os.environ.get("SUPABASE_ANON_KEY", "")
+        if not url or not key: return False
+        req = urllib.request.Request(f"{url}/rest/v1/trade_history", data=json.dumps(trades).encode(), headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json", "Prefer": "resolution=ignore-duplicates"}, method="POST")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status in (200, 201)
+    except Exception: return False
+
+def _cleanup_supabase_old_data():
+    try:
+        url = os.environ.get("SUPABASE_URL", "")
+        key = os.environ.get("SUPABASE_ANON_KEY", "")
+        if not url: return
+        cutoff = datetime.utcnow() - timedelta(days=30)
+        req = urllib.request.Request(f"{url}/rest/v1/trade_history?created_at=lt.{cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')}", headers={"apikey": key, "Authorization": f"Bearer {key}"}, method="DELETE")
+        urllib.request.urlopen(req, timeout=10)
+    except Exception: pass
+
+def keep_supabase_alive():
+    try:
+        url = os.environ.get("SUPABASE_URL", "")
+        key = os.environ.get("SUPABASE_ANON_KEY", "")
+        if not url: return
+        req = urllib.request.Request(f"{url}/rest/v1/pair_memory_history?select=pair_id&limit=1", headers={"apikey": key, "Authorization": f"Bearer {key}"})
+        urllib.request.urlopen(req, timeout=5)
+    except Exception: pass
 
 def main() -> None:
     global _main_socket
@@ -4080,11 +4187,40 @@ def main() -> None:
             except socket.timeout:
                 # Normal timeout, check shutdown event
                 global _last_daily_guard_check_at
+                global _last_screen_time
+                global _last_supabase_ping
+                if "_last_screen_time" not in globals(): _last_screen_time = 0.0
+                if "_last_supabase_ping" not in globals(): _last_supabase_ping = 0.0
+                if "_daily_sync_done_today" not in globals(): _daily_sync_done_today = False
                 now = time.time()
-                if (now - _last_daily_guard_check_at) >= 60.0:
+                
+                # 30 second checks
+                if (now - _last_daily_guard_check_at) >= 30.0:
                     _last_daily_guard_check_at = now
                     _check_daily_loss_limit()
                 _maybe_run_30min_math_review()
+                
+                # 15 minutes: screener
+                if (now - _last_screen_time) >= 900.0:
+                    _last_screen_time = now
+                    try:
+                        global _screen_cache
+                        _screen_cache = screen_all_pairs()
+                    except Exception as e:
+                        print(f"[SCREEN] loop err: {e}")
+                        
+                # 6 hours: supabase ping
+                if (now - _last_supabase_ping) >= 21600.0:
+                    _last_supabase_ping = now
+                    keep_supabase_alive()
+                    
+                wib_hour = (datetime.utcnow() + timedelta(hours=7)).hour
+                if wib_hour == 2 and not globals().get("_daily_sync_done_today"):
+                    globals()["_daily_sync_done_today"] = True
+                    run_daily_data_sync()
+                elif wib_hour != 2:
+                    globals()["_daily_sync_done_today"] = False
+
                 continue
             except OSError as e:
                 if _shutdown_event.is_set():
