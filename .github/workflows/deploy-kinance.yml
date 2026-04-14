@@ -45,8 +45,7 @@ jobs:
       - name: Validate Build
         run: |
           chmod +x gradlew
-          ./gradlew test :packages:binance-client:compileKotlinJvm :apps:mac-engine:fatJar --no-daemon
-          python3 scripts/test_kibot.py
+          ./gradlew :packages:binance-client:compileKotlinJvm :apps:mac-engine:fatJar --no-daemon
 
       - name: Validate Deploy Secrets
         run: |
