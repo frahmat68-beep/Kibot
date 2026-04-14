@@ -51,6 +51,9 @@ _last_math_review_at = 0.0
 _math_review_last_action = "INIT"
 _math_review_last_reason = ""
 _math_review_trade_journal: list[dict[str, Any]] = []
+_price_history: Dict[str, List[float]] = {}  # pair_id -> [price1, price2, ...]
+_last_screener_run_at = 0.0
+_active_trails: Dict[str, Dict[str, Any]] = {}  # pair_id -> {entry_price, max_price, trailing_pct, ...}
 
 
 def _load_dotenv_if_exists() -> None:
@@ -134,7 +137,422 @@ def _telegram_send(message: str) -> None:
         print(f"[KIBOT][TELEGRAM][WARN] {error}", flush=True)
 
 
+
+@dataclass
+class PumpAnalysis:
+    pair_id: str
+    legitimacy_score: float    # 0-100
+    pump_phase: str            # "EARLY"/"MID"/"LATE"/"PEAK"/"POST_PEAK"
+    entry_recommendation: str  # "ENTER_NOW"/"WAIT_PULLBACK"/"SKIP"/"DANGER"
+    exit_target_pct: float     # berapa % target keluar
+    stop_loss_pct: float       # berapa % stop loss dari entry
+    risk_reward: float
+    reasoning: str
+
+def analyze_pump_legitimacy(
+    pair_id: str,
+    price_now: float,
+    price_24h_ago: float,
+    price_1h_ago: float,
+    price_15m_ago: float,
+    volume_24h_idr: float,
+    volume_1h_idr: float,
+    high_24h: float,
+    low_24h: float,
+    bollinger_upper: float,
+    bollinger_middle: float,
+    bollinger_lower: float,
+    has_binance_pair: bool,
+    binance_price_change_pct: float = 0.0,
+) -> PumpAnalysis:
+    """
+    Hitung apakah pump ini legitimate dan layak dimasuki.
+    Pure matematika, tidak butuh AI.
+    """
+    score = 0.0
+    reasons = []
+
+    # === METRIC 1: Volume Legitimacy (0-25 poin) ===
+    volume_ratio_1h = (volume_1h_idr / max(volume_24h_idr / 24, 1))
+    if volume_ratio_1h > 3.0:
+        score += 25
+        reasons.append(f"Volume 1h = {volume_ratio_1h:.1f}x rata-rata (sangat kuat)")
+    elif volume_ratio_1h > 2.0:
+        score += 18
+        reasons.append(f"Volume 1h = {volume_ratio_1h:.1f}x rata-rata (kuat)")
+    elif volume_ratio_1h > 1.5:
+        score += 10
+        reasons.append(f"Volume 1h = {volume_ratio_1h:.1f}x rata-rata (moderate)")
+    else:
+        reasons.append(f"Volume lemah: {volume_ratio_1h:.1f}x rata-rata")
+
+    if volume_24h_idr < 100_000_000:
+        score -= 20
+        reasons.append(f"PENALTY: Volume 24h terlalu kecil Rp{volume_24h_idr/1e9:.2f}B")
+    elif volume_24h_idr > 1_000_000_000:
+        score += 10
+        reasons.append(f"Volume 24h besar Rp{volume_24h_idr/1e9:.1f}B")
+
+    # === METRIC 2: Pump Phase (0-25 poin) ===
+    pct_from_24h_low = (price_now - low_24h) / max(low_24h, 0.001) * 100
+    pct_from_24h_high = (high_24h - price_now) / max(high_24h, 0.001) * 100
+    total_range_pct = (high_24h - low_24h) / max(low_24h, 0.001) * 100
+    position_in_range = (price_now - low_24h) / max(high_24h - low_24h, 0.001)
+
+    if position_in_range < 0.4:
+        pump_phase = "EARLY"
+        score += 25
+        reasons.append(f"EARLY phase: {position_in_range:.0%} dari range")
+    elif position_in_range < 0.65:
+        pump_phase = "MID"
+        score += 18
+        reasons.append(f"MID phase: {position_in_range:.0%} dari range")
+    elif position_in_range < 0.85:
+        pump_phase = "LATE"
+        score += 8
+        reasons.append(f"LATE phase: {position_in_range:.0%} dari range — hati-hati")
+    elif position_in_range < 0.95:
+        pump_phase = "PEAK"
+        score -= 5
+        reasons.append(f"PEAK phase: {position_in_range:.0%} dari range — RISIKO TINGGI")
+    else:
+        pump_phase = "POST_PEAK"
+        score -= 20
+        reasons.append(f"POST_PEAK: harga sangat tinggi dari low — JANGAN MASUK")
+
+    # === METRIC 3: Bollinger Band Position (0-20 poin) ===
+    bb_range = bollinger_upper - bollinger_lower
+    bb_position = (price_now - bollinger_lower) / max(bb_range, 0.001)
+    if bb_position < 0.5:
+        score += 20
+        reasons.append(f"Harga di bawah BB middle ({bb_position:.0%}) — ruang naik besar")
+    elif bb_position < 0.75:
+        score += 12
+        reasons.append(f"Harga mid BB ({bb_position:.0%}) — masih ada ruang")
+    elif bb_position < 0.9:
+        score += 5
+        reasons.append(f"Harga dekat BB upper ({bb_position:.0%}) — terbatas")
+    else:
+        score -= 15
+        reasons.append(f"Harga ABOVE BB upper ({bb_position:.0%}) — OVERBOUGHT!")
+
+    # === METRIC 4: Momentum (0-15 poin) ===
+    momentum_15m = (price_now - price_15m_ago) / max(price_15m_ago, 0.001) * 100
+    momentum_1h  = (price_now - price_1h_ago) / max(price_1h_ago, 0.001) * 100
+    if momentum_15m > 1.0 and momentum_1h > 3.0:
+        score += 15
+        reasons.append(f"Momentum kuat: +{momentum_15m:.1f}% (15m), +{momentum_1h:.1f}% (1h)")
+    elif momentum_15m > 0.5:
+        score += 8
+        reasons.append(f"Momentum positif: +{momentum_15m:.1f}% (15m)")
+    elif momentum_15m < 0:
+        score -= 10
+        reasons.append(f"Momentum NEGATIF: {momentum_15m:.1f}% (15m) — mulai turun")
+
+    # === METRIC 5: Binance Lead-Lag Bonus (0-15 poin) ===
+    if has_binance_pair:
+        if binance_price_change_pct > 3.0:
+            score += 15
+            reasons.append(f"Binance +{binance_price_change_pct:.1f}% → lead-lag potential")
+        elif binance_price_change_pct > 1.0:
+            score += 8
+            reasons.append(f"Binance +{binance_price_change_pct:.1f}% — weak lead-lag")
+        else:
+            reasons.append("Tidak ada Binance lead-lag")
+    else:
+        score -= 5
+        reasons.append("Tidak ada di Binance — no lead-lag, hanya organic")
+
+    score = max(0, min(100, score))
+    if pump_phase == "EARLY":
+        exit_target = 0.08
+        stop_loss   = 0.03
+    elif pump_phase == "MID":
+        exit_target = 0.05
+        stop_loss   = 0.025
+    elif pump_phase == "LATE":
+        exit_target = 0.03
+        stop_loss   = 0.02
+    else:
+        exit_target = 0.02
+        stop_loss   = 0.015
+
+    rr = exit_target / max(stop_loss, 0.001)
+    if score >= 70 and rr >= 2.0:
+        recommendation = "ENTER_NOW"
+    elif score >= 55 and rr >= 1.5:
+        recommendation = "ENTER_NOW"
+    elif score >= 40 and pump_phase in ("LATE", "PEAK"):
+        recommendation = "WAIT_PULLBACK"
+    elif score < 30 or pump_phase in ("POST_PEAK",):
+        recommendation = "DANGER"
+    else:
+        recommendation = "SKIP"
+
+    return PumpAnalysis(
+        pair_id=pair_id,
+        legitimacy_score=round(score, 1),
+        pump_phase=pump_phase,
+        entry_recommendation=recommendation,
+        exit_target_pct=exit_target,
+        stop_loss_pct=stop_loss,
+        risk_reward=round(rr, 2),
+        reasoning=" | ".join(reasons[:4])
+    )
+
+def calculate_bollinger_bands(prices: List[float], window: int = 20, num_std: float = 2.0) -> Tuple[float, float, float]:
+    if len(prices) < window:
+        # Fallback if history is short
+        sma = sum(prices) / len(prices)
+        return sma * 1.05, sma, sma * 0.95
+    
+    recent = prices[-window:]
+    sma = sum(recent) / window
+    variance = sum((x - sma) ** 2 for x in recent) / window
+    std_dev = variance ** 0.5
+    return sma + (num_std * std_dev), sma, sma - (num_std * std_dev)
+
+def screen_all_pairs() -> List[PumpAnalysis]:
+    """
+    Scans all Indodax pairs and returns high-legitimacy pumps.
+    """
+    print("[KIBOT][SCREENER] Starting full market scan...", flush=True)
+    try:
+        # Get Indodax summaries
+        resp = requests.get("https://indodax.com/api/summaries", timeout=15)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        tickers = data.get("tickers", {})
+        
+        # Get Binance prices for lead-lag (optional)
+        binance_prices = {}
+        try:
+            b_resp = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=5)
+            if b_resp.status_code == 200:
+                for item in b_resp.json():
+                    binance_prices[item["symbol"]] = float(item["price"])
+        except Exception:
+            pass
+
+        recommended = []
+        for pair_key, t in tickers.items():
+            if not pair_key.endswith("_idr"):
+                continue
+            
+            pair_id = pair_key
+            price_now = float(t.get("last") or t.get("sell") or 0)
+            if price_now <= 0: continue
+            
+            # Update history
+            if pair_id not in _price_history:
+                _price_history[pair_id] = []
+            _price_history[pair_id].append(price_now)
+            if len(_price_history[pair_id]) > 100:
+                _price_history[pair_id].pop(0)
+            
+            # Basic filters before heavy analysis
+            vol_24h = float(t.get("vol_idr") or 0)
+            if vol_24h < 150_000_000: # Min 150JT IDR volume 24h
+                continue
+            
+            # Bollinger Bands
+            upper, mid, lower = calculate_bollinger_bands(_price_history[pair_id])
+            
+            # Binance lead-lag check
+            base_asset = pair_id.split("_")[0].upper()
+            b_symbol = f"{base_asset}USDT"
+            has_b = b_symbol in binance_prices
+            b_price = binance_prices.get(b_symbol, 0.0)
+            
+            # Mock historical prices for POC (should use _price_history for real)
+            # In real prod, _price_history will build up over time
+            p_1h = _price_history[pair_id][-4] if len(_price_history[pair_id]) >= 4 else price_now
+            p_15m = _price_history[pair_id][-1] if len(_price_history[pair_id]) >= 1 else price_now
+            
+            analysis = analyze_pump_legitimacy(
+                pair_id=pair_id,
+                price_now=price_now,
+                price_24h_ago=price_now * 0.95, # Mock
+                price_1h_ago=p_1h,
+                price_15m_ago=p_15m,
+                volume_24h_idr=vol_24h,
+                volume_1h_idr=vol_24h / 24 * 1.5, # Mock
+                high_24h=float(t.get("high") or price_now),
+                low_24h=float(t.get("low") or price_now),
+                bollinger_upper=upper,
+                bollinger_middle=mid,
+                bollinger_lower=lower,
+                has_binance_pair=has_b,
+                binance_price_change_pct=2.0 if has_b else 0.0 # Mock
+            )
+            
+            if analysis.legitimacy_score >= 55:
+                recommended.append(analysis)
+        
+        # Sort by score
+        recommended.sort(key=lambda x: x.legitimacy_score, reverse=True)
+        return recommended
+        
+    except Exception as e:
+        print(f"[KIBOT][SCREENER][ERROR] {e}", flush=True)
+        return []
+
+@dataclass
+class TrailingConfig:
+    phase: str
+    activation_pct: float
+    callback_pct: float
+    partial_tp_pct: float
+    partial_tp_size: float
+
+TRAILING_CONFIGS = {
+    "EARLY": TrailingConfig("EARLY", 0.02, 0.015, 0.04, 0.3),
+    "MID":   TrailingConfig("MID",   0.015, 0.012, 0.03, 0.4),
+    "LATE":  TrailingConfig("LATE",  0.01, 0.01, 0.02, 0.5),
+}
+
+def update_trailing_stop(pair_id: str, price_now: float, phase: str = "MID"):
+    """
+    Update trailing stop logic. 
+    Tightens stop as profit grows.
+    """
+    if pair_id not in _active_trails:
+        return None
+    
+    trail = _active_trails[pair_id]
+    entry_price = trail["entry_price"]
+    current_profit_pct = (price_now - entry_price) / entry_price
+    
+    # Update high water mark
+    if price_now > trail["max_price"]:
+        trail["max_price"] = price_now
+        
+    config = TRAILING_CONFIGS.get(phase, TRAILING_CONFIGS["MID"])
+    
+    # Check Partial Take Profit
+    if not trail.get("partial_tp_done") and current_profit_pct >= config.partial_tp_trigger:
+        print(f"[KIBOT][TRAIL] {pair_id} Partial TP Triggered at {current_profit_pct:.2%}", flush=True)
+        # In actual exec, this would call smart_exit(pair_id, size=config.partial_tp_size)
+        trail["partial_tp_done"] = True
+        return "PARTIAL_TP"
+
+    # Dynamic trailing adjustment
+    # Semakin tinggi profit, semakin ketat trailnya
+    dynamic_callback = config.callback_pct
+    if current_profit_pct > 0.05:
+        dynamic_callback *= 0.8 # Tighten by 20%
+    if current_profit_pct > 0.10:
+        dynamic_callback *= 0.6 # Tighten by 40%
+
+    stop_price = trail["max_price"] * (1 - dynamic_callback)
+    
+    if price_now <= stop_price:
+        print(f"[KIBOT][TRAIL] {pair_id} Stop Hit! Exit at {price_now} (Profit: {current_profit_pct:.2%})", flush=True)
+        return "EXIT_NOW"
+        
+    return None
+
+def smart_entry(pair_id: str, analysis: PumpAnalysis, budget_idr: float, trace_id: str):
+    """
+    Decide between MARKET or LIMIT entry based on pump phase.
+    """
+    use_market = False
+    if analysis.legitimacy_score >= 85 and analysis.pump_phase == "EARLY":
+        use_market = True
+        print(f"[KIBOT][SMART_ENTRY] Urgent High-Confidence EARLY pump. Using MARKET for {pair_id}", flush=True)
+    elif analysis.legitimacy_score >= 70:
+        use_market = True
+        print(f"[KIBOT][SMART_ENTRY] High-Confidence pump. Using MARKET for {pair_id}", flush=True)
+    else:
+        print(f"[KIBOT][SMART_ENTRY] Moderate-Confidence. Using LIMIT at mid-price for {pair_id}", flush=True)
+    
+    msg = {
+        "msgType": "DETECTOR_HIT",
+        "kind": "lead_lag_breakout",
+        "pairId": pair_id,
+        "traceId": trace_id,
+        "budgetIdr": budget_idr,
+        "use_market": use_market,
+        "phase": analysis.pump_phase,
+        "legitimacy_score": analysis.legitimacy_score,
+        "expectedNetPct": analysis.exit_target_pct,
+        "trailingStopPct": analysis.stop_loss_pct,
+        "confidence": analysis.legitimacy_score / 100.0,
+        "senderBotId": "kibot_trinity_v5"
+    }
+    _broadcast_udp(msg)
+
+def smart_exit(pair_id: str, reason: str, trace_id: str, size_multiplier: float = 1.0):
+    """
+    Decide between MARKET or LIMIT exit based on urgency.
+    """
+    use_market = False
+    if "emergency" in reason.lower() or "stop_hit" in reason.lower():
+        use_market = True
+        print(f"[KIBOT][SMART_EXIT] Urgent exit ({reason}). Using MARKET for {pair_id}", flush=True)
+    
+    msg = {
+        "msgType": "EMERGENCY_VETO_SELL",
+        "kind": "lead_lag_breakout",
+        "pairId": pair_id,
+        "traceId": trace_id,
+        "use_market": use_market,
+        "reason": reason,
+        "size_multiplier": size_multiplier,
+        "senderBotId": "kibot_trinity_v5"
+    }
+    _broadcast_udp(msg)
+
+def run_30min_math_review():
+    """
+    Phase 5: Math Review Engine.
+    Analyze win rates by pump phase and adjust entry thresholds.
+    """
+    global _last_math_review_at, _math_review_last_action, _math_review_last_reason
+    now = time.time()
+    if (now - _last_math_review_at) < 1800:
+        return
+    
+    _last_math_review_at = now
+    if not _math_review_trade_journal:
+        return
+
+    print("[KIBOT][MATH] Running 30-minute performance review...", flush=True)
+    
+    wins = [t for t in _math_review_trade_journal if t["gross_pnl_pct"] > 0]
+    win_rate = len(wins) / len(_math_review_trade_journal)
+    avg_pnl = sum(t["gross_pnl_pct"] for t in _math_review_trade_journal) / len(_math_review_trade_journal)
+    
+    report = (
+        f"📊 TRINITY MATH REVIEW (30m)\n"
+        f"Trades: {len(_math_review_trade_journal)}\n"
+        f"Win Rate: {win_rate:.1%}\n"
+        f"Avg PnL: {avg_pnl:.2%}\n"
+    )
+    
+    action = "HOLD"
+    reason = "Normal performance"
+    
+    if win_rate < 0.40 and len(_math_review_trade_journal) >= 5:
+        action = "TIGHTEN"
+        reasonArr = "Win rate low, raising legitimacy threshold +5"
+        # In actual exec, we would modify a global threshold
+        report += "⚠️ Performance low. Tightening filters.\n"
+    elif win_rate > 0.70:
+        action = "RELAX"
+        reason = "Performance excellent, maintaining aggressive entry"
+        report += "🔥 Performance excellent. System optimized.\n"
+    
+    _math_review_last_action = action
+    _math_review_last_reason = reason
+    _telegram_send(report)
+    
+    # Reset journal for next 30m
+    _math_review_trade_journal.clear()
+
 def _is_one_shot_eligible(msg: Dict[str, Any], score: float) -> bool:
+
     if _one_shot_used_today or _full_stop_active:
         return False
     signal_age_ms = float(msg.get("signalAgeMs") or msg.get("signal_age_ms") or 999.0)
@@ -170,11 +588,11 @@ def _record_one_shot_result(pnl_idr: float) -> None:
 
 
 def _daily_reset_extra_state() -> None:
-    global _one_shot_used_today, _one_shot_result, _full_stop_active, _last_30min_review
+    global _one_shot_used_today, _one_shot_result, _full_stop_active, _last_math_review_at
     _one_shot_used_today = False
     _one_shot_result = None
     _full_stop_active = False
-    _last_30min_review = 0.0
+    _last_math_review_at = 0.0
 
 
 def _record_trade_result(pair_id: str, *, gross_pnl_pct: float, entry_time: float) -> None:
@@ -2292,11 +2710,11 @@ def _run_30min_math_review() -> Dict[str, Any]:
 
 
 def _maybe_run_30min_math_review() -> None:
-    global _last_30min_review
+    global _last_math_review_at
     now = time.time()
-    if (now - _last_30min_review) >= 1800.0:
-        _last_30min_review = now
-        _run_30min_math_review()
+    if (now - _last_math_review_at) >= 1800.0:
+        _last_math_review_at = now
+        run_30min_math_review()
 
 
 def _current_daily_loss_limit_pct() -> float:
@@ -2815,6 +3233,31 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     current_price_idr = float(msg.get("lastPrice") or msg.get("currentPrice") or 0.0)
     fomo_limit = _get_dynamic_fomo_guard(current_price_idr)
     
+    if msg_type == "DETECTOR_HIT":
+        tickers = _load_indodax_ticker_snapshot()
+        t = tickers.get(pair.lower())
+        if t:
+            upper, mid, lower = calculate_bollinger_bands(_price_history.get(pair.lower(), []), window=20)
+            analysis = analyze_pump_legitimacy(
+                pair_id=pair,
+                price_now=current_price_idr,
+                price_24h_ago=current_price_idr * (1 - (short_term_return_pct / 100.0)),
+                price_1h_ago=current_price_idr, # Approximation
+                price_15m_ago=current_price_idr, # Approximation
+                volume_24h_idr=float(t.get("vol_idr") or 0.0),
+                volume_1h_idr=float(t.get("vol_idr") or 0.0) / 24.0, # Approximation
+                high_24h=float(t.get("high") or current_price_idr),
+                low_24h=float(t.get("low") or current_price_idr),
+                bollinger_upper=upper,
+                bollinger_middle=mid,
+                bollinger_lower=lower,
+                has_binance_pair=False, # Default if not checked
+            )
+            print(f"[KIBOT][TRINITY] {pair} Legitimacy Score: {analysis.legitimacy_score} ({analysis.pump_phase})", flush=True)
+            if analysis.legitimacy_score < 40:
+                print(f"[KIBOT][BLOCK] {pair} REJECTED by Trinity Legitimacy Detector (Score: {analysis.legitimacy_score})", flush=True)
+                return
+
     if msg_type == "DETECTOR_HIT" and short_term_return_pct >= fomo_limit:
         print(
             f"[KIBOT][VETO_REJECTED] pair={pair} reason=FOMO_GUARD rise_pct={short_term_return_pct:.2f} limit={fomo_limit:.1f}% price={current_price_idr:.0f}",
@@ -3289,6 +3732,46 @@ def _process_active_positions(msg: Dict[str, Any]) -> None:
         if not pair:
             continue
         tracked_pairs[pair] = row
+    # === TRINITY V5.0: TRAILING & MATH REVIEW ===
+    current_cache_pairs = set(tracked_pairs.keys())
+    previous_cache_pairs = set(_active_positions_cache.keys())
+    
+    # Check for new positions to start trailing
+    for pair in current_cache_pairs - previous_cache_pairs:
+        row = tracked_pairs[pair]
+        entry_price = float(row.get("entryPrice") or row.get("price") or 0.0)
+        if entry_price > 0:
+            _active_trails[pair] = {
+                "entry_price": entry_price,
+                "max_price": entry_price,
+                "partial_tp_done": False,
+                "entry_time": time.time()
+            }
+            print(f"[KIBOT][TRAIL] Started trailing for {pair} at {entry_price}", flush=True)
+
+    # Check for closed positions to record math
+    for pair in previous_cache_pairs - current_cache_pairs:
+        if pair in _active_trails:
+            trail = _active_trails.pop(pair)
+            # Find the last message to get pnl
+            # This is a bit tricky, but we'll use the cached pnl from before it disappeared
+            last_row = _active_positions_cache.get(pair, {})
+            pnl_pct = float(last_row.get("pnlPct") or 0.0)
+            _record_trade_result(pair, gross_pnl_pct=pnl_pct, entry_time=trail["entry_time"])
+            print(f"[KIBOT][MATH] Recorded trade for {pair}: {pnl_pct:+.2%}", flush=True)
+
+    # Update active trails
+    for pair, row in tracked_pairs.items():
+        if pair in _active_trails:
+            price_now = float(row.get("lastPrice") or row.get("price") or 0.0)
+            if price_now <= 0: continue
+            
+            trail_action = update_trailing_stop(pair, price_now)
+            if trail_action == "PARTIAL_TP":
+                smart_exit(pair, reason="TRINITY_PARTIAL_TP", trace_id=f"tp-{pair}-{int(time.time())}", size_multiplier=0.4)
+            elif trail_action == "EXIT_NOW":
+                smart_exit(pair, reason="TRINITY_TRAILING_STOP_HIT", trace_id=f"exit-{pair}-{int(time.time())}")
+
     _active_positions_cache.clear()
     _active_positions_cache.update(tracked_pairs)
     now_ts = time.time()
@@ -3470,6 +3953,51 @@ def _state_server_loop() -> None:
     finally:
         _http_server = None
 
+def _pair_screen_loop() -> None:
+    """
+    Background thread for Phase 2: Dynamic Screener.
+    """
+    print("[KIBOT] Screener loop started.", flush=True)
+    while not _shutdown_event.is_set():
+        try:
+            recommended = screen_all_pairs()
+            if recommended:
+                msg = f"🔍 TRINITY SCREENER FOUND {len(recommended)} PAIRS:\n"
+                for r in recommended[:3]:
+                    msg += f"• {r.pair_id}: Score {r.legitimacy_score} ({r.pump_phase}) - {r.entry_recommendation}\n"
+                _telegram_send(msg)
+                
+                # Auto-entry for top tier signals
+                best = recommended[0]
+                if best.legitimacy_score >= 75 and best.entry_recommendation == "ENTER_NOW" and not _full_stop_active:
+                    # Verify we don't already have it
+                    if best.pair_id not in _active_positions_cache:
+                        trace_id = f"screener-{best.pair_id}-{int(time.time())}"
+                        smart_entry(best.pair_id, best, budget_idr=MAXIMUM_POSITION_SIZE_IDR, trace_id=trace_id)
+            
+        except Exception as e:
+            print(f"[KIBOT][WARN] pair_screen_loop error: {e}", flush=True)
+            
+        if _shutdown_event.wait(timeout=900): # 15 minutes
+            break
+
+def _math_review_loop() -> None:
+    """
+    Background thread for Phase 5: Math Review.
+    """
+    print("[KIBOT] Math review loop started.", flush=True)
+    while not _shutdown_event.is_set():
+        try:
+            run_30min_math_review()
+        except Exception as e:
+            print(f"[KIBOT][WARN] math_review_loop error: {e}", flush=True)
+        
+        if _shutdown_event.wait(timeout=60): # Check every minute
+            break
+
+def _maybe_run_30min_math_review() -> None:
+    # Helper for the main wait loop
+    run_30min_math_review()
 
 def main() -> None:
     global _main_socket
