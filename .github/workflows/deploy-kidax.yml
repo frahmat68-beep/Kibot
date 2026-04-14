@@ -45,7 +45,8 @@ jobs:
       - name: Validate Build
         run: |
           chmod +x gradlew
-          ./gradlew :packages:core:jvmTest :apps:mac-engine:test :apps:mac-engine:fatJar --no-daemon
+          ./gradlew test :packages:core:jvmTest :apps:mac-engine:test :apps:mac-engine:fatJar --no-daemon
+          python3 scripts/test_kibot.py
 
       - name: Validate Deploy Secrets
         run: |
@@ -83,16 +84,13 @@ jobs:
             chmod 700 ${REMOTE_ROOT}
             chmod 600 ${REMOTE_ROOT}/${ENV_FILE}
 
-      - name: Copy Runtime Bundle
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ env.DEPLOY_HOST }}
-          port: ${{ env.DEPLOY_PORT }}
-          username: ${{ env.DEPLOY_USER }}
-          key: ${{ env.DEPLOY_KEY }}
-          source: '.deploy/*'
-          target: '${{ env.REMOTE_ROOT }}/'
-          strip_components: 1
+      - name: Sync Runtime Bundle via rsync
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ env.DEPLOY_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${{ env.DEPLOY_PORT }} ${{ env.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+          rsync -avz -e "ssh -p ${{ env.DEPLOY_PORT }} -i ~/.ssh/id_rsa" .deploy/ ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.REMOTE_ROOT }}/
 
       - name: Install and Restart KiDax
         uses: appleboy/ssh-action@v1.0.3

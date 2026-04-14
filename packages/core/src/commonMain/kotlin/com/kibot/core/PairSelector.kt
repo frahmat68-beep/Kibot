@@ -245,6 +245,14 @@ class PairSelector(
                 fillQualityScore >= 0.22 &&
                 quote.spreadPct <= (policy.smallCapitalMaxSpreadPct * 1.12) &&
                 quote.estimatedSlippagePct <= (policy.smallCapitalMaxSlippagePct * 1.10)
+        
+        val pairTradeHistory = com.kibot.core.logging.TradeLogger.readAll().filter { it.pair.equals(quote.pairId.value, ignoreCase = true) }
+        val pairWinCount = pairTradeHistory.count { it.netPnlPct > 0 }
+        val pairLossCount = pairTradeHistory.count { it.netPnlPct <= 0 }
+        val pairWinRate = pairWinCount.toDouble() / maxOf(1, pairWinCount + pairLossCount).toDouble()
+        val isFakePump = quote.shortTermReturnPct > 8.0 && pairLossCount >= 2
+        val pumpWinBoost = if (quote.shortTermReturnPct > 5.0 && pairWinRate > 0.5) 0.15 else 0.0
+
         val rankingScoreBase = weightedAverage(
             liquidityScore to 0.06,
             depthScore to 0.06,
@@ -279,7 +287,8 @@ class PairSelector(
                 (profileAssessment.statisticalStretchScore * 0.10) +
                 leadLagAffinity +
                 lowPriceBias +
-                urgentEntryBias
+                urgentEntryBias +
+                pumpWinBoost
             ).coerceIn(0.0, 1.0)
         val marketOpportunityScore = averageOf(
             rankingScore,
@@ -382,6 +391,9 @@ class PairSelector(
                 }
                 if (profileAssessment.statisticalStretchScore >= 0.82) {
                     add("Harga sudah terlalu jauh dari pusat statistik intraday.")
+                }
+                if (isFakePump) {
+                    add("Pump terdeteksi historis buruk (Fake Pump).")
                 }
                 if (!urgentLeadLagMatch) {
                     addAll(profileAssessment.rejectionReasons)

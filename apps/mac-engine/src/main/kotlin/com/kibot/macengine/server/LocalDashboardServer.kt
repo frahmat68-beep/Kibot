@@ -162,6 +162,7 @@ class LocalDashboardServer(
                 val pairScores: List<PairScoreState>,
                 val learningState: JsonObject,
                 val whatIfSimulation: JsonElement,
+                val tradeHistory: JsonElement,
                 val rawState: JsonElement
             )
 
@@ -170,6 +171,8 @@ class LocalDashboardServer(
                 val state = repository.state.value
                 val whatIfFile = java.io.File("state/whatif_results.json")
                 val whatIfJson = if (whatIfFile.exists()) Json.parseToJsonElement(whatIfFile.readText()) else JsonObject(emptyMap())
+                val tradeSummaryFile = java.io.File("state/trade_summary.json")
+                val tradeSummaryJson = if (tradeSummaryFile.exists() && tradeSummaryFile.length() > 0) Json.parseToJsonElement(tradeSummaryFile.readText()) else JsonObject(emptyMap())
                 
                 val customState = DashboardStateResponse(
                     portfolioValueIdr = state.portfolioValueIdr,
@@ -189,9 +192,28 @@ class LocalDashboardServer(
                     pairScores = state.radarPairs.map { p -> PairScoreState(p) },
                     learningState = JsonObject(emptyMap()),
                     whatIfSimulation = whatIfJson,
+                    tradeHistory = tradeSummaryJson,
                     rawState = Json.encodeToJsonElement(MacDashboardState.serializer(), state)
                 )
                 call.respond(customState)
+            }
+            
+            get("/api/trade-history") {
+                applyDashboardSecurityHeaders(call)
+                val days = call.request.queryParameters["days"]?.toIntOrNull() ?: 7
+                val trades = when (days) {
+                    1 -> com.kibot.core.logging.TradeLogger.getTodayTrades()
+                    7 -> com.kibot.core.logging.TradeLogger.getLast7DaysTrades()
+                    20, 30 -> com.kibot.core.logging.TradeLogger.getLast30DaysTrades()
+                    else -> com.kibot.core.logging.TradeLogger.getLast7DaysTrades()
+                }
+                call.respond(trades)
+            }
+
+            get("/api/trade-history/today") {
+                applyDashboardSecurityHeaders(call)
+                val trades = com.kibot.core.logging.TradeLogger.getTodayTrades()
+                call.respond(trades)
             }
             
             get("/api/mobile") {

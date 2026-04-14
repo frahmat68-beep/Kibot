@@ -131,6 +131,7 @@ data class MacDashboardState(
     val netWorthHistory: List<MacNetWorthPoint> = emptyList(),
     val assetAllocationDetailed: List<MacAssetAllocationDetail> = emptyList(),
     val whatIfSimulation: com.kibot.shared.models.CommandCenterSimulationSummary? = null,
+    val tradeHistory: kotlinx.serialization.json.JsonElement? = null,
 ) {
     companion object {
         fun preview(): MacDashboardState = MacDashboardState(
@@ -188,6 +189,7 @@ data class MacDashboardState(
             netWorthHistory = emptyList(),
             assetAllocationDetailed = emptyList(),
             whatIfSimulation = null,
+            tradeHistory = null,
         )
     }
 }
