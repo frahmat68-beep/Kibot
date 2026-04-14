@@ -54,11 +54,12 @@ jobs:
           cp "$SERVICE_FILE" .deploy/infra/systemd/
           cp infra/scripts/engine-recovery.sh .deploy/engine-recovery.sh
           cp infra/scripts/setup-engine-autorecover.sh .deploy/setup-autorecover.sh
-          cp scripts/audit_trading_6h_ai.py .deploy/scripts/
-          cp scripts/ai_learning_cycle.sh .deploy/scripts/
-          cp scripts/run_ai_auditors_hourly.sh .deploy/scripts/
-          cp scripts/test_ai_auditors.sh .deploy/scripts/
           cp scripts/sync_env_to_server.sh .deploy/scripts/
+          cp scripts/kibot_manager.py .deploy/scripts/
+          cp scripts/kibot_whatif_engine.py .deploy/scripts/
+          cp scripts/kibot_learning_engine.py .deploy/scripts/
+          cp scripts/kibot_timeframe_analyzer.py .deploy/scripts/
+          cp scripts/dashboard_template.py .deploy/scripts/
 
       - name: Prepare Remote Directories
         uses: appleboy/ssh-action@v1.0.3
