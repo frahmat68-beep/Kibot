@@ -12,19 +12,19 @@ Bot sekarang sudah **degraded mode ready** — bisa trading meskipun Supabase do
 
 ```bash
 # Project URL
-SUPABASE_URL=https://vptlelbgyxwieyfdpuja.supabase.co
+SUPABASE_URL=https://[REDATED].supabase.co
 
 # Publishable Key (Anon Key)
-SUPABASE_ANON_KEY=sb_publishable_Mz_JQcIowddTSbtLC0uhdQ_HfzeC7Qh
+SUPABASE_ANON_KEY=sb_publishable_[REDACTED]
 
 # Password
-SUPABASE_PASSWORD=NW5wYN8h98C9C29x
+SUPABASE_PASSWORD=[REDACTED]
 
 # Direct Connection (PostgreSQL)
-SUPABASE_DB_URL=postgresql://postgres:NW5wYN8h98C9C29x@db.vptlelbgyxwieyfdpuja.supabase.co:5432/postgres
+SUPABASE_DB_URL=postgresql://postgres:[REDACTED]@db.[REDACTED].supabase.co:5432/postgres
 
 # Pooler Connection (recommended for serverless)
-SUPABASE_POOLER_URL=postgresql://postgres.vptlelbgyxwieyfdpuja:NW5wYN8h98C9C29x@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres
+SUPABASE_POOLER_URL=postgresql://postgres.[REDACTED]:[REDACTED]@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres
 ```
 
 ---

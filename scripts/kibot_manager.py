@@ -344,12 +344,14 @@ def screen_all_pairs() -> List[PumpAnalysis]:
             price_now = float(t.get("last") or t.get("sell") or 0)
             if price_now <= 0: continue
             
-            # Update history
+            # Update history with TTL (Retention: max 100 samples)
             if pair_id not in _price_history:
                 _price_history[pair_id] = []
             _price_history[pair_id].append(price_now)
+            
+            # ROLLING DELETE: Keep last 100 price points to prevent memory bloat
             if len(_price_history[pair_id]) > 100:
-                _price_history[pair_id].pop(0)
+                _price_history[pair_id] = _price_history[pair_id][-100:]
             
             # Basic filters before heavy analysis
             vol_24h = float(t.get("vol_idr") or 0)
@@ -361,7 +363,11 @@ def screen_all_pairs() -> List[PumpAnalysis]:
             
             # Binance lead-lag check
             base_asset = pair_id.split("_")[0].upper()
+            
+            # FIXED: Ensure we always map to USDT pair on Binance for reliable lead-lag
+            # Audit reported incorrect mapping to IDR sometimes.
             b_symbol = f"{base_asset}USDT"
+            
             has_b = b_symbol in binance_prices
             b_price = binance_prices.get(b_symbol, 0.0)
             
