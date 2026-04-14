@@ -627,7 +627,10 @@ class KiBotWebSocketClient(
                     lastActivityUpdate = System.currentTimeMillis(),
                     connectedBotId = connectedBotId,
                     isConnected = true,
-                    lastUpdate = System.currentTimeMillis()
+                    lastUpdate = System.currentTimeMillis(),
+                    whatIfSimulation = snapshot.get("whatIfSimulation")?.takeIf { !it.isJsonNull }?.let {
+                        gson.fromJson(it, SimulationSummary::class.java)
+                    }
                 )
             }
             

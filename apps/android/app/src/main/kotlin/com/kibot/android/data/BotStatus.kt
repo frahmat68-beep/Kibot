@@ -24,7 +24,8 @@ data class StateData(
     val totalReturn: Double = 0.0,
     val pnlToday: Double = 0.0,
     val positions: List<Position> = emptyList(),
-    val netWorthHistory: List<NetWorthPoint> = emptyList()
+    val netWorthHistory: List<NetWorthPoint> = emptyList(),
+    val whatIfSimulation: SimulationSummary? = null,
 )
 
 @Serializable
@@ -39,9 +40,26 @@ data class Position(
 )
 
 @Serializable
-data class NetWorthPoint(
-    val timestamp: Long,
     val value: Double
+)
+
+@Serializable
+data class SimulationSummary(
+    val runAt: String,
+    val pairsSimulated: Int,
+    val topOpportunities: List<String> = emptyList(),
+    val results: Map<String, SimulationResult> = emptyMap()
+)
+
+@Serializable
+data class SimulationResult(
+    val pair: String,
+    val currentPrice: Double,
+    val winProbability: Double,
+    val expectedValue: Double,
+    val riskRewardRatio: Double,
+    val kellySizeRecommended: Double,
+    val verdict: String
 )
 
 // ============== Heartbeat Data ==============
@@ -131,7 +149,8 @@ data class BotState(
     val lastActivityUpdate: Long = 0,  // Timestamp for last activity update
     val connectedBotId: String = "unknown",
     val isConnected: Boolean = false,
-    val lastUpdate: Long = 0
+    val lastUpdate: Long = 0,
+    val whatIfSimulation: SimulationSummary? = null,
 )
 
 enum class ConnectionStatus {
