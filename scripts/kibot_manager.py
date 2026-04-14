@@ -9,6 +9,7 @@ import socket
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -439,6 +440,7 @@ _SEEN_NEWS_IDS_MAX_SIZE = int(os.getenv("KIBOT_SEEN_NEWS_IDS_MAX_SIZE", "5000"))
 _seen_news_ids: set[str] = set()
 _seen_news_ids_timestamps: Dict[str, float] = {}  # Track when IDs were added for TTL cleanup
 _indodax_ticker_cache: set[str] = set()
+_indodax_ticker_snapshot: Dict[str, Dict[str, Any]] = {}
 _indodax_ticker_cache_at: float = 0.0
 _coingecko_trending_cache: Dict[str, Any] = {"coins": [], "fetched_at_epoch_ms": 0}
 _last_sector_map: Dict[str, list[str]] = {}
@@ -2002,6 +2004,301 @@ def _should_use_market_order(msg: Dict[str, Any], pair_id: str) -> bool:
     return what_if["recommendation"] != "SKIP"
 
 
+@dataclass
+class PumpAnalysis:
+    pair_id: str
+    legitimacy_score: float
+    pump_phase: str
+    entry_recommendation: str
+    exit_target_pct: float
+    stop_loss_pct: float
+    risk_reward: float
+    reasoning: str
+
+
+def analyze_pump_legitimacy(
+    *,
+    pair_id: str,
+    price_now: float,
+    price_24h_ago: float,
+    price_1h_ago: float,
+    price_15m_ago: float,
+    volume_24h_idr: float,
+    volume_1h_idr: float,
+    high_24h: float,
+    low_24h: float,
+    bollinger_upper: float,
+    bollinger_middle: float,
+    bollinger_lower: float,
+    has_binance_pair: bool,
+    binance_price_change_pct: float = 0.0,
+) -> PumpAnalysis:
+    score = 0.0
+    reasons: list[str] = []
+    avg_hourly_volume = max(volume_24h_idr / 24.0, 1.0)
+    volume_ratio_1h = volume_1h_idr / avg_hourly_volume
+    if volume_ratio_1h > 3.0:
+        score += 25
+        reasons.append(f"volume 1h {volume_ratio_1h:.1f}x avg")
+    elif volume_ratio_1h > 2.0:
+        score += 18
+        reasons.append(f"volume 1h {volume_ratio_1h:.1f}x avg")
+    elif volume_ratio_1h > 1.5:
+        score += 10
+        reasons.append(f"volume 1h {volume_ratio_1h:.1f}x avg")
+    else:
+        reasons.append(f"volume weak {volume_ratio_1h:.1f}x")
+
+    if volume_24h_idr < 100_000_000:
+        score -= 20
+        reasons.append("illiquid")
+    elif volume_24h_idr > 1_000_000_000:
+        score += 10
+        reasons.append("liquid")
+
+    range_span = max(high_24h - low_24h, 0.000001)
+    position_in_range = (price_now - low_24h) / range_span
+    if position_in_range < 0.4:
+        phase = "EARLY"
+        score += 25
+    elif position_in_range < 0.65:
+        phase = "MID"
+        score += 18
+    elif position_in_range < 0.85:
+        phase = "LATE"
+        score += 8
+    elif position_in_range < 0.95:
+        phase = "PEAK"
+        score -= 5
+    else:
+        phase = "POST_PEAK"
+        score -= 20
+
+    bb_range = max(bollinger_upper - bollinger_lower, 0.000001)
+    bb_position = (price_now - bollinger_lower) / bb_range
+    if bb_position < 0.5:
+        score += 20
+    elif bb_position < 0.75:
+        score += 12
+    elif bb_position < 0.9:
+        score += 5
+    else:
+        score -= 15
+
+    momentum_15m = ((price_now - price_15m_ago) / max(price_15m_ago, 0.000001)) * 100.0
+    momentum_1h = ((price_now - price_1h_ago) / max(price_1h_ago, 0.000001)) * 100.0
+    if momentum_15m > 1.0 and momentum_1h > 3.0:
+        score += 15
+    elif momentum_15m > 0.5:
+        score += 8
+    elif momentum_15m < 0:
+        score -= 10
+
+    if has_binance_pair:
+        if binance_price_change_pct > 3.0:
+            score += 15
+        elif binance_price_change_pct > 1.0:
+            score += 8
+    else:
+        score -= 5
+
+    score = max(0.0, min(100.0, score))
+    if phase == "EARLY":
+        exit_target, stop_loss = 0.08, 0.03
+    elif phase == "MID":
+        exit_target, stop_loss = 0.05, 0.025
+    elif phase == "LATE":
+        exit_target, stop_loss = 0.03, 0.02
+    else:
+        exit_target, stop_loss = 0.02, 0.015
+    rr = exit_target / max(stop_loss, 0.001)
+    if score >= 70 and rr >= 2.0:
+        rec = "ENTER_NOW"
+    elif score >= 55 and rr >= 1.5:
+        rec = "ENTER_NOW"
+    elif score >= 40 and phase in ("LATE", "PEAK"):
+        rec = "WAIT_PULLBACK"
+    elif score < 30 or phase == "POST_PEAK":
+        rec = "DANGER"
+    else:
+        rec = "SKIP"
+    return PumpAnalysis(
+        pair_id=pair_id,
+        legitimacy_score=round(score, 1),
+        pump_phase=phase,
+        entry_recommendation=rec,
+        exit_target_pct=exit_target,
+        stop_loss_pct=stop_loss,
+        risk_reward=round(rr, 2),
+        reasoning=" | ".join(reasons[:4]),
+    )
+
+
+def _estimate_bollinger(price_now: float, low_24h: float, high_24h: float) -> tuple[float, float, float]:
+    span = max(high_24h - low_24h, 0.000001)
+    middle = low_24h + span * 0.5
+    upper = low_24h + span * 0.85
+    lower = low_24h + span * 0.15
+    return upper, middle, lower
+
+
+def screen_all_pairs() -> list[dict[str, Any]]:
+    tickers = _load_indodax_ticker_snapshot()
+    candidates: list[dict[str, Any]] = []
+    for pair_id, row in tickers.items():
+        try:
+            vol_24h = float(row.get("vol_idr") or row.get("volume_idr") or 0.0)
+            if vol_24h < 200_000_000:
+                continue
+            price_now = float(row.get("last") or row.get("close") or 0.0)
+            if price_now <= 0.0:
+                continue
+            high_24h = float(row.get("high") or price_now)
+            low_24h = float(row.get("low") or price_now)
+            open_24h = float(row.get("open") or price_now)
+            price_15m_ago = float(row.get("last_15m") or row.get("price_15m") or open_24h)
+            price_1h_ago = float(row.get("last_1h") or row.get("price_1h") or open_24h)
+            price_24h_ago = float(row.get("open") or row.get("price_24h") or open_24h)
+            pump_pct_24h = ((price_now - price_24h_ago) / max(price_24h_ago, 0.000001)) * 100.0
+            if pump_pct_24h > 80.0:
+                continue
+            pump_pct_15m = ((price_now - price_15m_ago) / max(price_15m_ago, 0.000001)) * 100.0
+            if pump_pct_15m < 0.3:
+                continue
+            volume_1h = float(row.get("vol_1h_idr") or vol_24h / 24.0 * 1.5)
+            bb_upper, bb_middle, bb_lower = _estimate_bollinger(price_now, low_24h, high_24h)
+            has_binance = bool(row.get("binance_pair") or row.get("binance") or False)
+            binance_change = float(row.get("binance_price_change_pct") or 0.0)
+            analysis = analyze_pump_legitimacy(
+                pair_id=pair_id,
+                price_now=price_now,
+                price_24h_ago=price_24h_ago,
+                price_1h_ago=price_1h_ago,
+                price_15m_ago=price_15m_ago,
+                volume_24h_idr=vol_24h,
+                volume_1h_idr=volume_1h,
+                high_24h=high_24h,
+                low_24h=low_24h,
+                bollinger_upper=bb_upper,
+                bollinger_middle=bb_middle,
+                bollinger_lower=bb_lower,
+                has_binance_pair=has_binance,
+                binance_price_change_pct=binance_change,
+            )
+            if analysis.legitimacy_score < 55 or analysis.entry_recommendation in {"SKIP", "DANGER"} or analysis.risk_reward < 1.5:
+                continue
+            candidates.append(
+                {
+                    "pair_id": pair_id,
+                    "analysis": analysis,
+                    "price_now": price_now,
+                    "pump_pct_24h": pump_pct_24h,
+                    "volume_24h_idr": vol_24h,
+                    "composite_score": analysis.legitimacy_score * 0.6 + analysis.risk_reward * 10.0,
+                }
+            )
+        except Exception:
+            continue
+    candidates.sort(key=lambda item: item["composite_score"], reverse=True)
+    return candidates[:10]
+
+
+_screen_cache: list[dict[str, Any]] = []
+_last_screen_time = 0.0
+_last_pnl_check = 0.0
+
+
+def _pair_screen_loop() -> None:
+    global _screen_cache, _last_screen_time
+    while not _shutdown_event.is_set():
+        try:
+            now = time.time()
+            if (now - _last_screen_time) >= 900.0:
+                _last_screen_time = now
+                _screen_cache = screen_all_pairs()
+                if _screen_cache:
+                    top = _screen_cache[0]
+                    print(
+                        f"[KIBOT][SCREEN] top={top['pair_id']} score={top['analysis'].legitimacy_score:.1f} phase={top['analysis'].pump_phase}",
+                        flush=True,
+                    )
+                    _append_runtime_event(
+                        "pair_screen_update",
+                        {
+                            "top_pair": top["pair_id"],
+                            "score": top["analysis"].legitimacy_score,
+                            "phase": top["analysis"].pump_phase,
+                            "count": len(_screen_cache),
+                        },
+                    )
+                    _write_runtime_note()
+        except Exception as error:
+            print(f"[KIBOT][WARN] pair_screen_loop error: {error}", flush=True)
+        if _shutdown_event.wait(timeout=30.0):
+            break
+
+
+def _apply_dynamic_trailing(pump_phase: str, current_profit_pct: float) -> float:
+    if pump_phase == "EARLY":
+        return 0.02 if current_profit_pct >= 0.05 else 0.04
+    if pump_phase == "MID":
+        return 0.015 if current_profit_pct >= 0.03 else 0.03
+    if pump_phase == "LATE":
+        return 0.01 if current_profit_pct >= 0.015 else 0.02
+    return 0.01
+
+
+def _run_30min_math_review() -> Dict[str, Any]:
+    metrics = _get_trade_metrics_today()
+    equity = _get_total_equity_estimate() or 0.0
+    pnl_pct = float(_daily_guard_state.get("daily_pnl_pct") or 0.0)
+    hours_left = _hours_until_midnight_wib()
+    avg_trades_per_hour = metrics["total_trades"] / max((time.time() - _bot_start_time) / 3600.0, 0.5)
+    trades_possible = avg_trades_per_hour * hours_left
+    loss_idr = abs(min(pnl_pct, 0.0) * equity)
+    ev = float(metrics["ev_per_trade"])
+    if ev > 0 and loss_idr > 0:
+        trades_to_recover = loss_idr / ev
+    else:
+        trades_to_recover = float("inf") if ev <= 0 else 0.0
+    if ev <= 0 and metrics["total_trades"] >= 3:
+        action = "TIGHTEN_FILTER"
+    elif trades_to_recover > trades_possible * 1.5:
+        action = "PREPARE_STOP"
+    elif trades_to_recover > trades_possible:
+        action = "DEFENSIVE"
+    elif metrics["win_rate"] >= 0.60 and ev > 0:
+        action = "CONTINUE_OPTIMAL"
+    else:
+        action = "CONTINUE"
+    report = (
+        f"📊 30min Math Review\n"
+        f"PnL: {pnl_pct:+.2%} | Trades: {metrics['total_trades']} ({metrics['wins']}W/{metrics['losses']}L)\n"
+        f"WR: {metrics['win_rate']:.0%} | PF: {metrics['profit_factor']:.2f} | EV/trade: Rp{ev:+,.0f}\n"
+        f"Hours left: {hours_left:.1f} | Trades possible: {trades_possible:.1f}\n"
+        f"Action: {action}"
+    )
+    _telegram_send(report)
+    _append_runtime_event(
+        "math_review",
+        {
+            "action": action,
+            "metrics": metrics,
+            "hours_left": round(hours_left, 2),
+            "trades_possible": round(trades_possible, 2),
+        },
+    )
+    return {"action": action, "metrics": metrics}
+
+
+def _maybe_run_30min_math_review() -> None:
+    global _last_30min_review
+    now = time.time()
+    if (now - _last_30min_review) >= 1800.0:
+        _last_30min_review = now
+        _run_30min_math_review()
+
+
 def _current_daily_loss_limit_pct() -> float:
     return 0.01 if _is_survival_mode() else abs(float(DAILY_LOSS_LIMIT_PCT))
 
@@ -2754,31 +3051,38 @@ def _normalize_sector_map(raw_obj: Any) -> Dict[str, list[str]]:
     return out
 
 
-def _load_indodax_tickers() -> set[str]:
-    global _indodax_ticker_cache, _indodax_ticker_cache_at
+def _load_indodax_ticker_snapshot() -> Dict[str, Dict[str, Any]]:
+    global _indodax_ticker_cache, _indodax_ticker_snapshot, _indodax_ticker_cache_at
     now = time.time()
     if _indodax_ticker_cache and (now - _indodax_ticker_cache_at) < max(60, INDODAX_TICKER_CACHE_TTL_SEC):
-        return _indodax_ticker_cache
+        return _indodax_ticker_snapshot
     try:
         response = requests.get(INDODAX_SUMMARIES_URL, timeout=TIMEOUT)
         if response.status_code >= 300:
-            return _indodax_ticker_cache
+            return _indodax_ticker_snapshot
         body = response.json()
         tickers = ((body or {}).get("tickers") or {})
         pairs = set()
+        snapshot: Dict[str, Dict[str, Any]] = {}
         if isinstance(tickers, dict):
-            for pair_key in tickers.keys():
+            for pair_key, row in tickers.items():
                 if not isinstance(pair_key, str):
                     continue
                 norm = pair_key.strip().lower()
                 if norm:
                     pairs.add(norm)
+                    snapshot[norm] = row if isinstance(row, dict) else {}
         if pairs:
             _indodax_ticker_cache = pairs
+            _indodax_ticker_snapshot = snapshot
             _indodax_ticker_cache_at = now
-        return _indodax_ticker_cache
+        return _indodax_ticker_snapshot
     except Exception:
-        return _indodax_ticker_cache
+        return _indodax_ticker_snapshot
+
+
+def _load_indodax_tickers() -> set[str]:
+    return set(_load_indodax_ticker_snapshot().keys())
 
 
 def _sanitize_sector_map_for_indodax(raw_map: Dict[str, list[str]]) -> Dict[str, list[str]]:
@@ -3201,6 +3505,8 @@ def main() -> None:
     corr_thread.start()
     gecko_thread = threading.Thread(target=_coingecko_trending_loop, name="kibot-coingecko-loop", daemon=True)
     gecko_thread.start()
+    screen_thread = threading.Thread(target=_pair_screen_loop, name="kibot-pair-screen-loop", daemon=True)
+    screen_thread.start()
     heartbeat_thread = threading.Thread(target=_heartbeat_loop, name="kibot-heartbeat-loop", daemon=True)
     heartbeat_thread.start()
     health_gate_thread = threading.Thread(target=_health_gate_loop, name="kibot-health-gate-loop", daemon=True)
@@ -3244,6 +3550,7 @@ def main() -> None:
                 if (now - _last_daily_guard_check_at) >= 60.0:
                     _last_daily_guard_check_at = now
                     _check_daily_loss_limit()
+                _maybe_run_30min_math_review()
                 continue
             except OSError as e:
                 if _shutdown_event.is_set():
