@@ -7134,6 +7134,30 @@ class MacEngineDaemon(
                         ),
                     )
                     val executionFillQty = sellQty ?: requestedSellQty.coerceAtLeast(0.0)
+                    
+                    com.kibot.core.logging.TradeLogger.record(com.kibot.core.logging.TradeRecord(
+                        id = java.util.UUID.randomUUID().toString(),
+                        timestamp = now.toString(),
+                        pair = pairKey,
+                        side = "SELL",
+                        orderType = smartRoutedExitPlan.orderType.name,
+                        requestedPrice = exitExpectedPrice,
+                        filledPrice = sellPrice ?: exitExpectedPrice,
+                        filledAmount = executionFillQty,
+                        filledIdr = (sellPrice ?: exitExpectedPrice) * executionFillQty,
+                        feeIdr = estimatedFees / 2.0,
+                        feeType = if (smartRoutedExitPlan.orderType.name == "LIMIT") "MAKER" else "TAKER",
+                        grossPnlPct = (sellPnlPct ?: 0.0) / 100.0,
+                        netPnlPct = netProfit / maxOf(1.0, (entryExpectedPrice * executionFillQty)),
+                        netPnlIdr = netProfit,
+                        holdingDurationMs = ((exitAt.toEpochMilliseconds() - filteredExitDecision.position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L)),
+                        exitReason = filteredExitDecision.message,
+                        signalSource = "EXIT",
+                        entryScore = 0.0,
+                        balanceAfter = 0.0,
+                        marketRegime = "UNKNOWN"
+                    ))
+                    
                     notifyManagerExecutionFilled(
                         pairId = pairKey,
                         entryPrice = buyPrice ?: 0.0,
@@ -7858,10 +7882,16 @@ class MacEngineDaemon(
                 lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
                 return@forEach
             }
+            
+            if (finalExecutionPlan.orderType.name == "MARKET" || finalExecutionPlan.orderType.name == "market") {
+                logger.error("[CRITICAL] BUY MARKET ORDER ATTEMPTED — BLOCKED. pair=${effectiveExecutionPlan.signal.pairId.value}")
+                return@forEach
+            }
 
             acquirePerSymbolExecutionLease(effectiveExecutionPlan.signal.pairId, now)
             val result = liveExecutionCoordinator.submitEntry(
                 botId = config.controlPlane.botId,
+
                 deviceId = config.device.deviceId,
                 term = submissionLease.term,
                 executionPlan = finalExecutionPlan,
@@ -7884,6 +7914,30 @@ class MacEngineDaemon(
                     effectiveExecutionPlan.signal.pairId.value,
                     result.message,
                 )
+                
+                com.kibot.core.logging.TradeLogger.record(com.kibot.core.logging.TradeRecord(
+                    id = java.util.UUID.randomUUID().toString(),
+                    timestamp = now.toString(),
+                    pair = effectiveExecutionPlan.signal.pairId.value.lowercase(),
+                    side = "BUY",
+                    orderType = finalExecutionPlan.orderType.name,
+                    requestedPrice = finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0,
+                    filledPrice = result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0,
+                    filledAmount = finalQuantity,
+                    filledIdr = (result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0) * finalQuantity,
+                    feeIdr = 0.0,
+                    feeType = if (finalExecutionPlan.orderType.name == "LIMIT") "MAKER" else "TAKER",
+                    grossPnlPct = 0.0,
+                    netPnlPct = 0.0,
+                    netPnlIdr = 0.0,
+                    holdingDurationMs = 0L,
+                    exitReason = "",
+                    signalSource = "ENTRY",
+                    entryScore = 0.0,
+                    balanceAfter = 0.0,
+                    marketRegime = "UNKNOWN"
+                ))
+
                 // [CAPITAL ALLOCATION] Track bucket type for this position
                 val pairKey = effectiveExecutionPlan.signal.pairId.value.lowercase()
                 val bucketType = if (isAnomalyCoin) "AGGRESSIVE" else "STABLE"

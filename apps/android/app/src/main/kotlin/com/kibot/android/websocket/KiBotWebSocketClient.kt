@@ -630,6 +630,9 @@ class KiBotWebSocketClient(
                     lastUpdate = System.currentTimeMillis(),
                     whatIfSimulation = snapshot.get("whatIfSimulation")?.takeIf { !it.isJsonNull }?.let {
                         gson.fromJson(it, SimulationSummary::class.java)
+                    },
+                    tradeHistory = snapshot.get("tradeHistory")?.takeIf { !it.isJsonNull }?.let {
+                        gson.fromJson(it, TradeHistorySummary::class.java)
                     }
                 )
             }

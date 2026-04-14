@@ -14,10 +14,10 @@ INDODAX_MAKER_FEE = 0.0015
 ROUND_TRIP_TAKER = INDODAX_TAKER_FEE * 2
 ROUND_TRIP_MAKER = INDODAX_MAKER_FEE * 2
 HALF_KELLY_MULT = 0.5
-MIN_TRADES_FOR_KELLY = 5
+MIN_TRADES_FOR_KELLY = 3
 MAX_KELLY_FRACTION = 0.12
 MIN_KELLY_FRACTION = 0.02
-EMA_DECAY = 0.90
+EMA_DECAY = 0.80
 MIN_PROFIT_FACTOR = 1.30
 
 
@@ -98,11 +98,9 @@ class PairStats:
                 return False, "kelly=0 no edge detected"
         return True, "ok"
 
-    def record_trade(self, gross_pnl_pct: float, fee_cost: float = ROUND_TRIP_MAKER) -> None:
-        net_pnl = gross_pnl_pct - fee_cost
+    def record_trade(self, net_pnl_pct: float) -> None:
+        net_pnl = net_pnl_pct
         self.trade_count += 1
-        self.total_gross_pnl += gross_pnl_pct
-        self.total_fees_paid += fee_cost
         self.last_trade_ts = time.time()
         self.ema_pnl = net_pnl if self.trade_count == 1 else (EMA_DECAY * self.ema_pnl + (1 - EMA_DECAY) * net_pnl)
         if net_pnl > 0:
@@ -135,6 +133,28 @@ class LearningEngine:
                     self._stats[pair] = PairStats.from_dict(payload)
         except Exception:
             self._stats = {}
+            
+        self.ingest_trade_log()
+
+    def ingest_trade_log(self, file_path="state/trade_log.jsonl") -> None:
+        p = Path(file_path)
+        if not p.exists():
+            return
+        # Reset current stats if relying on JSONL
+        try:
+            self._stats = {}
+            with open(p, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip(): continue
+                    trade = json.loads(line)
+                    if trade.get("side") == "SELL":
+                        pair = trade.get("pair")
+                        if pair:
+                            if pair not in self._stats:
+                                self._stats[pair] = PairStats(pair=pair)
+                            self._stats[pair].record_trade(trade.get("netPnlPct", 0.0))
+        except Exception as e:
+            print(f"Failed to ingest trade log: {e}")
 
     def _save(self) -> None:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
@@ -146,10 +166,9 @@ class LearningEngine:
             self._stats[pair] = PairStats(pair=pair)
         return self._stats[pair]
 
-    def record_trade(self, pair: str, gross_pnl_pct: float, used_limit_order: bool = True) -> PairStats:
-        fee = ROUND_TRIP_MAKER if used_limit_order else ROUND_TRIP_TAKER
+    def record_trade(self, pair: str, net_pnl_pct: float) -> PairStats:
         stats = self.get(pair)
-        stats.record_trade(gross_pnl_pct, fee)
+        stats.record_trade(net_pnl_pct)
         self._save()
         return stats
 

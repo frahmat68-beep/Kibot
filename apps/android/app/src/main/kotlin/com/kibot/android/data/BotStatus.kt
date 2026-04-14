@@ -62,6 +62,34 @@ data class SimulationResult(
     val verdict: String
 )
 
+@Serializable
+data class TradeHistorySummary(
+    val lastUpdated: String = "",
+    val today: TradePeriodStats = TradePeriodStats(),
+    val last7Days: TradePeriodStats = TradePeriodStats(),
+    val last30Days: TradePeriodStats = TradePeriodStats()
+)
+
+@Serializable
+data class TradePeriodStats(
+    val count: Int = 0,
+    val winCount: Int = 0,
+    val lossCount: Int = 0,
+    val totalNetPnlPct: Double = 0.0,
+    val totalNetPnlIdr: Double = 0.0,
+    val totalFeeIdr: Double = 0.0,
+    val marketOrderCount: Int = 0,
+    val avgHoldingMs: Long = 0L,
+    val topLosers: List<TradeLoser> = emptyList()
+)
+
+@Serializable
+data class TradeLoser(
+    val pair: String,
+    val pnl: Double,
+    val reason: String
+)
+
 // ============== Heartbeat Data ==============
 
 @Serializable
@@ -151,6 +179,7 @@ data class BotState(
     val isConnected: Boolean = false,
     val lastUpdate: Long = 0,
     val whatIfSimulation: SimulationSummary? = null,
+    val tradeHistory: TradeHistorySummary? = null,
 )
 
 enum class ConnectionStatus {
