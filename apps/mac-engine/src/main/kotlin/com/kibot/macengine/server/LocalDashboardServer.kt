@@ -138,326 +138,112 @@ class LocalDashboardServer(
                         script {
                             unsafe {
                                 +"""
-                                function updateStatusBadge(state) {
-                                  const badge = document.getElementById('status-badge');
-                                  const label = document.getElementById('status-badge-label');
-                                  const pingText = String(state.exchangePingMs || '--').trim();
-                                  const pingValue = parseInt(pingText.replace(/[^0-9]/g, ''), 10);
-                                  let css = 'pill-neutral';
-                                  if (!Number.isNaN(pingValue)) {
-                                    if (pingValue <= 90) css = 'pill-live';
-                                    else if (pingValue <= 220) css = 'pill-warm';
-                                    else css = 'pill-lag';
+                                function applyState(v5State) {
+                                  // Nav Bar
+                                  const totalEquity = document.getElementById('total-equity');
+                                  if (totalEquity) totalEquity.textContent = v5State.portfolioValueIdr;
+
+                                  const pnlLabel = document.getElementById('daily-pnl');
+                                  if (pnlLabel) {
+                                    pnlLabel.textContent = (v5State.dailyPnlPct >= 0 ? '+' : '') + v5State.dailyPnlPct + '%';
+                                    pnlLabel.className = 'daily ' + (v5State.dailyPnlPct < 0 ? 'pnl-loss' : 'pnl-gain');
                                   }
-                                  badge.className = 'pill ' + css;
-                                  label.textContent =  pingText;
-                                }
-
-                                function renderTimeline(entries) {
-                                  const container = document.getElementById('log-lines');
-                                  container.innerHTML = '';
-                                  const freshEntries = (entries || [])
-                                    .filter(entry => !entry.timestampEpochMs || (Date.now() - entry.timestampEpochMs) <= ${WEB_LOG_FRESHNESS_WINDOW_MS})
-                                    .sort((a, b) => (b.timestampEpochMs || 0) - (a.timestampEpochMs || 0));
-                                  if (!freshEntries || freshEntries.length === 0) {
-                                    const empty = document.createElement('div');
-                                    empty.className = 'empty-state';
-                                    empty.innerHTML = '<div class="empty-title">Log server belum ada</div><div class="empty-copy">Status rotasi, target, dan fokus pair akan tampil otomatis di sini.</div>';
-                                    container.appendChild(empty);
-                                    return;
+                                  
+                                  // System Info
+                                  const regimeEl = document.getElementById('market-regime');
+                                  const edgeEl = document.getElementById('edge-conf');
+                                  const syncEl = document.getElementById('last-sync');
+                                  if (regimeEl) regimeEl.textContent = v5State.botMode || 'N/A';
+                                  if (edgeEl) edgeEl.textContent = v5State.hardStopActive ? 'HARD STOP' : 'NOMINAL';
+                                  if (syncEl) syncEl.textContent = v5State.lastUpdate ? new Date(v5State.lastUpdate).toLocaleTimeString() : '--';
+                                  
+                                  // Connectivity
+                                  const kPulse = document.getElementById('kidax-pulse');
+                                  const kiPulse = document.getElementById('kinance-pulse');
+                                  if (kPulse && v5State.connections?.kidax) {
+                                    kPulse.className = 'net-pulse ' + (v5State.connections.kidax.status === 'HEALTHY' ? 'status-up' : 'status-down');
                                   }
-                                  freshEntries
-                                    .slice(0, 12)
-                                    .forEach(entry => {
-                                    const row = document.createElement('div');
-                                    row.className = 'timeline-row';
-                                    const timestamp = entry.timestampEpochMs ? new Date(entry.timestampEpochMs).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Jakarta' }) : '--:--';
-                                    const category = String(entry.category || 'LOG').toUpperCase();
-                                    row.innerHTML =
-                                      '<div class="timeline-head">' +
-                                        '<div class="timeline-badge timeline-badge-' + category.toLowerCase() + '">' + category + '</div>' +
-                                        '<div class="timeline-time">' + timestamp + '</div>' +
-                                      '</div>' +
-                                      '<div class="timeline-copy">' + (entry.message || '-') + '</div>';
-                                    container.appendChild(row);
-                                  });
-                                }
-
-                                function radarPillClass(pair) {
-                                  const token = String(pair || '').toLowerCase();
-                                  if (token.includes('xrp') || token.includes('btc') || token.includes('eth')) return 'radar-pill-blue';
-                                  if (token.includes('doge') || token.includes('trx')) return 'radar-pill-warm';
-                                  if (token.includes('pepe') || token.includes('fart') || token.includes('shib')) return 'radar-pill-mint';
-                                  if (token.includes('jelly') || token.includes('plpa') || token.includes('arb')) return 'radar-pill-purple';
-                                  return 'radar-pill-slate';
-                                }
-
-                                function renderRadarPairs(pairs) {
-                                  const container = document.getElementById('radar-grid');
-                                  if (!container) return;
-                                  container.innerHTML = '';
-                                  const fallback = ['xrp_idr', 'doge_idr', 'trx_idr', 'pepe_idr', 'shib_idr', 'fartcoin_idr', 'jellyjelly_idr', 'sol_idr', 'btc_idr', 'arb_idr', 'plpa_idr'];
-                                  const items = (pairs || []).filter(Boolean).map(pair => String(pair).toLowerCase()).slice(0, 9);
-                                  const normalized = items.concat(fallback.filter(pair => !items.includes(pair))).slice(0, 9);
-                                  normalized.forEach(pair => {
-                                    const pill = document.createElement('div');
-                                    pill.className = 'radar-pill ' + radarPillClass(pair);
-                                    pill.textContent = String(pair).toLowerCase();
-                                    container.appendChild(pill);
-                                  });
-                                }
-
-                                function renderTradeHistory(entries) {
-                                  const container = document.getElementById('trade-lines');
-                                  container.innerHTML = '';
-                                  if (!entries || entries.length === 0) {
-                                    const empty = document.createElement('div');
-                                    empty.className = 'empty-state';
-                                    empty.innerHTML = '<div class="empty-title">Trade history belum ada</div><div class="empty-copy">Eksekusi terbaru akan muncul di sini saat bot sudah isi order.</div>';
-                                    container.appendChild(empty);
-                                    return;
+                                  if (kiPulse && v5State.connections?.kinance) {
+                                    kiPulse.className = 'net-pulse ' + (v5State.connections.kinance.status === 'HEALTHY' ? 'status-up' : 'status-down');
                                   }
-                                  entries
-                                    .slice()
-                                    .sort((a, b) => (b.timestampEpochMs || 0) - (a.timestampEpochMs || 0))
-                                    .slice(0, 10)
-                                    .forEach(entry => {
-                                    const row = document.createElement('div');
-                                    row.className = 'timeline-row';
-                                    const pair = (entry.pair || '-').toLowerCase();
-                                    const side = (entry.side || '-').toUpperCase();
-                                    const status = (entry.status || '-').toUpperCase();
-                                    const detail = entry.detail || '-';
-                                    const timestamp = entry.timestampEpochMs ? new Date(entry.timestampEpochMs).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Jakarta' }) : '--:--';
-                                    row.innerHTML =
-                                      '<div class="trade-row-shell">' +
-                                        '<div class="trade-side trade-side-' + side.toLowerCase() + '">' + side + '</div>' +
-                                        '<div class="trade-main">' +
-                                          '<div class="trade-pair">' + pair + '</div>' +
-                                          '<div class="trade-detail">' + detail + '</div>' +
-                                          '<div class="trade-time">' + timestamp + '</div>' +
-                                        '</div>' +
-                                        '<div class="trade-status">' + status + '</div>' +
-                                      '</div>';
-                                    container.appendChild(row);
-                                  });
-                                }
-
-                                function parseIdr(value) {
-                                  const clean = String(value || '').replace(/[^0-9,-]/g, '').replace(/\\./g, '').replace(',', '.');
-                                  const parsed = parseFloat(clean);
-                                  return Number.isNaN(parsed) ? 0 : parsed;
-                                }
-
-                                function allocationColor(index) {
-                                  const colors = ['#4bb8ff', '#ffc93d', '#29d7b8', '#6ea8ff', '#ff5f6d', '#c88bff', '#6cf08f', '#ff8f4d'];
-                                  return colors[index % colors.length];
-                                }
-
-                                function renderAssetAllocation(holdings, portfolioValueLabel) {
-                                  const chart = document.getElementById('allocation-chart');
-                                  const legend = document.getElementById('allocation-legend');
-                                  if (!chart || !legend) return;
-                                  const portfolioValue = Math.max(parseIdr(portfolioValueLabel), 1);
-                                  const items = (holdings || [])
-                                    .map(item => ({
-                                      code: item.assetCode || '-',
-                                      value: parseIdr(item.valueIdrLabel || 'Rp0')
-                                    }))
-                                    .filter(item => item.value > 0)
-                                    .sort((a, b) => b.value - a.value)
-                                    .slice(0, 6);
-                                  legend.innerHTML = '';
-                                  if (items.length === 0) {
-                                    chart.style.background = 'rgba(255,255,255,0.05)';
-                                    chart.innerHTML = '<div class=\"allocation-center\"><span>Alloc</span><strong>0%</strong></div>';
-                                    legend.innerHTML = '<p class=\"muted-copy\">Belum ada aset aktif.</p>';
-                                    return;
+                                  
+                                  // Active Positions
+                                  const posBody = document.getElementById('active-positions-body');
+                                  if (posBody) {
+                                    posBody.innerHTML = '';
+                                    (v5State.activePositions || []).forEach(p => {
+                                      const tr = document.createElement('tr');
+                                      tr.innerHTML = `
+                                        <td><div class="token-badge"><div class="token-icon">${'$'}{p.pair.substring(0,3).toUpperCase()}</div><span>${'$'}{p.pair}</span></div></td>
+                                        <td>${'$'}{p.currentPrice}</td>
+                                        <td><span class="pnl-chip ${'$'}{p.pnlPct.includes('-') ? 'pnl-loss' : 'pnl-gain'}">${'$'}{p.pnlPct}</span></td>
+                                        <td>${'$'}{p.pnlIdr}</td>
+                                      `;
+                                      posBody.appendChild(tr);
+                                    });
+                                    const posCount = document.getElementById('pos-count');
+                                    if (posCount) posCount.textContent = (v5State.activePositions || []).length + ' Active';
                                   }
-                                  let cursor = 0;
-                                  const segments = [];
-                                  items.forEach((item, index) => {
-                                    const pct = Math.max(4, (item.value / portfolioValue) * 100);
-                                    const start = cursor;
-                                    const end = Math.min(100, cursor + pct);
-                                    const color = allocationColor(index);
-                                    item.color = color;
-                                    item.pct = Math.round((item.value / portfolioValue) * 100);
-                                    segments.push(color + ' ' + start + '% ' + end + '%');
-                                    cursor = end;
-                                  });
-                                  if (cursor < 100) {
-                                    segments.push('rgba(255,255,255,0.10) ' + cursor + '% 100%');
-                                  }
-                                  const lead = items[0];
-                                  chart.style.background = 'conic-gradient(' + segments.join(', ') + ')';
-                                  chart.innerHTML = '<div class=\"allocation-center\"><span>' + lead.code + '</span><strong>' + lead.pct + '%</strong></div>';
-                                  items.forEach(item => {
-                                    const row = document.createElement('div');
-                                    row.className = 'allocation-row';
-                                    row.innerHTML =
-                                      '<div class=\"allocation-row-left\">' +
-                                        '<span class=\"allocation-dot\" style=\"background:' + item.color + '\"></span>' +
-                                        '<span class=\"allocation-code\">' + item.code + '</span>' +
-                                      '</div>' +
-                                      '<div class=\"allocation-pct\" style=\"color:' + item.color + '\">' + item.pct + '%</div>';
-                                    legend.appendChild(row);
-                                  });
-                                }
 
-                                function updateTickerValue(elementId, value) {
-                                  const el = document.getElementById(elementId);
-                                  if (!el) return;
-                                  if (el.textContent === String(value || '')) return;
-                                  el.classList.remove('ticker-up');
-                                  void el.offsetWidth;
-                                  el.textContent = value || '-';
-                                  el.classList.add('ticker-up');
-                                }
-
-                                function applyState(state) {
-                                  updateStatusBadge(state);
-                                  updateTickerValue('portfolio-value', state.portfolioValueIdr);
-                                  updateTickerValue('free-idr', state.freeIdrLabel || 'Rp0');
-                                  updateTickerValue('total-value', state.totalValueIdr || state.portfolioValueIdr || 'Rp0');
-                                  updateTickerValue('free-idr-kinance', state.freeIdrLabel || 'Rp0');
-                                  updateTickerValue('total-value-kinance', state.totalValueIdr || state.portfolioValueIdr || 'Rp0');
-                                  document.getElementById('hero-pnl').textContent = state.pnlTodayIdr;
-                                  document.getElementById('hero-pnl').className = 'hero-pnl ' + (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel) ? 'hero-pnl-loss' : 'hero-pnl-gain');
-                                  document.getElementById('hero-pnl-pct').textContent = state.pnlTodayPctLabel;
-                                  document.getElementById('hero-pnl-pct').className = 'hero-pnl-chip ' + (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel) ? 'hero-pnl-chip-loss' : 'hero-pnl-chip-gain');
-                                  document.getElementById('last-updated').textContent = state.lastUpdatedLabel;
-                                  const managerLog = document.getElementById('manager-log');
-                                  if (managerLog) {
-                                    const summary = state.statusMessage || 'Belum ada laporan manajer terbaru.';
-                                    managerLog.textContent = summary;
+                                  // What-If Simulations
+                                  const simContainer = document.getElementById('sim-results');
+                                  if (simContainer) {
+                                    simContainer.innerHTML = '';
+                                    const simData = v5State.whatIfSimulation?.results || {};
+                                    const topPairs = Object.keys(simData).slice(0, 5);
+                                    if (topPairs.length === 0) {
+                                      simContainer.innerHTML = '<p class=\"muted-copy\">No active opportunities simulated.</p>';
+                                    } else {
+                                      topPairs.forEach(pair => {
+                                        const data = simData[pair];
+                                        const row = document.createElement('div');
+                                        row.className = 'sim-item';
+                                        row.innerHTML = `
+                                          <div class="sim-header">
+                                            <span class="sim-pair">${'$'}{pair.toUpperCase()}</span>
+                                            <span class="sim-ev">EV: ${'$'}{data.expectedValue}%</span>
+                                          </div>
+                                          <div class="sim-bar-bg">
+                                            <div class="sim-bar-fill" style="width: ${'$'}{Math.min(100, data.winProbability * 100)}%"></div>
+                                          </div>
+                                          <div style="font-size: 11px; margin-top: 4px; color: var(--text-dim)">Win Prob: ${'$'}{(data.winProbability * 100).toFixed(1)}% | R/R: ${'$'}{data.riskRewardRatio}</div>
+                                        `;
+                                        simContainer.appendChild(row);
+                                      });
+                                    }
                                   }
-                                  document.getElementById('release-label').textContent = 'Oracle Active ' + (state.releaseLabel || '#0');
-                                  document.getElementById('top-candidate').textContent = state.topCandidate;
-                                  renderRadarPairs(state.radarPairs || []);
-                                  document.getElementById('exchange-ping').textContent = state.exchangePingMs;
-                                  document.getElementById('ret-1d').textContent = state.pnlTodayIdr;
-                                  document.getElementById('ret-7d').textContent = state.return7dIdr;
-                                  document.getElementById('ret-7d-pct').textContent = state.return7dPctLabel;
-                                  document.getElementById('ret-30d').textContent = state.return30dIdr;
-                                  document.getElementById('ret-30d-pct').textContent = state.return30dPctLabel;
-                                  document.getElementById('ret-1d-pct').textContent = state.pnlTodayPctLabel;
-                                  applyMetricTone('ret-1d-card', state.pnlTodayIdr, state.pnlTodayPctLabel);
-                                  applyMetricTone('ret-7d-card', state.return7dIdr, state.return7dPctLabel);
-                                  applyMetricTone('ret-30d-card', state.return30dIdr, state.return30dPctLabel);
-                                  renderAssetAllocation(state.holdingsDetailed || [], state.portfolioValueIdr || 'Rp0');
+
+                                  // Manager Logs from rawState
+                                  const logContainer = document.getElementById('log-lines');
+                                  if (logContainer) {
+                                    logContainer.innerHTML = '';
+                                    const timeline = v5State.rawState?.liveTimeline || [];
+                                    timeline.slice(0, 8).forEach(entry => {
+                                      const row = document.createElement('div');
+                                      row.className = 'log-row';
+                                      const time = new Date(entry.timestampEpochMs).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                                      row.innerHTML = `<div class="log-time">${'$'}{time} · ${'$'}{entry.category}</div><div>${'$'}{entry.message}</div>`;
+                                      logContainer.appendChild(row);
+                                    });
+                                  }
                                 }
 
                                 function refreshState() {
                                   fetch('/api/state', { cache: 'no-store' })
                                     .then(r => r.json())
                                     .then(applyState)
-                                    .catch(() => {});
-                                }
-
-                                function connectStateStream() {
-                                  const stream = new EventSource('/api/state/stream');
-                                  stream.addEventListener('state', (event) => {
-                                    try { applyState(JSON.parse(event.data)); } catch (_) {}
-                                  });
-                                  stream.onerror = () => {
-                                    stream.close();
-                                    setTimeout(connectStateStream, 2500);
-                                  };
-                                  return stream;
+                                    .catch(err => console.error('Fetch error:', err));
                                 }
 
                                 refreshState();
-                                connectStateStream();
-                                setInterval(refreshState, ${statePollIntervalMillis});
-
-                                function setViewMode(mode) {
-                                  document.body.dataset.view = mode;
-                                  document.querySelectorAll('.v2-switch-btn').forEach((btn) => {
-                                    btn.classList.toggle('is-active', btn.dataset.mode === mode);
-                                  });
-                                }
-
-                                function initViewSwitcher() {
-                                  document.querySelectorAll('.v2-switch-btn').forEach((btn) => {
-                                    btn.addEventListener('click', () => setViewMode(btn.dataset.mode || 'overview'));
-                                  });
-                                  setViewMode('overview');
-                                }
-                                initViewSwitcher();
-
-                                function toggleFullscreen() {
-                                  const root = document.documentElement;
-                                  if (!document.fullscreenElement) {
-                                    root.requestFullscreen?.().catch(() => {});
-                                  } else {
-                                    document.exitFullscreen?.().catch(() => {});
-                                  }
-                                }
+                                setInterval(refreshState, 3000);
 
                                 document.addEventListener('keydown', (event) => {
-                                  const tag = (event.target?.tagName || '').toLowerCase();
-                                  if (tag === 'input' || tag === 'textarea' || event.metaKey || event.ctrlKey || event.altKey) return;
                                   if (event.key === 'f' || event.key === 'F') {
-                                    event.preventDefault();
-                                    toggleFullscreen();
+                                    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+                                    else document.exitFullscreen();
                                   }
                                 });
-
-                                function pingPillClass(pingText) {
-                                  const pingValue = parseInt(String(pingText || '--').replace(/[^0-9]/g, ''), 10);
-                                  if (Number.isNaN(pingValue)) return 'pill-neutral';
-                                  if (pingValue <= 90) return 'pill-live';
-                                  if (pingValue <= 220) return 'pill-warm';
-                                  return 'pill-lag';
-                                }
-
-                                function pairHeatLabel(pingText) {
-                                  const pingValue = parseInt(String(pingText || '--').replace(/[^0-9]/g, ''), 10);
-                                  if (Number.isNaN(pingValue)) return 'LIVE';
-                                  if (pingValue <= 90) return 'LIVE';
-                                  if (pingValue <= 220) return 'WARM';
-                                  return 'LAG';
-                                }
-
-                                function compactAiStatusLabel(summary) {
-                                  const normalized = String(summary || '').toLowerCase();
-                                  const healthy = normalized.includes('sehat:') || normalized.includes('healthy:');
-                                  const limited = normalized.includes('limited');
-                                  const skipped = normalized.includes('skip:') || normalized.includes('forbidden') || normalized.includes('failure');
-                                  if (healthy && !limited && !skipped) return 'AI ONLINE';
-                                  if (healthy) return 'AI LIMITED';
-                                  if (skipped) return 'AI SKIP';
-                                  return 'AI OFFLINE';
-                                }
-
-                                function aiPillClass(summary) {
-                                  const label = compactAiStatusLabel(summary);
-                                  if (label === 'AI ONLINE') return 'pill-live';
-                                  if (label === 'AI LIMITED') return 'pill-warm';
-                                  if (label === 'AI SKIP') return 'pill-lag';
-                                  return 'pill-neutral';
-                                }
-
-                                function targetPillClass(label) {
-                                  const value = String(label || '').toUpperCase();
-                                  if (value === 'OVERDRIVE') return 'pill-safe';
-                                  if (value === 'FULL_CHASE') return 'pill-lag';
-                                  if (value === 'CHASE') return 'pill-live';
-                                  if (value === 'LOCK_PROFIT') return 'pill-blue';
-                                  return 'pill-neutral';
-                                }
-
-                                function isNegativeTone(value, caption) {
-                                  return String(value || '').trim().startsWith('-') || String(caption || '').trim().startsWith('-');
-                                }
-
-                                function applyMetricTone(id, value, caption) {
-                                  const element = document.getElementById(id);
-                                  if (!element) return;
-                                  const negative = isNegativeTone(value, caption);
-                                  element.className = 'metric-card ' + (negative ? 'metric-card-loss' : 'metric-card-gain');
-                                }
                                 """.trimIndent()
                             }
                         }
@@ -1035,145 +821,120 @@ private fun applyDashboardSecurityHeaders(
 }
 
 private fun BODY.renderDashboard(state: MacDashboardState) {
-    div("page-shell v2-shell") {
-        div("card v2-header") {
-            div("v2-header-top") {
-                h1 { +"KiBot" }
-                div("pill pill-neutral") {
-                    attributes["id"] = "status-badge"
-                    span("wifi-icon") {}
-                    span {
-                        attributes["id"] = "status-badge-label"
-                        +state.exchangePingMs
+    div("v5-container") {
+        // TOP NAV BAR
+        header("nav-bar") {
+            div("nav-brand") {
+                div("net-pulse status-up") { attributes["id"] = "pulse-dot" }
+                h1 { +"KIBOT TRINITY v5.0" }
+            }
+            div("system-pnl") {
+                div("total") { 
+                    attributes["id"] = "total-equity"
+                    +state.portfolioValueIdr 
+                }
+                div("daily pnl-gain") { 
+                    attributes["id"] = "daily-pnl"
+                    +state.pnlTodayPctLabel 
+                }
+            }
+        </header>
+
+        // COLUMN 1: TACTICAL POSITIONS (Left)
+        section("card-v5") {
+            attributes["style"] = "grid-area: col1"
+            div("card-title") {
+                span { +"Active Tactical Positions" }
+                span("pill pill-blue") { 
+                    attributes["id"] = "pos-count"
+                    +"${state.holdingsDetailed.size} Active" 
+                }
+            }
+            div("pos-table-wrap") {
+                table("pos-table") {
+                    thead {
+                        tr {
+                            th { +"ASSET" }
+                            th { +"PRICE" }
+                            th { +"PNL (%)" }
+                            th { +"VALUE" }
+                        }
                     }
-                }
-            }
-            div("hero-balance") {
-                span {
-                    attributes["id"] = "portfolio-value"
-                    +state.portfolioValueIdr
-                }
-            }
-            div("hero-pnl-row") {
-                span(if (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel)) "hero-pnl hero-pnl-loss" else "hero-pnl hero-pnl-gain") {
-                    attributes["id"] = "hero-pnl"
-                    +state.pnlTodayIdr
-                }
-                span(if (isNegativeTone(state.pnlTodayIdr, state.pnlTodayPctLabel)) "hero-pnl-chip hero-pnl-chip-loss" else "hero-pnl-chip hero-pnl-chip-gain") {
-                    attributes["id"] = "hero-pnl-pct"
-                    +state.pnlTodayPctLabel
-                }
-            }
-            div("manager-card") {
-                div("manager-title") { +"🤖 Laporan Manajer" }
-                p("manager-log") {
-                    attributes["id"] = "manager-log"
-                    +(state.statusMessage.ifBlank { "Belum ada laporan manajer terbaru." })
-                }
-            }
-        }
-
-        div("card v2-switcher") {
-            button(classes = "v2-switch-btn is-active") {
-                attributes["type"] = "button"
-                attributes["data-mode"] = "overview"
-                +"Overview KiDax + Kinance"
-            }
-            button(classes = "v2-switch-btn") {
-                attributes["type"] = "button"
-                attributes["data-mode"] = "kidax"
-                +"KiDax Only"
-            }
-            button(classes = "v2-switch-btn") {
-                attributes["type"] = "button"
-                attributes["data-mode"] = "kinance"
-                +"Kinance Only"
-            }
-        }
-
-        div("card v2-overview") {
-            div("v2-overview-item") {
-                div("target-ring-mini")
-                strong { +"Target 25% / hari" }
-            }
-            div("v2-overview-item") { +"UDP ~0.7ms" }
-            div("v2-overview-item") { +"KiDax ${state.exchangePingMs}" }
-            div("v2-overview-item") { +"Kinance ${state.exchangePingMs}" }
-            div("v2-overview-item") {
-                +"Update "
-                span {
-                    attributes["id"] = "last-updated"
-                    +state.lastUpdatedLabel
-                }
-            }
-        }
-
-        div("card v2-pillar v2-kidax") {
-            div("card-header-row") {
-                h2 { +"INDODAX · KiDax" }
-                div("pill pill-blue") { +"IDR" }
-            }
-            div("returns-grid") {
-                metricCard("Free IDR", state.freeIdrLabel, "tersedia", "free-idr", "free-idr-note")
-                metricCard("Total Value", state.totalValueIdr, "free + holdings", "total-value", "total-value-note")
-                metricCard("Return 1D", state.pnlTodayIdr, state.pnlTodayPctLabel, "ret-1d", "ret-1d-pct")
-                metricCard("Return 7D", state.return7dIdr, state.return7dPctLabel, "ret-7d", "ret-7d-pct")
-                metricCard("Return 30D", state.return30dIdr, state.return30dPctLabel, "ret-30d", "ret-30d-pct")
-            }
-            div("v2-status-row") {
-                span("pill pill-live") {
-                    attributes["id"] = "release-label"
-                    +"Oracle Active ${state.releaseLabel}"
-                }
-                span("pill pill-blue") { +"Slippage Guard ON" }
-            }
-        }
-
-        div("card v2-pillar v2-kinance") {
-            div("card-header-row") {
-                h2 { +"BINANCE · Kinance" }
-                div("pill pill-warm") { +"USDT → IDR" }
-            }
-            div("allocation-shell") {
-                div("returns-grid") {
-                    metricCard("Free IDR", state.freeIdrLabel, "tersedia", "free-idr-kinance", "free-idr-kinance-note")
-                    metricCard("Total Value", state.totalValueIdr, "free + holdings", "total-value-kinance", "total-value-kinance-note")
-                }
-                div("allocation-chart-wrap") {
-                    div("allocation-chart") {
-                        attributes["id"] = "allocation-chart"
-                        div("allocation-center") {
-                            span { +"Alloc" }
-                            strong { +"0%" }
+                    tbody {
+                        attributes["id"] = "active-positions-body"
+                        state.holdingsDetailed.forEach { h ->
+                            tr {
+                                td {
+                                    div("token-badge") {
+                                        div("token-icon") { +h.assetCode.take(3).uppercase() }
+                                        span { +h.assetCode }
+                                    }
+                                }
+                                td { +h.currentPriceLabel }
+                                td {
+                                    span("pnl-chip ${if (h.pnlPctLabel.contains("-")) "pnl-loss" else "pnl-gain"}") { +h.pnlPctLabel }
+                                }
+                                td { +h.valueIdrLabel }
+                            }
                         }
                     }
                 }
-                div("allocation-legend") {
-                    attributes["id"] = "allocation-legend"
-                    p("muted-copy") { +"Loading allocation..." }
-                }
             }
-            div("v2-status-row") {
-                span("pill pill-warm") { +"Aggressive Mode" }
-                span("pill pill-live") { +"UDP Link Active" }
-                span("pill pill-neutral") {
-                    attributes["id"] = "exchange-ping"
-                    +state.exchangePingMs
+        }
+
+        // COLUMN 2: INTELLIGENCE & OPPORTUNITIES (Center)
+        section("card-v5") {
+            attributes["style"] = "grid-area: col2"
+            div("card-title") {
+                span { +"What-If Simulation" }
+                span { +"Bayesian Learning" }
+            }
+            div("sim-container") {
+                attributes["id"] = "sim-results"
+                p("muted-copy") { +"Processing market scenarios..." }
+            }
+            
+            div("health-section") {
+                div("card-title") { +"Market Context" }
+                div("health-row") {
+                    span { +"Regime" }
+                    strong { 
+                        attributes["id"] = "market-regime"
+                        +state.marketRegime 
+                    }
+                }
+                div("health-row") {
+                    span { +"Edge Confidence" }
+                    strong { 
+                        attributes["id"] = "edge-conf"
+                        +state.edgeConfidence 
+                    }
                 }
             }
         }
 
-        div("card v2-ticker") {
-            div("pair-hero") {
-                attributes["id"] = "top-candidate"
-                +state.topCandidate
+        // COLUMN 3: SYSTEM & LOGS (Right)
+        section("card-v5") {
+            attributes["style"] = "grid-area: col3"
+            div("card-title") {
+                span { +"Command Intelligence" }
+                span { attributes["id"] = "last-sync" ; +state.lastUpdatedLabel }
             }
-            div("v2-ticker-tape") {
-                div("radar-grid radar-grid-tape") {
-                    attributes["id"] = "radar-grid"
-                    filledRadarPairs(state.radarPairs).forEach { pair ->
-                        div("radar-pill ${radarPillClass(pair)}") { +pair.lowercase() }
-                    }
+            
+            div("log-container") {
+                attributes["id"] = "log-lines"
+                p("muted-copy") { +"Awaiting telemetry..." }
+            }
+
+            div("health-section") {
+                div("card-title") { +"Connectivity" }
+                div("health-row") {
+                    span { +"Kidax (Indodax)" }
+                    div("net-pulse status-up") { attributes["id"] = "kidax-pulse" }
+                }
+                div("health-row") {
+                    span { +"Kinance (Binance)" }
+                    div("net-pulse status-up") { attributes["id"] = "kinance-pulse" }
                 }
             }
         }
@@ -1300,104 +1061,223 @@ private const val WEB_LOG_FRESHNESS_WINDOW_MS = 2 * 60 * 60 * 1000L
 
 private fun dashboardStyles(): String = """
     :root {
-      color-scheme: dark;
-      --bg-0: #0b1220;
-      --bg-1: #10182b;
-      --card: rgba(255,255,255,0.06);
-      --stroke: rgba(255,255,255,0.09);
-      --text: #ecf2ff;
-      --muted: #93a4c6;
-      --panel: rgba(18, 28, 56, 0.92);
+      --bg-deep: #05080f;
+      --bg-card: rgba(16, 24, 45, 0.65);
+      --bg-glass: rgba(255, 255, 255, 0.03);
+      --border: rgba(255, 255, 255, 0.08);
+      --text-main: #f0f4ff;
+      --text-dim: #94a3b8;
+      --accent-blue: #38bdf8;
+      --accent-green: #22c55e;
+      --accent-red: #ef4444;
+      --accent-yellow: #fbbf24;
+      --accent-purple: #a855f7;
+      --shadow-lg: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+      --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     }
-    * { box-sizing: border-box; }
-    html {
-      min-height: 100%;
-      background:
-        radial-gradient(circle at top left, rgba(96,165,250,0.18), transparent 28%),
-        radial-gradient(circle at top right, rgba(45,216,129,0.10), transparent 24%),
-        linear-gradient(180deg, var(--bg-0), var(--bg-1));
-    }
+    
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
     body {
-      margin: 0;
+      background: var(--bg-deep);
+      color: var(--text-main);
+      font-family: 'Inter', -apple-system, system-ui, sans-serif;
       min-height: 100vh;
-      font-family: "SF Pro Display", "Segoe UI", sans-serif;
-      color: var(--text);
-      background:
-        radial-gradient(circle at top left, rgba(96,165,250,0.18), transparent 28%),
-        radial-gradient(circle at top right, rgba(45,216,129,0.10), transparent 24%),
-        linear-gradient(180deg, var(--bg-0), var(--bg-1));
+      line-height: 1.5;
       overflow-x: hidden;
-      overflow-y: auto;
+      background-image: 
+        radial-gradient(circle at 0% 0%, rgba(56, 189, 248, 0.08) 0%, transparent 40%),
+        radial-gradient(circle at 100% 100%, rgba(168, 85, 247, 0.08) 0%, transparent 40%);
     }
-    .page-shell {
-      width: min(100%, 1500px);
+
+    .v5-container {
+      max-width: 1700px;
       margin: 0 auto;
-      min-height: 100vh;
-      padding: 12px 14px 18px;
+      padding: 20px;
       display: grid;
-      grid-template-columns: minmax(0, 1.18fr) minmax(360px, 0.92fr);
-      gap: 10px;
-      align-items: stretch;
-    }
-    .v2-shell {
-      width: 100%;
-      max-width: 100%;
-      margin: 0;
-      padding: 12px;
-      display: grid;
-      grid-template-columns: 1fr;
       grid-template-areas:
-        "header"
-        "overview"
-        "ticker";
-      gap: 12px;
-      min-height: 100vh;
+        "nav nav nav"
+        "col1 col2 col3";
+      grid-template-columns: 1fr 1fr 0.8fr;
+      gap: 20px;
     }
-    .v2-header { grid-area: header; }
-    .v2-switcher {
-      grid-area: switcher;
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-      padding: 8px;
-      border-radius: 16px;
-      border: 1px solid rgba(255,255,255,0.08);
-      background: rgba(255,255,255,0.03);
+
+    @media (max-width: 1300px) {
+      .v5-container {
+        grid-template-areas:
+          "nav nav"
+          "col1 col2"
+          "col3 col3";
+        grid-template-columns: 1fr 1fr;
+      }
     }
-    .v2-switch-btn {
-      border: 1px solid rgba(255,255,255,0.12);
-      background: rgba(18, 28, 56, 0.82);
-      color: #dbe7ff;
-      border-radius: 12px;
-      min-height: 40px;
-      font-size: 13px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: all .2s ease;
+
+    @media (max-width: 900px) {
+      .v5-container {
+        grid-template-areas: "nav" "col1" "col2" "col3";
+        grid-template-columns: 1fr;
+      }
     }
-    .v2-switch-btn:hover { border-color: rgba(255,255,255,0.24); }
-    .v2-switch-btn.is-active {
-      background: linear-gradient(180deg, rgba(56,189,248,0.22), rgba(59,130,246,0.18));
-      border-color: rgba(56,189,248,0.48);
-      color: #e9f9ff;
+
+    .nav-bar {
+      grid-area: nav;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      padding: 15px 25px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-lg);
     }
-    .v2-overview { grid-area: overview; }
-    .v2-kidax { grid-area: kidax; border-color: rgba(34, 211, 238, 0.34); box-shadow: 0 24px 56px rgba(0,0,0,0.24), inset 0 0 0 1px rgba(34,211,238,0.12); display: none; }
-    .v2-kinance { grid-area: kinance; border-color: rgba(250, 204, 21, 0.34); box-shadow: 0 24px 56px rgba(0,0,0,0.24), inset 0 0 0 1px rgba(250,204,21,0.12); display: none; }
-    .v2-ticker { grid-area: ticker; }
-    .v2-switcher { display: none; }
-    .v2-header-top {
+
+    .nav-brand {
       display: flex;
       align-items: center;
-      justify-content: space-between;
       gap: 12px;
     }
-    .v2-header-top h1 {
-      margin: 0;
-      font-size: 42px;
-      letter-spacing: -0.04em;
+
+    .nav-brand h1 {
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      background: linear-gradient(90deg, #fff, #94a3b8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
     }
-    .v2-overview {
+
+    .system-pnl {
+      text-align: right;
+    }
+
+    .system-pnl .total { font-size: 20px; font-weight: 700; color: #fff; }
+    .system-pnl .daily { font-size: 14px; font-weight: 600; }
+
+    .card-v5 {
+      background: var(--bg-card);
+      border-radius: 24px;
+      border: 1px solid var(--border);
+      padding: 24px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: var(--shadow-lg);
+    }
+
+    .card-v5::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--border), transparent);
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+      margin-bottom: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* Active Positions Table */
+    .pos-table { width: 100%; border-collapse: collapse; }
+    .pos-table th { text-align: left; padding: 12px 8px; font-size: 12px; color: var(--text-dim); border-bottom: 1px solid var(--border); }
+    .pos-table td { padding: 16px 8px; border-bottom: 1px dotted rgba(255,255,255,0.05); }
+
+    .token-badge {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .token-icon {
+      width: 32px; height: 32px;
+      border-radius: 10px;
+      background: var(--bg-glass);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: 11px;
+      border: 1px solid var(--border);
+    }
+
+    .pnl-chip {
+      padding: 4px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .pnl-gain { background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.2); }
+    .pnl-loss { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.2); }
+
+    /* Simulation Widget */
+    .sim-item {
+      background: var(--bg-glass);
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 12px;
+      border: 1px solid transparent;
+      transition: var(--transition);
+    }
+    .sim-item:hover { border-color: rgba(56, 189, 248, 0.3); transform: translateX(5px); }
+    .sim-header { display: flex; justify-content: space-between; margin-bottom: 8px; }
+    .sim-pair { font-weight: 700; font-size: 15px; }
+    .sim-ev { font-family: monospace; color: var(--accent-blue); font-weight: 700; }
+    .sim-bar-bg { width: 100%; height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; }
+    .sim-bar-fill { height: 100%; background: var(--accent-blue); }
+
+    /* Manager Logs */
+    .log-container {
+      max-height: 400px;
+      overflow-y: auto;
+      font-size: 14px;
+    }
+    .log-row {
+      padding: 10px 0;
+      border-left: 2px solid var(--border);
+      padding-left: 15px;
+      margin-bottom: 5px;
+      position: relative;
+    }
+    .log-row::after {
+      content: "";
+      position: absolute;
+      left: -5px; top: 15px;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--text-dim);
+    }
+    .log-time { font-size: 11px; color: var(--text-dim); margin-bottom: 2px; }
+
+    /* Connectivity Status */
+    .net-pulse {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 8px;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7); }
+      70% { transform: scale(1.1); box-shadow: 0 0 0 10px rgba(74, 222, 128, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
+    }
+
+    .status-up { background: var(--accent-green); }
+    .status-warn { background: var(--accent-yellow); }
+    .status-down { background: var(--accent-red); }
+
+    .health-section { margin-top: 25px; }
+    .health-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 12px; background: var(--bg-glass); border-radius: 12px; margin-bottom: 8px;
+    }
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+"""
+
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 8px;
