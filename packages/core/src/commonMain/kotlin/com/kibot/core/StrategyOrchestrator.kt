@@ -100,6 +100,8 @@ class StrategyOrchestrator(
         weeklySummary: WeeklyLearningSummary? = null,
         aiSoftAuditOnly: Boolean = false,
         selectionContextOverride: PairSelectionContext? = null,
+        pairHistoricalWinRate: Map<String, Double> = emptyMap(),
+        pairHistoricalLossCount: Map<String, Int> = emptyMap(),
     ): StrategyCycleResult {
         val quoteByPair = marketQuotes.associateBy { it.pairId }
         val equity = estimatePortfolioValueReference(balances, marketQuotes)
@@ -160,6 +162,8 @@ class StrategyOrchestrator(
             urgentEntryMode = urgentEntryMode,
             maxSpreadPct = leadLagMaxSpreadPct,
             leadLagEnabled = leadLagSignal != null,
+            pairHistoricalWinRate = pairHistoricalWinRate,
+            pairHistoricalLossCount = pairHistoricalLossCount,
         )
         val rankedPairs = applyWeeklyLearningBias(
             rankedPairs = applySupportHints(

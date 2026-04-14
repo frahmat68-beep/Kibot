@@ -4362,6 +4362,16 @@ class MacEngineDaemon(
 	                    ?.free?.toDoubleOrZero()
 	                    ?: 0.0
 	                val activeEngineDecision = activeEngineDecisionForCallout(now = now, freeIdr = freeQuoteBalance)
+                val allTrades = com.kibot.macengine.logging.TradeLogger.readAll()
+                val globalHistoricalWinRate = allTrades.groupBy { it.pair.lowercase() }
+                    .mapValues { (_, trades) -> 
+                        val wins = trades.count { it.netPnlPct > 0 }
+                        val loss = trades.count { it.netPnlPct <= 0 }
+                        wins.toDouble() / maxOf(1, wins + loss).toDouble() 
+                    }
+                val globalHistoricalLossCount = allTrades.groupBy { it.pair.lowercase() }
+                    .mapValues { (_, trades) -> trades.count { it.netPnlPct <= 0 } }
+
                 val strategyCycle = if (resolvedMarketQuotes.isNotEmpty()) {
                     val baseCycle = strategyOrchestrator.analyzeWithContext(
                         botId = config.controlPlane.botId,
@@ -4374,6 +4384,8 @@ class MacEngineDaemon(
                         weeklySummary = weeklyReview,
                         aiSoftAuditOnly = aiSupportEvaluation?.blockedReason != null,
                         selectionContextOverride = activeEngineDecision?.selectionContext,
+                        pairHistoricalWinRate = globalHistoricalWinRate,
+                        pairHistoricalLossCount = globalHistoricalLossCount,
                     )
                     applyPursuitPolicy(
                         cycle = baseCycle,
@@ -7135,7 +7147,7 @@ class MacEngineDaemon(
                     )
                     val executionFillQty = sellQty ?: requestedSellQty.coerceAtLeast(0.0)
                     
-                    com.kibot.core.logging.TradeLogger.record(com.kibot.core.logging.TradeRecord(
+                    com.kibot.macengine.logging.TradeLogger.record(com.kibot.macengine.logging.TradeRecord(
                         id = java.util.UUID.randomUUID().toString(),
                         timestamp = now.toString(),
                         pair = pairKey,
@@ -7915,7 +7927,7 @@ class MacEngineDaemon(
                     result.message,
                 )
                 
-                com.kibot.core.logging.TradeLogger.record(com.kibot.core.logging.TradeRecord(
+                com.kibot.macengine.logging.TradeLogger.record(com.kibot.macengine.logging.TradeRecord(
                     id = java.util.UUID.randomUUID().toString(),
                     timestamp = now.toString(),
                     pair = effectiveExecutionPlan.signal.pairId.value.lowercase(),
