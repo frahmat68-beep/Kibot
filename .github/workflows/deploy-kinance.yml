@@ -67,12 +67,13 @@ jobs:
           port: ${{ env.DEPLOY_PORT }}
           username: ${{ env.DEPLOY_USER }}
           key: ${{ env.DEPLOY_KEY }}
+          envs: REMOTE_ROOT,ENV_FILE
           script: |
             set -euo pipefail
-            mkdir -p ${{ env.REMOTE_ROOT }}/server ${{ env.REMOTE_ROOT }}/scripts ${{ env.REMOTE_ROOT }}/infra/systemd ${{ env.REMOTE_ROOT }}/.tmp
-            touch ${{ env.REMOTE_ROOT }}/${{ env.ENV_FILE }}
-            chmod 700 ${{ env.REMOTE_ROOT }}
-            chmod 600 ${{ env.REMOTE_ROOT }}/${{ env.ENV_FILE }}
+            mkdir -p ${REMOTE_ROOT}/server ${REMOTE_ROOT}/scripts ${REMOTE_ROOT}/infra/systemd ${REMOTE_ROOT}/.tmp
+            touch ${REMOTE_ROOT}/${ENV_FILE}
+            chmod 700 ${REMOTE_ROOT}
+            chmod 600 ${REMOTE_ROOT}/${ENV_FILE}
 
       - name: Copy Runtime Bundle
         uses: appleboy/scp-action@v0.1.7
@@ -92,6 +93,7 @@ jobs:
           port: ${{ env.DEPLOY_PORT }}
           username: ${{ env.DEPLOY_USER }}
           key: ${{ env.DEPLOY_KEY }}
+          envs: REMOTE_ROOT,SERVICE_NAME,RUNTIME_PORT,ENV_FILE,BOT_ID,BOT_PROFILE_KEY,EXCHANGE_KIND,DEVICE_ID,DEVICE_DISPLAY_NAME
           script: |
             set -euo pipefail
             RELEASE_LABEL="#${{ github.run_number }}"
@@ -113,10 +115,10 @@ jobs:
             ensure_env KIBOT_RUNTIME_ROOT ${REMOTE_ROOT}
             ensure_env KIBOT_SERVICE_NAME ${SERVICE_NAME}
             ensure_env KIBOT_DASHBOARD_PORT ${RUNTIME_PORT}
-            ensure_env KIBOT_ENV_FILE ${{ env.REMOTE_ROOT }}/${{ env.ENV_FILE }}
-            mv ${{ env.REMOTE_ROOT }}/mac-engine-all.jar ${{ env.REMOTE_ROOT }}/server/mac-engine-all.jar
-            chmod +x ${{ env.REMOTE_ROOT }}/engine-recovery.sh ${{ env.REMOTE_ROOT }}/setup-autorecover.sh ${{ env.REMOTE_ROOT }}/scripts/ai_learning_cycle.sh ${{ env.REMOTE_ROOT }}/scripts/run_ai_auditors_hourly.sh ${{ env.REMOTE_ROOT }}/scripts/test_ai_auditors.sh ${{ env.REMOTE_ROOT }}/scripts/sync_env_to_server.sh
-            sudo cp ${{ env.REMOTE_ROOT }}/infra/systemd/kinance-engine.service /etc/systemd/system/${SERVICE_NAME}.service
+            ensure_env KIBOT_ENV_FILE ${REMOTE_ROOT}/${ENV_FILE}
+            mv ${REMOTE_ROOT}/mac-engine-all.jar ${REMOTE_ROOT}/server/mac-engine-all.jar
+            chmod +x ${REMOTE_ROOT}/engine-recovery.sh ${REMOTE_ROOT}/setup-autorecover.sh ${REMOTE_ROOT}/scripts/ai_learning_cycle.sh ${REMOTE_ROOT}/scripts/run_ai_auditors_hourly.sh ${REMOTE_ROOT}/scripts/test_ai_auditors.sh ${REMOTE_ROOT}/scripts/sync_env_to_server.sh
+            sudo cp ${REMOTE_ROOT}/infra/systemd/kinance-engine.service /etc/systemd/system/${SERVICE_NAME}.service
             sudo systemctl stop ${SERVICE_NAME} || true
             sudo fuser -k ${RUNTIME_PORT}/tcp || true
             sudo systemctl daemon-reload
