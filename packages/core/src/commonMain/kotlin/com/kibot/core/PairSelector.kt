@@ -6,6 +6,9 @@ import com.kibot.shared.models.PairScore
 import com.kibot.shared.models.PairTier
 import com.kibot.shared.models.TradingHorizon
 import com.kibot.shared.models.BucketType
+import com.kibot.core.data.CoinUniverse
+import com.kibot.core.data.CoinTier
+import com.kibot.core.data.CorrelationGroup
 import kotlin.math.abs
 
 class PairSelector(
@@ -55,10 +58,14 @@ class PairSelector(
         // Normal filtering with spread checks (Macro Follower Engine or legacy mode)
         val lenientCandidates = eligibleQuotes.asSequence()
             .filter { quote ->
+                val entry = CoinUniverse.byIndodax[quote.pairId.value.lowercase()]
+                val minVol = entry?.minVolumeIdr?.toDouble() ?: policy.minDailyQuoteVolumeIdr
+                val maxSpread = entry?.maxSpreadPct ?: policy.maxSpreadPct
+                
                 passesPriceBandGate(quote, context) &&
                 quote.spreadPct <= context.maxSpreadPct.coerceAtLeast(0.0) &&
                 (
-                    quote.quoteVolume24h.toDoubleOrZero() >= policy.minDailyQuoteVolumeIdr * 0.50 ||
+                    quote.quoteVolume24h.toDoubleOrZero() >= minVol * 0.50 ||
                         isSmallCapitalOverrideEligible(
                             quote = quote,
                             stabilityScore = quote.orderBookStabilityScore.coerceIn(0.0, 1.0),
@@ -66,7 +73,7 @@ class PairSelector(
                             fillQualityScore = quote.fillQualityScore.coerceIn(0.0, 1.0),
                         )
                     ) &&
-                    quote.spreadPct <= policy.maxSpreadPct * 1.2 &&
+                    quote.spreadPct <= maxSpread * 1.2 &&
                     quote.estimatedSlippagePct <= policy.maxEstimatedSlippagePct * 1.2 &&
                     quote.orderBookStabilityScore >= policy.minOrderBookStabilityScore * 0.7
             }
@@ -264,8 +271,15 @@ class PairSelector(
             sectorHotnessBias to 0.04,
             volumeVelocityBias to 0.04,
         )
+        val coinEntry = CoinUniverse.byIndodax[quote.pairId.value.lowercase()]
+        val tierMultiplier = when (coinEntry?.tier) {
+            CoinTier.TIER_A -> 1.2
+            CoinTier.TIER_B -> 1.0
+            CoinTier.TIER_C -> 0.7
+            else -> 1.0
+        }
         val rankingScore = (
-            rankingScoreBase -
+            (rankingScoreBase * tierMultiplier) -
                 if (stagnantPair) 0.12 else 0.0 +
                 if (earlyBreakoutEligible) 0.08 else 0.0 -
                 (profileAssessment.toxicityScore * 0.14) -
@@ -451,24 +465,9 @@ class PairSelector(
     }
 
     private fun correlationFamily(pairId: PairId): String {
-        val base = pairId.value.substringBefore('_').lowercase()
-        return when (base) {
-            // Meme coins - high BTC correlation but extreme volatility
-            in setOf("doge", "shib", "pepe", "floki", "bonk", "wif", "pippin", "neiro", "turbo", "mog", "bome", "brett", "dog", "popcat") -> "meme"
-            // AI/ML tokens - moderate correlation with ETH ecosystem
-            in setOf("fet", "agix", "ocean", "render", "tao", "ai16z", "grt", "worldcoin", "rndr") -> "ai"
-            // Layer 1/2 - high correlation with ETH
-            in setOf("sol", "ada", "avax", "matic", "arb", "op", "eth", "near", "ont", "trx", "xlm", "plpa", "kaito", "dot", "atom", "inj", "sui", "sei", "apt", "ftm", "klay", "cro", "zil") -> "l1_l2"
-            // BTC ecosystem
-            in setOf("btc", "stx", "ordi", "sats", "rune", "tia") -> "btc"
-            // DeFi - high ETH correlation
-            in setOf("uni", "aave", "link", "snx", "crv", "mkr", "comp", "ldo", "gmx", "dydx", "1inch", "cake", "sushi", "pendle", "eigen") -> "defi"
-            // Gaming/Metaverse
-            in setOf("axs", "sand", "mana", "gala", "imx", "ilv", "enjin", "alice", "rmrk", "magic") -> "gaming"
-            // Micro-caps (Indodax specific) - uncorrelated but volatile
-            in setOf("sto", "drx", "d", "cast", "one", "hot", "reef", "btt", "win", "xec", "luna2", "ustc") -> "microcap"
-            else -> base
-        }
+        val entry = CoinUniverse.byIndodax[pairId.value.lowercase()]
+        if (entry != null) return entry.correlationGroup.name.lowercase()
+        return pairId.value.substringBefore('_').lowercase()
     }
 
     private fun deriveVolatilityQuality(quote: MarketQuote): Double {
@@ -688,10 +687,8 @@ class PairSelector(
     }
 
     private fun isDormantStablePair(quote: MarketQuote): Boolean {
-        val assets = quote.pairId.assets()
-        if (assets.quoteAsset != "idr") return false
-        if (quote.pairId.value.lowercase() in policy.blockedBaseAssets.map { "${it}_idr" }.toSet()) return true
-        return assets.baseAsset in policy.blockedBaseAssets
+        val entry = CoinUniverse.byIndodax[quote.pairId.value.lowercase()]
+        return entry == null || entry.correlationGroup == CorrelationGroup.STABLECOIN
     }
 
     private data class PairParts(

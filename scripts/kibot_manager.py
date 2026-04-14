@@ -17,6 +17,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
 
+try:
+    from kibot_whatif_engine import run_simulation
+    from kibot_timeframe_analyzer import analyze_timeframes
+    _WHATIF_AVAILABLE = True
+except ImportError:
+    _WHATIF_AVAILABLE = False
+
+TRADING_CAPITAL_PCT = 0.50
+MIN_POSITION_IDR = 50_000
+MAX_POSITION_IDR = 1_000_000
+
 # Use defusedxml to prevent XXE attacks
 try:
     import defusedxml.ElementTree as ET
@@ -498,10 +509,42 @@ def update_trailing_stop(pair_id: str, price_now: float, phase: str = "MID"):
         
     return None
 
+def _get_position_size_pct(kelly_recommended: float) -> float:
+    """Modul 4: Dynamic Sizing"""
+    size_pct = kelly_recommended * TRADING_CAPITAL_PCT
+    return max(0.01, min(size_pct, 1.0))
+
 def smart_entry(pair_id: str, analysis: PumpAnalysis, budget_idr: float, trace_id: str):
     """
     Decide between MARKET or LIMIT entry based on pump phase.
     """
+    if _WHATIF_AVAILABLE:
+        try:
+            tf = analyze_timeframes(pair_id)
+            eq = tf.entry_quality()
+            if eq not in ["A", "A-", "B"]:
+                print(f"[KIBOT][SMART_ENTRY] Multi-Timeframe Score {eq} for {pair_id} is too weak. Aborting entry.", flush=True)
+                return
+            
+            # Fetch Kelly size from What-If logic
+            import json
+            try:
+                whatif_data = json.load(open("state/whatif_results.json"))
+                pair_sim = whatif_data.get("results", {}).get(pair_id, {})
+                kelly_size = pair_sim.get("kellySizeRecommended", 0.05)
+                adj_pct = _get_position_size_pct(kelly_size)
+                budget_idr = budget_idr * adj_pct
+            except Exception:
+                pass
+                
+        except Exception as e:
+            print(f"[KIBOT][SMART_ENTRY] Analysis error: {e}", flush=True)
+            
+    # Sizing constraints
+    if budget_idr < MIN_POSITION_IDR:
+        print(f"[KIBOT][SMART_ENTRY] Budget {budget_idr} below min position {MIN_POSITION_IDR}. Aborting.", flush=True)
+        return
+    budget_idr = min(budget_idr, MAX_POSITION_IDR)
     use_market = False
     if analysis.legitimacy_score >= 85 and analysis.pump_phase == "EARLY":
         use_market = True
@@ -4208,6 +4251,20 @@ def main() -> None:
                         _screen_cache = screen_all_pairs()
                     except Exception as e:
                         print(f"[SCREEN] loop err: {e}")
+                        
+                # What-If Simulation
+                if _WHATIF_AVAILABLE and (now - globals().get("_last_whatif_time", 0)) >= 900.0:
+                    globals()["_last_whatif_time"] = now
+                    try:
+                        import urllib.request
+                        # get market prices
+                        req = urllib.request.Request("https://indodax.com/api/tickers", headers={"User-Agent": "Mozilla"})
+                        resp = urllib.request.urlopen(req, timeout=5)
+                        tdata = json.loads(resp.read()).get("tickers", {})
+                        prices = {k: float(v.get("last", "0")) for k,v in tdata.items() if v.get("last", "0")}
+                        res = run_simulation(prices)
+                    except Exception as e:
+                        print(f"[WHATIF] loop err: {e}")
                         
                 # 6 hours: supabase ping
                 if (now - _last_supabase_ping) >= 21600.0:

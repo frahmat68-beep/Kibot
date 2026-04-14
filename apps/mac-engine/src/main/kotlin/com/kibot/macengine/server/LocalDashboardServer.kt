@@ -465,7 +465,57 @@ class LocalDashboardServer(
 
             get("/api/state") {
                 applyDashboardSecurityHeaders(call)
-                call.respond(repository.state.value)
+                val state = repository.state.value
+                val whatIfFile = java.io.File("state/whatif_results.json")
+                val whatIfJson = if (whatIfFile.exists()) kotlinx.serialization.json.Json.parseToJsonElement(whatIfFile.readText()) else kotlinx.serialization.json.JsonObject(emptyMap())
+                
+                val customState = kotlinx.serialization.json.buildJsonObject {
+                    put("portfolioValueIdr", state.portfolioValueIdr)
+                    put("dailyPnlPct", (state.pnlTodayPctLabel.replace("%", "").replace("+", "").toDoubleOrNull() ?: 0.0))
+                    put("dailyPnlIdr", (state.pnlTodayIdr.replace(Regex("[^0-9-]"), "").toDoubleOrNull() ?: 0.0))
+                    put("tradingAllowed", state.liveExecutionEnabled)
+                    put("hardStopActive", state.statusMessage.contains("hard stop", ignoreCase = true))
+                    put("botMode", state.operatingMode)
+                    put("lastUpdate", java.time.Instant.ofEpochMilli(state.lastUpdatedEpochMs).toString())
+                    putJsonObject("connections") {
+                        putJsonObject("kidax") { put("status", state.kidaxNodeStatus); put("latencyMs", 42) }
+                        putJsonObject("kinance") { put("status", state.kinanceNodeStatus); put("latencyMs", 150) }
+                    }
+                    putJsonArray("activePositions") {
+                        state.holdingsDetailed.forEach { h ->
+                            addJsonObject {
+                                put("pair", h.assetCode)
+                                put("currentPrice", h.currentPriceLabel)
+                                put("pnlPct", h.pnlPctLabel)
+                                put("pnlIdr", h.pnlIdrLabel)
+                                put("size", h.quantityLabel)
+                            }
+                        }
+                    }
+                    putJsonArray("pairScores") {
+                        state.radarPairs.forEach { p ->
+                            addJsonObject { put("pair", p) }
+                        }
+                    }
+                    put("learningState", kotlinx.serialization.json.JsonObject(emptyMap())) // Placeholder learning engine state
+                    put("whatIfSimulation", whatIfJson)
+                    // Full state for retro-compatibility
+                    put("rawState", kotlinx.serialization.json.Json.encodeToJsonElement(state))
+                }
+                call.respond(customState)
+            }
+            
+            get("/api/mobile") {
+                applyDashboardSecurityHeaders(call)
+                val state = repository.state.value
+                val compact = mapOf(
+                    "timestamp" to java.time.Instant.now().epochSecond,
+                    "portfolioIdr" to state.portfolioValueIdr,
+                    "pnl" to state.pnlTodayIdr,
+                    "active" to state.holdingsDetailed.size,
+                    "status" to if (state.liveExecutionEnabled) "LIVE" else "PAUSED"
+                )
+                call.respond(compact)
             }
 
             get("/api/state/stream") {

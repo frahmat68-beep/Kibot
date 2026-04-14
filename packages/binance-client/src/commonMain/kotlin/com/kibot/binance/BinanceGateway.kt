@@ -574,25 +574,8 @@ private fun String.toOrderSide(): OrderSide = if (equals("SELL", ignoreCase = tr
 
 private fun OrderSide.toApiValue(): String = if (this == OrderSide.SELL) "SELL" else "BUY"
 
-private val INDODAX_TO_BINANCE = mapOf(
-    "btc_idr" to "BTCUSDT", "eth_idr" to "ETHUSDT",
-    "xlm_idr" to "XLMUSDT", "doge_idr" to "DOGEUSDT",
-    "xrp_idr" to "XRPUSDT", "trx_idr" to "TRXUSDT",
-    "ada_idr" to "ADAUSDT", "sol_idr" to "SOLUSDT",
-    "bnb_idr" to "BNBUSDT", "enj_idr" to "ENJUSDT",
-    "fun_idr" to "FUNUSDT", "dusk_idr" to "DUSKUSDT",
-    "pepe_idr" to "PEPEUSDT", "floki_idr" to "FLOKIUSDT",
-    "bonk_idr" to "BONKUSDT", "shib_idr" to "SHIBUSDT",
-    "matic_idr" to "MATICUSDT", "link_idr" to "LINKUSDT",
-    "dot_idr" to "DOTUSDT", "avax_idr" to "AVAXUSDT",
-    "near_idr" to "NEARUSDT", "apt_idr" to "APTUSDT",
-    "arb_idr" to "ARBUSDT", "op_idr" to "OPUSDT",
-    "atom_idr" to "ATOMUSDT", "ltc_idr" to "LTCUSDT",
-    "bch_idr" to "BCHUSDT", "etc_idr" to "ETCUSDT",
-)
-
 private fun PairId.toBinanceSymbol(): String {
-    INDODAX_TO_BINANCE[value.lowercase()]?.let { return it }
+    com.kibot.core.data.CoinUniverse.indodaxToBinance(value.lowercase())?.let { return it }
     val base = value.lowercase().removeSuffix("_idr").removeSuffix("_usdt")
     return "${base.uppercase()}USDT"
 }
