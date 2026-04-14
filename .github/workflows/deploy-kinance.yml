@@ -13,7 +13,7 @@ jobs:
     env:
       DEPLOY_HOST: ${{ secrets.KINANCE_HOST }}
       DEPLOY_USER: ${{ secrets.KINANCE_USER }}
-      DEPLOY_KEY: ${{ secrets.KINANCE_SSH_KEY }}
+      DEPLOY_KEY: ${{ secrets.KINANCE_SSH }}
       DEPLOY_PORT: ${{ secrets.KINANCE_SSH_PORT || '22' }}
       REMOTE_ROOT: /home/ubuntu/Kinance
       SERVICE_NAME: kinance-engine
@@ -45,7 +45,7 @@ jobs:
           set -euo pipefail
           test -n "${DEPLOY_HOST:-}" || (echo 'Missing KINANCE_HOST' && exit 1)
           test -n "${DEPLOY_USER:-}" || (echo 'Missing KINANCE_USER' && exit 1)
-          test -n "${DEPLOY_KEY:-}" || (echo 'Missing KINANCE_SSH_KEY' && exit 1)
+          test -n "${DEPLOY_KEY:-}" || (echo 'Missing KINANCE_SSH' && exit 1)
 
       - name: Stage Runtime Bundle
         run: |
