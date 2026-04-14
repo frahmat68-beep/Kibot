@@ -20,7 +20,7 @@ jobs:
     env:
       DEPLOY_HOST: ${{ secrets.KIDAX_HOST }}
       DEPLOY_USER: ${{ secrets.KIDAX_USER }}
-      DEPLOY_KEY: ${{ secrets.KIDAX_SSH_KEY }}
+      DEPLOY_KEY: ${{ secrets.KIDAX_SSH }}
       DEPLOY_PORT: ${{ secrets.KIDAX_SSH_PORT || '22' }}
       REMOTE_ROOT: /home/ubuntu/KiDax
       SERVICE_NAME: kidax-engine
@@ -52,7 +52,7 @@ jobs:
           set -euo pipefail
           test -n "${DEPLOY_HOST:-}" || (echo 'Missing KIDAX_HOST' && exit 1)
           test -n "${DEPLOY_USER:-}" || (echo 'Missing KIDAX_USER' && exit 1)
-          test -n "${DEPLOY_KEY:-}" || (echo 'Missing KIDAX_SSH_KEY' && exit 1)
+          test -n "${DEPLOY_KEY:-}" || (echo 'Missing KIDAX_SSH' && exit 1)
 
       - name: Stage Runtime Bundle
         run: |
