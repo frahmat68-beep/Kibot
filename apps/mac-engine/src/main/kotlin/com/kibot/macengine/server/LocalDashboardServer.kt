@@ -61,7 +61,10 @@ import kotlinx.html.unsafe
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.Serializable
 import java.io.EOFException
 import java.io.File
 import java.io.IOException
@@ -463,57 +466,82 @@ class LocalDashboardServer(
                 }
             }
 
+            @Serializable
+            data class MobileStateResponse(
+                val timestamp: Long,
+                val portfolioIdr: String,
+                val pnl: String,
+                val active: Int,
+                val status: String
+            )
+
+            @Serializable
+            data class DashboardConnectionStatus(val status: String, val latencyMs: Int)
+
+            @Serializable
+            data class DashboardConnections(val kidax: DashboardConnectionStatus, val kinance: DashboardConnectionStatus)
+
+            @Serializable
+            data class ActivePositionState(val pair: String, val currentPrice: String, val pnlPct: String, val pnlIdr: String, val size: String)
+
+            @Serializable
+            data class PairScoreState(val pair: String)
+
+            @Serializable
+            data class DashboardStateResponse(
+                val portfolioValueIdr: String,
+                val dailyPnlPct: Double,
+                val dailyPnlIdr: Double,
+                val tradingAllowed: Boolean,
+                val hardStopActive: Boolean,
+                val botMode: String,
+                val lastUpdate: String,
+                val connections: DashboardConnections,
+                val activePositions: List<ActivePositionState>,
+                val pairScores: List<PairScoreState>,
+                val learningState: JsonObject,
+                val whatIfSimulation: JsonElement,
+                val rawState: JsonElement
+            )
+
             get("/api/state") {
                 applyDashboardSecurityHeaders(call)
                 val state = repository.state.value
                 val whatIfFile = java.io.File("state/whatif_results.json")
-                val whatIfJson = if (whatIfFile.exists()) kotlinx.serialization.json.Json.parseToJsonElement(whatIfFile.readText()) else kotlinx.serialization.json.JsonObject(emptyMap())
+                val whatIfJson = if (whatIfFile.exists()) Json.parseToJsonElement(whatIfFile.readText()) else JsonObject(emptyMap())
                 
-                val customState = kotlinx.serialization.json.buildJsonObject {
-                    put("portfolioValueIdr", state.portfolioValueIdr)
-                    put("dailyPnlPct", (state.pnlTodayPctLabel.replace("%", "").replace("+", "").toDoubleOrNull() ?: 0.0))
-                    put("dailyPnlIdr", (state.pnlTodayIdr.replace(Regex("[^0-9-]"), "").toDoubleOrNull() ?: 0.0))
-                    put("tradingAllowed", state.liveExecutionEnabled)
-                    put("hardStopActive", state.statusMessage.contains("hard stop", ignoreCase = true))
-                    put("botMode", state.operatingMode)
-                    put("lastUpdate", java.time.Instant.ofEpochMilli(state.lastUpdatedEpochMs).toString())
-                    putJsonObject("connections") {
-                        putJsonObject("kidax") { put("status", state.kidaxNodeStatus); put("latencyMs", 42) }
-                        putJsonObject("kinance") { put("status", state.kinanceNodeStatus); put("latencyMs", 150) }
-                    }
-                    putJsonArray("activePositions") {
-                        state.holdingsDetailed.forEach { h ->
-                            addJsonObject {
-                                put("pair", h.assetCode)
-                                put("currentPrice", h.currentPriceLabel)
-                                put("pnlPct", h.pnlPctLabel)
-                                put("pnlIdr", h.pnlIdrLabel)
-                                put("size", h.quantityLabel)
-                            }
-                        }
-                    }
-                    putJsonArray("pairScores") {
-                        state.radarPairs.forEach { p ->
-                            addJsonObject { put("pair", p) }
-                        }
-                    }
-                    put("learningState", kotlinx.serialization.json.JsonObject(emptyMap())) // Placeholder learning engine state
-                    put("whatIfSimulation", whatIfJson)
-                    // Full state for retro-compatibility
-                    put("rawState", kotlinx.serialization.json.Json.encodeToJsonElement(state))
-                }
+                val customState = DashboardStateResponse(
+                    portfolioValueIdr = state.portfolioValueIdr,
+                    dailyPnlPct = state.pnlTodayPctLabel.replace("%", "").replace("+", "").toDoubleOrNull() ?: 0.0,
+                    dailyPnlIdr = state.pnlTodayIdr.replace(Regex("[^0-9-]"), "").toDoubleOrNull() ?: 0.0,
+                    tradingAllowed = state.liveExecutionEnabled,
+                    hardStopActive = state.statusMessage.contains("hard stop", ignoreCase = true),
+                    botMode = state.operatingMode,
+                    lastUpdate = java.time.Instant.ofEpochMilli(state.lastUpdatedEpochMs).toString(),
+                    connections = DashboardConnections(
+                        kidax = DashboardConnectionStatus(state.kidaxNodeStatus, 42),
+                        kinance = DashboardConnectionStatus(state.kinanceNodeStatus, 150)
+                    ),
+                    activePositions = state.holdingsDetailed.map { h ->
+                        ActivePositionState(h.assetCode, h.currentPriceLabel, h.pnlPctLabel, h.pnlIdrLabel, h.quantityLabel)
+                    },
+                    pairScores = state.radarPairs.map { p -> PairScoreState(p) },
+                    learningState = JsonObject(emptyMap()),
+                    whatIfSimulation = whatIfJson,
+                    rawState = Json.encodeToJsonElement(MacDashboardState.serializer(), state)
+                )
                 call.respond(customState)
             }
             
             get("/api/mobile") {
                 applyDashboardSecurityHeaders(call)
                 val state = repository.state.value
-                val compact = mapOf(
-                    "timestamp" to java.time.Instant.now().epochSecond,
-                    "portfolioIdr" to state.portfolioValueIdr,
-                    "pnl" to state.pnlTodayIdr,
-                    "active" to state.holdingsDetailed.size,
-                    "status" to if (state.liveExecutionEnabled) "LIVE" else "PAUSED"
+                val compact = MobileStateResponse(
+                    timestamp = java.time.Instant.now().epochSecond,
+                    portfolioIdr = state.portfolioValueIdr,
+                    pnl = state.pnlTodayIdr,
+                    active = state.holdingsDetailed.size,
+                    status = if (state.liveExecutionEnabled) "LIVE" else "PAUSED"
                 )
                 call.respond(compact)
             }
