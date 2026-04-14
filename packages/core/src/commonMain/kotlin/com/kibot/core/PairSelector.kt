@@ -246,10 +246,8 @@ class PairSelector(
                 quote.spreadPct <= (policy.smallCapitalMaxSpreadPct * 1.12) &&
                 quote.estimatedSlippagePct <= (policy.smallCapitalMaxSlippagePct * 1.10)
         
-        val pairTradeHistory = com.kibot.core.logging.TradeLogger.readAll().filter { it.pair.equals(quote.pairId.value, ignoreCase = true) }
-        val pairWinCount = pairTradeHistory.count { it.netPnlPct > 0 }
-        val pairLossCount = pairTradeHistory.count { it.netPnlPct <= 0 }
-        val pairWinRate = pairWinCount.toDouble() / maxOf(1, pairWinCount + pairLossCount).toDouble()
+        val pairWinRate = context.pairHistoricalWinRate[quote.pairId.value.lowercase()] ?: 0.0
+        val pairLossCount = context.pairHistoricalLossCount[quote.pairId.value.lowercase()] ?: 0
         val isFakePump = quote.shortTermReturnPct > 8.0 && pairLossCount >= 2
         val pumpWinBoost = if (quote.shortTermReturnPct > 5.0 && pairWinRate > 0.5) 0.15 else 0.0
 

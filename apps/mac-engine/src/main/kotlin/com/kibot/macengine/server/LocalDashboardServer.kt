@@ -202,17 +202,17 @@ class LocalDashboardServer(
                 applyDashboardSecurityHeaders(call)
                 val days = call.request.queryParameters["days"]?.toIntOrNull() ?: 7
                 val trades = when (days) {
-                    1 -> com.kibot.core.logging.TradeLogger.getTodayTrades()
-                    7 -> com.kibot.core.logging.TradeLogger.getLast7DaysTrades()
-                    20, 30 -> com.kibot.core.logging.TradeLogger.getLast30DaysTrades()
-                    else -> com.kibot.core.logging.TradeLogger.getLast7DaysTrades()
+                    1 -> com.kibot.macengine.logging.TradeLogger.getTodayTrades()
+                    7 -> com.kibot.macengine.logging.TradeLogger.getLast7DaysTrades()
+                    20, 30 -> com.kibot.macengine.logging.TradeLogger.getLast30DaysTrades()
+                    else -> com.kibot.macengine.logging.TradeLogger.getLast7DaysTrades()
                 }
                 call.respond(trades)
             }
 
             get("/api/trade-history/today") {
                 applyDashboardSecurityHeaders(call)
-                val trades = com.kibot.core.logging.TradeLogger.getTodayTrades()
+                val trades = com.kibot.macengine.logging.TradeLogger.getTodayTrades()
                 call.respond(trades)
             }
             

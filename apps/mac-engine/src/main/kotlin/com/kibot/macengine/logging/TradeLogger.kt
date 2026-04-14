@@ -1,4 +1,4 @@
-package com.kibot.core.logging
+package com.kibot.macengine.logging
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString

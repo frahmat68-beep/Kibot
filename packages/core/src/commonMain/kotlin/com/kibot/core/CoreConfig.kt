@@ -75,6 +75,8 @@ data class PairSelectionContext(
     val bypassVetoService: Boolean = false,
     val bypassRankingFloor: Boolean = false,
     val engineId: String? = null,  // "macro_follower" or "barbarian_anomaly"
+    val pairHistoricalWinRate: Map<String, Double> = emptyMap(),
+    val pairHistoricalLossCount: Map<String, Int> = emptyMap(),
 )
 
 data class RiskConfig(
