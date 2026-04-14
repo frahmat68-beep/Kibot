@@ -33,3 +33,7 @@ infra/supabase/.generated/
 SSH_BINANCE/
 SSH_INDODAX/
 **/bin/
+SUPABASE_MIGRATION_GUIDE.md
+*.credentials.md
+*_GUIDE.md
+.env*
