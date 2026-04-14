@@ -130,6 +130,7 @@ data class MacDashboardState(
     val trailingFloors: List<MacTrailingFloorDetail>,
     val netWorthHistory: List<MacNetWorthPoint> = emptyList(),
     val assetAllocationDetailed: List<MacAssetAllocationDetail> = emptyList(),
+    val whatIfSimulation: com.kibot.shared.models.CommandCenterSimulationSummary? = null,
 ) {
     companion object {
         fun preview(): MacDashboardState = MacDashboardState(
@@ -186,6 +187,7 @@ data class MacDashboardState(
             trailingFloors = emptyList(),
             netWorthHistory = emptyList(),
             assetAllocationDetailed = emptyList(),
+            whatIfSimulation = null,
         )
     }
 }

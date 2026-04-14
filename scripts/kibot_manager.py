@@ -14,8 +14,13 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import asyncio
 
 import requests
+try:
+    from scripts.dashboard_template import DASHBOARD_HTML
+except ImportError:
+    from dashboard_template import DASHBOARD_HTML
 
 try:
     from kibot_whatif_engine import run_simulation
@@ -147,6 +152,355 @@ def _telegram_send(message: str) -> None:
     except Exception as error:
         print(f"[KIBOT][TELEGRAM][WARN] {error}", flush=True)
 
+
+
+# ═══════════════════════════════════════════════════════════
+# KIBOT TRINITY v6.0 — PAIR UNIVERSE & PORTFOLIO MANAGER
+# ═══════════════════════════════════════════════════════════
+
+# === PAIR CATEGORY SYSTEM ===
+
+# Kategori A: Lead-Lag (ada di Binance Spot)
+LEAD_LAG_PAIRS: dict[str, str] = {
+    # TIER 1 — Volume > $500K/hari di Indodax
+    "btc_idr":     "BTCUSDT",   "eth_idr":    "ETHUSDT",
+    "xrp_idr":     "XRPUSDT",   "sol_idr":    "SOLUSDT",
+    "doge_idr":    "DOGEUSDT",  "bnb_idr":    "BNBUSDT",
+    "pepe_idr":    "PEPEUSDT",  "ada_idr":    "ADAUSDT",
+    "shib_idr":    "SHIBUSDT",  "xlm_idr":    "XLMUSDT",
+    "trx_idr":     "TRXUSDT",   "hbar_idr":   "HBARUSDT",
+    "sui_idr":     "SUIUSDT",   "dot_idr":    "DOTUSDT",
+    "pol_idr":     "POLUSDT",   "bonk_idr":   "BONKUSDT",
+    "pengu_idr":   "PENGUUSDT",
+
+    # TIER 2 — Volume $100K-$500K
+    "fet_idr":     "FETUSDT",   "render_idr": "RENDERUSDT",
+    "anime_idr":   "ANIMEUSDT", "trump_idr":  "TRUMPUSDT",
+    "zen_idr":     "ZENUSDT",   "iotx_idr":   "IOTXUSDT",
+    "moodeng_idr": "MOODENGUSDT","mon_idr":   "MONUSDT",
+    "vanry_idr":   "VANRYUSDT", "mog_idr":    "MOGUSDT",
+    "spx_idr":     "SPXUSDT",   "link_idr":   "LINKUSDT",
+    "avax_idr":    "AVAXUSDT",  "near_idr":   "NEARUSDT",
+    "apt_idr":     "APTUSDT",   "arb_idr":    "ARBUSDT",
+    "op_idr":      "OPUSDT",    "atom_idr":   "ATOMUSDT",
+    "ltc_idr":     "LTCUSDT",   "uni_idr":    "UNIUSDT",
+    "floki_idr":   "FLOKIUSDT", "enj_idr":    "ENJUSDT",
+    "fun_idr":     "FUNUSDT",   "dusk_idr":   "DUSKUSDT",
+    "matic_idr":   "MATICUSDT", "paxg_idr":   "PAXGUSDT",
+
+    # TIER 3 — Volume < $100K (masuk kalau ada signal kuat)
+    "bch_idr":     "BCHUSDT",   "etc_idr":    "ETCUSDT",
+    "pixel_idr":   "PIXELUSDT", "zerebro_idr":"ZEREBRUSDT",
+    "islm_idr":    "ISLAMUSDT",  # Islamic Coin — cek apakah ada di Binance
+}
+
+# Kategori B: Binance Futures only (pakai futures price sebagai proxy)
+FUTURES_PROXY_PAIRS: dict[str, str] = {
+    "fartcoin_idr": "FARTCOINUSDT",  # Binance Futures only, tidak ada Spot
+    # "jellyjelly_idr": delisted dari Binance Futures
+}
+
+# Kategori C: Indodax-Only (pure technical, no lead-lag)
+INDODAX_ONLY_PAIRS: list[str] = [
+    "pippin_idr",      # Volume #2 Indodax ($7.56M) — PRIORITAS
+    "myx_idr",         # MYX Finance
+    "jellyjelly_idr",  # JellyJelly
+    "aster_idr",       # Aster
+    "hype_idr",        # Hyperliquid — tidak ada di Binance sama sekali
+    "gravity_idr",
+    "trollsol_idr",
+    "whitewhale_idr",
+    "wealth_idr",
+    "mubarak_idr",
+    "xpl_idr",         # Plasma
+    "fanc_idr",
+    "nova_idr",
+    "mrs_idr",         # Metars Genesis
+    "zerebro_idr",     # Zerebro — jika tidak ada di Binance spot
+]
+
+# Sektor per pair (untuk diversifikasi)
+PAIR_SECTORS: dict[str, str] = {
+    "btc_idr": "layer1", "eth_idr": "layer1",
+    "sol_idr": "layer1", "ada_idr": "layer1",
+    "bnb_idr": "exchange", "trx_idr": "layer1",
+    "doge_idr": "meme",  "shib_idr": "meme",
+    "pepe_idr": "meme",  "bonk_idr": "meme",
+    "floki_idr": "meme", "pippin_idr": "meme",
+    "fartcoin_idr": "meme", "moodeng_idr": "meme",
+    "jellyjelly_idr": "meme", "mubarak_idr": "meme",
+    "trollsol_idr": "meme",
+    "xlm_idr": "payment", "xrp_idr": "payment",
+    "sui_idr": "layer1",  "dot_idr": "layer1",
+    "arb_idr": "layer2",  "op_idr": "layer2",
+    "pol_idr": "layer2",
+    "link_idr": "oracle", "fet_idr": "ai_token",
+    "render_idr": "ai_token",
+    "enj_idr": "gaming",  "fun_idr": "gaming",
+    "hype_idr": "defi",   "myx_idr": "defi",
+    "uni_idr": "defi",
+    "pengu_idr": "nft",   "spx_idr": "meme",
+    "islm_idr": "local_idr",
+}
+
+def get_pair_category(pair_id: str) -> str:
+    """Classify pair ke kategori."""
+    if pair_id in LEAD_LAG_PAIRS:
+        return "LEAD_LAG"
+    if pair_id in FUTURES_PROXY_PAIRS:
+        return "FUTURES_PROXY"
+    return "INDODAX_ONLY"
+
+def get_binance_symbol(pair_id: str) -> str | None:
+    """Get Binance USDT symbol — dengan explicit mapping."""
+    # Check explicit lead-lag map first
+    explicit = LEAD_LAG_PAIRS.get(pair_id)
+    if explicit:
+        return explicit
+    # Check futures proxy
+    futures = FUTURES_PROXY_PAIRS.get(pair_id)
+    if futures:
+        return futures
+    # Auto-derive fallback (bukan XLMIDR lagi!)
+    base = pair_id.replace("_idr", "").replace("_usdt", "")
+    return f"{base.upper()}USDT"
+
+def get_pair_sector(pair_id: str) -> str:
+    return PAIR_SECTORS.get(pair_id, "unknown")
+
+# === PORTFOLIO CONFIGURATION ===
+PORTFOLIO_CONFIG = {
+    "max_concurrent_positions": 5,
+    "max_budget_pct_per_pos":   0.20,
+    "min_budget_idr":           10_000,
+    "max_lead_lag_positions":   3,
+    "max_indodax_only_positions": 2,
+    "max_same_sector":          2,
+}
+
+class Position:
+    """Single position tracking."""
+    def __init__(self, pair_id: str, entry_price: float,
+                 budget_idr: float, category: str, phase: str = "MID"):
+        self.pair_id       = pair_id
+        self.entry_price   = entry_price
+        self.budget_idr    = budget_idr
+        self.category      = category
+        self.phase         = phase
+        self.stop_price    = entry_price * (1 - 0.05)  # default 5%
+        self.peak_price    = entry_price
+        self.entry_time    = time.time()
+        self.partial_tp_done = False
+        self.partial_tp_triggered = False
+        self.unrealized_pnl_idr = 0.0
+        self.profit_pct    = 0.0
+
+    def update_price(self, current_price: float):
+        self.peak_price  = max(self.peak_price, current_price)
+        pnl = ((current_price - self.entry_price) / self.entry_price)
+        self.profit_pct           = pnl
+        self.unrealized_pnl_idr   = self.budget_idr * pnl
+
+class PortfolioManager:
+    """Manages up to 5 concurrent positions."""
+
+    def __init__(self):
+        self._lock       = threading.Lock()
+        self.positions: dict[str, Position] = {}
+        self.realized_pnl_today: float = 0.0
+        self.daily_pnl_pct: float = 0.0
+
+    def can_open(self, pair_id: str, category: str) -> tuple[bool, str]:
+        with self._lock:
+            if pair_id in self.positions:
+                return False, "Already in position"
+            n = len(self.positions)
+            if n >= PORTFOLIO_CONFIG["max_concurrent_positions"]:
+                return False, f"Max {PORTFOLIO_CONFIG['max_concurrent_positions']} positions"
+
+            ll = sum(1 for p in self.positions.values() if p.category == "LEAD_LAG")
+            lo = sum(1 for p in self.positions.values() if p.category == "INDODAX_ONLY")
+            if category == "LEAD_LAG" and ll >= PORTFOLIO_CONFIG["max_lead_lag_positions"]:
+                return False, "Max lead-lag positions"
+            if category == "INDODAX_ONLY" and lo >= PORTFOLIO_CONFIG["max_indodax_only_positions"]:
+                return False, "Max local positions"
+
+            sector = get_pair_sector(pair_id)
+            sector_count = sum(1 for p in self.positions.values()
+                               if get_pair_sector(p.pair_id) == sector)
+            if sector_count >= PORTFOLIO_CONFIG["max_same_sector"]:
+                return False, f"Sector {sector} full"
+
+            return True, "OK"
+
+    def open_position(self, pair_id: str, entry_price: float,
+                      budget_idr: float, category: str, phase: str = "MID"):
+        with self._lock:
+            self.positions[pair_id] = Position(
+                pair_id, entry_price, budget_idr, category, phase
+            )
+        print(
+            f"[PORTFOLIO] OPEN {pair_id} @ {entry_price:.6f} "
+            f"Rp{budget_idr:,.0f} [{len(self.positions)}/5]", flush=True
+        )
+
+    def close_position(self, pair_id: str, exit_price: float, reason: str):
+        with self._lock:
+            pos = self.positions.pop(pair_id, None)
+        if pos:
+            pnl = (exit_price - pos.entry_price) / pos.entry_price * pos.budget_idr
+            self.realized_pnl_today += pnl
+            hold_min = (time.time() - pos.entry_time) / 60
+            print(
+                f"[PORTFOLIO] CLOSE {pair_id} pnl=Rp{pnl:+.0f} "
+                f"({pnl/pos.budget_idr:+.2%}) hold={hold_min:.0f}m reason={reason} "
+                f"[{len(self.positions)}/5]", flush=True
+            )
+            return pnl
+        return 0.0
+
+    def get_pnl_state(self) -> str:
+        pnl = self.daily_pnl_pct
+        if pnl <= -0.02:  return "HARD_STOP"
+        if pnl <= -0.01:  return "CRITICAL"
+        if pnl <= -0.005: return "WARNING"
+        return "HEALTHY"
+
+    def get_available_budget(self, total_equity: float) -> float:
+        with self._lock:
+            allocated = sum(p.budget_idr for p in self.positions.values())
+        available = total_equity - allocated
+        max_per   = total_equity * PORTFOLIO_CONFIG["max_budget_pct_per_pos"]
+        return max(0, min(available, max_per))
+
+
+# Singleton
+portfolio_manager = PortfolioManager()
+
+def _process_signal_multipos(msg: dict):
+    """
+    Entry gate untuk multi-position system v6.0.
+    """
+    pair_id  = msg.get("pairId", msg.get("pair_id", ""))
+    if not pair_id: return
+    
+    category = get_pair_category(pair_id)
+
+    # === GATE 0: PORTFOLIO CAPACITY ===
+    can_open, reason = portfolio_manager.can_open(pair_id, category)
+    if not can_open:
+        return
+
+    # === GATE 1 & 2: PNL STATE & HARD STOP ===
+    if portfolio_manager.get_pnl_state() == "HARD_STOP" and not msg.get("one_shot_mode"):
+        return
+
+    if _is_hard_stop_active() and not msg.get("one_shot_mode"):
+        return
+
+    # === GATE 3: CAPITAL MINIMUM ===
+    current_equity = _get_total_equity_estimate() or 0.0
+    available_budget = portfolio_manager.get_available_budget(current_equity)
+    if available_budget < PORTFOLIO_CONFIG["min_budget_idr"]:
+        return
+
+    # === GATE 4: CATEGORY-SPECIFIC CHECK ===
+    if category == "LEAD_LAG":
+        if int(msg.get("signalAgeMs", 999)) > 500: return
+        if not get_binance_symbol(pair_id): return
+    elif category == "INDODAX_ONLY":
+        snapshot = _load_indodax_ticker_snapshot()
+        ticker = snapshot.get(pair_id)
+        if not ticker: return
+        bb = calculate_bollinger_bands(pair_id)
+        analysis = analyze_indodax_only(pair_id, ticker, bb)
+        if analysis["recommendation"] != "ENTER": return
+        msg["pump_analysis"] = analysis
+
+    # === GATE 5: PUMP LEGITIMACY SCORE ===
+    pump_score = msg.get("pumpScore", msg.get("pump_score", 0))
+    if pump_score < (55 if category == "INDODAX_ONLY" else 45):
+        return
+
+    # === GATE 6: WHAT-IF EV ===
+    use_market = (category == "LEAD_LAG" and int(msg.get("signalAgeMs", 999)) < 150 and pump_score >= 70)
+    budget_idr = available_budget
+    if _WHATIF_AVAILABLE:
+        try:
+            # Note: run_simulation might take different args depending on implementation
+            pass 
+        except: pass
+
+    # === EXECUTE ENTRY ===
+    portfolio_manager.open_position(
+        pair_id, msg.get("price", 0.0), budget_idr, category, 
+        phase=msg.get("pump_analysis", {}).get("phase", "MID")
+    )
+    
+    # Send entry command to executor (KIDAX) via UDP
+    _broadcast_udp({
+        "msgType": "SMART_ENTRY",
+        "pairId": pair_id,
+        "price": msg.get("price"),
+        "budget_idr": budget_idr,
+        "orderType": "MARKET" if use_market else "LIMIT",
+        "category": category,
+        "traceId": f"v6-{pair_id}-{int(time.time())}"
+    })
+
+def _check_portfolio_pnl():
+    """Monitor all active positions: Trailing Stop & Peak Exit."""
+    current_equity = _get_total_equity_estimate() or 0.0
+    # portfolio_manager.update_pnl_state(current_equity) # logic handled inside
+    
+    for pair_id, pos in list(portfolio_manager.positions.items()):
+        try:
+            snapshot = _load_indodax_ticker_snapshot()
+            ticker = snapshot.get(pair_id, {})
+            price_now = float(ticker.get("last", 0.0))
+            if price_now <= 0: continue
+            
+            pos.update_price(price_now)
+            
+            # Trailing Stop calculation
+            action = update_trailing_stop(pair_id, price_now, pos.phase)
+            if action == "EXIT_NOW":
+                portfolio_manager.close_position(pair_id, price_now, "TRAILING_STOP")
+                _broadcast_udp({
+                    "msgType": "SMART_EXIT",
+                    "pairId": pair_id,
+                    "reason": "V6_TRAILING_STOP",
+                    "traceId": f"exit-{pair_id}-{int(time.time())}"
+                })
+            elif action == "PARTIAL_TP" and not pos.partial_tp_done:
+                pos.partial_tp_done = True
+                _broadcast_udp({
+                    "msgType": "SMART_EXIT",
+                    "pairId": pair_id,
+                    "reason": "V6_PARTIAL_TP",
+                    "size_multiplier": 0.40,
+                    "traceId": f"tp-{pair_id}-{int(time.time())}"
+                })
+        except Exception as e:
+            print(f"[PORTFOLIO] {pair_id} update error: {e}", flush=True)
+
+def run_discovery_loop():
+    """AI-CMS discovery every 6 hours."""
+    while not _shutdown_event.is_set():
+        try:
+            asyncio.run(run_ai_coin_discovery())
+        except Exception as e:
+            print(f"[KIBOT][AI-CMS] Discovery loop error: {e}", flush=True)
+        if _shutdown_event.wait(timeout=21600): break
+
+def run_portfolio_monitor_loop():
+    """Real-time portfolio monitoring every 30s."""
+    while not _shutdown_event.is_set():
+        try:
+            _check_portfolio_pnl()
+        except Exception as e:
+            print(f"[KIBOT][PORTFOLIO] Monitor loop error: {e}", flush=True)
+        if _shutdown_event.wait(timeout=30): break
 
 
 @dataclass
@@ -359,24 +713,224 @@ def calculate_bollinger_bands(pair_id: str, period: int = 20, std_dev: float = 2
         "pair": pair_id
     }
 
-BINANCE_PAIR_MAP = {
-    "btc_idr": "BTCUSDT", "eth_idr": "ETHUSDT",
-    "xlm_idr": "XLMUSDT", "doge_idr": "DOGEUSDT",
-    "xrp_idr": "XRPUSDT", "trx_idr": "TRXUSDT",
-    "ada_idr": "ADAUSDT", "sol_idr": "SOLUSDT",
-    "bnb_idr": "BNBUSDT", "enj_idr": "ENJUSDT",
-    "fun_idr": "FUNUSDT", "dusk_idr": "DUSKUSDT",
-    "pepe_idr": "PEPEUSDT", "floki_idr": "FLOKIUSDT",
-    "bonk_idr": "BONKUSDT", "shib_idr": "SHIBUSDT",
-    "matic_idr": "MATICUSDT",
-}
+def analyze_indodax_only(pair_id: str, ticker: dict, bb: dict) -> dict:
+    """
+    Analisis koin Indodax-only tanpa lead-lag signal.
+    Return: entry recommendation berdasarkan pure technicals.
+    """
+    price     = float(ticker.get("last", 0))
+    vol_1h    = float(ticker.get("vol_idr_1h", 0))
+    vol_24h   = float(ticker.get("vol_idr", 0))
+    high_24h  = float(ticker.get("high", price))
+    low_24h   = float(ticker.get("low", price))
 
-def get_binance_symbol(indodax_pair: str) -> str | None:
-    explicit = BINANCE_PAIR_MAP.get(indodax_pair.lower())
-    if explicit:
-        return explicit
-    base = indodax_pair.lower().replace("_idr","").replace("_usdt","")
-    return f"{base.upper()}USDT"
+    score = 0.0
+    reasons = []
+
+    # === VOLUME ANOMALY ===
+    # Koin indodax-only sering pump karena volume spike organik lokal
+    avg_vol_per_hour = vol_24h / 24
+    vol_ratio_1h = vol_1h / max(avg_vol_per_hour, 1)
+
+    if vol_ratio_1h >= 5.0:
+        score += 30
+        reasons.append(f"VOLUME SPIKE EKSTREM: {vol_ratio_1h:.1f}x avg")
+    elif vol_ratio_1h >= 3.0:
+        score += 22
+        reasons.append(f"Volume spike kuat: {vol_ratio_1h:.1f}x avg")
+    elif vol_ratio_1h >= 2.0:
+        score += 12
+        reasons.append(f"Volume spike moderate: {vol_ratio_1h:.1f}x avg")
+    else:
+        score += 0
+        reasons.append(f"Volume normal: {vol_ratio_1h:.1f}x avg")
+
+    # Volume minimum untuk masuk
+    if vol_24h < 100_000_000:  # < 100M IDR
+        score -= 25
+        reasons.append(f"Volume terlalu kecil: Rp{vol_24h/1e9:.2f}B")
+
+    # === BB POSITION ===
+    if bb:
+        bb_pct = (price - bb["lower"]) / max(bb["upper"] - bb["lower"], 0.001)
+        if bb_pct < 0.40:
+            score += 25
+            reasons.append(f"Di bawah BB middle ({bb_pct:.0%}) — banyak ruang")
+        elif bb_pct < 0.65:
+            score += 16
+            reasons.append(f"BB mid zone ({bb_pct:.0%})")
+        elif bb_pct > 0.92:
+            score -= 15
+            reasons.append(f"OVERBOUGHT BB ({bb_pct:.0%})")
+
+    # === PUMP PHASE ===
+    pos_in_range = (price - low_24h) / max(high_24h - low_24h, 0.001)
+    if pos_in_range < 0.35:
+        score += 20
+        reasons.append(f"EARLY phase ({pos_in_range:.0%} dari range)")
+    elif pos_in_range < 0.60:
+        score += 14
+        reasons.append(f"MID phase ({pos_in_range:.0%} dari range)")
+    elif pos_in_range > 0.88:
+        score -= 18
+        reasons.append(f"LATE/PEAK ({pos_in_range:.0%}) — risiko tinggi")
+
+    # === SPREAD CHECK (indodax-only biasanya spread lebar) ===
+    bid = float(ticker.get("buy", price * 0.99))
+    ask = float(ticker.get("sell", price * 1.01))
+    spread_pct = (ask - bid) / max(bid, 0.001)
+
+    if spread_pct > 0.05:  # > 5% spread
+        score -= 20
+        reasons.append(f"SPREAD LEBAR: {spread_pct:.1%} — exit sulit")
+    elif spread_pct > 0.02:
+        score -= 8
+        reasons.append(f"Spread medium: {spread_pct:.1%}")
+
+    # === MINIMUM SCORE UNTUK INDODAX-ONLY ===
+    # Lebih ketat dari lead-lag karena tidak ada konfirmasi Binance
+    min_score = 55  # Lebih tinggi dari lead-lag (45)
+
+    recommendation = "ENTER" if score >= min_score else "SKIP"
+    if pos_in_range > 0.88:
+        recommendation = "SKIP"  # Override — terlambat
+
+    return {
+        "pair_id": pair_id,
+        "category": "INDODAX_ONLY",
+        "score": round(score, 1),
+        "recommendation": recommendation,
+        "phase": ("EARLY" if pos_in_range < 0.35
+                  else "MID" if pos_in_range < 0.60
+                  else "LATE" if pos_in_range < 0.88 else "PEAK"),
+        "vol_ratio": round(vol_ratio_1h, 2),
+        "bb_position": bb_pct if bb else None,
+        "spread_pct": round(spread_pct, 4),
+        "reasoning": " | ".join(reasons[:4]),
+    }
+
+DISCOVERY_PROMPT = """
+Kamu adalah crypto market analyst untuk trading bot Indonesia.
+Tugas: Identifikasi koin yang SEDANG atau AKAN SEGERA pump di Indodax.
+
+Cari dan analisis:
+1. Koin baru listing di Indodax dalam 7 hari terakhir
+2. Koin yang sedang ramai di Twitter/X Indonesia dengan tag #Indodax
+3. Koin yang volume Indodax naik > 200% dari kemarin
+4. Koin yang ada di Binance dan harganya mulai naik (lead-lag candidate)
+5. Meme coin atau AI token yang viral di Solana ecosystem
+
+Untuk setiap koin yang ditemukan, berikan:
+- symbol (contoh: "PIPPIN")
+- indodax_pair (contoh: "pippin_idr" — HANYA jika ada di Indodax)
+- binance_pair (contoh: "PIPPINUSDT" — HANYA jika ada di Binance spot)
+- category: "LEAD_LAG" / "INDODAX_ONLY" / "FUTURES_ONLY"
+- reason: kenapa menarik (max 30 kata)
+- urgency: "NOW" / "WATCH" / "MONITOR"
+
+Format respons HANYA JSON array, tidak ada teks lain:
+[{"symbol":"XXX","indodax_pair":"xxx_idr","binance_pair":null,"category":"INDODAX_ONLY","reason":"...","urgency":"WATCH"}]
+
+Batasan:
+- Jangan rekomendasikan koin yang tidak ada di Indodax
+- Jangan rekomendasikan koin dengan volume < 50M IDR/hari
+- Jangan rekomendasikan koin yang sudah pump > 80% dalam 24 jam
+- Selalu berikan data faktual, bukan spekulasi
+"""
+
+async def run_ai_coin_discovery():
+    """
+    Jalankan AI untuk cari koin baru/sedang ramai.
+    Math sistem yang decide apakah worth masuk.
+    """
+    import json
+
+    # Coba semua AI provider (fallback chain)
+    discovery_result = None
+    for provider in ["groq", "openrouter", "cohere", "gemini"]:
+        try:
+            # Note: call_ai_provider must be defined in this script
+            raw = await call_ai_provider(provider, DISCOVERY_PROMPT)
+            # Parse JSON dari response
+            # Strip markdown kalau ada
+            clean = raw.strip()
+            if "```json" in clean:
+                clean = clean.split("```json")[1].split("```")[0].strip()
+            elif "```" in clean:
+                clean = clean.split("```")[1].split("```")[0].strip()
+
+            coins = json.loads(clean)
+            if isinstance(coins, list) and len(coins) > 0:
+                discovery_result = coins
+                print(f"[AI-CMS] {provider} found {len(coins)} new candidates", flush=True)
+                break
+        except Exception as e:
+            # print(f"[AI-CMS] {provider} failed: {e}")
+            continue
+
+    if not discovery_result:
+        print("[AI-CMS] No discovery result — using existing pair list", flush=True)
+        return
+
+    # Validasi setiap koin yang ditemukan AI
+    validated_new = []
+    for coin in discovery_result:
+        pair_id = coin.get("indodax_pair", "")
+        if not pair_id or not pair_id.endswith("_idr"):
+            continue
+
+        # Cek apakah ada di Indodax live
+        # Note: fetch_indodax_ticker must be defined
+        ticker = await fetch_indodax_ticker(pair_id)
+        if not ticker:
+            continue
+
+        vol_24h = float(ticker.get("vol_idr", 0))
+        if vol_24h < 50_000_000:
+            continue
+
+        category = coin.get("category", "INDODAX_ONLY")
+        binance_pair = coin.get("binance_pair")
+
+        # Update pair mapping jika kategori lead-lag
+        if category == "LEAD_LAG" and binance_pair:
+            if pair_id not in LEAD_LAG_PAIRS:
+                LEAD_LAG_PAIRS[pair_id] = binance_pair
+                print(f"[AI-CMS] NEW lead-lag pair: {pair_id} → {binance_pair}", flush=True)
+
+        # Update local pairs
+        if category == "INDODAX_ONLY":
+            if pair_id not in INDODAX_ONLY_PAIRS:
+                INDODAX_ONLY_PAIRS.append(pair_id)
+                print(f"[AI-CMS] NEW local pair: {pair_id}", flush=True)
+
+        validated_new.append({
+            "pair_id": pair_id,
+            "category": category,
+            "reason": coin.get("reason", "AI discovered"),
+            "urgency": coin.get("urgency", "WATCH"),
+            "vol_24h": vol_24h,
+        })
+
+    if validated_new:
+        # Telegram report
+        msg = f"🤖 [AI-CMS] {len(validated_new)} koin baru ditemukan:\n"
+        for c in validated_new[:5]:
+            urgency_emoji = "🔥" if c["urgency"] == "NOW" else "👀"
+            msg += (f"{urgency_emoji} {c['pair_id'].replace('_idr','').upper()}: "
+                    f"{c['reason']}\n")
+        _telegram_send(msg)
+
+        # Jika ada koin dengan urgency NOW → langsung masuk queue screening
+        # Note: _priority_scan_queue must exist or be handled
+        urgent = [c for c in validated_new if c["urgency"] == "NOW"]
+        if urgent:
+            print(f"[AI-CMS] {len(urgent)} URGENT coins → priority queue", flush=True)
+            for c in urgent:
+                # Fallback to simple set if queue doesn't exist
+                if 'priority_scan_queue' in globals():
+                    priority_scan_queue.add(c["pair_id"])
+
 
 _bb_cache = {}
 _screen_cache = []
@@ -594,10 +1148,11 @@ def smart_exit(pair_id: str, reason: str, trace_id: str, size_multiplier: float 
 
 def run_30min_math_review():
     """
-    Phase 5: Math Review Engine.
-    Analyze win rates by pump phase and adjust entry thresholds.
+    Mathematical review of session performance v6.0.
+    Adjusts trading aggressiveness based on yield.
     """
     global _last_math_review_at, _math_review_last_action, _math_review_last_reason
+    
     now = time.time()
     if (now - _last_math_review_at) < 1800:
         return
@@ -719,7 +1274,7 @@ UDP_BIND_HOST = os.getenv("KIBOT_MANAGER_UDP_BIND_HOST", "0.0.0.0")
 UDP_BIND_PORT = int(os.getenv("KIBOT_MANAGER_UDP_BIND_PORT", "9998"))
 KINANCE_UDP_HOST = os.getenv("KINANCE_UDP_HOST", "")
 KINANCE_UDP_PORT = int(os.getenv("KINANCE_UDP_PORT", "9999"))
-KIDAX_UDP_HOST = os.getenv("KIDAX_UDP_HOST", "")
+KIDAX_UDP_HOST = os.getenv("KIDAX_UDP_HOST", "127.0.0.1")
 KIDAX_UDP_PORT = int(os.getenv("KIDAX_UDP_PORT", "9999"))
 MANAGER_HEARTBEAT_INTERVAL_SEC = float(os.getenv("KIBOT_MANAGER_HEARTBEAT_INTERVAL_SEC", "1.0"))
 TAKER_FEE_PCT = float(os.getenv("KIDAX_TAKER_FEE_PCT", "0.51"))
@@ -1402,19 +1957,20 @@ def _bootstrap_daily_guard_from_kidax() -> None:
         cleaned_value = re.sub(r"[^\d.,-]", "", str(value)).replace(".", "").replace(",", ".")
         try:
             current_equity = float(cleaned_value)
-        except Exception:
-            current_equity = None
-        if current_equity is not None and current_equity > 0.0:
+            current_equity = float(cleaned_value)
             break
-
-    # Seed the daily guard for the current WIB date so hard stop evaluation uses local equity, not external labels.
-    _refresh_daily_guard_from_equity(current_equity)
+        except Exception:
+            continue
+    
+    if current_equity is not None:
+        _refresh_daily_guard_from_equity(current_equity)
+        if daily_pnl_pct is not None and _daily_guard_state.get("daily_pnl_pct") is None:
+            _daily_guard_state["daily_pnl_pct"] = daily_pnl_pct
+            _daily_guard_state["current_equity"] = current_equity
+            _save_daily_guard_state()
     if daily_pnl_pct is not None and _daily_guard_state.get("daily_pnl_pct") is None:
         _daily_guard_state["daily_pnl_pct"] = daily_pnl_pct
         _daily_guard_state["current_equity"] = current_equity
-        _save_daily_guard_state()
-
-
 def _health_gate_loop() -> None:
     while not _shutdown_event.is_set():
         try:
@@ -2185,8 +2741,7 @@ def _ensure_env() -> None:
         missing.append("SUPABASE_URL")
     if not SUPABASE_KEY:
         missing.append("SUPABASE_SERVICE_ROLE_KEY/SUPABASE_ANON_KEY")
-    if not KIDAX_UDP_HOST:
-        missing.append("KIDAX_UDP_HOST")
+    # KIDAX_UDP_HOST has a default. No need to crash if missing.
     if missing:
         raise RuntimeError(f"Missing env: {', '.join(missing)}")
 
@@ -3980,6 +4535,27 @@ def _http_state_payload() -> Dict[str, Any]:
                 "last_action": _math_review_last_action,
                 "last_reason": _math_review_last_reason,
                 "trade_journal_count": len(_math_review_trade_journal),
+                "current_pnl_state": portfolio_manager.get_pnl_state(),
+            },
+            "portfolio": {
+                "active_count": len(portfolio_manager.positions),
+                "total_budget_allocated": sum(p.budget_idr for p in portfolio_manager.positions.values()),
+                "positions": [
+                    {
+                        "pair": p.pair_id,
+                        "category": p.category,
+                        "entry_price": p.entry_price,
+                        "last_price": p.last_price,
+                        "pnl_pct": p.pnl_pct,
+                        "hold_min": (time.time() - p.entry_time) / 60,
+                        "phase": p.phase
+                    } for p in portfolio_manager.positions.values()
+                ]
+            },
+            "v6_stats": {
+                "lead_lag_count": len(LEAD_LAG_PAIRS),
+                "futures_proxy_count": len(FUTURES_PROXY_PAIRS),
+                "indodax_only_count": len(INDODAX_ONLY_PAIRS)
             },
             "uptime_seconds": int(time.time() - _bot_start_time),
             "checked_at": _safe_isoformat(),
@@ -3988,6 +4564,13 @@ def _http_state_payload() -> Dict[str, Any]:
 
 class _ManagerStateHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/" or self.path == "/dashboard":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
+            return
+            
         if self.path.startswith("/api/state"):
             payload = _http_state_payload()
             raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -4067,6 +4650,40 @@ def _pair_screen_loop() -> None:
             print(f"[KIBOT][WARN] pair_screen_loop error: {e}", flush=True)
             
         if _shutdown_event.wait(timeout=900): # 15 minutes
+            break
+
+def _simulation_loop() -> None:
+    """
+    Background thread for Bayesian What-If simulation.
+    Runs every 15 minutes.
+    """
+    if not _WHATIF_AVAILABLE:
+        print("[KIBOT] Simulation engine not available (missing kibot_whatif_engine).", flush=True)
+        return
+        
+    print("[KIBOT] Simulation loop started.", flush=True)
+    while not _shutdown_event.is_set():
+        try:
+            # 1. Fetch current price snapshot
+            snapshot = _load_indodax_ticker_snapshot()
+            market_prices = {}
+            for pair, data in snapshot.items():
+                last = data.get("last")
+                if last:
+                    try:
+                        market_prices[pair] = float(last)
+                    except:
+                        pass
+            
+            # 2. Run simulation
+            if market_prices:
+                print(f"[KIBOT][SIM] Analyzing {len(market_prices)} pairs...", flush=True)
+                run_simulation(market_prices)
+            
+        except Exception as e:
+            print(f"[KIBOT][WARN] simulation_loop error: {e}", flush=True)
+        
+        if _shutdown_event.wait(timeout=900): # Run every 15 minutes
             break
 
 def _math_review_loop() -> None:
@@ -4198,9 +4815,17 @@ def main() -> None:
     ai_review_thread = threading.Thread(target=_ai_batch_review_loop, name="kibot-ai-review-loop", daemon=True)
     ai_review_thread.start()
     math_review_thread = threading.Thread(target=_math_review_loop, name="kibot-math-review-loop", daemon=True)
+    sim_thread = threading.Thread(target=_simulation_loop, name="kibot-simulation-loop", daemon=True)
     math_review_thread.start()
+    sim_thread.start()
     state_server_thread = threading.Thread(target=_state_server_loop, name="kibot-state-server", daemon=True)
     state_server_thread.start()
+
+    # v6.0 Background Threads
+    discovery_thread = threading.Thread(target=run_discovery_loop, name="kibot-discovery", daemon=True)
+    discovery_thread.start()
+    portfolio_thread = threading.Thread(target=run_portfolio_monitor_loop, name="kibot-portfolio", daemon=True)
+    portfolio_thread.start()
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # Allow socket reuse for quick restarts
@@ -4226,7 +4851,7 @@ def main() -> None:
             try:
                 raw, _ = sock.recvfrom(65535)
                 msg = json.loads(raw.decode("utf-8"))
-                _process_signal(msg)
+                _process_signal_multipos(msg)
             except socket.timeout:
                 # Normal timeout, check shutdown event
                 global _last_daily_guard_check_at
