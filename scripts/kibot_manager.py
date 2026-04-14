@@ -43,6 +43,9 @@ _metrics: Dict[str, float | int] = {
     "whatif_skips_today": 0,
     "whatif_enters_today": 0,
 }
+_one_shot_used_today = False
+_full_stop_active = False
+_one_shot_result: str | None = None
 _last_math_review_at = 0.0
 _math_review_last_action = "INIT"
 _math_review_last_reason = ""
@@ -130,6 +133,49 @@ def _telegram_send(message: str) -> None:
         print(f"[KIBOT][TELEGRAM][WARN] {error}", flush=True)
 
 
+def _is_one_shot_eligible(msg: Dict[str, Any], score: float) -> bool:
+    if _one_shot_used_today or _full_stop_active:
+        return False
+    signal_age_ms = float(msg.get("signalAgeMs") or msg.get("signal_age_ms") or 999.0)
+    has_volume_spike = bool(msg.get("volumeSpike") or msg.get("volume_spike") or False)
+    confidence = float(msg.get("confidence") or 0.0)
+    return signal_age_ms < 200 and score >= 8.0 and has_volume_spike and confidence >= 0.80
+
+
+def _activate_one_shot(pair_id: str, budget_idr: float) -> float:
+    global _one_shot_used_today
+    equity = _get_total_equity_estimate() or budget_idr
+    max_budget = equity * 0.20
+    actual_budget = min(budget_idr, max_budget)
+    _one_shot_used_today = True
+    _telegram_send(
+        f"⚡ ONE_SHOT ACTIVATED: {pair_id}\n"
+        f"Budget: Rp{actual_budget:,.0f} (max 20% equity)\n"
+        f"Jika gagal, FULL_STOP sampai midnight WIB"
+    )
+    return actual_budget
+
+
+def _record_one_shot_result(pnl_idr: float) -> None:
+    global _one_shot_result, _full_stop_active
+    if pnl_idr > 0:
+        _one_shot_result = "WIN"
+        _full_stop_active = False
+        _telegram_send(f"✅ ONE_SHOT WIN +Rp{pnl_idr:,.0f}. Kembali ke WARNING mode.")
+    else:
+        _one_shot_result = "LOSS"
+        _full_stop_active = True
+        _telegram_send(f"🛑 ONE_SHOT FAILED Rp{pnl_idr:,.0f}. FULL_STOP aktif sampai midnight WIB.")
+
+
+def _daily_reset_extra_state() -> None:
+    global _one_shot_used_today, _one_shot_result, _full_stop_active, _last_30min_review
+    _one_shot_used_today = False
+    _one_shot_result = None
+    _full_stop_active = False
+    _last_30min_review = 0.0
+
+
 def _record_trade_result(pair_id: str, *, gross_pnl_pct: float, entry_time: float) -> None:
     pair_key = pair_id.lower().strip()
     if not pair_key:
@@ -141,6 +187,8 @@ def _record_trade_result(pair_id: str, *, gross_pnl_pct: float, entry_time: floa
             "entry_time": float(entry_time),
         }
     )
+    if _one_shot_used_today and _one_shot_result is None:
+        _record_one_shot_result(gross_pnl_pct)
     if len(_math_review_trade_journal) > 500:
         del _math_review_trade_journal[:-500]
 
@@ -735,6 +783,7 @@ def _reconcile_daily_guard_day_rollover() -> None:
         _gate_state["daily_hard_stop_reason"] = ""
         _gate_state["daily_hard_stop_reset_at"] = ""
         _save_gate_state()
+    _daily_reset_extra_state()
     _resume_new_entries("new day rollover")
 
 def _ensure_hard_stop_consistency() -> None:
@@ -2295,6 +2344,14 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         print(f"[KIBOT][WARN] missing pair in msgType={msg_type}", flush=True)
         return
 
+    if msg_type in SAFE_ENTRY_MSG_TYPES:
+        score = float(msg.get("score") or 0.0)
+        if _is_hard_stop_active():
+            if _is_one_shot_eligible(msg, score):
+                msg["one_shot_mode"] = True
+            else:
+                return
+
     if msg_type in SAFE_ENTRY_MSG_TYPES and _learning_enabled and _learning_engine is not None:
         allowed, reason = _learning_engine.should_entry(pair)
         if not allowed:
@@ -2318,6 +2375,7 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         elif pair_cfg.get("tier") == "C":
             target_profit_pct = max(target_profit_pct, 0.025)
         if entry_price > 0.0 and budget_idr > 0.0:
+            use_market = bool(msg.get("breakout_urgent") or msg.get("use_market") or False)
             what_if = _simulate_what_if(
                 pair_id=pair,
                 entry_price=entry_price,
@@ -2338,6 +2396,11 @@ def _process_signal(msg: Dict[str, Any]) -> None:
                 print(f"[KIBOT][BLOCK] Blocking {msg_type} - what-if rejected", flush=True)
                 return
             _metric_inc("whatif_enters_today")
+            if msg.get("one_shot_mode"):
+                budget_idr = _activate_one_shot(pair, budget_idr)
+                use_market = True
+            elif use_market and what_if["recommendation"] == "REDUCE_SIZE":
+                budget_idr *= 0.5
         allowed, reason = _apply_survival_filters(
             pair_id=pair,
             budget_idr=float(msg.get("budgetIdr") or msg.get("budget_idr") or msg.get("quoteBudgetIdr") or 0.0),

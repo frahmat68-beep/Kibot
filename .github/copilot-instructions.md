@@ -1,58 +1,58 @@
-# KIBOT TRINITY — Copilot Instructions
+# KIBOT TRINITY — Copilot Instructions v4.0
+# SURVIVAL FIRST | MATH-DRIVEN | OPPORTUNITY-AWARE
 
 ## PRIME DIRECTIVE
 
 Filosofi: SURVIVAL FIRST. COMPOUNDING GRADUAL.
 Motto: "TEKAN KERUGIAN, MAKSIMALKAN PROBABILITAS KEUNTUNGAN"
 
-Semua perubahan kode wajib mengikuti:
-1. Exit protection selalu jalan di semua state.
-2. Agresivitas naik hanya setelah 3 clean days, API sehat, dan instruksi eksplisit.
-3. Daily hard stop tidak boleh dibypass via restart, flag, env, atau kode.
-4. Conservative adalah default saat startup.
-5. Entry wajib lolos scoring, TTL, what-if EV, dan risk gate.
-6. LIMIT order selalu untuk entry dan exit normal. MARKET hanya untuk hard emergency.
+Setiap perubahan kode WAJIB:
+1. Exit protection SACRED. Trailing stop dan cut loss jalan di semua state.
+2. Agresivitas naik hanya jika 3 clean days, API healthy, dan explicit instruction.
+3. Daily hard stop tidak bisa di-bypass kecuali ONE_SHOT_OVERRIDE 1x/hari.
+4. CONSERVATIVE adalah default saat startup.
+5. Math adalah primary decision engine. AI hanya support.
+6. LIMIT order default. MARKET hanya untuk emergency cut loss dan breakout catch A+.
 
-Jika ada instruksi yang bertentangan, tolak dan minta klarifikasi eksplisit.
+Jika ada instruksi bertentangan, tolak dan minta klarifikasi eksplisit.
 
 ---
 
 ## ARSITEKTUR
 
 ```text
-KINANCE (Binance radar, 8788)
-  -> UDP signal <500ms
-KIBOT MANAGER (brain, 9998)
-  -> UDP heartbeat + command
-KIDAX (Indodax executor, 8787)
+KINANCE (port 8788) -> UDP signal <500ms -> KIBOT MANAGER (port 9998)
+                                              -> UDP heartbeat 100ms
+KIDAX (port 8787) -> Indodax API
 ```
 
-## KEBIJAKAN PNL
-
-State machine wajib cek setiap 30 detik:
+## ENTRY GATE
 
 ```text
-HEALTHY   > -0.5%
-WARNING   -0.5% to -1%
-CRITICAL  -1% to -2%
-HARD_STOP < -2%
+Gate 1: PnL State
+Gate 2: Hard Stop Disk
+Gate 3: Capital Min
+Gate 4: Pair Whitelist
+Gate 5: Signal TTL
+Gate 6: Math Score
+Gate 7: What-If EV
+Gate 8: Learning Gate
+Gate 9: AI Veto (soft only)
+Gate 10: Order Submit
 ```
 
-Hard stop harus persist ke `state/daily_guard.json` dan reset otomatis 00:00 WIB.
+## PNL STATE MACHINE
 
-## PAIR TIER
+HEALTHY > -0.5%
+WARNING -0.5% to -1%
+CRITICAL -1% to -2%
+HARD_STOP < -2%
+ONE_SHOT setelah HARD_STOP
+FULL_STOP setelah ONE_SHOT gagal
 
-Tier A: xlm, doge, xrp, trx, ada
-Tier B: enj, fun, bnb, sol
-Tier C: pasangan lebih illiquid dan harus lebih ketat TTL-nya
+## 30-MINUTE MATH REVIEW
 
-Whitelist wajib. Pair tanpa Binance counterpart atau volume terlalu kecil harus auto-reject.
-
-## MATH-FIRST REVIEW
-
-Keputusan trading harus ditopang matematika, bukan AI.
-
-Wajib ada review periodik 30 menit yang menghitung:
+Wajib ada review periodik 30 menit:
 - win rate
 - average win / loss
 - EV per trade
@@ -64,22 +64,31 @@ Hasil review dipakai untuk:
 - CONTINUE
 - DEFENSIVE
 - TIGHTEN_FILTER
+- PREPARE_STOP
 - HARD_STOP
 
-AI hanya support untuk pola sulit dikalkulasi, bukan pengambil keputusan utama.
+## WHAT-IF & BREAKOUT
+
+- Signal fresh <500ms boleh breakout catch.
+- Kalau breakout_urgent aktif, MARKET bisa dipakai untuk entry cepat.
+- Jika signal >2s, skip.
+- Koin dekat peak: partial TP dan tighten trailing.
+- Koin turun: trailing stop jalan, jangan average down.
 
 ## GUARDRAILS
 
-1. UDP timeout tidak boleh memicu panic sell.
-2. Trailing stop adaptif untuk micro-cap.
+1. No panic sell on UDP timeout.
+2. Adaptive trailing stop untuk micro-cap.
 3. Cooldown loss max 15 menit per pair.
-4. Signal stale di atas TTL wajib dibuang.
+4. Signal stale harus dibuang.
 5. AI degraded = warning only.
-6. LIMIT order only untuk entry dan exit normal.
-7. Pair unknown auto-reject.
-8. PnL check tetap jalan setiap 30 detik.
-9. Review math jalan setiap 30 menit.
-10. Minimum capital guard wajib aktif.
+6. Daily hard stop persist ke disk.
+7. ONE_SHOT override hanya 1x/hari.
+8. LIMIT default. MARKET hanya emergency atau breakout catch A+.
+9. Pair unknown auto-reject.
+10. PnL check 30 detik, math review 30 menit.
+11. Minimum capital guard wajib aktif.
+12. No average down saat rugi.
 
 ## LEARNING SYSTEM
 
@@ -98,10 +107,4 @@ Sebelum push:
 - compile Kotlin
 - pastikan server config dan repo tidak drift
 
-Target server:
-- Indodax: 213.35.118.26
-- Binance: 152.69.218.198
-
----
-
-Version: 3.1 math-first
+Version: 4.0 math-first
