@@ -125,6 +125,10 @@ jobs:
             sudo systemctl enable ${SERVICE_NAME}
             sudo systemctl restart ${SERVICE_NAME}
             sudo systemctl is-active --quiet ${SERVICE_NAME}
-            echo "Waiting for engine cold start (60s total max)..."
-            curl -fsS --retry 20 --retry-delay 5 http://127.0.0.1:${RUNTIME_PORT}/api/state >/tmp/kinance-state.json
+            echo "Waiting for engine cold start (100s total max)..."
+            if ! curl -fsS --retry 20 --retry-connrefused --retry-delay 5 http://127.0.0.1:${RUNTIME_PORT}/api/state >/tmp/kinance-state.json; then
+              echo "❌ Health check failed! Recent logs:"
+              sudo journalctl -u ${SERVICE_NAME} --no-pager -n 50
+              exit 1
+            fi
             cat /tmp/kinance-state.json | head -c 800
