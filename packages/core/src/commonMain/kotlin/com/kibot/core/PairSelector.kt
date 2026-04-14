@@ -271,15 +271,8 @@ class PairSelector(
             sectorHotnessBias to 0.04,
             volumeVelocityBias to 0.04,
         )
-        val coinEntry = CoinUniverse.byIndodax[quote.pairId.value.lowercase()]
-        val tierMultiplier = when (coinEntry?.tier) {
-            CoinTier.TIER_A -> 1.2
-            CoinTier.TIER_B -> 1.0
-            CoinTier.TIER_C -> 0.7
-            else -> 1.0
-        }
         val rankingScore = (
-            (rankingScoreBase * tierMultiplier) -
+            rankingScoreBase -
                 if (stagnantPair) 0.12 else 0.0 +
                 if (earlyBreakoutEligible) 0.08 else 0.0 -
                 (profileAssessment.toxicityScore * 0.14) -
