@@ -1979,6 +1979,29 @@ def _simulate_what_if(
     }
 
 
+def _should_use_market_order(msg: Dict[str, Any], pair_id: str) -> bool:
+    signal_age_ms = float(msg.get("signalAgeMs") or msg.get("signal_age_ms") or 999.0)
+    price_change_1m_pct = float(msg.get("priceChange1mPct") or msg.get("price_change_1m_pct") or 0.0)
+    volume_spike = bool(msg.get("volumeSpike") or msg.get("volume_spike") or False)
+    confidence = float(msg.get("confidence") or 0.0)
+    breakout_urgent = bool(msg.get("breakout_urgent") or msg.get("breakoutUrgent") or False)
+    if breakout_urgent:
+        return True
+    is_breakout = signal_age_ms < 150 and abs(price_change_1m_pct) > 0.5 and volume_spike and confidence >= 0.75
+    if not is_breakout:
+        return False
+    what_if = _simulate_what_if(
+        pair_id=pair_id,
+        entry_price=float(msg.get("entryPrice") or msg.get("entry_price") or msg.get("price") or 0.0),
+        budget_idr=float(msg.get("budgetIdr") or msg.get("budget_idr") or msg.get("quoteBudgetIdr") or MINIMUM_POSITION_SIZE_IDR),
+        spread_pct=float(msg.get("spreadPct") or msg.get("spread_pct") or 0.0),
+        slippage_pct=float(msg.get("slippagePct") or msg.get("slippage_pct") or 0.0),
+        trailing_stop_pct=float(msg.get("trailingStopPct") or 0.05),
+        target_profit_pct=float(msg.get("targetProfitPct") or msg.get("target_profit_pct") or _target_profit_pct_for_pair(pair_id)),
+    )
+    return what_if["recommendation"] != "SKIP"
+
+
 def _current_daily_loss_limit_pct() -> float:
     return 0.01 if _is_survival_mode() else abs(float(DAILY_LOSS_LIMIT_PCT))
 
@@ -2343,6 +2366,7 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     if not pair:
         print(f"[KIBOT][WARN] missing pair in msgType={msg_type}", flush=True)
         return
+    pair_cfg = _get_pair_config(pair)
 
     if msg_type in SAFE_ENTRY_MSG_TYPES:
         score = float(msg.get("score") or 0.0)
@@ -2375,7 +2399,9 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         elif pair_cfg.get("tier") == "C":
             target_profit_pct = max(target_profit_pct, 0.025)
         if entry_price > 0.0 and budget_idr > 0.0:
-            use_market = bool(msg.get("breakout_urgent") or msg.get("use_market") or False)
+            use_market = _should_use_market_order(msg, pair) or bool(msg.get("use_market") or False)
+            if use_market and not msg.get("breakout_urgent"):
+                msg["breakout_urgent"] = True
             what_if = _simulate_what_if(
                 pair_id=pair,
                 entry_price=entry_price,
@@ -2445,7 +2471,8 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     sent_at_ms = int(msg.get("sentAtEpochMs") or now_ms)
     signal_age_ms = max(0, now_ms - sent_at_ms)
-    if signal_age_ms > STALE_SIGNAL_ABORT_MS:
+    ttl_ms = 200 if str(pair_cfg.get("tier") or "").upper() == "C" or msg.get("one_shot_mode") else STALE_SIGNAL_ABORT_MS
+    if signal_age_ms > ttl_ms:
         print(
             f"[KIBOT][VETO_REJECTED] pair={pair} reason=STALE_SIGNAL age_ms={signal_age_ms}",
             flush=True,

@@ -18,6 +18,12 @@ data class KinanceSignal(
     val tickVelocity5m: Double = 0.0,
     val leadPairId: String? = null,
     val leadMomentumScore: Double = 0.0,
+    val priceChange1mPct: Double = 0.0,
+    val priceChange3mPct: Double = 0.0,
+    val volumeTrend: String = "stable",
+    val momentumScore: Double = 0.0,
+    val rsi: Double = 50.0,
+    val isBreakout: Boolean = false,
     val sentAtEpochMs: Long = 0L,
     val expiresAtEpochMs: Long = 0L,
 )
@@ -44,4 +50,3 @@ interface TradingEngine {
         return evaluateSignal(signal)
     }
 }
-
