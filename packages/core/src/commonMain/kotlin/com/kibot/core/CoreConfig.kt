@@ -83,17 +83,17 @@ data class RiskConfig(
     // MICRO-CAP: Tighter loss limits for protection
     val hardDailyLossLimitPct: Double = 0.03,
     val hardRealizedLossLimitIdr: Double = 10_000.0,
-    val maxDailyTradeActions: Int = 999,  // EMERGENCY FIX: Unlimited trades (was 24) - if profitable, keep trading!
-    val maxDailyRoundTrips: Int = 999,    // EMERGENCY FIX: Unlimited round-trips (was 12)
-    val dailyProfitLockPct: Double = 999.0,  // EMERGENCY FIX: NEVER stop on profit (was 0.010 = 1%)
+    val maxDailyTradeActions: Int = 24,  // RESTORED: Prevents over-trading during volatility
+    val maxDailyRoundTrips: Int = 12,    // RESTORED
+    val dailyProfitLockPct: Double = 0.010,  // RESTORED: Lock in 1% daily profit
     val dailyProfitLockRankingScore: Double = 0.99,
     val dailyProfitLockOpportunityScore: Double = 0.90,
     val dailyProfitLockConfidenceFloor: Double = 0.99,
-    val warningDrawdownPct: Double = 999.0,  // EMERGENCY FIX: Never stop on drawdown - bot must stay active!
-    val reduceSizeDrawdownPct: Double = 999.0,  // EMERGENCY FIX: Don't reduce size
-    val defensiveDrawdownPct: Double = 999.0,   // EMERGENCY FIX: Don't go defensive
-    val restrictedEntriesDrawdownPct: Double = 999.0,  // EMERGENCY FIX: Never restrict entries
-    val stopNewEntriesDrawdownPct: Double = 999.0,     // EMERGENCY FIX: NEVER stop trading!
+    val warningDrawdownPct: Double = 0.012,  // RESTORED: 1.2% warning
+    val reduceSizeDrawdownPct: Double = 0.018,  // RESTORED: 1.8% reduce size
+    val defensiveDrawdownPct: Double = 0.022,   // RESTORED: 2.2% defensive
+    val restrictedEntriesDrawdownPct: Double = 0.026,  // RESTORED: 2.6% restrict entries
+    val stopNewEntriesDrawdownPct: Double = 0.030,     // RESTORED: 3.0% STOP ALL NEW ENTRIES
     val maxConcurrentPositions: Int = 10,
     val minimumCashReservePct: Double = 0.03,
     val defensiveCashReservePct: Double = 0.06,

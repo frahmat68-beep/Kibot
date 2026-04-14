@@ -1,6 +1,13 @@
 name: Deploy Kinance
 
 on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - 'packages/indodax-client/**'
+      - '.github/workflows/deploy-kidax.yml'
+      - 'infra/systemd/kidax-engine.service'
+      - 'SSH_INDODAX/**'
   workflow_dispatch:
 
 concurrency:

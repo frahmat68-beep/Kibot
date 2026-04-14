@@ -4,6 +4,7 @@ import com.kibot.macengine.runtime.MacCommandDispatcher
 import com.kibot.macengine.state.MacDashboardState
 import com.kibot.macengine.state.MacCommand
 import com.kibot.macengine.state.MacStateRepository
+import com.kibot.macengine.runtime.MacEngineDaemon
 import com.kibot.shared.models.BotId
 import com.kibot.shared.models.BotDesiredState
 import com.kibot.shared.models.CommandCenterCommandReply
