@@ -688,7 +688,15 @@ class PairSelector(
 
     private fun isDormantStablePair(quote: MarketQuote): Boolean {
         val entry = CoinUniverse.byIndodax[quote.pairId.value.lowercase()]
-        return entry == null || entry.correlationGroup == CorrelationGroup.STABLECOIN
+        if (entry != null) {
+            return entry.correlationGroup == CorrelationGroup.STABLECOIN
+        }
+        
+        // Fallback policy lama agar unit test (mock pairs) tidak crash
+        val assets = quote.pairId.assets()
+        if (assets.quoteAsset != "idr") return false
+        if (quote.pairId.value.lowercase() in policy.blockedBaseAssets.map { "${it}_idr" }.toSet()) return true
+        return assets.baseAsset in policy.blockedBaseAssets
     }
 
     private data class PairParts(
