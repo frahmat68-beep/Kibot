@@ -64,7 +64,6 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.Serializable
 import java.io.EOFException
 import java.io.File
 import java.io.IOException
