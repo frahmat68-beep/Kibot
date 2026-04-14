@@ -199,10 +199,10 @@ private fun exchangeRiskConfig(exchangeKind: ExchangeKind): RiskConfig = when (e
         defensiveDrawdownPct = 0.040,
         restrictedEntriesDrawdownPct = 0.055,
         stopNewEntriesDrawdownPct = 0.070,
-        maxConcurrentPositions = 10,
-        minimumCashReservePct = 0.03,
-        defensiveCashReservePct = 0.06,
-        attackCashReservePct = 0.02,
+        maxConcurrentPositions = 5,
+        minimumCashReservePct = 0.05,
+        defensiveCashReservePct = 0.10,
+        attackCashReservePct = 0.03,
         targetMinPositionBudgetIdr = 20_000.0,
         maxPerPositionBudgetPct = 0.70,
         dominantAllInMaxAllocationPct = 0.55,
@@ -214,7 +214,7 @@ private fun exchangeRiskConfig(exchangeKind: ExchangeKind): RiskConfig = when (e
         rotationMinClearProfitIdr = 160.0,
         dominantTierAMinCashReservePct = 0.03,
         maxPerPositionBudgetPct = 0.15,
-        maxConcurrentPositions = 4,
+        maxConcurrentPositions = 5,
     )
 }
 
@@ -300,6 +300,33 @@ class MacEngineDaemon(
     private var capitalAllocationManager: CapitalAllocationManager? = null  // 70/30 capital split (initialized in syncOnce)
     private val dualEngineConfig = DualEngineConfig()
     private val dualEngineCoordinator = DualEngineCoordinator(config = dualEngineConfig)
+    
+    // === KiBot Trinity v6.0 Pair Universe ===
+    private val LEAD_LAG_PAIRS = setOf(
+        "btc_idr", "eth_idr", "bnb_idr", "sol_idr", "xrp_idr", "ada_idr", "doge_idr",
+        "trx_idr", "dot_idr", "matic_idr", "link_idr", "ltc_idr", "shib_idr", "uni_idr",
+        "near_idr", "atom_idr", "apt_idr", "arb_idr", "op_idr", "pepe_idr", "wif_idr",
+        "bonk_idr", "floki_idr", "tia_idr", "sei_idr", "inj_idr", "rndr_idr", "fet_idr",
+        "agix_idr", "ocean_idr", "xlm_idr", "stx_idr", "fil_idr", "icp_idr", "vet_idr",
+        "sand_idr", "mana_idr", "ape_idr", "gala_idr", "axs_idr", "imx_idr", "grt_idr",
+        "theta_idr", "egld_idr"
+    )
+
+    private val FUTURES_PROXY_PAIRS = mapOf(
+        "fartcoin_idr" to "FARTCOIN",
+        "zerebro_idr" to "ZEREBRO",
+        "ai16z_idr" to "AI16Z"
+    )
+
+    private fun toBinanceSymbol(indodaxPairId: String): String {
+        val lower = indodaxPairId.lowercase()
+        // Special mappings for Trinity v6.0
+        if (lower == "xlm_idr") return "XLMUSDT"
+        if (lower == "pepe_idr") return "1000PEPEUSDT" // Binance Futures/Spot mapping quirk handling
+        
+        val base = lower.substringBefore("_idr")
+        return base.uppercase() + "USDT"
+    }
     private val barbarianLeadLagEntryAtByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
     // [CAPITAL ALLOCATION] Track which bucket (STABLE/AGGRESSIVE) was used for each position
     private val positionBucketTypeByPair = java.util.concurrent.ConcurrentHashMap<String, String>()  // "STABLE" or "AGGRESSIVE"
@@ -810,6 +837,8 @@ class MacEngineDaemon(
     @Volatile private var trinityHeartbeatSafeModeReason: String? = null
     @Volatile private var startupRecoveryAudited = false
     @Volatile private var lastLocalPositionStateSignature: String? = null
+    @Volatile private var whatIfSimulationSummary: com.kibot.shared.models.CommandCenterSimulationSummary? = null
+    @Volatile private var whatIfSimulationJob: kotlinx.coroutines.Job? = null
     @Volatile private var lastToxicFlowStateSignature: String? = null
     @Volatile private var localRecoveryFallbackAnnounced = false
     @Volatile private var lastOperatorAlertStateKey: String? = null
@@ -3940,6 +3969,7 @@ class MacEngineDaemon(
         cachedBalances = emptyList()
         ensureLeadLagListenerInitialized()
         startTelegramCommandPolling()
+        startWhatIfSimulationPolling()
         while (true) {
             val currentState = repository.state.value
             val lifecycleBlocked = !currentState.syncHealth.equals("HEALTHY", ignoreCase = true) ||
@@ -3982,6 +4012,7 @@ class MacEngineDaemon(
     fun shutdown() {
         logger.info("Mac engine daemon shutdown requested.")
         runCatching { telegramCommandJob?.cancel() }
+        runCatching { whatIfSimulationJob?.cancel() }
         runCatching {
             holdingsResearchInFlightByPair.values.forEach { it.cancel() }
             holdingsResearchInFlightByPair.clear()
@@ -10784,6 +10815,7 @@ class MacEngineDaemon(
             trailingFloors = trailingFloors,
             netWorthHistory = netWorthHistory,
             assetAllocationDetailed = assetAllocationDetailed,
+            whatIfSimulation = whatIfSimulationSummary,
         )
     }
 
@@ -14106,6 +14138,28 @@ class MacEngineDaemon(
             com.kibot.shared.models.OrderStatus.CANCEL_REQUESTED,
             com.kibot.shared.models.OrderStatus.UNKNOWN,
         )
+    }
+
+    private fun startWhatIfSimulationPolling() {
+        whatIfSimulationJob?.cancel()
+        whatIfSimulationJob = CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+            while (true) {
+                try {
+                    val file = java.io.File("state/whatif_results.json")
+                    if (file.exists()) {
+                        val content = file.readText()
+                        whatIfSimulationSummary = Json { 
+                            ignoreUnknownKeys = true 
+                            coerceInputValues = true
+                        }.decodeFromString<com.kibot.shared.models.CommandCenterSimulationSummary>(content)
+                    }
+                } catch (e: Exception) {
+                    // Fail silently but log periodically if needed
+                    logger.debug("Failed to poll What-If simulation results from state/whatif_results.json", e)
+                }
+                delay(30_000L) // Poll every 30s
+            }
+        }
     }
 }
 

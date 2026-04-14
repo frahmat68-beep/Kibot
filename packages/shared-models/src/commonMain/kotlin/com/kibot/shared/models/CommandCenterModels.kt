@@ -54,7 +54,27 @@ data class CommandCenterLiveSnapshot(
     val liveTimeline: List<CommandCenterTimelineEntry> = emptyList(),
     val netWorthHistory: List<CommandCenterNetWorthPoint> = emptyList(),
     val assetAllocationDetailed: List<CommandCenterAssetAllocation> = emptyList(),
+    val whatIfSimulation: CommandCenterSimulationSummary? = null,
     val updatedAtEpochMs: Long,
+)
+
+@Serializable
+data class CommandCenterSimulationSummary(
+    val runAt: String,
+    val pairsSimulated: Int,
+    val topOpportunities: List<String> = emptyList(),
+    val results: Map<String, CommandCenterSimulationResult> = emptyMap(),
+)
+
+@Serializable
+data class CommandCenterSimulationResult(
+    val pair: String,
+    val currentPrice: Double,
+    val winProbability: Double,
+    val expectedValue: Double,
+    val riskRewardRatio: Double,
+    val kellySizeRecommended: Double,
+    val verdict: String,
 )
 
 @Serializable
