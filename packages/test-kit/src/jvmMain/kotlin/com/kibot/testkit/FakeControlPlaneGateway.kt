@@ -70,8 +70,13 @@ class FakeControlPlaneGateway(
     var dailyRisk: DailyRiskSnapshot? = null
     private val dailyRiskHistory = linkedMapOf<LocalDate, DailyRiskSnapshot>()
     var encryptedCredentialBundle: EncryptedCredentialBundle? = null
+    var registerFailuresRemaining: Int = 0
 
     override suspend fun registerDevice(registration: DeviceRegistration): DeviceDescriptor {
+        if (registerFailuresRemaining > 0) {
+            registerFailuresRemaining -= 1
+            error("simulated register failure")
+        }
         val descriptor = DeviceDescriptor(
             userId = userId,
             deviceId = registration.deviceId,

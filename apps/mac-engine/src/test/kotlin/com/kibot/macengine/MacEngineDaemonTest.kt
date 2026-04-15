@@ -209,6 +209,44 @@ class MacEngineDaemonTest {
     }
 
     @Test
+    fun `registration failure does not block degraded startup`() = runBlocking {
+        val controlPlane = FakeControlPlaneGateway(botId = botId)
+        controlPlane.botState = BotStateSnapshot(
+            botId = botId,
+            desiredState = BotDesiredState.ON,
+            effectiveState = BotEffectiveState.STOPPED,
+            activeDeviceId = null,
+            standbyDeviceId = macId,
+            currentTerm = LeaseTerm(1),
+            syncHealth = SyncHealth.DEGRADED,
+            strategyMode = StrategyMode.AUTO_CONSERVATIVE,
+            lastHeartbeatAt = Instant.parse("2026-03-15T00:00:00Z"),
+        )
+        controlPlane.registerFailuresRemaining = 1
+        controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
+
+        val exchange = FakeExchangeGateway(
+            marketQuotes = mutableListOf(marketQuote("eth_usdt", 2000.0, 0.77)),
+            balances = mutableListOf(BalanceSnapshot("usdt", DecimalValue("50"))),
+        )
+        val repository = MacStateRepository()
+        val daemon = MacEngineDaemon(
+            repository = repository,
+            controlPlane = controlPlane,
+            exchange = exchange,
+            config = runtimeConfig(exchangeKind = ExchangeKind.BINANCE_SPOT),
+            clock = fixedClock,
+        )
+
+        daemon.syncOnce()
+        delay(11_500)
+
+        assertTrue(controlPlane.fetchDevices(botId).isNotEmpty())
+        assertTrue(repository.state.value.statusMessage.contains("connected", ignoreCase = true) ||
+            repository.state.value.statusMessage.contains("degraded", ignoreCase = true))
+    }
+
+    @Test
     fun `master submits live order when execution is enabled and gate is clean`() = runBlocking {
         val previousPlanDebug = System.getProperty("KIBOT_DEBUG_PLAN")
         System.setProperty("KIBOT_DEBUG_PLAN", "true")

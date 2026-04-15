@@ -1,5 +1,6 @@
 package com.kibot.macengine.logging
 
+import com.kibot.core.AtomicFileWriter
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -98,6 +99,6 @@ object TradeLogger {
             "last7Days" to stats(week),
             "last30Days" to stats(month)
         )
-        summaryPath.writeText(json.encodeToString(summary))
+        AtomicFileWriter.write(summaryPath, json.encodeToString(summary))
     }
 }

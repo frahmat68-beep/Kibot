@@ -645,11 +645,11 @@ class SelfHealingSystem(
                 
                 val stateFile = File(stateDir, "self_healing_state.json")
                 val json = serializeState(state)
-                stateFile.writeText(json)
+                AtomicFileWriter.write(stateFile, json)
                 
                 // Also save a backup with timestamp
                 val backupFile = File(stateDir, "self_healing_state_backup.json")
-                backupFile.writeText(json)
+                AtomicFileWriter.write(backupFile, json)
                 
                 logDebug("💾 State saved to disk (${state.openPositions.size} positions)")
             } catch (e: Exception) {

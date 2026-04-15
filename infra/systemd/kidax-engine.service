@@ -2,6 +2,9 @@
 Description=KiDax Indodax Trading Engine
 After=network.target
 Wants=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+StartLimitAction=none
 
 [Service]
 Type=simple
@@ -26,8 +29,9 @@ Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000
 Environment=KIBOT_HIVE_EXPECTED_BOT_IDS=kinance,kibot
 Environment="JAVA_OPTS=-XX:+UseSerialGC -Xms96m -Xmx256m -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
 ExecStart=/bin/bash -lc '/usr/bin/java $JAVA_OPTS -jar /home/ubuntu/KiDax/server/mac-engine-all.jar'
-Restart=always
+Restart=on-failure
 RestartSec=5
+OOMPolicy=kill
 TimeoutStartSec=120
 TimeoutStopSec=20
 KillSignal=SIGTERM

@@ -4,6 +4,7 @@ import com.kibot.core.ExchangeGateway
 import com.kibot.core.MarketBuyImpactEstimate
 import com.kibot.core.ExchangeOrderVisibilityException
 import com.kibot.core.ExchangeRejectedException
+import com.kibot.core.data.CoinUniverse
 import com.kibot.shared.models.BalanceSnapshot
 import com.kibot.shared.models.ClientOrderId
 import com.kibot.shared.models.DecimalValue
@@ -20,6 +21,7 @@ import com.kibot.shared.models.PairId
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.ResponseException
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -36,6 +38,8 @@ import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlin.math.absoluteValue
 import kotlin.math.max
@@ -50,9 +54,20 @@ class BinanceGateway internal constructor(
     private val client: HttpClient,
     private val json: Json,
 ) : ExchangeGateway {
+    private data class CachedMarketQuotes(
+        val quotes: List<MarketQuote>,
+        val fetchedAtEpochMs: Long,
+    ) {
+        fun isFresh(nowEpochMs: Long, ttlMs: Long): Boolean = nowEpochMs - fetchedAtEpochMs < ttlMs
+    }
+
     private val privateApiEnabled =
         credentials.apiKey.isNotBlank() &&
             credentials.apiSecret.isNotBlank()
+    private val marketDataCacheTtlMs = 30_000L
+    private val marketDataTimeoutMs = 5_000L
+    private val selectiveTickerSymbolsJson = buildTicker24hSymbolsPayload()
+    @Volatile private var cachedMarketQuotes: CachedMarketQuotes? = null
 
     override suspend fun ping(): Boolean {
         return runCatching {
@@ -63,11 +78,27 @@ class BinanceGateway internal constructor(
     }
 
     override suspend fun fetchMarketQuotes(): List<MarketQuote> {
-        val response = withUrlFailover(config.publicRestUrls("ticker/24hr")) { url ->
-            client.get(url).body<List<Ticker24hRow>>()
+        val nowEpochMs = Clock.System.now().toEpochMilliseconds()
+        cachedMarketQuotes?.takeIf { it.isFresh(nowEpochMs, marketDataCacheTtlMs) }?.let { cached ->
+            return cached.quotes
+        }
+
+        val response = runCatching {
+            withUrlFailover(config.publicRestUrls("ticker/24hr")) { url ->
+                client.get(url) {
+                    timeout {
+                        requestTimeoutMillis = marketDataTimeoutMs
+                        socketTimeoutMillis = marketDataTimeoutMs
+                    }
+                    parameter("symbols", selectiveTickerSymbolsJson)
+                }.body<List<Ticker24hRow>>()
+            }
+        }.getOrElse { error ->
+            cachedMarketQuotes?.let { cached -> return cached.quotes }
+            throw error
         }
         val primaryQuote = config.primaryQuoteAsset.lowercase()
-        return response.mapNotNull { ticker ->
+        val quotes = response.mapNotNull { ticker ->
             if (ticker.symbol.length <= primaryQuote.length) return@mapNotNull null
             if (!ticker.symbol.lowercase().endsWith(primaryQuote)) return@mapNotNull null
             val pairId = ticker.symbol.toPairId(primaryQuote)
@@ -137,6 +168,11 @@ class BinanceGateway internal constructor(
                 capturedAt = Clock.System.now(),
             )
         }
+        cachedMarketQuotes = CachedMarketQuotes(
+            quotes = quotes,
+            fetchedAtEpochMs = Clock.System.now().toEpochMilliseconds(),
+        )
+        return quotes
     }
 
     override suspend fun fetchBalances(): List<BalanceSnapshot> {
@@ -426,6 +462,15 @@ class BinanceGateway internal constructor(
         client = createPlatformHttpClient(defaultJson),
         json = defaultJson,
     )
+}
+
+internal fun buildTicker24hSymbolsPayload(): String {
+    val symbols = CoinUniverse.byBinance.keys
+        .asSequence()
+        .filterNot { it.equals("USDTUSDT", ignoreCase = true) }
+        .sorted()
+        .toList()
+    return Json.encodeToString(ListSerializer(String.serializer()), symbols)
 }
 
 private data class SignedQuery(

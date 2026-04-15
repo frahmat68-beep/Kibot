@@ -711,6 +711,13 @@ class MacEngineDaemon(
     private val aiProviderStatusLoader = AiProviderStatusLoader()
     private val dailyTargetPursuitBrain = DailyTargetPursuitBrain()
     private var registered = false
+    private val registrationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var registrationJob: kotlinx.coroutines.Job? = null
+    @Volatile private var registrationAttemptStartedAt: Instant? = null
+    private val registrationBootstrapTimeoutMs = 30_000L
+    private val registrationInitialDelayMs = 2_000L
+    private val registrationTimeoutMs = 20_000L
+    private val registrationBackoffScheduleMs = longArrayOf(3_000L, 6_000L, 9_000L)
     private var lastAnalysisPublishedAt: Instant? = null
     private var lastStrategyMetricsPublishedAt: Instant? = null
     private var lastCandidateSignature: String? = null
@@ -3986,16 +3993,21 @@ class MacEngineDaemon(
         ensureLeadLagListenerInitialized()
         startTelegramCommandPolling()
         startWhatIfSimulationPolling()
+        ensureRegistered()
         while (true) {
             val currentState = repository.state.value
-            val lifecycleBlocked = !currentState.syncHealth.equals("HEALTHY", ignoreCase = true) ||
-                currentState.effectiveState == BotEffectiveState.DEGRADED
+            val lifecycleBlocked = isLifecycleBlocked(currentState, clock.now())
             val momentumBypass = currentState.marketRegime.equals("HIGH_VOLATILITY_MOMENTUM", ignoreCase = true)
             val standbyBypass = config.device.role == DeviceRole.STANDBY
             val shouldRun = !lifecycleBlocked || momentumBypass || standbyBypass
             if (!shouldRun) {
                 logger.error("LIFECYCLE_BLOCK: Cannot start sync cycle because state is {}", currentState.effectiveState)
                 repository.noteStatus("LIFECYCLE_BLOCK: state=${currentState.effectiveState}")
+            } else if (currentState.effectiveState == BotEffectiveState.DEGRADED) {
+                logger.warn(
+                    "[LIFECYCLE] Running sync cycle in DEGRADED mode while control-plane recovers; syncHealth={}",
+                    currentState.syncHealth,
+                )
             } else if (lifecycleBlocked && (momentumBypass || standbyBypass)) {
                 logger.warn(
                     "LIFECYCLE_BYPASS: continuing sync cycle despite state={} role={} momentumBypass={} standbyBypass={}",
@@ -4029,6 +4041,8 @@ class MacEngineDaemon(
         logger.info("Mac engine daemon shutdown requested.")
         runCatching { telegramCommandJob?.cancel() }
         runCatching { whatIfSimulationJob?.cancel() }
+        runCatching { registrationJob?.cancel() }
+        runCatching { registrationScope.cancel() }
         runCatching {
             holdingsResearchInFlightByPair.values.forEach { it.cancel() }
             holdingsResearchInFlightByPair.clear()
@@ -4772,22 +4786,96 @@ class MacEngineDaemon(
 
     private suspend fun ensureRegistered() {
         if (registered) return
-        if (writeControlPlane(context = "register-device", timeoutMs = 12_000L) {
-                controlPlane.registerDevice(config.device)
-            }
-        ) {
-            registered = true
-            repository.noteBootstrapProgress(
-                message = "Server monitor connected to live feed.",
-                liveExecutionEnabled = config.enableLiveExecution,
-            )
-            appendAuditLog(LogLevel.INFO, "AUTH", "Server monitor connected to live feed.")
-        } else {
-            repository.noteBootstrapProgress(
-                message = "Server monitor waiting for control-plane registration.",
-                liveExecutionEnabled = config.enableLiveExecution,
-            )
+        val existingJob = registrationJob
+        if (existingJob != null && existingJob.isActive) return
+        if (registrationAttemptStartedAt == null) {
+            registrationAttemptStartedAt = clock.now()
         }
+        repository.noteBootstrapProgress(
+            message = "Server monitor waiting for control-plane registration.",
+            liveExecutionEnabled = config.enableLiveExecution,
+        )
+        registrationJob = registrationScope.launch {
+            if (!registered && registrationInitialDelayMs > 0L) {
+                delay(registrationInitialDelayMs)
+            }
+            val success = registerDeviceWithRetry()
+            if (success) {
+                registered = true
+                repository.noteBootstrapProgress(
+                    message = "Server monitor connected to live feed.",
+                    liveExecutionEnabled = config.enableLiveExecution,
+                )
+                appendAuditLog(LogLevel.INFO, "AUTH", "Server monitor connected to live feed.")
+            } else {
+                repository.noteBootstrapProgress(
+                    message = "Control-plane registration delayed; running in degraded mode.",
+                    liveExecutionEnabled = config.enableLiveExecution,
+                )
+                registrationJob = null
+            }
+        }
+    }
+
+    private fun isLifecycleBlocked(
+        currentState: com.kibot.macengine.state.MacDashboardState,
+        now: Instant,
+    ): Boolean {
+        val hardStopActive = currentState.statusMessage.contains("hard stop", ignoreCase = true)
+        if (hardStopActive || currentState.effectiveState == BotEffectiveState.SAFE_MODE) {
+            return true
+        }
+        if (currentState.effectiveState == BotEffectiveState.DEGRADED) {
+            return false
+        }
+        if (currentState.effectiveState == BotEffectiveState.STOPPED) {
+            val bootstrapStartedAt = registrationAttemptStartedAt ?: now
+            val bootstrapElapsedMs = (now - bootstrapStartedAt).inWholeMilliseconds
+            if (bootstrapElapsedMs < registrationBootstrapTimeoutMs) {
+                return false
+            }
+            logger.warn(
+                "[LIFECYCLE] Bootstrap timeout after {} ms; continuing sync in degraded startup path",
+                registrationBootstrapTimeoutMs,
+            )
+            return false
+        }
+        return currentState.syncHealth.equals("BROKEN", ignoreCase = true)
+    }
+
+    private suspend fun registerDeviceWithRetry(): Boolean {
+        val maxAttempts = registrationBackoffScheduleMs.size + 1
+        repeat(maxAttempts) { attempt ->
+            val attemptNumber = attempt + 1
+            val registeredNow = withTimeoutOrNull(registrationTimeoutMs) {
+                runCatching {
+                    controlPlane.registerDevice(config.device)
+                    true
+                }.getOrElse { error ->
+                    logger.warn(
+                        "[CONTROL_PLANE] register-device error on attempt {}: {}",
+                        attemptNumber,
+                        error.message ?: "unknown",
+                    )
+                    false
+                }
+            } ?: false.also {
+                logger.warn(
+                    "[CONTROL_PLANE] register-device timeout on attempt {} after {} ms",
+                    attemptNumber,
+                    registrationTimeoutMs,
+                )
+            }
+            if (registeredNow) {
+                logger.info("[CONTROL_PLANE] Device registered successfully on attempt {}", attemptNumber)
+                return true
+            }
+            if (attempt < registrationBackoffScheduleMs.lastIndex) {
+                delay(registrationBackoffScheduleMs[attempt])
+            }
+        }
+        logger.warn("[CONTROL_PLANE] Device registration failed after {} attempts; continuing in degraded mode", maxAttempts)
+        return false
     }
 
     private suspend fun handleCommand(

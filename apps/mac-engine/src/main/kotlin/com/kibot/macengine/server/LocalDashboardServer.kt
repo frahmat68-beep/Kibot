@@ -88,9 +88,14 @@ class LocalDashboardServer(
     private val logPollIntervalMillis: Long = 5_000L,
 ) {
     private val logger = LoggerFactory.getLogger(LocalDashboardServer::class.java)
+    private val startedAtMs = System.currentTimeMillis()
     private val lanProbeUrl = detectLanProbeUrl(host, port)
     private val lanServiceAdvertiser = if (enableLanAdvertising) LanServiceAdvertiser(host, port) else null
     private val commandAuth = DashboardCommandAuth.fromEnv(host)
+    private val relaxedJson = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+    }
 
     private val server = embeddedServer(CIO, host = host, port = port) {
         install(CallLogging)
@@ -170,10 +175,8 @@ class LocalDashboardServer(
             get("/api/state") {
                 applyDashboardSecurityHeaders(call)
                 val state = repository.state.value
-                val whatIfFile = java.io.File("state/whatif_results.json")
-                val whatIfJson = if (whatIfFile.exists()) Json.parseToJsonElement(whatIfFile.readText()) else JsonObject(emptyMap())
-                val tradeSummaryFile = java.io.File("state/trade_summary.json")
-                val tradeSummaryJson = if (tradeSummaryFile.exists() && tradeSummaryFile.length() > 0) Json.parseToJsonElement(tradeSummaryFile.readText()) else JsonObject(emptyMap())
+                val whatIfJson = readJsonFileOrEmpty(Path.of("state/whatif_results.json"))
+                val tradeSummaryJson = readJsonFileOrEmpty(Path.of("state/trade_summary.json"))
                 
                 val customState = DashboardStateResponse(
                     portfolioValueIdr = state.portfolioValueIdr,
@@ -197,6 +200,33 @@ class LocalDashboardServer(
                     rawState = Json.encodeToJsonElement(MacDashboardState.serializer(), state)
                 )
                 call.respond(customState)
+            }
+
+            get("/api/health") {
+                applyDashboardSecurityHeaders(call)
+                val state = repository.state.value
+                val hardStopActive = state.statusMessage.contains("hard stop", ignoreCase = true)
+                val degraded = hardStopActive ||
+                    state.effectiveState.name == "DEGRADED" ||
+                    state.syncHealth.equals("DEGRADED", ignoreCase = true) ||
+                    state.kidaxNodeStatus.contains("down", ignoreCase = true) ||
+                    state.kinanceNodeStatus.contains("down", ignoreCase = true)
+                val payload = mapOf(
+                    "status" to if (degraded) "degraded" else "ok",
+                    "timestamp" to java.time.Instant.now().toString(),
+                    "uptimeMs" to (System.currentTimeMillis() - startedAtMs),
+                    "botId" to botId.value,
+                    "effectiveState" to state.effectiveState.name,
+                    "syncHealth" to state.syncHealth,
+                    "tradingAllowed" to state.liveExecutionEnabled,
+                    "hardStopActive" to hardStopActive,
+                    "services" to mapOf(
+                        "kidax" to state.kidaxNodeStatus,
+                        "kibot" to state.kibotNodeStatus,
+                        "kinance" to state.kinanceNodeStatus,
+                    ),
+                )
+                call.respond(if (degraded) HttpStatusCode.ServiceUnavailable else HttpStatusCode.OK, payload)
             }
             
             get("/api/trade-history") {
@@ -407,6 +437,18 @@ class LocalDashboardServer(
             server.stop(1_000, 2_000)
         }.onFailure { error ->
             logger.warn("Dashboard stop encountered recoverable error: ${error.message}")
+        }
+    }
+
+    private fun readJsonFileOrEmpty(path: Path): JsonElement {
+        val file = path.toFile()
+        if (!file.exists() || file.length() == 0L) return JsonObject(emptyMap())
+        return runCatching {
+            relaxedJson.parseToJsonElement(file.readText())
+        }.onFailure { error ->
+            logger.warn("Ignoring malformed dashboard JSON file {}: {}", path, error.message)
+        }.getOrElse {
+            JsonObject(emptyMap())
         }
     }
 
