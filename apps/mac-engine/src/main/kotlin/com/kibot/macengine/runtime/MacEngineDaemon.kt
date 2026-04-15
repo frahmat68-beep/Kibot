@@ -58,12 +58,6 @@ import com.kibot.shared.models.DeviceDescriptor
 import com.kibot.shared.models.DeviceId
 import com.kibot.shared.models.DeviceRole
 import com.kibot.shared.models.DailyRiskSnapshot
-import com.kibot.shared.models.PnlResetAnchorSnapshot
-import com.kibot.shared.models.MonthlyPnlAnchorSnapshot
-import com.kibot.shared.models.MonthlyPnlAnchorSnapshot as MonthlyAnchor // Optional alias if needed, but not used now
-import com.kibot.shared.models.EngineHealthSnapshot
-import com.kibot.shared.models.EngineHeartbeatSnapshot
-import com.kibot.shared.models.EngineLeaseSnapshot
 import com.kibot.shared.models.HealthStatus
 import com.kibot.shared.models.LeaseState
 import com.kibot.shared.models.LeaseTerm
@@ -7769,7 +7763,7 @@ class MacEngineDaemon(
                 logWhyNotBuy(now, "entry", "trinity_heartbeat_safe_mode")
                 return
             }
-        }
+        
         val hyperAggressivePriorityPair = superSexyTarget ?: sexyMomentumTargets.firstOrNull()
         logger.info(
             "EXECUTION_TRACE: About to prioritize candidate set. topCandidate={} executionPlans={}",
@@ -8483,6 +8477,7 @@ class MacEngineDaemon(
     private suspend fun maybeRunAutonomousResolver(
         now: Instant,
         lease: EngineLeaseSnapshot,
+    }
         activePersistedOrders: List<com.kibot.shared.models.OrderSnapshot>,
     ) {
         if (config.exchangeKind != ExchangeKind.INDODAX) return
@@ -14584,6 +14579,7 @@ internal data class OwnershipResolution(
     val resolvedIsOwner: Boolean,
     val mismatch: Boolean,
     val shouldLog: Boolean,
+}
 )
 
 internal data class MarketDataValidation(
