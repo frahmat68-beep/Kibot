@@ -58,6 +58,9 @@ import com.kibot.shared.models.DeviceDescriptor
 import com.kibot.shared.models.DeviceId
 import com.kibot.shared.models.DeviceRole
 import com.kibot.shared.models.DailyRiskSnapshot
+import com.kibot.shared.models.PnlResetAnchorSnapshot
+import com.kibot.shared.models.MonthlyPnlAnchorSnapshot
+import com.kibot.shared.models.MonthlyPnlAnchorSnapshot as MonthlyAnchor // Optional alias if needed, but not used now
 import com.kibot.shared.models.EngineHealthSnapshot
 import com.kibot.shared.models.EngineHeartbeatSnapshot
 import com.kibot.shared.models.EngineLeaseSnapshot
@@ -14577,7 +14580,6 @@ class MacEngineDaemon(
             }
         }
     }
-}
 
 internal data class OwnershipResolution(
     val resolvedIsOwner: Boolean,
