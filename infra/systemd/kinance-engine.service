@@ -17,10 +17,6 @@ Environment=DEVICE_DISPLAY_NAME="Kinance Oracle Singapore"
 Environment=DEVICE_ROLE=PRIMARY
 Environment=KIBOT_RUNTIME_ROOT=/home/ubuntu/Kinance
 Environment=KIBOT_SERVICE_NAME=kinance-engine
-Environment=KIBOT_DASHBOARD_PORT=8788
-Environment=KIBOT_ENV_FILE=/home/ubuntu/Kinance/.env.kinance
-Environment=MAC_ENGINE_BIND_HOST=0.0.0.0
-Environment=MAC_ENGINE_PORT=8788
 Environment=MAC_ENGINE_ENABLE_LAN_ADVERTISE=false
 Environment=KIBOT_LOCAL_POSITION_STATE_ENABLED=true
 Environment=KIBOT_LEAD_LAG_UDP_ENABLED=true

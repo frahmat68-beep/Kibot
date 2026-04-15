@@ -119,9 +119,11 @@ jobs:
             ensure_env DEVICE_ID ${DEVICE_ID}
             ensure_env DEVICE_DISPLAY_NAME '"'"${DEVICE_DISPLAY_NAME}"'"'
             ensure_env KIBOT_RUNTIME_ROOT ${REMOTE_ROOT}
-            ensure_env KIBOT_SERVICE_NAME ${SERVICE_NAME}
             ensure_env KIBOT_DASHBOARD_PORT ${RUNTIME_PORT}
             ensure_env KIBOT_ENV_FILE ${REMOTE_ROOT}/${ENV_FILE}
+            ensure_env MAC_ENGINE_PORT ${RUNTIME_PORT}
+            ensure_env MAC_ENGINE_BIND_HOST 0.0.0.0
+            echo "--- ENV CONFIG LOADED ---"
             mv ${REMOTE_ROOT}/mac-engine-all.jar ${REMOTE_ROOT}/server/mac-engine-all.jar
             chmod +x ${REMOTE_ROOT}/engine-recovery.sh ${REMOTE_ROOT}/setup-autorecover.sh ${REMOTE_ROOT}/scripts/sync_env_to_server.sh || true
             sudo cp ${REMOTE_ROOT}/infra/systemd/kinance-engine.service /etc/systemd/system/${SERVICE_NAME}.service
@@ -129,12 +131,16 @@ jobs:
             sudo fuser -k ${RUNTIME_PORT}/tcp || true
             sudo systemctl daemon-reload
             sudo systemctl enable ${SERVICE_NAME}
+            echo "Restarting service ${SERVICE_NAME}..."
             sudo systemctl restart ${SERVICE_NAME}
-            sudo systemctl is-active --quiet ${SERVICE_NAME}
-            echo "Waiting for engine cold start (100s total max)..."
+            sudo systemctl is-active ${SERVICE_NAME}
+            echo "Waiting for engine cold start (100s total max) on port ${RUNTIME_PORT}..."
             if ! curl -fsS --retry 20 --retry-connrefused --retry-delay 5 http://127.0.0.1:${RUNTIME_PORT}/api/state >/tmp/kinance-state.json; then
               echo "❌ Health check failed! Recent logs:"
-              sudo journalctl -u ${SERVICE_NAME} --no-pager -n 50
+              sudo journalctl -u ${SERVICE_NAME} --no-pager -n 100
+              echo "--- SERVER STATE AT FAILURE ---"
+              netstat -tulpn | grep ${RUNTIME_PORT} || echo "Nothing listening on ${RUNTIME_PORT}"
               exit 1
             fi
+            echo "✅ Health check passed!"
             cat /tmp/kinance-state.json | head -c 800
