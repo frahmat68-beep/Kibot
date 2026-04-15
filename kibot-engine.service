@@ -2,6 +2,9 @@
 Description=KiBot Oracle Trading Engine
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+StartLimitAction=none
 
 [Service]
 Type=simple
@@ -47,12 +50,10 @@ ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/mac-engine-0.1.0-all.jar
 ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/KiBot/server/mac-engine-all.jar
 ExecStartPre=-/usr/bin/fuser -k 8787/tcp
 ExecStart=/bin/bash -lc '/usr/bin/java $JAVA_OPTS -jar /home/ubuntu/KiBot/server/mac-engine-all.jar'
-Restart=always
+Restart=on-failure
 RestartSec=5
-# Rate limit restarts to prevent crash loops
-StartLimitIntervalSec=300
-StartLimitBurst=10
 # Memory limit to prevent OOM
+OOMPolicy=kill
 MemoryMax=512M
 TimeoutStopSec=20
 KillSignal=SIGTERM

@@ -22,6 +22,14 @@ from kibot_learning_engine import get_engine, ROUND_TRIP_MAKER, ROUND_TRIP_TAKER
 
 WHATIF_PATH = "state/whatif_results.json"
 
+def atomic_write_json(path: str, payload: dict) -> None:
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
 def simulate_pair(pair: str, current_price: float, 
                    win_prob: float = 0.55) -> dict:
     """
@@ -99,7 +107,6 @@ def run_simulation(market_prices: dict) -> dict:
     }
     
     os.makedirs("state", exist_ok=True)
-    with open(WHATIF_PATH, "w") as f:
-        json.dump(output, f, indent=2)
+    atomic_write_json(WHATIF_PATH, output)
     
     return output

@@ -8,11 +8,14 @@ fi
 
 KINANCE_ENV="/home/ubuntu/Kinance/.env.kinance"
 KIBOT_ENV="/home/ubuntu/KiBot/.env.kibot"
+KIBOT_MANAGER_ENV="/home/ubuntu/KiBot/.env.kibot_manager"
 DROPIN_DIR="/etc/systemd/system/kibot-engine.service.d"
 DROPIN_FILE="${DROPIN_DIR}/binance-relocation.conf"
 KINANCE_DROPIN_DIR="/etc/systemd/system/kinance-engine.service.d"
 KINANCE_DROPIN_FILE="${KINANCE_DROPIN_DIR}/kibot-local-routing.conf"
 ORACLE_HOST="213.35.118.26"
+KINANCE_LOCAL_UDP_PORT="10098"
+MANAGER_UDP_PORT="9998"
 
 upsert_env() {
   local file="$1"
@@ -47,24 +50,28 @@ PY
 }
 
 echo "[1/5] Redirect Kinance -> localhost KiBot -> Oracle KiDax..."
-upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_LISTEN_PORT" "9998"
+upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_LISTEN_PORT" "${KINANCE_LOCAL_UDP_PORT}"
 upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_HOST" "127.0.0.1"
-upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_PORT" "9999"
+upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_PORT" "${MANAGER_UDP_PORT}"
 upsert_env "$KINANCE_ENV" "KIBOT_HIVE_UDP_PEERS" "${ORACLE_HOST}:9997"
 upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS" "1000"
 upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS" "5000"
 
-echo "[2/5] Set KiBot Binance output ke KiDax Oracle..."
+echo "[2/5] Sinkronkan target manager ke port UDP Kinance yang unik..."
+upsert_env "$KIBOT_MANAGER_ENV" "KINANCE_UDP_HOST" "127.0.0.1"
+upsert_env "$KIBOT_MANAGER_ENV" "KINANCE_UDP_PORT" "${KINANCE_LOCAL_UDP_PORT}"
+
+echo "[3/5] Set KiBot Binance output ke KiDax Oracle..."
 upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_ENABLED" "true"
 upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_LISTEN_PORT" "9999"
 upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_HOST" "$ORACLE_HOST"
 upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_PORT" "9997"
-upsert_env "$KIBOT_ENV" "KIBOT_HIVE_UDP_PEERS" "127.0.0.1:9998,${ORACLE_HOST}:9997"
+upsert_env "$KIBOT_ENV" "KIBOT_HIVE_UDP_PEERS" "127.0.0.1:${KINANCE_LOCAL_UDP_PORT},${ORACLE_HOST}:9997"
 upsert_env "$KIBOT_ENV" "KIBOT_HIVE_EXPECTED_BOT_IDS" "kinance,kidax"
 upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS" "1000"
 upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS" "5000"
 
-echo "[3/5] Pasang throttling + JVM cap KiBot..."
+echo "[4/5] Pasang throttling + JVM cap KiBot..."
 mkdir -p "$DROPIN_DIR"
 cat > "$DROPIN_FILE" <<'EOF'
 [Service]
@@ -94,12 +101,12 @@ Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=1000
 Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000
 EOF
 
-echo "[4/5] Reload + start services..."
+echo "[5/5] Reload + start services..."
 systemctl daemon-reload
-systemctl enable kibot-engine kinance-engine
-systemctl restart kibot-engine kinance-engine
+systemctl enable kibot-engine kinance-engine kibot-manager
+systemctl restart kibot-manager kibot-engine kinance-engine
 
-echo "[5/5] Verifikasi..."
+echo "[6/6] Verifikasi..."
 echo "--- kinance-engine ---"
 systemctl is-active kinance-engine
 echo "--- kibot-engine ---"

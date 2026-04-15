@@ -2,6 +2,9 @@
 Description=KiBot Manager UDP Veto Daemon
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+StartLimitAction=none
 
 [Service]
 Type=simple
@@ -46,8 +49,9 @@ Environment=KIBOT_MANAGER_DAILY_SUMMARY_FILE=/home/ubuntu/KiBot/state/daily_summ
 Environment=KIDAX_UDP_HOST=213.35.118.26
 Environment=KINANCE_UDP_HOST=152.69.218.198
 ExecStart=/usr/bin/python3 -u /home/ubuntu/KiBot/scripts/kibot_manager.py
-Restart=always
-RestartSec=2
+Restart=on-failure
+RestartSec=5
+OOMPolicy=kill
 MemoryMax=160M
 Nice=5
 StandardOutput=journal

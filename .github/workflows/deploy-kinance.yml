@@ -2,19 +2,12 @@ name: Deploy Kinance
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     paths-ignore:
-      - 'packages/indodax-client/**'
-      - '.github/workflows/deploy-kidax.yml'
-      - 'infra/systemd/kidax-engine.service'
-
-      - name: Check Build Output
-        run: |
-          if [ ! -f apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar ]; then
-            echo "❌ Build output not found!"
-            exit 1
-          fi
-      - 'SSH_INDODAX/**'
+      - "packages/indodax-client/**"
+      - ".github/workflows/deploy-kidax.yml"
+      - "infra/systemd/kidax-engine.service"
+      - "SSH_INDODAX/**"
   workflow_dispatch:
 
 concurrency:
@@ -32,7 +25,7 @@ jobs:
       REMOTE_ROOT: /home/ubuntu/Kinance
       SERVICE_NAME: kinance-engine
       SERVICE_FILE: infra/systemd/kinance-engine.service
-      RUNTIME_PORT: '8788'
+      RUNTIME_PORT: "8788"
       ENV_FILE: .env.kinance
       BOT_ID: kinance
       BOT_PROFILE_KEY: kinance
@@ -46,21 +39,24 @@ jobs:
       - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
-          distribution: 'temurin'
+          java-version: "21"
+          distribution: temurin
 
-      - name: Validate Build
+      - name: Build Runtime Jar
         run: |
           chmod +x gradlew
-          # EMERGENCY: tests skipped — deployment of risk guardrails is priority
           ./gradlew :apps:mac-engine:fatJar --no-daemon
 
+      - name: Check Build Output
+        run: |
+          test -f apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar
+
       - name: Validate Deploy Secrets
-            DEPLOY_PORT: ${{ secrets.KINANCE_SSH_PORT }}
+        run: |
           set -euo pipefail
-          test -n "${DEPLOY_HOST:-}" || (echo 'Missing KINANCE_HOST' && exit 1)
-          test -n "${DEPLOY_USER:-}" || (echo 'Missing KINANCE_USER' && exit 1)
-          test -n "${DEPLOY_KEY:-}" || (echo 'Missing KINANCE_SSH' && exit 1)
+          test -n "${DEPLOY_HOST:-}" || (echo "Missing KINANCE_HOST" && exit 1)
+          test -n "${DEPLOY_USER:-}" || (echo "Missing KINANCE_USER" && exit 1)
+          test -n "${DEPLOY_KEY:-}" || (echo "Missing KINANCE_SSH" && exit 1)
 
       - name: Stage Runtime Bundle
         run: |
@@ -83,27 +79,23 @@ jobs:
           port: ${{ env.DEPLOY_PORT }}
           username: ${{ env.DEPLOY_USER }}
           key: ${{ env.DEPLOY_KEY }}
-            - name: Check Build Output
-              run: |
-                if [ ! -f apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar ]; then
-                  echo "❌ Build output not found!"
-                  exit 1
-                fi
           envs: REMOTE_ROOT,ENV_FILE
           script: |
             set -euo pipefail
-            mkdir -p ${REMOTE_ROOT}/server ${REMOTE_ROOT}/scripts ${REMOTE_ROOT}/infra/systemd ${REMOTE_ROOT}/.tmp
-            touch ${REMOTE_ROOT}/${ENV_FILE}
-            chmod 700 ${REMOTE_ROOT}
-            chmod 600 ${REMOTE_ROOT}/${ENV_FILE}
+            mkdir -p "${REMOTE_ROOT}/server" "${REMOTE_ROOT}/scripts" "${REMOTE_ROOT}/infra/systemd" "${REMOTE_ROOT}/.tmp"
+            touch "${REMOTE_ROOT}/${ENV_FILE}"
+            chmod 700 "${REMOTE_ROOT}"
+            chmod 600 "${REMOTE_ROOT}/${ENV_FILE}"
 
       - name: Sync Runtime Bundle via rsync
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
-          echo "${{ env.DEPLOY_KEY }}" > ~/.ssh/id_rsa
+          echo "${DEPLOY_KEY}" | tr -d '\r' > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -p ${{ env.DEPLOY_PORT }} ${{ env.DEPLOY_HOST }} >> ~/.ssh/known_hosts
-          rsync -avz -e "ssh -p ${{ env.DEPLOY_PORT }} -i ~/.ssh/id_rsa" .deploy/ ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.REMOTE_ROOT }}/
+          ssh-keyscan -p "${DEPLOY_PORT}" "${DEPLOY_HOST}" >> ~/.ssh/known_hosts
+          rsync -avz -e "ssh -p ${DEPLOY_PORT} -i ~/.ssh/id_rsa" .deploy/ "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_ROOT}/"
+          rm -f ~/.ssh/id_rsa
 
       - name: Install and Restart Kinance
         uses: appleboy/ssh-action@v1.0.3
@@ -116,44 +108,42 @@ jobs:
           script: |
             set -euo pipefail
             RELEASE_LABEL="#${{ github.run_number }}"
+
             ensure_env() {
-              KEY="$1"
-              VALUE="$2"
-              if grep -q "^${KEY}=" ${REMOTE_ROOT}/${ENV_FILE}; then
-                sed -i "s|^${KEY}=.*|${KEY}=${VALUE}|" ${REMOTE_ROOT}/${ENV_FILE}
+              local key="$1"
+              local value="$2"
+              if grep -q "^${key}=" "${REMOTE_ROOT}/${ENV_FILE}"; then
+                sed -i "s|^${key}=.*|${key}=${value}|" "${REMOTE_ROOT}/${ENV_FILE}"
               else
-                echo "${KEY}=${VALUE}" >> ${REMOTE_ROOT}/${ENV_FILE}
+                echo "${key}=${value}" >> "${REMOTE_ROOT}/${ENV_FILE}"
               fi
             }
-            ensure_env KIBOT_RELEASE_LABEL ${RELEASE_LABEL}
-            ensure_env BOT_ID ${BOT_ID}
-            ensure_env BOT_PROFILE_KEY ${BOT_PROFILE_KEY}
-            ensure_env KIBOT_EXCHANGE_KIND ${EXCHANGE_KIND}
-            ensure_env DEVICE_ID ${DEVICE_ID}
-            ensure_env DEVICE_DISPLAY_NAME '"'"${DEVICE_DISPLAY_NAME}"'"'
-            ensure_env KIBOT_RUNTIME_ROOT ${REMOTE_ROOT}
-            ensure_env KIBOT_DASHBOARD_PORT ${RUNTIME_PORT}
-            ensure_env KIBOT_ENV_FILE ${REMOTE_ROOT}/${ENV_FILE}
-            ensure_env MAC_ENGINE_PORT ${RUNTIME_PORT}
+
+            ensure_env KIBOT_RELEASE_LABEL "${RELEASE_LABEL}"
+            ensure_env BOT_ID "${BOT_ID}"
+            ensure_env BOT_PROFILE_KEY "${BOT_PROFILE_KEY}"
+            ensure_env KIBOT_EXCHANGE_KIND "${EXCHANGE_KIND}"
+            ensure_env DEVICE_ID "${DEVICE_ID}"
+            ensure_env DEVICE_DISPLAY_NAME "\"${DEVICE_DISPLAY_NAME}\""
+            ensure_env KIBOT_RUNTIME_ROOT "${REMOTE_ROOT}"
+            ensure_env KIBOT_DASHBOARD_PORT "${RUNTIME_PORT}"
+            ensure_env KIBOT_ENV_FILE "${REMOTE_ROOT}/${ENV_FILE}"
+            ensure_env MAC_ENGINE_PORT "${RUNTIME_PORT}"
             ensure_env MAC_ENGINE_BIND_HOST 0.0.0.0
-            echo "--- ENV CONFIG LOADED ---"
-            mv ${REMOTE_ROOT}/mac-engine-all.jar ${REMOTE_ROOT}/server/mac-engine-all.jar
-            chmod +x ${REMOTE_ROOT}/engine-recovery.sh ${REMOTE_ROOT}/setup-autorecover.sh ${REMOTE_ROOT}/scripts/sync_env_to_server.sh || true
-            sudo cp ${REMOTE_ROOT}/infra/systemd/kinance-engine.service /etc/systemd/system/${SERVICE_NAME}.service
-            sudo systemctl stop ${SERVICE_NAME} || true
-            sudo fuser -k ${RUNTIME_PORT}/tcp || true
+
+            mv "${REMOTE_ROOT}/mac-engine-all.jar" "${REMOTE_ROOT}/server/mac-engine-all.jar"
+            chmod +x "${REMOTE_ROOT}/engine-recovery.sh" "${REMOTE_ROOT}/setup-autorecover.sh" "${REMOTE_ROOT}/scripts/sync_env_to_server.sh" || true
+            sudo cp "${REMOTE_ROOT}/infra/systemd/kinance-engine.service" "/etc/systemd/system/${SERVICE_NAME}.service"
+            sudo systemctl stop "${SERVICE_NAME}" || true
+            sudo fuser -k "${RUNTIME_PORT}/tcp" || true
             sudo systemctl daemon-reload
-            sudo systemctl enable ${SERVICE_NAME}
-            echo "Restarting service ${SERVICE_NAME}..."
-            sudo systemctl restart ${SERVICE_NAME}
-            sudo systemctl is-active ${SERVICE_NAME}
-            echo "Waiting for engine cold start (100s total max) on port ${RUNTIME_PORT}..."
-            if ! curl -fsS --retry 20 --retry-connrefused --retry-delay 5 http://127.0.0.1:${RUNTIME_PORT}/api/state >/tmp/kinance-state.json; then
-              echo "❌ Health check failed! Recent logs:"
-              sudo journalctl -u ${SERVICE_NAME} --no-pager -n 100
-              echo "--- SERVER STATE AT FAILURE ---"
-              netstat -tulpn | grep ${RUNTIME_PORT} || echo "Nothing listening on ${RUNTIME_PORT}"
+            sudo systemctl enable "${SERVICE_NAME}"
+            sudo systemctl restart "${SERVICE_NAME}"
+            sudo systemctl is-active "${SERVICE_NAME}"
+
+            if ! curl -fsS --retry 20 --retry-connrefused --retry-delay 5 "http://127.0.0.1:${RUNTIME_PORT}/api/state" >/tmp/kinance-state.json; then
+              sudo journalctl -u "${SERVICE_NAME}" --no-pager -n 100
               exit 1
             fi
-            echo "✅ Health check passed!"
-            cat /tmp/kinance-state.json | head -c 800
+
+            head -c 800 /tmp/kinance-state.json
