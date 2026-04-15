@@ -7,6 +7,13 @@ on:
       - 'packages/indodax-client/**'
       - '.github/workflows/deploy-kidax.yml'
       - 'infra/systemd/kidax-engine.service'
+
+      - name: Check Build Output
+        run: |
+          if [ ! -f apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar ]; then
+            echo "❌ Build output not found!"
+            exit 1
+          fi
       - 'SSH_INDODAX/**'
   workflow_dispatch:
 
@@ -49,7 +56,7 @@ jobs:
           ./gradlew :apps:mac-engine:fatJar --no-daemon
 
       - name: Validate Deploy Secrets
-        run: |
+            DEPLOY_PORT: ${{ secrets.KINANCE_SSH_PORT }}
           set -euo pipefail
           test -n "${DEPLOY_HOST:-}" || (echo 'Missing KINANCE_HOST' && exit 1)
           test -n "${DEPLOY_USER:-}" || (echo 'Missing KINANCE_USER' && exit 1)
@@ -76,6 +83,12 @@ jobs:
           port: ${{ env.DEPLOY_PORT }}
           username: ${{ env.DEPLOY_USER }}
           key: ${{ env.DEPLOY_KEY }}
+            - name: Check Build Output
+              run: |
+                if [ ! -f apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar ]; then
+                  echo "❌ Build output not found!"
+                  exit 1
+                fi
           envs: REMOTE_ROOT,ENV_FILE
           script: |
             set -euo pipefail
