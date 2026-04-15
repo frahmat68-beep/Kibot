@@ -449,7 +449,6 @@ class LocalDashboardServer(
     }
 
     fun start() {
-        lanServiceAdvertiser?.start()
         if (stateCacheJob?.isActive != true) {
             stateCacheJob = stateCacheScope.launch {
                 while (isActive) {
@@ -464,6 +463,14 @@ class LocalDashboardServer(
             }
         }
         server.start()
+        lanServiceAdvertiser?.let { advertiser ->
+            stateCacheScope.launch(Dispatchers.IO) {
+                runCatching { advertiser.start() }
+                    .onFailure { error ->
+                        logger.warn("LAN advertising disabled after startup failure: {}", error.message)
+                    }
+            }
+        }
     }
 
     fun stop() {
