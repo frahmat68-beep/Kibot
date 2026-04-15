@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import asyncio
 
 import requests
+import kibot_engine_v2 as engine
 try:
     from scripts.dashboard_template import DASHBOARD_HTML
 except ImportError:
@@ -5834,52 +5835,64 @@ def main() -> None:
                 _process_signal_multipos(msg)
             except socket.timeout:
                 # Normal timeout, check shutdown event
-                global _last_daily_guard_check_at
-                global _last_screen_time
-                global _last_supabase_ping
-                if "_last_screen_time" not in globals(): _last_screen_time = 0.0
-                if "_last_supabase_ping" not in globals(): _last_supabase_ping = 0.0
-                if "_daily_sync_done_today" not in globals(): _daily_sync_done_today = False
                 now = time.time()
                 
-                # 30 second checks
-                if (now - _last_daily_guard_check_at) >= 30.0:
-                    _last_daily_guard_check_at = now
-                    _check_daily_loss_limit()
-                _maybe_run_30min_math_review()
-                
-                # 15 minutes: screener
-                if (now - _last_screen_time) >= 900.0:
-                    _last_screen_time = now
-                    try:
-                        global _screen_cache
-                        _screen_cache = screen_all_pairs()
-                    except Exception as e:
-                        print(f"[SCREEN] loop err: {e}")
-                        
-                # What-If Simulation
-                if _WHATIF_AVAILABLE and (now - globals().get("_last_whatif_time", 0)) >= 900.0:
-                    globals()["_last_whatif_time"] = now
+                # 30 second checks: Cascade, Screen B, Discovery
+                if (now - globals().get("_last_daily_guard_check_at", 0)) >= 30.0:
+                    globals()["_last_daily_guard_check_at"] = now
                     try:
                         import urllib.request
-                        # get market prices
                         req = urllib.request.Request("https://indodax.com/api/tickers", headers={"User-Agent": "Mozilla"})
                         resp = urllib.request.urlopen(req, timeout=5)
                         tdata = json.loads(resp.read()).get("tickers", {})
-                        prices = {k: float(v.get("last", "0")) for k,v in tdata.items() if v.get("last", "0")}
-                        res = run_simulation(prices)
-                    except Exception as e:
-                        print(f"[WHATIF] loop err: {e}")
                         
+                        btc_ticker = tdata.get("btc_idr", {})
+                        if btc_ticker:
+                            engine.update_btc_price(float(btc_ticker.get("last", 0)))
+                        
+                        # 2. Cascade Update (Daily PnL Check)
+                        daily_pnl_pct = _metrics.get("daily_pnl_pct", 0.0)
+                        if daily_pnl_pct <= -0.02:
+                            engine.cascade_state.on_loss(daily_pnl_pct)
+                        elif daily_pnl_pct > 0.01: # Small growth threshold for recovery
+                             engine.cascade_state.on_win()
+                        
+                        # 3. Screen Bucket B Candidates
+                        cfg = engine.cascade_state.get_config()
+                        if cfg.get("bucket_b_active"):
+                            candidates = engine.screen_bucket_b_candidates(tdata, engine.get_btc_change_1h(), cfg)
+                            if candidates:
+                                top = candidates[0]
+                                print(f"[SCREEN-B] Top: {top['pair_id']} score={top['score']:.3f}")
+                        
+                        # 4. New Coin Discovery
+                        engine.discover_new_listings(tdata)
+                        
+                    except Exception as e:
+                        print(f"[TRINITY-LOOP] err: {e}")
+                
+                # 30-min Math Review
+                if (now - globals().get("_last_math_review_at", 0)) >= 1800.0:
+                    globals()["_last_math_review_at"] = now
+                    equity = _metrics.get("total_equity_idr", 60000.0)
+                    msg = engine.run_30min_review(equity, _metrics.get("daily_pnl_pct", 0.0))
+                    _telegram_send(msg)
+                
                 # 6 hours: supabase ping
-                if (now - _last_supabase_ping) >= 21600.0:
-                    _last_supabase_ping = now
-                    keep_supabase_alive()
+                if (now - globals().get("_last_supabase_ping", 0)) >= 21600.0:
+                    globals()["_last_supabase_ping"] = now
+                    try:
+                        keep_supabase_alive()
+                    except NameError:
+                        pass
                     
                 wib_hour = (datetime.utcnow() + timedelta(hours=7)).hour
                 if wib_hour == 2 and not globals().get("_daily_sync_done_today"):
                     globals()["_daily_sync_done_today"] = True
-                    run_daily_data_sync()
+                    try:
+                        run_daily_data_sync()
+                    except NameError:
+                        pass
                 elif wib_hour != 2:
                     globals()["_daily_sync_done_today"] = False
 

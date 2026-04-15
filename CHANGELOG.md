@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.0.0] - 2026-04-15
+### Added
+- **Dual-Bucket Trinity Architecture**: Strictly 50/50 split between Bucket A (Global Lead-Lag) and Bucket B (Local Indodax-Only).
+- **Cascade Loss Intelligence**: Dynamic state machine (`GROWTH` → `HARD_STOP`) scaling risk based on PnL performance and consecutive losses.
+- **Conviction Score Engine**: Mathematical 4-component scoring (Volume, Breakout, Orderbook, Momentum) with a 0.85 entry threshold for Bucket B.
+- **Multi-Level Ladder Exit**: Automated partial profit-taking at +3% (30%), +6% (30%), +10% (20%), and +15% (all).
+- **KiCom Scanner**: Robust REST-based scanner for Crypto.com consensus (Bucket A AND-gate).
+- **Volume Crash Detector**: Emergency exit system triggered by 70% volume drops.
+- **20% Global Cash Reserve**: Permanent liquidity buffer strictly maintained in `CapitalAllocationManager`.
+- **40% Bucket B Reserve**: Specific liquidity buffer for localIndodax operations.
+
+### Changed
+- **Refactored `CapitalAllocationManager.kt`**: Full implementation of the 50/50 Dual-Bucket split and reserve system.
+- **Integrated `kibot_engine_v2.py`**: Consolidated all mathematical logic into a single deterministic engine.
+- **Universal Instructions**: Overhauled `.github/copilot-instructions.md` with v7.0 logic.
+
+### Removed
+- **Deprecated Files**: Cleaned up 26 legacy documentation and research files.
+
 ## [6.2.0] - 2026-04-15
 ### Added
 - **Trinity v6.2 Upgrade**: Full integration of math-first, memory-capable trading logic.
