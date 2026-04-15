@@ -813,6 +813,8 @@ class MacEngineDaemon(
     )
     private val hyperAggressiveEntryReasonByPair = java.util.concurrent.ConcurrentHashMap<String, HyperTargetKind>()
     private val partialTakeProfitExecutedByPair = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val trinityLadderStageByPair = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val lastOneMinVolByPair = java.util.concurrent.ConcurrentHashMap<String, Double>()
     private var lastSuperSexyTarget: com.kibot.shared.models.PairId? = null
     private val hyperConfig = config.hyperAggressiveConfig
     @Volatile private var dynamicSectorCorrelationBook: Map<String, Set<String>> = emptyMap()
@@ -7183,7 +7185,16 @@ class MacEngineDaemon(
             hungry = hyperAggressiveTracker.hungry,
             marketQuotes = marketQuotes,
         )
-        val exitDecision = emergencyGarbageExit ?: absoluteLossProtectionExit ?: barbarianMaxHoldExit ?: hardTimeoutExit ?: opportunityCostExit ?: emergencyLiquidityExit ?: crashHardStopExit ?: localAutonomyTrailingExit ?: forcedSellExit ?: hyperAggressiveTrailingExit ?: hyperAggressiveRotationExit ?: leadLagTrailingExit ?: adaptiveCoordinator.planExit(
+        val trinityLadderExit = planTrinityLadderExit(
+            managedPositions = managedPositions,
+            marketQuotes = marketQuotes,
+            cycle = cycle
+        )
+        val volumeCrashExit = planVolumeCrashExit(
+            managedPositions = managedPositions,
+            marketQuotes = marketQuotes
+        )
+        val exitDecision = emergencyGarbageExit ?: volumeCrashExit ?: absoluteLossProtectionExit ?: barbarianMaxHoldExit ?: hardTimeoutExit ?: opportunityCostExit ?: emergencyLiquidityExit ?: crashHardStopExit ?: trinityLadderExit ?: localAutonomyTrailingExit ?: forcedSellExit ?: hyperAggressiveTrailingExit ?: hyperAggressiveRotationExit ?: leadLagTrailingExit ?: adaptiveCoordinator.planExit(
             now = now,
             cycle = cycle,
             managedPositions = managedPositions,
@@ -7499,16 +7510,28 @@ class MacEngineDaemon(
                         )
                         else -> Unit
                     }
-                    emitLeadLagExecutionReport(
+                }
+                
+                // Track Ladder Stage for partial fills
+                if (isPartialExit) {
+                    val pairKey = filteredExitDecision.executionPlan.signal.pairId.value.lowercase()
+                    if (filteredExitDecision.message.contains("LADDER_STAGE_1")) trinityLadderStageByPair[pairKey] = 1
+                    if (filteredExitDecision.message.contains("LADDER_STAGE_2")) trinityLadderStageByPair[pairKey] = 2
+                    if (filteredExitDecision.message.contains("LADDER_STAGE_3")) trinityLadderStageByPair[pairKey] = 3
+                } else {
+                    trinityLadderStageByPair.remove(filteredExitDecision.position.pairId.value.lowercase())
+                }
+
+                emitLeadLagExecutionReport(
                     pairId = filteredExitDecision.executionPlan.signal.pairId,
                     status = "SUCCESS",
-                        t0DetectedAtMs = detectedAtMs,
-                        t1ReceivedAtMs = receivedAt?.toEpochMilliseconds(),
-                        t2BuyAtMs = entryAt?.toEpochMilliseconds(),
-                        t3SellAtMs = exitAt.toEpochMilliseconds(),
-                        slippagePct = null,
-                        finalPnlIdr = pnlIdr,
-                    )
+                    t0DetectedAtMs = detectedAtMs,
+                    t1ReceivedAtMs = receivedAt?.toEpochMilliseconds(),
+                    t2BuyAtMs = entryAt?.toEpochMilliseconds(),
+                    t3SellAtMs = exitAt.toEpochMilliseconds(),
+                    slippagePct = null,
+                    finalPnlIdr = pnlIdr,
+                )
                 }
                 
                 // [70/30 CAPITAL ALLOCATION] Return capital to appropriate bucket after exit
@@ -14449,6 +14472,88 @@ class MacEngineDaemon(
             com.kibot.shared.models.OrderStatus.CANCEL_REQUESTED,
             com.kibot.shared.models.OrderStatus.UNKNOWN,
         )
+    }
+
+    private fun planTrinityLadderExit(
+        managedPositions: List<com.kibot.shared.models.Position>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+        cycle: Long
+    ): ExitDecision? {
+        for (pos in managedPositions) {
+            val pairKey = pos.pairId.value.lowercase()
+            val currentProfit = pos.currentProfitPct
+            val stage = trinityLadderStageByPair[pairKey] ?: 0
+            
+            // Ladder Stage 1: +3% -> Sell 30%
+            if (stage < 1 && currentProfit >= 3.0) {
+                return ExitDecision(
+                    position = pos,
+                    executionPlan = com.kibot.shared.models.ExecutionPlan(
+                        signal = com.kibot.shared.models.ExecutionSignal(pos.pairId, pos.averageEntryPrice, com.kibot.shared.models.OrderSide.SELL),
+                        quantity = (pos.quantity.toDoubleOrZero() * 0.30).toBigDecimalIdr(),
+                        orderType = com.kibot.shared.models.OrderType.LIMIT,
+                        limitPrice = marketQuotes.firstOrNull { it.pairId == pos.pairId }?.bestBid ?: pos.averageEntryPrice
+                    ),
+                    message = "TRINITY_LADDER_STAGE_1: Profit +3% reached, locking 30%"
+                )
+            }
+            
+            // Ladder Stage 2: +6% -> Sell 30%
+            if (stage < 2 && currentProfit >= 6.0) {
+                return ExitDecision(
+                    position = pos,
+                    executionPlan = com.kibot.shared.models.ExecutionPlan(
+                        signal = com.kibot.shared.models.ExecutionSignal(pos.pairId, pos.averageEntryPrice, com.kibot.shared.models.OrderSide.SELL),
+                        quantity = (pos.quantity.toDoubleOrZero() * 0.30).toBigDecimalIdr(),
+                        orderType = com.kibot.shared.models.OrderType.LIMIT,
+                        limitPrice = marketQuotes.firstOrNull { it.pairId == pos.pairId }?.bestBid ?: pos.averageEntryPrice
+                    ),
+                    message = "TRINITY_LADDER_STAGE_2: Profit +6% reached, locking 30%"
+                )
+            }
+            
+            // Ladder Stage 3: +10% -> Sell 20%
+            if (stage < 3 && currentProfit >= 10.0) {
+                return ExitDecision(
+                    position = pos,
+                    executionPlan = com.kibot.shared.models.ExecutionPlan(
+                        signal = com.kibot.shared.models.ExecutionSignal(pos.pairId, pos.averageEntryPrice, com.kibot.shared.models.OrderSide.SELL),
+                        quantity = (pos.quantity.toDoubleOrZero() * 0.20).toBigDecimalIdr(),
+                        orderType = com.kibot.shared.models.OrderType.LIMIT,
+                        limitPrice = marketQuotes.firstOrNull { it.pairId == pos.pairId }?.bestBid ?: pos.averageEntryPrice
+                    ),
+                    message = "TRINITY_LADDER_STAGE_3: Profit +10% reached, locking 20%"
+                )
+            }
+        }
+        return null
+    }
+
+    private fun planVolumeCrashExit(
+        managedPositions: List<com.kibot.shared.models.Position>,
+        marketQuotes: List<com.kibot.shared.models.MarketQuote>
+    ): ExitDecision? {
+        for (pos in managedPositions) {
+            val pairKey = pos.pairId.value.lowercase()
+            val quote = marketQuotes.firstOrNull { it.pairId == pos.pairId } ?: continue
+            
+            val current1mVol = quote.volume24h.toDoubleOrZero() / (24 * 60)
+            val last1mVol = lastOneMinVolByPair[pairKey] ?: current1mVol
+            lastOneMinVolByPair[pairKey] = current1mVol
+            
+            if (current1mVol < last1mVol * 0.3 && pos.currentProfitPct > 0.5) {
+                return ExitDecision(
+                    position = pos,
+                    executionPlan = com.kibot.shared.models.ExecutionPlan(
+                        signal = com.kibot.shared.models.ExecutionSignal(pos.pairId, pos.averageEntryPrice, com.kibot.shared.models.OrderSide.SELL),
+                        quantity = pos.quantity,
+                        orderType = com.kibot.shared.models.OrderType.MARKET
+                    ),
+                    message = "VOLUME_CRASH_EXIT: 1m volume dropped > 70%, exiting immediately to bypass liquidity trap"
+                )
+            }
+        }
+        return null
     }
 
     private fun startWhatIfSimulationPolling() {

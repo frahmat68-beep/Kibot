@@ -49,8 +49,24 @@ class KiCrypRadar:
         await ws.send(json.dumps(response))
         # print(f"[KICRYP][HEARTBEAT] Responded to {msg_id}", flush=True)
 
+    async def run_regime_scanner(self):
+        """Periodic scan of BTC/ETH to determine global market regime."""
+        while True:
+            try:
+                # In a real scenario, this would use the whiteboard or a separate ticker stream
+                # For now, we use the tickers received to evaluate
+                # logic for regime detection:
+                pass
+            except Exception as e:
+                print(f"[KICRYP][REGIME-ERR] {e}")
+            await asyncio.sleep(60)
+
     async def run(self):
         print(f"[KICRYP] Connecting to {KICRYP_WS_URL}...", flush=True)
+        
+        # Broadcast initial regime
+        self.broadcast_regime("SIDEWAYS")
+        
         async for ws in websockets.connect(KICRYP_WS_URL):
             try:
                 # 1. Subscribe to Tickers
@@ -68,13 +84,11 @@ class KiCrypRadar:
                 async for message in ws:
                     data = json.loads(message)
                     
-                    # Handle Heartbeat
                     if data.get("method") == "public/heartbeat":
                         await self.handle_heartbeat(ws, data["id"])
                         continue
 
-                    # Handle Ticker Updates
-                    if "result" in data: continue # subscribe success msg
+                    if "result" in data: continue
                     
                     channel = data.get("channel", "")
                     if channel.startswith("ticker."):
@@ -82,9 +96,16 @@ class KiCrypRadar:
                         if instr_data:
                             ticker = instr_data[0]
                             symbol = ticker["i"]
-                            last_price = ticker["a"] # Price 'a' is last price
-                            vol_24h = ticker["v"]
+                            last_price = float(ticker["a"])
+                            vol_24h = float(ticker["v"])
+                            
                             self.broadcast_to_whiteboard(symbol, last_price, vol_24h)
+                            
+                            # Regime Detection Logic (Simplified for BTC)
+                            if symbol == "BTC_USDT":
+                                # Detect PANIC: price drop > 4% (This would need historical tracking)
+                                # For simulation/POC, we just keep it simple
+                                pass
 
             except websockets.ConnectionClosed:
                 print("[KICRYP] Connection closed. Reconnecting...", flush=True)
@@ -93,7 +114,21 @@ class KiCrypRadar:
                 print(f"[KICRYP][ERR] {e}", flush=True)
                 await asyncio.sleep(5)
 
+    def broadcast_regime(self, regime: str):
+        """Broadcast global market regime to manager."""
+        msg = {
+            "source": "KICRYP_RADAR",
+            "type": "REGIME_UPDATE",
+            "regime": regime,
+            "timestamp": time.time()
+        }
+        try:
+            self.sock.sendto(json.dumps(msg).encode(), (MANAGER_UDP_HOST, MANAGER_UDP_PORT))
+        except Exception:
+            pass
+
 if __name__ == "__main__":
+    # Expand to all USDT pairs if possible, or a large subset
     radar = KiCrypRadar()
     try:
         asyncio.run(radar.run())
