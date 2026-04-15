@@ -41,6 +41,11 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.html.BODY
@@ -87,6 +92,67 @@ class LocalDashboardServer(
     private val statePollIntervalMillis: Long = 2_000L,
     private val logPollIntervalMillis: Long = 5_000L,
 ) {
+    @Serializable
+    private data class MobileStateResponse(
+        val timestamp: Long,
+        val portfolioIdr: String,
+        val pnl: String,
+        val active: Int,
+        val status: String,
+    )
+
+    @Serializable
+    private data class DashboardConnectionStatus(val status: String, val latencyMs: Int)
+
+    @Serializable
+    private data class DashboardConnections(val kidax: DashboardConnectionStatus, val kinance: DashboardConnectionStatus)
+
+    @Serializable
+    private data class ActivePositionState(val pair: String, val currentPrice: String, val pnlPct: String, val pnlIdr: String, val size: String)
+
+    @Serializable
+    private data class PairScoreState(val pair: String)
+
+    @Serializable
+    private data class HealthServicesResponse(
+        val kidax: String,
+        val kibot: String,
+        val kinance: String,
+    )
+
+    @Serializable
+    private data class HealthResponse(
+        val status: String,
+        val timestamp: String,
+        val uptimeMs: Long,
+        val botId: String,
+        val effectiveState: String,
+        val syncHealth: String,
+        val tradingAllowed: Boolean,
+        val hardStopActive: Boolean,
+        val services: HealthServicesResponse,
+    )
+
+    @Serializable
+    private data class DashboardStateResponse(
+        val portfolioValueIdr: String,
+        val dailyPnlPct: Double,
+        val dailyPnlIdr: Double,
+        val tradingAllowed: Boolean,
+        val hardStopActive: Boolean,
+        val botMode: String,
+        val lastUpdate: String,
+        val connections: DashboardConnections,
+        val activePositions: List<ActivePositionState>,
+        val pairScores: List<PairScoreState>,
+        val learningState: JsonObject,
+        val whatIfSimulation: JsonElement,
+        val tradeHistory: JsonElement,
+        val rawState: JsonElement,
+        val stale: Boolean = false,
+        val cacheAgeMs: Long = 0L,
+    )
+
     private val logger = LoggerFactory.getLogger(LocalDashboardServer::class.java)
     private val startedAtMs = System.currentTimeMillis()
     private val lanProbeUrl = detectLanProbeUrl(host, port)
@@ -96,6 +162,10 @@ class LocalDashboardServer(
         ignoreUnknownKeys = true
         isLenient = true
     }
+    private val stateCacheScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    @Volatile private var stateCacheJob: kotlinx.coroutines.Job? = null
+    @Volatile private var cachedStateResponse: DashboardStateResponse? = null
+    @Volatile private var cachedStateUpdatedAtMs: Long = 0L
 
     private val server = embeddedServer(CIO, host = host, port = port) {
         install(CallLogging)
@@ -133,93 +203,19 @@ class LocalDashboardServer(
                 }
             }
 
-            @Serializable
-            data class MobileStateResponse(
-                val timestamp: Long,
-                val portfolioIdr: String,
-                val pnl: String,
-                val active: Int,
-                val status: String
-            )
-
-            @Serializable
-            data class DashboardConnectionStatus(val status: String, val latencyMs: Int)
-
-            @Serializable
-            data class DashboardConnections(val kidax: DashboardConnectionStatus, val kinance: DashboardConnectionStatus)
-
-            @Serializable
-            data class ActivePositionState(val pair: String, val currentPrice: String, val pnlPct: String, val pnlIdr: String, val size: String)
-
-            @Serializable
-            data class PairScoreState(val pair: String)
-
-            @Serializable
-            data class HealthServicesResponse(
-                val kidax: String,
-                val kibot: String,
-                val kinance: String,
-            )
-
-            @Serializable
-            data class HealthResponse(
-                val status: String,
-                val timestamp: String,
-                val uptimeMs: Long,
-                val botId: String,
-                val effectiveState: String,
-                val syncHealth: String,
-                val tradingAllowed: Boolean,
-                val hardStopActive: Boolean,
-                val services: HealthServicesResponse,
-            )
-
-            @Serializable
-            data class DashboardStateResponse(
-                val portfolioValueIdr: String,
-                val dailyPnlPct: Double,
-                val dailyPnlIdr: Double,
-                val tradingAllowed: Boolean,
-                val hardStopActive: Boolean,
-                val botMode: String,
-                val lastUpdate: String,
-                val connections: DashboardConnections,
-                val activePositions: List<ActivePositionState>,
-                val pairScores: List<PairScoreState>,
-                val learningState: JsonObject,
-                val whatIfSimulation: JsonElement,
-                val tradeHistory: JsonElement,
-                val rawState: JsonElement
-            )
-
             get("/api/state") {
                 applyDashboardSecurityHeaders(call)
-                val state = repository.state.value
-                val whatIfJson = readJsonFileOrEmpty(Path.of("state/whatif_results.json"))
-                val tradeSummaryJson = readJsonFileOrEmpty(Path.of("state/trade_summary.json"))
-                
-                val customState = DashboardStateResponse(
-                    portfolioValueIdr = state.portfolioValueIdr,
-                    dailyPnlPct = state.pnlTodayPctLabel.replace("%", "").replace("+", "").toDoubleOrNull() ?: 0.0,
-                    dailyPnlIdr = state.pnlTodayIdr.replace(Regex("[^0-9-]"), "").toDoubleOrNull() ?: 0.0,
-                    tradingAllowed = state.liveExecutionEnabled,
-                    hardStopActive = state.statusMessage.contains("hard stop", ignoreCase = true),
-                    botMode = state.operatingMode,
-                    lastUpdate = java.time.Instant.ofEpochMilli(state.lastUpdatedEpochMs).toString(),
-                    connections = DashboardConnections(
-                        kidax = DashboardConnectionStatus(state.kidaxNodeStatus, 42),
-                        kinance = DashboardConnectionStatus(state.kinanceNodeStatus, 150)
-                    ),
-                    activePositions = state.holdingsDetailed.map { h ->
-                        ActivePositionState(h.assetCode, h.currentPriceLabel, h.pnlPctLabel, h.pnlIdrLabel, h.quantityLabel)
-                    },
-                    pairScores = state.radarPairs.map { p -> PairScoreState(p) },
-                    learningState = JsonObject(emptyMap()),
-                    whatIfSimulation = whatIfJson,
-                    tradeHistory = tradeSummaryJson,
-                    rawState = Json.encodeToJsonElement(MacDashboardState.serializer(), state)
-                )
-                call.respond(customState)
+                val now = System.currentTimeMillis()
+                val freshCache = cachedStateResponse
+                val cacheAgeMs = now - cachedStateUpdatedAtMs
+                if (freshCache != null && cacheAgeMs <= statePollIntervalMillis.coerceAtLeast(1_000L)) {
+                    call.respond(freshCache.copy(stale = false, cacheAgeMs = cacheAgeMs.coerceAtLeast(0L)))
+                } else {
+                    val rebuilt = buildDashboardStateResponse()
+                    cachedStateResponse = rebuilt
+                    cachedStateUpdatedAtMs = now
+                    call.respond(rebuilt.copy(stale = false, cacheAgeMs = 0L))
+                }
             }
 
             get("/api/health") {
@@ -448,16 +444,58 @@ class LocalDashboardServer(
 
     fun start() {
         lanServiceAdvertiser?.start()
+        if (stateCacheJob?.isActive != true) {
+            stateCacheJob = stateCacheScope.launch {
+                while (isActive) {
+                    runCatching {
+                        cachedStateResponse = buildDashboardStateResponse()
+                        cachedStateUpdatedAtMs = System.currentTimeMillis()
+                    }.onFailure { error ->
+                        logger.debug("Dashboard state cache refresh failed: ${error.message}")
+                    }
+                    delay(500L)
+                }
+            }
+        }
         server.start()
     }
 
     fun stop() {
         lanServiceAdvertiser?.stop()
+        runCatching { stateCacheJob?.cancel() }
+        stateCacheScope.cancel()
         runCatching {
             server.stop(1_000, 2_000)
         }.onFailure { error ->
             logger.warn("Dashboard stop encountered recoverable error: ${error.message}")
         }
+    }
+
+    private fun buildDashboardStateResponse(): DashboardStateResponse {
+        val state = repository.state.value
+        val whatIfJson = readJsonFileOrEmpty(Path.of("state/whatif_results.json"))
+        val tradeSummaryJson = readJsonFileOrEmpty(Path.of("state/trade_summary.json"))
+        return DashboardStateResponse(
+            portfolioValueIdr = state.portfolioValueIdr,
+            dailyPnlPct = state.pnlTodayPctLabel.replace("%", "").replace("+", "").toDoubleOrNull() ?: 0.0,
+            dailyPnlIdr = state.pnlTodayIdr.replace(Regex("[^0-9-]"), "").toDoubleOrNull() ?: 0.0,
+            tradingAllowed = state.liveExecutionEnabled,
+            hardStopActive = state.statusMessage.contains("hard stop", ignoreCase = true),
+            botMode = state.operatingMode,
+            lastUpdate = java.time.Instant.ofEpochMilli(state.lastUpdatedEpochMs).toString(),
+            connections = DashboardConnections(
+                kidax = DashboardConnectionStatus(state.kidaxNodeStatus, 42),
+                kinance = DashboardConnectionStatus(state.kinanceNodeStatus, 150),
+            ),
+            activePositions = state.holdingsDetailed.map { h ->
+                ActivePositionState(h.assetCode, h.currentPriceLabel, h.pnlPctLabel, h.pnlIdrLabel, h.quantityLabel)
+            },
+            pairScores = state.radarPairs.map { p -> PairScoreState(p) },
+            learningState = JsonObject(emptyMap()),
+            whatIfSimulation = whatIfJson,
+            tradeHistory = tradeSummaryJson,
+            rawState = Json.encodeToJsonElement(MacDashboardState.serializer(), state),
+        )
     }
 
     private fun readJsonFileOrEmpty(path: Path): JsonElement {

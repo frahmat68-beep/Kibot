@@ -7,6 +7,9 @@ import com.kibot.macengine.config.ExchangeKind
 import com.kibot.macengine.config.HyperAggressiveConfig
 import com.kibot.macengine.config.MacRuntimeConfig
 import com.kibot.macengine.runtime.MacEngineDaemon
+import com.kibot.macengine.runtime.exchangeProbeBackoffMillis
+import com.kibot.macengine.runtime.resolveOwnership
+import com.kibot.macengine.runtime.validateMarketData
 import com.kibot.macengine.state.MacStateRepository
 import com.kibot.shared.models.BalanceSnapshot
 import com.kibot.shared.models.BotDesiredState
@@ -78,6 +81,61 @@ class MacEngineDaemonTest {
             Instant.parse("2026-03-15T00:00:00Z").toEpochMilliseconds() - System.currentTimeMillis()
 
         override fun now(): Instant = Instant.fromEpochMilliseconds(System.currentTimeMillis() + offsetMs)
+    }
+
+    @Test
+    fun `ownership resolution uses lease as canonical authority`() {
+        val consistentOwner = resolveOwnership(ownerByList = true, ownerByLease = true)
+        val consistentNotOwner = resolveOwnership(ownerByList = false, ownerByLease = false, lastResolved = consistentOwner.resolvedIsOwner)
+        val mismatchSafetyBlock = resolveOwnership(ownerByList = true, ownerByLease = false, lastResolved = consistentNotOwner.resolvedIsOwner)
+        val mismatchLeaseWins = resolveOwnership(ownerByList = false, ownerByLease = true, lastResolved = mismatchSafetyBlock.resolvedIsOwner)
+
+        assertTrue(consistentOwner.resolvedIsOwner)
+        assertFalse(consistentOwner.mismatch)
+        assertFalse(consistentNotOwner.resolvedIsOwner)
+        assertFalse(consistentNotOwner.mismatch)
+        assertFalse(mismatchSafetyBlock.resolvedIsOwner)
+        assertTrue(mismatchSafetyBlock.mismatch)
+        assertTrue(mismatchSafetyBlock.shouldLog)
+        assertTrue(mismatchLeaseWins.resolvedIsOwner)
+        assertTrue(mismatchLeaseWins.mismatch)
+    }
+
+    @Test
+    fun `market data validation blocks empty stale or suspicious snapshots`() {
+        val now = Instant.parse("2026-03-15T00:01:00Z")
+        val empty = validateMarketData(now = now, marketQuotes = emptyList(), equityIdr = 75_000.0)
+        val lowEquity = validateMarketData(now = now, marketQuotes = listOf(marketQuote("eth_idr", 120_000.0, 0.77)), equityIdr = 459.0)
+        val stale = validateMarketData(
+            now = now,
+            marketQuotes = listOf(marketQuote("eth_idr", 120_000.0, 0.77).copy(capturedAt = Instant.parse("2026-03-15T00:00:00Z"))),
+            equityIdr = 75_000.0,
+        )
+        val healthy = validateMarketData(
+            now = now,
+            marketQuotes = listOf(marketQuote("eth_idr", 120_000.0, 0.77).copy(capturedAt = Instant.parse("2026-03-15T00:00:45Z"))),
+            equityIdr = 75_000.0,
+        )
+
+        assertFalse(empty.isValid)
+        assertTrue(empty.reason.contains("No quotes"))
+        assertFalse(lowEquity.isValid)
+        assertTrue(lowEquity.reason.contains("Equity suspiciously low"))
+        assertFalse(stale.isValid)
+        assertTrue(stale.reason.contains("stale"))
+        assertTrue(healthy.isValid)
+        assertEquals(1, healthy.quoteCount)
+    }
+
+    @Test
+    fun `exchange probe backoff grows exponentially and caps at two minutes`() {
+        assertEquals(5_000L, exchangeProbeBackoffMillis(1))
+        assertEquals(10_000L, exchangeProbeBackoffMillis(2))
+        assertEquals(20_000L, exchangeProbeBackoffMillis(3))
+        assertEquals(40_000L, exchangeProbeBackoffMillis(4))
+        assertEquals(80_000L, exchangeProbeBackoffMillis(5))
+        assertEquals(120_000L, exchangeProbeBackoffMillis(6))
+        assertEquals(120_000L, exchangeProbeBackoffMillis(10))
     }
 
     @Test

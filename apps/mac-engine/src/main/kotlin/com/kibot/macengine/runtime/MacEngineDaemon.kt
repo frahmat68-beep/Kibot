@@ -729,9 +729,13 @@ class MacEngineDaemon(
     private var smoothedExchangePingMs: Double? = null
     private var lastSuccessfulExchangePingAt: Instant? = null
     private var lastExchangeProbeAt: Instant? = null
+    private var nextExchangeProbeAllowedAt: Instant? = null
     private var lastExchangeReachable: Boolean = false
     private var lastExchangePingMs: Long? = null
     private var consecutiveExchangeProbeFailures: Int = 0
+    private var degradedModeEnteredAt: Instant? = null
+    private var degradedModePausedUntil: Instant? = null
+    private var lastResolvedExecutionOwner: Boolean? = null
     private var lastExecutionPolicyLogSignature: String? = null
     private var lastExecutionPolicyLoggedAt: Instant? = null
     private var lastObservedLeaseTerm: com.kibot.shared.models.LeaseTerm? = null
@@ -1143,7 +1147,7 @@ class MacEngineDaemon(
         timeoutMs: Long? = null,
         block: suspend () -> Unit,
     ): Boolean {
-        val effectiveTimeoutMs = timeoutMs ?: if (registered) 4_000L else 12_000L
+        val effectiveTimeoutMs = timeoutMs ?: 3_000L
         val outcome = withTimeoutOrNull(effectiveTimeoutMs) {
             runCatching {
                 block()
@@ -1275,12 +1279,12 @@ class MacEngineDaemon(
         var flushedFastTelemetry = false
 
         buffer.pendingHeartbeat?.let { snapshot ->
-            flushedHeartbeat = writeControlPlane("flush-buffered-heartbeat", timeoutMs = 12_000L) {
+            flushedHeartbeat = writeControlPlane("flush-buffered-heartbeat", timeoutMs = 3_000L) {
                 controlPlane.appendHeartbeat(snapshot)
             }
         }
         buffer.pendingDailyRisk?.let { pending ->
-            flushedDailyRisk = writeControlPlane("flush-buffered-daily-risk", timeoutMs = 12_000L) {
+            flushedDailyRisk = writeControlPlane("flush-buffered-daily-risk", timeoutMs = 3_000L) {
                 controlPlane.upsertDailyRisk(
                     botId = BotId(pending.botId),
                     date = LocalDate.parse(pending.date),
@@ -1289,7 +1293,7 @@ class MacEngineDaemon(
             }
         }
         buffer.pendingFastTelemetry?.let { pending ->
-            flushedFastTelemetry = writeControlPlane("flush-buffered-fast-telemetry", timeoutMs = 12_000L) {
+            flushedFastTelemetry = writeControlPlane("flush-buffered-fast-telemetry", timeoutMs = 3_000L) {
                 controlPlane.upsertKingDashboardFastTelemetry(
                     totalBalanceIdr = pending.totalBalanceIdr,
                     currentPingMs = pending.currentPingMs,
@@ -4000,6 +4004,40 @@ class MacEngineDaemon(
             val momentumBypass = currentState.marketRegime.equals("HIGH_VOLATILITY_MOMENTUM", ignoreCase = true)
             val standbyBypass = config.device.role == DeviceRole.STANDBY
             val shouldRun = !lifecycleBlocked || momentumBypass || standbyBypass
+            val now = clock.now()
+            if (currentState.effectiveState == BotEffectiveState.DEGRADED) {
+                if (degradedModeEnteredAt == null) {
+                    degradedModeEnteredAt = now
+                    degradedModePausedUntil = null
+                    logger.warn("[DEGRADED] Entering degraded mode — trading remains guarded until market data recovers")
+                }
+                val degradedSince = degradedModeEnteredAt ?: now
+                val degradedDurationMs = (now - degradedSince).inWholeMilliseconds
+                if (degradedDurationMs >= MAX_DEGRADED_BEFORE_PAUSE_MS) {
+                    val pausedUntil = degradedModePausedUntil
+                    if (pausedUntil == null || now >= pausedUntil) {
+                        degradedModePausedUntil = now + MAX_DEGRADED_PAUSE_MS.milliseconds
+                        logger.error(
+                            "[DEGRADED] {}s in degraded mode — pausing sync for {}s to avoid fail-open looping",
+                            degradedDurationMs / 1000,
+                            MAX_DEGRADED_PAUSE_MS / 1000,
+                        )
+                        repository.noteStatus(
+                            "Degraded > ${(MAX_DEGRADED_BEFORE_PAUSE_MS / 1000)}s; sync dijeda ${(MAX_DEGRADED_PAUSE_MS / 1000)}s sambil tunggu recovery.",
+                        )
+                    }
+                }
+            } else if (degradedModeEnteredAt != null) {
+                val degradedDurationSec = (now - (degradedModeEnteredAt ?: now)).inWholeMilliseconds / 1000
+                logger.info("[DEGRADED] Exiting degraded mode after {}s", degradedDurationSec.coerceAtLeast(0))
+                degradedModeEnteredAt = null
+                degradedModePausedUntil = null
+            }
+            val pauseUntil = degradedModePausedUntil
+            if (pauseUntil != null && now < pauseUntil) {
+                delay((pauseUntil - now).inWholeMilliseconds.coerceAtLeast(1L))
+                continue
+            }
             if (!shouldRun) {
                 logger.error("LIFECYCLE_BLOCK: Cannot start sync cycle because state is {}", currentState.effectiveState)
                 repository.noteStatus("LIFECYCLE_BLOCK: state=${currentState.effectiveState}")
@@ -6420,6 +6458,10 @@ class MacEngineDaemon(
     }
 
     private suspend fun probeExchange(now: Instant): Pair<Boolean, Long?> {
+        val nextAllowedAt = nextExchangeProbeAllowedAt
+        if (nextAllowedAt != null && now < nextAllowedAt) {
+            return lastExchangeReachable to lastExchangePingMs
+        }
         if (!shouldRefresh(now, lastExchangeProbeAt, config.exchangePingRefreshIntervalMillis, force = lastExchangeProbeAt == null)) {
             return lastExchangeReachable to lastExchangePingMs
         }
@@ -6458,11 +6500,21 @@ class MacEngineDaemon(
             }
         }
         if (exchangeReachable) {
-            logger.info("[EXCHANGE_PROBE] SUCCESS after {} attempts", 
-                if (lastExchangeReachable) "0" else "1+")
+            if (consecutiveExchangeProbeFailures > 0) {
+                logger.info("[EXCHANGE_PROBE] Recovered after {} failures", consecutiveExchangeProbeFailures)
+            } else {
+                logger.info("[EXCHANGE_PROBE] SUCCESS after {} attempts", if (lastExchangeReachable) "0" else "1+")
+            }
+            nextExchangeProbeAllowedAt = null
         } else {
-            logger.warn("[EXCHANGE_PROBE] FAILED - Exchange unreachable (failure count: {})", 
-                (consecutiveExchangeProbeFailures + 1).coerceAtMost(10))
+            val failureCount = (consecutiveExchangeProbeFailures + 1).coerceAtMost(10)
+            val backoffMs = exchangeProbeBackoffMillis(failureCount)
+            nextExchangeProbeAllowedAt = now + backoffMs.milliseconds
+            logger.warn(
+                "[EXCHANGE_PROBE] FAILED - Exchange unreachable (failure count: {}, next probe in {}s)",
+                failureCount,
+                backoffMs / 1000,
+            )
         }
         lastExchangeProbeAt = now
         lastExchangeReachable = exchangeReachable
@@ -6752,37 +6804,38 @@ class MacEngineDaemon(
             activeControlPlaneState,
             cycle.marketSnapshot.regime,
         )
-        val leaseOwnershipMatches = activeControlPlaneState
-            ?.toString()
-            ?.lowercase()
-            ?.split("|", ",", ";", " ")
-            ?.map { it.trim() }
-            ?.any { it == botId }
-            ?: false
-        var isExecutionOwner = validBotIds.any { botId.equals(it, ignoreCase = true) } || leaseOwnershipMatches
-        if (botId == "kibot") {
-            isExecutionOwner = true
-        }
+        val ownerByList = validBotIds.any { botId.equals(it, ignoreCase = true) }
+        val ownerByLease = lease.isHeldBy(config.device.deviceId, now)
+        val ownership = resolveOwnership(
+            ownerByList = ownerByList,
+            ownerByLease = ownerByLease,
+            lastResolved = lastResolvedExecutionOwner,
+        )
+        lastResolvedExecutionOwner = ownership.resolvedIsOwner
         logger.info(
             "OWNERSHIP_DECISION: botId={} ownerByList={} ownerByLease={} finalOwner={}",
             botId,
-            validBotIds.any { botId.equals(it, ignoreCase = true) },
-            leaseOwnershipMatches,
-            isExecutionOwner,
+            ownerByList,
+            ownerByLease,
+            ownership.resolvedIsOwner,
         )
-        if (leaseOwnershipMatches) {
+        if (ownerByLease) {
             logger.info(
-                "[LIVE_TRADING] ownership recovered from lease term. botId={} activeControlPlaneState={}",
+                "[LIVE_TRADING] ownership confirmed by lease. botId={} activeControlPlaneState={}",
                 botId,
                 activeControlPlaneState,
             )
         }
-        val forceOwnershipBypass = botId == "kidax" &&
-            cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM
-        if (forceOwnershipBypass) {
-            isExecutionOwner = true
+        if (ownership.shouldLog) {
+            val message = "[OWNERSHIP] State changed: list=$ownerByList lease=$ownerByLease resolved=${ownership.resolvedIsOwner}" +
+                if (ownership.mismatch) " mismatch_detected" else ""
+            if (ownership.mismatch) {
+                logger.warn(message)
+            } else {
+                logger.info(message)
+            }
         }
-        if (!isExecutionOwner && !forceOwnershipBypass && botId != "kibot") {
+        if (!ownership.resolvedIsOwner) {
             logger.warn("[LIVE_TRADING] Bot ID '{}' is not an execution owner. Valid IDs: {}", config.controlPlane.botId.value, validBotIds)
             maybeScheduleAutonomousAiReview(
                 now = now,
@@ -6800,12 +6853,14 @@ class MacEngineDaemon(
             lastRejectedReasonAt = now
             return
         }
-        if (!isExecutionOwner && forceOwnershipBypass) {
-            logger.warn(
-                "[LIVE_TRADING] HARD-BYPASS ownership gate for kidax in HIGH_VOLATILITY_MOMENTUM. botId={} activeControlPlaneState={}",
-                botId,
-                activeControlPlaneState,
-            )
+        val marketDataValidation = validateMarketData(now = now, marketQuotes = marketQuotes, equityIdr = cycle.portfolio.totalEquityIdr.toDoubleOrZero())
+        if (!marketDataValidation.isValid) {
+            val reason = "[MARKET_DATA] Trading BLOCKED: ${marketDataValidation.reason} (quotes=${marketDataValidation.quoteCount}, equity=${formatDecimal(marketDataValidation.equityIdr, 0)})"
+            logger.warn(reason)
+            repository.noteStatus(reason)
+            lastRejectedReasonLabel = reason
+            lastRejectedReasonAt = now
+            return
         }
         refreshProtectiveState(now)
         refreshIndodaxFocusUniverse(now)
@@ -14336,11 +14391,90 @@ class MacEngineDaemon(
     }
 }
 
+internal data class OwnershipResolution(
+    val resolvedIsOwner: Boolean,
+    val mismatch: Boolean,
+    val shouldLog: Boolean,
+)
+
+internal data class MarketDataValidation(
+    val isValid: Boolean,
+    val reason: String,
+    val quoteCount: Int,
+    val equityIdr: Double,
+)
+
 private data class EntryRoutingDecision(
     val executionPlan: com.kibot.shared.models.ExecutionPlan?,
     val message: String? = null,
     val blockedReason: String? = null,
 )
+
+private const val MIN_VALID_MARKET_EQUITY_IDR = 10_000.0
+private const val MAX_QUOTE_STALENESS_MS = 60_000L
+private const val MAX_DEGRADED_BEFORE_PAUSE_MS = 5 * 60 * 1000L
+private const val MAX_DEGRADED_PAUSE_MS = 30_000L
+
+internal fun resolveOwnership(
+    ownerByList: Boolean,
+    ownerByLease: Boolean,
+    lastResolved: Boolean? = null,
+): OwnershipResolution {
+    val resolved = when {
+        ownerByList == ownerByLease -> ownerByLease
+        ownerByLease -> true
+        else -> false
+    }
+    return OwnershipResolution(
+        resolvedIsOwner = resolved,
+        mismatch = ownerByList != ownerByLease,
+        shouldLog = lastResolved == null || lastResolved != resolved || ownerByList != ownerByLease,
+    )
+}
+
+internal fun validateMarketData(
+    now: Instant,
+    marketQuotes: List<com.kibot.shared.models.MarketQuote>,
+    equityIdr: Double,
+): MarketDataValidation {
+    if (marketQuotes.isEmpty()) {
+        return MarketDataValidation(
+            isValid = false,
+            reason = "No quotes available — market data missing",
+            quoteCount = 0,
+            equityIdr = equityIdr,
+        )
+    }
+    if (equityIdr in 0.0..<MIN_VALID_MARKET_EQUITY_IDR) {
+        return MarketDataValidation(
+            isValid = false,
+            reason = "Equity suspiciously low: ${equityIdr.toLong()} IDR",
+            quoteCount = marketQuotes.size,
+            equityIdr = equityIdr,
+        )
+    }
+    val freshQuotes = marketQuotes.count { (now - it.capturedAt).inWholeMilliseconds in 0 until MAX_QUOTE_STALENESS_MS }
+    if (freshQuotes == 0) {
+        return MarketDataValidation(
+            isValid = false,
+            reason = "All ${marketQuotes.size} quotes are stale (>60s old)",
+            quoteCount = marketQuotes.size,
+            equityIdr = equityIdr,
+        )
+    }
+    return MarketDataValidation(
+        isValid = true,
+        reason = "OK",
+        quoteCount = freshQuotes,
+        equityIdr = equityIdr,
+    )
+}
+
+internal fun exchangeProbeBackoffMillis(failureCount: Int): Long {
+    val boundedFailures = failureCount.coerceIn(1, 10)
+    val backoffByAttempt = listOf(5_000L, 10_000L, 20_000L, 40_000L, 80_000L, 120_000L)
+    return backoffByAttempt.getOrElse(boundedFailures - 1) { 120_000L }
+}
 
 private fun EngineLeaseSnapshot?.isHeldBy(deviceId: DeviceId, now: Instant): Boolean {
     return this != null &&
