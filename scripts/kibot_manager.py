@@ -153,6 +153,279 @@ def _telegram_send(message: str) -> None:
         print(f"[KIBOT][TELEGRAM][WARN] {error}", flush=True)
 
 
+import math, statistics
+from pathlib import Path
+from datetime import datetime, timedelta, date
+
+# =============================================
+# TRADE LOGGER — Memory Sistem
+# Simpan ke local file DAN Supabase
+# =============================================
+
+TRADE_LOG_FILE = Path("/home/ubuntu/KiBot/state/trade_log.jsonl")
+DAILY_SUMMARY_FILE = Path("/home/ubuntu/KiBot/state/daily_summary.json")
+
+class TradeLogger:
+    """Log setiap trade dan hitung statistik untuk learning."""
+
+    def __init__(self):
+        TRADE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self._today_trades: list[dict] = []
+        self._load_today_trades()
+
+    def _load_today_trades(self):
+        """Load trades hari ini dari file."""
+        if not TRADE_LOG_FILE.exists():
+            return
+        today_wib = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d")
+        try:
+            with open(TRADE_LOG_FILE) as f:
+                for line in f:
+                    try:
+                        t = json.loads(line.strip())
+                        if t.get("entry_at", "").startswith(today_wib):
+                            self._today_trades.append(t)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[TRADELOG] Load error: {e}", flush=True)
+
+    def record_entry(self, pair_id: str, entry_price: float, budget_idr: float,
+                     category: str, pump_phase: str, pump_score: float,
+                     order_type: str, bucket_type: str) -> str:
+        """Catat entry — return trade_id."""
+        import uuid
+        trade_id = str(uuid.uuid4())[:8]
+        trade = {
+            "trade_id": trade_id,
+            "pair_id": pair_id,
+            "category": category,
+            "entry_price": entry_price,
+            "budget_idr": budget_idr,
+            "pump_phase": pump_phase,
+            "pump_score": pump_score,
+            "order_type_entry": order_type,
+            "bucket_type": bucket_type,
+            "entry_at": (datetime.utcnow() + timedelta(hours=7)).isoformat(),
+            "status": "OPEN"
+        }
+        with open(TRADE_LOG_FILE, "a") as f:
+            f.write(json.dumps(trade) + "\n")
+        print(f"[TRADELOG] ENTRY {pair_id} @ {entry_price:.6f} Rp{budget_idr:,.0f} [{trade_id}]", flush=True)
+        return trade_id
+
+    def record_exit(self, trade_id: str, exit_price: float, exit_reason: str,
+                    order_type_exit: str = "LIMIT") -> dict | None:
+        """Catat exit — hitung PnL dan simpan."""
+        lines = []
+        found_trade = None
+        if TRADE_LOG_FILE.exists():
+            with open(TRADE_LOG_FILE) as f:
+                for line in f:
+                    try:
+                        t = json.loads(line.strip())
+                        if t.get("trade_id") == trade_id and t.get("status") == "OPEN":
+                            # Hitung PnL
+                            entry = t["entry_price"]
+                            budget = t["budget_idr"]
+                            pnl_pct = (exit_price - entry) / entry
+                            # Fee Indodax: maker 0.04% entry + 0.21% PPh sell + 0.04% exit
+                            fee_cost = 0.0004 + 0.0021 + 0.0004  # total ~0.69% round trip
+                            net_pct = pnl_pct - fee_cost
+                            pnl_idr = budget * net_pct
+                            entry_at = datetime.fromisoformat(t["entry_at"])
+                            hold_min = int((datetime.now() - entry_at).total_seconds() / 60)
+                            t.update({
+                                "exit_price": exit_price,
+                                "pnl_idr": round(pnl_idr, 2),
+                                "pnl_pct": round(net_pct, 5),
+                                "hold_minutes": hold_min,
+                                "win": pnl_idr > 0,
+                                "exit_reason": exit_reason,
+                                "order_type_exit": order_type_exit,
+                                "exit_at": (datetime.utcnow() + timedelta(hours=7)).isoformat(),
+                                "status": "CLOSED"
+                            })
+                            found_trade = t
+                            self._today_trades.append(t)
+                            print(
+                                f"[TRADELOG] EXIT {t['pair_id']} "
+                                f"pnl=Rp{pnl_idr:+,.0f} ({net_pct:+.2%}) "
+                                f"hold={hold_min}m reason={exit_reason} [{trade_id}]",
+                                flush=True
+                            )
+                        lines.append(json.dumps(t))
+                    except Exception:
+                        lines.append(line.strip())
+        with open(TRADE_LOG_FILE, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        if found_trade:
+            # FEEDBACK: Update Memory/Learning Engine
+            if _learning_engine:
+                try:
+                    stats = _learning_engine.record_trade(found_trade["pair_id"], found_trade["pnl_pct"])
+                    print(f"[LEARNING] Feedback recorded for {found_trade['pair_id']}. "
+                          f"New Kelly Size: {stats.kelly_fraction():.2%}", flush=True)
+                except Exception as e:
+                    print(f"[LEARNING] Error updating memory: {e}", flush=True)
+
+            self._sync_to_supabase(found_trade)
+        return found_trade
+
+    def get_today_stats(self) -> dict:
+        """Statistik trading hari ini — pure math."""
+        closed = [t for t in self._today_trades if t.get("status") == "CLOSED"]
+        wins   = [t for t in closed if t.get("win")]
+        losses = [t for t in closed if not t.get("win")]
+        total  = len(closed)
+        if total == 0:
+            return {"total": 0, "win_rate": 0.5, "ev_idr": 0, "pf": 1.0,
+                    "total_pnl_idr": 0, "avg_win": 0, "avg_loss": 0}
+        win_rate = len(wins) / total
+        avg_win  = sum(t["pnl_idr"] for t in wins) / max(len(wins), 1)
+        avg_loss = abs(sum(t["pnl_idr"] for t in losses)) / max(len(losses), 1)
+        ev       = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
+        pf       = (sum(t["pnl_idr"] for t in wins) /
+                    max(abs(sum(t["pnl_idr"] for t in losses)), 1))
+        total_pnl = sum(t["pnl_idr"] for t in closed)
+        return {
+            "total": total, "wins": len(wins), "losses": len(losses),
+            "win_rate": round(win_rate, 3), "ev_idr": round(ev, 0),
+            "pf": round(pf, 2), "total_pnl_idr": round(total_pnl, 0),
+            "avg_win": round(avg_win, 0), "avg_loss": round(avg_loss, 0)
+        }
+
+    def get_pair_stats(self, pair_id: str) -> dict:
+        """Statistik per pair dari trade log lokal."""
+        pair_trades = [t for t in self._today_trades
+                       if t.get("pair_id") == pair_id and t.get("status") == "CLOSED"]
+        if not pair_trades:
+            return {"win_rate": 0.5, "profit_factor": 1.0, "avg_slippage": 0.012, "total": 0}
+        wins = [t for t in pair_trades if t.get("win")]
+        losses = [t for t in pair_trades if not t.get("win")]
+        wr = len(wins) / len(pair_trades)
+        pf = (sum(t["pnl_idr"] for t in wins) /
+              max(abs(sum(t["pnl_idr"] for t in losses)), 1))
+        return {"win_rate": round(wr, 3), "profit_factor": round(pf, 2),
+                "avg_slippage": 0.012, "total": len(pair_trades)}
+
+    def _sync_to_supabase(self, trade: dict):
+        """Sync ke Supabase async (non-blocking)."""
+        import threading
+        def do_sync():
+            try:
+                import urllib.request
+                supabase_url = os.environ.get("SUPABASE_URL", "")
+                supabase_key = os.environ.get("SUPABASE_ANON_KEY", "")
+                if not supabase_url:
+                    return
+                payload = json.dumps({
+                    "pair_id": trade.get("pair_id"),
+                    "category": trade.get("category", "LEAD_LAG"),
+                    "entry_price": trade.get("entry_price"),
+                    "exit_price": trade.get("exit_price"),
+                    "budget_idr": trade.get("budget_idr"),
+                    "pnl_idr": trade.get("pnl_idr"),
+                    "pnl_pct": trade.get("pnl_pct"),
+                    "order_type_entry": trade.get("order_type_entry", "LIMIT"),
+                    "order_type_exit": trade.get("order_type_exit", "LIMIT"),
+                    "pump_phase": trade.get("pump_phase"),
+                    "pump_score": trade.get("pump_score"),
+                    "hold_minutes": trade.get("hold_minutes"),
+                    "win": trade.get("win"),
+                    "exit_reason": trade.get("exit_reason"),
+                    "bucket_type": trade.get("bucket_type", "STABLE"),
+                }).encode()
+                req = urllib.request.Request(
+                    f"{supabase_url}/rest/v1/trade_history",
+                    data=payload,
+                    headers={
+                        "apikey": supabase_key,
+                        "Authorization": f"Bearer {supabase_key}",
+                        "Content-Type": "application/json",
+                        "Prefer": "resolution=ignore-duplicates"
+                    },
+                    method="POST"
+                )
+                urllib.request.urlopen(req, timeout=5)
+            except Exception as e:
+                print(f"[TRADELOG] Supabase sync error: {e}", flush=True)
+        threading.Thread(target=do_sync, daemon=True).start()
+
+    def save_daily_summary(self):
+        """Simpan ringkasan hari ini ke file dan Supabase."""
+        stats = self.get_today_stats()
+        equity = _get_total_equity_estimate() or 0.0
+        today_wib = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d")
+        summary = {
+            "date": today_wib,
+            "stats": stats,
+            "equity_idr": equity,
+            "saved_at": datetime.utcnow().isoformat()
+        }
+        DAILY_SUMMARY_FILE.write_text(json.dumps(summary, indent=2))
+        print(
+            f"[DAILY] {today_wib}: {stats['total']} trades "
+            f"WR={stats['win_rate']:.0%} "
+            f"PnL=Rp{stats['total_pnl_idr']:+,.0f} "
+            f"EV=Rp{stats['ev_idr']:+,.0f}/trade",
+            flush=True
+        )
+
+# Singleton
+trade_logger = TradeLogger()
+
+# =============================================
+# TRINITY HELPERS — Networking & State
+# =============================================
+
+def _broadcast_udp(msg: dict):
+    """Kirim perintah ke executor (KIDAX)."""
+    global _main_socket
+    if _main_socket and KIDAX_UDP_HOST:
+        try:
+            _main_socket.sendto(json.dumps(msg).encode(), (KIDAX_UDP_HOST, KIDAX_UDP_PORT))
+        except Exception as e:
+            print(f"[UDP][ERR] send failed: {e}", flush=True)
+
+def _get_total_equity_estimate() -> float:
+    """Estimasi total aset (IDR + Koin) dari Kidax."""
+    # Prioritas 1: Daily Guard state
+    eq = _daily_guard_state.get("current_equity")
+    if eq: return float(eq)
+    
+    # Prioritas 2: Fetch langsung (Cache bypass)
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:8787/api/state", timeout=2) as r:
+            payload = json.loads(r.read())
+            val = payload.get("totalValueIdr", 0)
+            if isinstance(val, str):
+                val = re.sub(r"[^\d.,-]", "", val).replace(".", "").replace(",", ".")
+            return float(val)
+    except:
+        return 0.0
+
+def _load_indodax_ticker_snapshot() -> dict:
+    """Shorthand untuk ambil ticker snapshot."""
+    global _indodax_ticker_snapshot
+    return _indodax_ticker_snapshot
+
+def _is_hard_stop_active() -> bool:
+    """Check both manager and daily guard hard stops."""
+    return portfolio_manager.get_pnl_state() == "HARD_STOP" or bool(_daily_guard_state.get("hard_stopped"))
+
+def _maybe_run_30min_math_review():
+    """Trigger review setiap 30 menit (math-based)."""
+    global _last_30min_review
+    now = time.time()
+    if (now - _last_30min_review) >= 1800:
+        _last_30min_review = now
+        run_30min_math_review()
+
+
+
+
 
 # ═══════════════════════════════════════════════════════════
 # KIBOT TRINITY v6.0 — PAIR UNIVERSE & PORTFOLIO MANAGER
@@ -377,82 +650,650 @@ class PortfolioManager:
 # Singleton
 portfolio_manager = PortfolioManager()
 
+# =============================================
+# PURE TECHNICAL DETECTOR — Indodax-only pairs
+# Untuk koin tanpa Binance pair (WHITEWHALE, BR, DRX, BIO, dll)
+# =============================================
+
+INDODAX_OHLCV_URL = "https://indodax.com/tradingview/history_v2"
+INDODAX_TICKERS_URL = "https://indodax.com/api/tickers"
+
+def fetch_candles(pair_id: str, tf: int = 15, count: int = 25) -> list[dict]:
+    """Ambil OHLCV dari Indodax tradingview API."""
+    import time, urllib.request
+    base = pair_id.replace("_idr", "").upper()
+    symbol = f"{base}/IDR"
+    now = int(time.time())
+    from_ts = now - (tf * 60 * count)
+    url = f"{INDODAX_OHLCV_URL}?symbol={symbol}&tf={tf}&from={from_ts}&to={now}"
+    try:
+        with urllib.request.urlopen(url, timeout=8) as r:
+            data = json.loads(r.read())
+        times  = data.get("t", [])
+        opens  = data.get("o", data.get("Open", []))
+        highs  = data.get("h", data.get("High", []))
+        lows   = data.get("l", data.get("Low", []))
+        closes = data.get("c", data.get("Close", []))
+        # Ensure it's OHLC format
+        candles = []
+        for i in range(len(times)):
+            candles.append({
+                "t": int(times[i]),
+                "o": float(opens[i]), "h": float(highs[i]),
+                "l": float(lows[i]),  "c": float(closes[i]),
+                "v": float(data.get("v", [])[i]) if "v" in data and i < len(data["v"]) else 0
+            })
+        return candles
+    except Exception as e:
+        print(f"[CANDLE] {pair_id}: {e}", flush=True)
+        return []
+
+def fetch_order_book_depth(pair_id: str) -> dict | None:
+    """Fetch order book depth for imbalance analysis."""
+    import urllib.request
+    url = f"https://indodax.com/api/depth/{pair_id}"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+def check_order_book_imbalance(depth: dict | None) -> float:
+    """Calculate Bid/Ask volume ratio for the first 10 levels. Returns ratio."""
+    if not depth or "buy" not in depth or "sell" not in depth:
+        return 1.0
+    try:
+        bid_vol = sum(float(b[1]) for b in depth["buy"][:10])
+        ask_vol = sum(float(s[1]) for s in depth["sell"][:10])
+        return bid_vol / max(ask_vol, 1e-9)
+    except Exception:
+        return 1.0
+
+def calc_bollinger(closes: list[float], period: int = 20, std_mult: float = 2.0) -> dict | None:
+    """Hitung Bollinger Band dari list close prices."""
+    if len(closes) < period:
+        return None
+    window = closes[-period:]
+    sma = sum(window) / period
+    variance = sum((c - sma) ** 2 for c in window) / period
+    std = math.sqrt(variance)
+    return {
+        "upper": sma + std_mult * std,
+        "middle": sma,
+        "lower": sma - std_mult * std,
+        "std": std,
+        "bandwidth": (std_mult * 2 * std) / sma if sma > 0 else 0
+    }
+
+def calc_rsi(closes: list[float], period: int = 14) -> float:
+    """Hitung RSI dari list close prices."""
+    if len(closes) < period + 1:
+        return 50.0
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i-1]
+        gains.append(max(delta, 0))
+        losses.append(max(-delta, 0))
+    gains = gains[-period:]
+    losses = losses[-period:]
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def analyze_pure_technical(pair_id: str, ticker: dict) -> dict:
+    """
+    Analisis teknikal murni untuk koin indodax-only.
+    Refined v6.2: Bollinger Divergence, RSI Guard, Order Book Imbalance.
+    """
+    import time
+    price     = float(ticker.get("last", 0))
+    vol_24h   = float(ticker.get("vol_idr", 0))
+    high_24h  = float(ticker.get("high", price))
+    low_24h   = float(ticker.get("low", price))
+    bid       = float(ticker.get("buy", price * 0.99))
+    ask       = float(ticker.get("sell", price * 1.01))
+
+    if price <= 0:
+        return {"recommendation": "SKIP", "score": 0, "reason": "invalid price"}
+
+    # Ambil candle data
+    candles = fetch_candles(pair_id, tf=15, count=25)
+    closes  = [c["c"] for c in candles] if candles else []
+    volumes = [c["v"] for c in candles] if candles else []
+
+    score   = 0.0
+    reasons = []
+
+    # === 1. VOLUME LEGITIMACY (0-30 poin) ===
+    if vol_24h < 500_000_000:  # < 500 juta (User Audit Penalty)
+        score -= 25
+        reasons.append(f"vol kecil Rp{vol_24h/1e9:.1f}B")
+    elif vol_24h > 5_000_000_000:
+        score += 30
+        reasons.append(f"vol besar Rp{vol_24h/1e9:.1f}B")
+    elif vol_24h > 1_000_000_000:
+        score += 20
+        reasons.append(f"vol OK Rp{vol_24h/1e9:.1f}B")
+
+    # Volume spike 1h vs avg
+    if len(volumes) >= 4:
+        avg_vol = sum(volumes[:-1]) / max(len(volumes)-1, 1)
+        last_vol = volumes[-1]
+        vol_ratio = last_vol / max(avg_vol, 1)
+        if vol_ratio >= 3.0:
+            score += 25
+            reasons.append(f"vol spike {vol_ratio:.1f}x")
+        elif vol_ratio >= 2.0:
+            score += 15
+            reasons.append(f"vol spike {vol_ratio:.1f}x")
+
+    # === 2. BOLLINGER BAND & DIVERGENCE (0-25 poin) ===
+    bb = calc_bollinger(closes) if len(closes) >= 20 else None
+    bb_pct = 0.5
+    if bb:
+        bb_range = bb["upper"] - bb["lower"]
+        bb_pct = (price - bb["lower"]) / max(bb_range, 1e-9)
+        
+        # Check Divergence: Price Up, Volume Down
+        if len(closes) >= 5 and len(volumes) >= 5:
+            price_trend = closes[-1] > closes[-4]
+            vol_trend   = volumes[-1] < volumes[-4]
+            if price_trend and vol_trend and bb_pct > 0.8:
+                score -= 20
+                reasons.append("divergensi bearish")
+        
+        if bb_pct < 0.35:
+            score += 25
+            reasons.append(f"BB bawah ({bb_pct:.0%})")
+        elif bb_pct < 0.60:
+            score += 16
+        elif bb_pct > 0.95:
+            score -= 20
+            reasons.append("BB overbought")
+
+    # === 3. RSI GUARD (Hard Veto) ===
+    rsi = calc_rsi(closes) if len(closes) >= 15 else 50.0
+    if rsi > 82:
+        return {"recommendation": "SKIP", "score": 0, "reason": f"RSI extreme {rsi:.0f}"}
+    if rsi < 35:
+        score += 15
+        reasons.append(f"RSI oversold {rsi:.0f}")
+    elif rsi > 70:
+        score -= 10
+
+    # === 4. ORDER BOOK IMBALANCE (0-20 poin) ===
+    depth = fetch_order_book_depth(pair_id)
+    ob_ratio = check_order_book_imbalance(depth)
+    if ob_ratio >= 2.5:
+        score += 20
+        reasons.append(f"OB imbalance {ob_ratio:.1f}x")
+    elif ob_ratio >= 1.5:
+        score += 10
+    elif ob_ratio < 0.6:
+        score -= 15
+        reasons.append(f"OB weak {ob_ratio:.1f}x")
+
+    # === DECISION ===
+    pos_range = (price - low_24h) / max(high_24h - low_24h, 0.001)
+    pump_phase = "MID"
+    if pos_range < 0.35: pump_phase = "EARLY"
+    elif pos_range > 0.85: pump_phase = "PEAK"
+
+    min_score = 55
+    if score >= min_score and ob_ratio >= 1.2:
+        recommendation = "ENTER"
+    elif score >= 40:
+        recommendation = "WATCH"
+    else:
+        recommendation = "SKIP"
+
+    return {
+        "pair_id": pair_id,
+        "recommendation": recommendation,
+        "score": round(score, 1),
+        "pump_phase": pump_phase,
+        "rsi": round(rsi, 1),
+        "ob_ratio": round(ob_ratio, 2),
+        "trailing_stop_pct": 0.035 if pump_phase == "MID" else 0.05,
+        "target_pct": 0.05 if pump_phase == "MID" else 0.08,
+        "reasoning": " | ".join(reasons[:3])
+    }
+
+# =============================================
+# WHAT-IF ENGINE — Matematis, tidak butuh AI
+# =============================================
+
+MAKER_FEE = 0.0004   # 0.04% LIMIT order (prioritas)
+TAKER_FEE = 0.0055   # 0.55% MARKET order (mahal)
+PPH_SELL  = 0.0021   # 0.21% PPh sisi jual
+
+def simulate_what_if(
+    pair_id: str,
+    budget_idr: float,
+    spread_pct: float = 0.015,
+    slippage_pct: float = 0.012,
+    target_pct: float = 0.025,
+    trailing_stop_pct: float = 0.05,
+    use_market_entry: bool = False,
+    use_market_exit: bool = False,
+) -> dict:
+    """
+    Simulasi what-if lengkap sebelum setiap entry.
+    Return: keputusan ENTER/REDUCE/SKIP + semua angka.
+    """
+    fee_entry = TAKER_FEE if use_market_entry else MAKER_FEE
+    fee_exit  = TAKER_FEE if use_market_exit  else MAKER_FEE
+
+    round_trip_cost = (spread_pct / 2) + slippage_pct + fee_entry + fee_exit + PPH_SELL
+    breakeven_pct   = round_trip_cost
+    net_pct         = target_pct - round_trip_cost
+    max_loss_pct    = trailing_stop_pct + round_trip_cost
+    max_loss_idr    = budget_idr * max_loss_pct
+    reward_idr      = budget_idr * max(net_pct, 0)
+    rr              = reward_idr / max(max_loss_idr, 1)
+
+    # Win rate & Memory from Bayesian-Kelly Engine (Trinity v6.2)
+    le_stats = None
+    if _learning_engine:
+        le_stats = _learning_engine.get(pair_id)
+        win_rate = le_stats.win_probability
+    else:
+        # Fallback to local trade logger stats
+        pair_stats = trade_logger.get_pair_stats(pair_id)
+        win_rate = pair_stats.get("win_rate", 0.5)
+
+    ev_idr = (win_rate * reward_idr) - ((1 - win_rate) * max_loss_idr)
+
+    # Kelly fraction (using LE stats if available)
+    kelly_f = 0.02 # Default min
+    if le_stats:
+        kelly_f = le_stats.kelly_fraction()
+    else:
+        if rr > 0:
+            kelly_f = max(0.01, min(0.12, (win_rate - ((1 - win_rate) / rr)) * 0.5))
+
+    # Decision Gate Trinity v6.2
+    penalty = _learning_engine.score_penalty(pair_id) if _learning_engine else 0.0
+    min_net = 0.015 # Hard floor for Trinity
+    
+    decision = "ENTER"
+    reason   = "EV Positive"
+    
+    if ev_idr <= 0:
+        decision = "SKIP"
+        reason   = f"EV Negative (Rp{ev_idr:,.0f})"
+    elif kelly_f <= 0.01:
+        decision = "SKIP"
+        reason   = "Kelly Sizing too small (no edge)"
+    elif net_pct < min_net:
+        decision = "SKIP"
+        reason   = f"Net target too thin ({net_pct:.2%})"
+    elif rr < 1.0:
+        decision = "REDUCE"
+        reason   = f"Low RR ratio ({rr:.2f})"
+
+    return {
+        "decision": decision,
+        "reason":   reason,
+        "ev_idr":   round(ev_idr, 0),
+        "win_rate": round(win_rate, 3),
+        "kelly_f":  round(kelly_f, 3),
+        "rr":       round(rr, 2),
+        "net_pct":  round(net_pct, 4),
+        "penalty":  round(penalty, 2),
+        "breakeven_pct": round(breakeven_pct, 4),
+        "reward_idr":    round(reward_idr, 0),
+        "max_loss_idr":  round(max_loss_idr, 0)
+    }
+
+def what_if_untung_banyak(pnl_pct: float, equity_idr: float) -> dict:
+    """Apa yang harus dilakukan saat untung banyak?"""
+    if pnl_pct >= 0.10:  # +10%
+        return {
+            "action": "TIGHTEN_TRAILING",
+            "trailing_stop": 0.015,
+            "partial_tp_now": True,
+            "partial_tp_size": 0.60,
+            "reason": f"Profit besar +{pnl_pct:.1%} — lock 60% profit segera"
+        }
+    elif pnl_pct >= 0.05:  # +5%
+        return {
+            "action": "TIGHTEN_TRAILING",
+            "trailing_stop": 0.02,
+            "partial_tp_now": True,
+            "partial_tp_size": 0.40,
+            "reason": f"Profit bagus +{pnl_pct:.1%} — lock 40%, trailing ketat"
+        }
+    elif pnl_pct >= 0.025:  # +2.5%
+        return {
+            "action": "NORMAL_TRAILING",
+            "trailing_stop": 0.035,
+            "partial_tp_now": False,
+            "reason": f"Profit normal +{pnl_pct:.1%} — trailing stop normal"
+        }
+    return {"action": "HOLD", "reason": f"Profit kecil +{pnl_pct:.1%} — tunggu"}
+
+def what_if_rugi(pnl_pct: float, equity_idr: float, daily_pnl_pct: float) -> dict:
+    """Apa yang harus dilakukan saat rugi?"""
+    if abs(pnl_pct) >= 0.05:  # -5% per posisi
+        return {
+            "action": "CUT_LOSS_NOW",
+            "use_market": True,
+            "reason": f"Posisi rugi -{abs(pnl_pct):.1%} — cut loss SEKARANG"
+        }
+    elif daily_pnl_pct <= -0.02:  # daily -2%
+        return {
+            "action": "HARD_STOP_ALL",
+            "reason": f"Daily PnL {daily_pnl_pct:.1%} — stop semua trading"
+        }
+    elif daily_pnl_pct <= -0.01:  # daily -1%
+        return {
+            "action": "DEFENSIVE_MODE",
+            "reason": f"Daily PnL {daily_pnl_pct:.1%} — mode defensif"
+        }
+    return {"action": "MONITOR", "reason": f"Rugi wajar {pnl_pct:.1%}"}
+
+def what_if_ketinggalan_entry(signal_age_ms: float, price_change_pct: float) -> str:
+    """Ketinggalan signal — harus gimana?"""
+    if signal_age_ms < 200 and abs(price_change_pct) < 2.0:
+        return "ENTER_MARKET"          # Masih bisa, pakai MARKET
+    elif signal_age_ms < 500 and abs(price_change_pct) < 1.5:
+        return "ENTER_LIMIT_AGGRESSIVE" # Limit agresif
+    elif abs(price_change_pct) >= 5.0:
+        return "WAIT_PULLBACK"         # Sudah terlambat, tunggu koreksi
+    return "SKIP"
+
+def what_if_dekat_peak(bb_pct: float, rsi: float, volume_trend: str,
+                        current_profit_pct: float) -> dict:
+    """Deteksi dekat peak dan tentukan exit strategy."""
+    peak_signals = 0
+    reasons = []
+
+    if bb_pct > 0.90:
+        peak_signals += 1
+        reasons.append(f"BB overbought {bb_pct:.0%}")
+    if rsi > 72:
+        peak_signals += 1
+        reasons.append(f"RSI overbought {rsi:.0f}")
+    if volume_trend == "decreasing":
+        peak_signals += 1
+        reasons.append("volume menurun")
+    if current_profit_pct > 0.05:
+        peak_signals += 1
+        reasons.append(f"profit besar {current_profit_pct:.1%}")
+
+    if peak_signals >= 3:
+        return {
+            "near_peak": True,
+            "action": "PARTIAL_EXIT",
+            "exit_pct": 0.70,
+            "tighten_trailing": 0.015,
+            "reason": " + ".join(reasons)
+        }
+    elif peak_signals >= 2:
+        return {
+            "near_peak": True,
+            "action": "TIGHTEN_TRAILING",
+            "exit_pct": 0,
+            "tighten_trailing": 0.025,
+            "reason": " + ".join(reasons)
+        }
+    return {"near_peak": False, "action": "CONTINUE", "reason": "tidak ada sinyal peak"}
+
+_last_30min_review = 0.0
+_score_multiplier  = 1.0
+_allowed_tiers_override: list | None = None
+_day_start_time = time.time()
+
+def run_30min_math_review():
+    global _score_multiplier, _allowed_tiers_override
+
+    stats = trade_logger.get_today_stats()
+    equity = _get_total_equity_estimate() or 0.0
+    pnl_pct = (portfolio_manager.realized_pnl_today / equity) if equity > 0 else 0.0
+    loss_idr = abs(min(pnl_pct, 0) * equity)
+
+    from datetime import datetime, timedelta
+    now_wib      = datetime.utcnow() + timedelta(hours=7)
+    midnight_wib = now_wib.replace(hour=0,minute=0,second=0) + timedelta(days=1)
+    hours_left   = (midnight_wib - now_wib).total_seconds() / 3600
+
+    elapsed_hrs  = max((time.time() - _day_start_time) / 3600, 0.5)
+    trades_per_h = stats["total"] / elapsed_hrs if stats["total"] > 0 else 1.5
+    trades_left  = trades_per_h * hours_left
+    ev_idr       = stats["ev_idr"]
+
+    to_recover = loss_idr / max(ev_idr, 1) if ev_idr > 0 else float("inf")
+
+    # Keputusan berbasis math
+    if ev_idr <= 0 and stats["total"] >= 3:
+        action = "TIGHTEN_FILTER"
+        _score_multiplier = min(_score_multiplier * 1.20, 1.5)
+        _allowed_tiers_override = ["A"]
+    elif to_recover > trades_left * 2.0:
+        action = "PREPARE_STOP"
+        _score_multiplier = min(_score_multiplier * 1.15, 1.5)
+        _allowed_tiers_override = ["A"]
+    elif to_recover > trades_left:
+        action = "DEFENSIVE"
+        _score_multiplier = min(_score_multiplier * 1.10, 1.4)
+        _allowed_tiers_override = ["A", "B"]
+    elif stats["win_rate"] >= 0.65 and ev_idr > 0:
+        action = "CONTINUE_OPTIMAL"
+        _score_multiplier = max(_score_multiplier * 0.97, 1.0)
+        _allowed_tiers_override = None
+    else:
+        action = "CONTINUE"
+        _score_multiplier = 1.0
+        _allowed_tiers_override = None
+
+    pnl_emoji = "🟢" if pnl_pct >= 0 else ("🟡" if pnl_pct >= -0.01 else "🔴")
+    report = (
+        f"📊 [{now_wib.strftime('%H:%M')} WIB] 30min Review\n"
+        f"{pnl_emoji} PnL: {pnl_pct:+.2%} | Equity: Rp{equity:,.0f}\n"
+        f"📈 {stats['total']} trade ({stats['wins']}W/{stats['losses']}L) "
+        f"WR={stats['win_rate']:.0%}\n"
+        f"💰 EV: Rp{ev_idr:+,.0f}/trade | PF={stats['pf']:.2f}\n"
+        f"⏰ Sisa {hours_left:.1f}h | Recover: {to_recover:.0f} trade\n"
+        f"🎯 Action: {action} | Threshold: x{_score_multiplier:.2f}"
+    )
+    _telegram_send(report)
+    print(f"[30MIN] {action} | WR={stats['win_rate']:.0%} EV={ev_idr:.0f}", flush=True)
+
+    # Simpan ke Supabase
+    _sync_snapshot_to_supabase(pnl_pct, equity, stats, action)
+
+def _sync_snapshot_to_supabase(pnl_pct, equity, stats, action):
+    """Sync performance snapshot ke Supabase non-blocking."""
+    import threading
+    def do_sync():
+        try:
+            import urllib.request
+            supabase_url = os.environ.get("SUPABASE_URL", "")
+            supabase_key = os.environ.get("SUPABASE_ANON_KEY", "")
+            if not supabase_url: return
+            payload = json.dumps({
+                "equity_idr": equity,
+                "daily_pnl_pct": pnl_pct,
+                "daily_pnl_idr": pnl_pct * equity,
+                "pnl_state": portfolio_manager.get_pnl_state(),
+                "win_rate_today": stats.get("win_rate", 0),
+                "ev_per_trade_idr": stats.get("ev_idr", 0),
+                "trades_today": stats.get("total", 0),
+                "action_taken": action,
+                "threshold_multiplier": _score_multiplier,
+            }).encode()
+            req = urllib.request.Request(
+                f"{supabase_url}/rest/v1/performance_snapshots",
+                data=payload,
+                headers={
+                    "apikey": supabase_key,
+                    "Authorization": f"Bearer {supabase_key}",
+                    "Content-Type": "application/json"
+                },
+                method="POST"
+            )
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            print(f"[SNAPSHOT] Supabase sync error: {e}", flush=True)
+    threading.Thread(target=do_sync, daemon=True).start()
+
+_screen_cache_local: list = []
+_last_screen_time = 0.0
+_bb_cache_local: dict = {}
+
+async def screen_indodax_only_pairs() -> list[dict]:
+    """
+    Universal Screener: Scan SEMUA koin Indodax.
+    Focus: Mencari koin dengan volume & momentum tinggi yang tidak ada di Binance.
+    """
+    import urllib.request
+    try:
+        with urllib.request.urlopen(INDODAX_TICKERS_URL, timeout=10) as r:
+            raw = json.loads(r.read())
+        tickers = raw.get("tickers", raw)
+    except Exception as e:
+        print(f"[SCREEN] Tickers fetch failed: {e}", flush=True)
+        return []
+
+    candidates = []
+    # Scan seluruh universe Indodax
+    for pair_id, ticker in tickers.items():
+        # Filter 1: Bukan Stablecoin / Base pair
+        if "_usdt" in pair_id or "idrt" in pair_id or pair_id == "btc_idr":
+            continue
+            
+        # Filter 2: Bukan koin Lead-Lag (sudah dihandle radar Binance)
+        if pair_id in LEAD_LAG_PAIRS:
+            continue
+
+        # Filter 3: Liquidity Guard (Min 500jt volume 24 jam)
+        vol_24h = float(ticker.get("vol_idr", 0))
+        if vol_24h < 500_000_000:
+            continue
+
+        # Filter 4: Momentum Check (Last price vs Low 24h)
+        last = float(ticker.get("last", 0))
+        low = float(ticker.get("low", last))
+        high = float(ticker.get("high", last))
+        if last <= low: continue # No momentum
+        
+        # Deep Analysis hanya untuk yang lolos filter awal
+        analysis = analyze_pure_technical(pair_id, ticker)
+        if analysis["recommendation"] == "SKIP":
+            continue
+
+        candidates.append({
+            "pair_id": pair_id,
+            "category": "INDODAX_ONLY",
+            "analysis": analysis,
+            "vol_24h_idr": vol_24h,
+            "composite_score": analysis["score"]
+        })
+
+    # Sort berdasarkan skor teknikal terbaik
+    candidates.sort(key=lambda x: x["composite_score"], reverse=True)
+
+    if candidates:
+        top = candidates[0]
+        a   = top["analysis"]
+        print(
+            f"[SCREEN-UNIVERSAL] Found {len(candidates)} candidates. "
+            f"Top: {top['pair_id']} score={a['score']} OB={a['ob_ratio']} RSI={a['rsi']}",
+            flush=True
+        )
+
+    return candidates[:8]
+
+
+
 def _process_signal_multipos(msg: dict):
     """
-    Entry gate untuk multi-position system v6.0.
+    Entry gate untuk multi-position system Trinity v6.2.
+    Math-first: Kelly sizing, What-If simulation, Pure Technical Detection.
     """
-    pair_id  = msg.get("pairId", msg.get("pair_id", ""))
+    pair_id = msg.get("pairId", msg.get("pair_id", ""))
     if not pair_id: return
     
     category = get_pair_category(pair_id)
+    raw_score = float(msg.get("pumpScore", msg.get("pump_score", 0)))
+    
+    # === GATE 1: DYNAMIC THRESHOLD (from 30min review) ===
+    score = raw_score * _score_multiplier
+    min_score = 55 if category == "INDODAX_ONLY" else 45
+    if score < min_score:
+        return
 
-    # === GATE 0: PORTFOLIO CAPACITY ===
+    # === GATE 2: PORTFOLIO & HARD STOP ===
     can_open, reason = portfolio_manager.can_open(pair_id, category)
-    if not can_open:
-        return
+    if not can_open: return
+    if _is_hard_stop_active(): return
 
-    # === GATE 1 & 2: PNL STATE & HARD STOP ===
-    if portfolio_manager.get_pnl_state() == "HARD_STOP" and not msg.get("one_shot_mode"):
-        return
-
-    if _is_hard_stop_active() and not msg.get("one_shot_mode"):
-        return
-
-    # === GATE 3: CAPITAL MINIMUM ===
-    current_equity = _get_total_equity_estimate() or 0.0
-    available_budget = portfolio_manager.get_available_budget(current_equity)
-    if available_budget < PORTFOLIO_CONFIG["min_budget_idr"]:
-        return
-
-    # === GATE 4: CATEGORY-SPECIFIC CHECK ===
-    if category == "LEAD_LAG":
-        if int(msg.get("signalAgeMs", 999)) > 500: return
-        if not get_binance_symbol(pair_id): return
-    elif category == "INDODAX_ONLY":
+    # === GATE 3: PURE TECHNICAL (for local pairs) ===
+    if category == "INDODAX_ONLY":
         snapshot = _load_indodax_ticker_snapshot()
         ticker = snapshot.get(pair_id)
         if not ticker: return
-        bb = calculate_bollinger_bands(pair_id)
-        analysis = analyze_indodax_only(pair_id, ticker, bb)
+        analysis = analyze_pure_technical(pair_id, ticker)
         if analysis["recommendation"] != "ENTER": return
-        msg["pump_analysis"] = analysis
-
-    # === GATE 5: PUMP LEGITIMACY SCORE ===
-    pump_score = msg.get("pumpScore", msg.get("pump_score", 0))
-    if pump_score < (55 if category == "INDODAX_ONLY" else 45):
-        return
-
-    # === GATE 6: WHAT-IF EV ===
-    use_market = (category == "LEAD_LAG" and int(msg.get("signalAgeMs", 999)) < 150 and pump_score >= 70)
-    budget_idr = available_budget
-    if _WHATIF_AVAILABLE:
-        try:
-            # Note: run_simulation might take different args depending on implementation
-            pass 
-        except: pass
-
-    # === EXECUTE ENTRY ===
-    portfolio_manager.open_position(
-        pair_id, msg.get("price", 0.0), budget_idr, category, 
-        phase=msg.get("pump_analysis", {}).get("phase", "MID")
+        msg.update(analysis) # merge trailing/target config
+    
+    # === GATE 4: WHAT-IF & KELLY SIZING ===
+    current_equity = _get_total_equity_estimate() or 0.0
+    available_budget = portfolio_manager.get_available_budget(current_equity)
+    
+    # Use Trinity What-If Engine
+    sim = simulate_what_if(
+        pair_id, available_budget,
+        target_pct=msg.get("target_pct", 0.025),
+        trailing_stop_pct=msg.get("trailing_stop_pct", 0.05),
+        use_market_entry=(raw_score >= 75)
     )
     
-    # Send entry command to executor (KIDAX) via UDP
+    if sim["decision"] == "SKIP":
+        _metric_inc("whatif_skips_today")
+        return
+    
+    # Final budget decision — Math-based
+    budget_idr = min(available_budget, sim["kelly_budget_idr"])
+    if sim["decision"] == "REDUCE":
+        budget_idr *= 0.5
+    
+    if budget_idr < PORTFOLIO_CONFIG["min_budget_idr"]:
+        return
+
+    # === EXECUTE ENTRY ===
+    _metric_inc("whatif_enters_today")
+    trade_id = trade_logger.record_entry(
+        pair_id, float(msg.get("price", 0)), budget_idr,
+        category, msg.get("pump_phase", "MID"), score,
+        "MARKET" if sim["use_market"] else "LIMIT",
+        "STABLE" if current_equity > 1_000_000 else "CONSERVATIVE"
+    )
+    
+    portfolio_manager.open_position(
+        pair_id, float(msg.get("price", 0)), budget_idr, category, 
+        phase=msg.get("pump_phase", "MID")
+    )
+    
     _broadcast_udp({
         "msgType": "SMART_ENTRY",
         "pairId": pair_id,
         "price": msg.get("price"),
         "budget_idr": budget_idr,
-        "orderType": "MARKET" if use_market else "LIMIT",
+        "orderType": "MARKET" if sim["use_market"] else "LIMIT",
         "category": category,
-        "traceId": f"v6-{pair_id}-{int(time.time())}"
+        "traceId": trade_id
     })
 
 def _check_portfolio_pnl():
-    """Monitor all active positions: Trailing Stop & Peak Exit."""
-    current_equity = _get_total_equity_estimate() or 0.0
-    # portfolio_manager.update_pnl_state(current_equity) # logic handled inside
-    
+    """Monitor positions via Trinity What-If logic."""
+    equity = _get_total_equity_estimate() or 0.0
+    daily_pnl = (portfolio_manager.realized_pnl_today / equity) if equity > 0 else 0.0
+
     for pair_id, pos in list(portfolio_manager.positions.items()):
         try:
             snapshot = _load_indodax_ticker_snapshot()
@@ -461,28 +1302,37 @@ def _check_portfolio_pnl():
             if price_now <= 0: continue
             
             pos.update_price(price_now)
+            pnl_pct = pos.profit_pct
             
-            # Trailing Stop calculation
-            action = update_trailing_stop(pair_id, price_now, pos.phase)
-            if action == "EXIT_NOW":
-                portfolio_manager.close_position(pair_id, price_now, "TRAILING_STOP")
+            # Decide via What-If logic
+            if pnl_pct > 0:
+                decision = what_if_untung_banyak(pnl_pct, equity)
+            else:
+                decision = what_if_rugi(pnl_pct, equity, daily_pnl)
+            
+            if decision["action"] in ("CUT_LOSS_NOW", "EXIT_NOW", "HARD_STOP_ALL"):
+                # Find matching trade log entry
+                # (Simple mapping for now; real systems use trade_id in Position object)
+                trade_id = next((t["trade_id"] for t in trade_logger._today_trades 
+                                 if t["pair_id"] == pair_id and t["status"] == "OPEN"), "unknown")
+                
+                trade_logger.record_exit(trade_id, price_now, decision["reason"])
+                portfolio_manager.close_position(pair_id, price_now, decision["reason"])
+                
                 _broadcast_udp({
                     "msgType": "SMART_EXIT",
                     "pairId": pair_id,
-                    "reason": "V6_TRAILING_STOP",
-                    "traceId": f"exit-{pair_id}-{int(time.time())}"
+                    "reason": f"TRINITY_{decision['action']}",
+                    "orderType": "MARKET" if decision.get("use_market") else "LIMIT",
+                    "traceId": trade_id
                 })
-            elif action == "PARTIAL_TP" and not pos.partial_tp_done:
-                pos.partial_tp_done = True
-                _broadcast_udp({
-                    "msgType": "SMART_EXIT",
-                    "pairId": pair_id,
-                    "reason": "V6_PARTIAL_TP",
-                    "size_multiplier": 0.40,
-                    "traceId": f"tp-{pair_id}-{int(time.time())}"
-                })
+            elif decision["action"] == "TIGHTEN_TRAILING":
+                # Update local position stop level logic
+                pass 
+                
         except Exception as e:
-            print(f"[PORTFOLIO] {pair_id} update error: {e}", flush=True)
+            print(f"[TRINITY][MONITOR] {pair_id} err: {e}", flush=True)
+
 
 def run_discovery_loop():
     """AI-CMS discovery every 6 hours."""

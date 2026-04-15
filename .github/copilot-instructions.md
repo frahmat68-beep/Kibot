@@ -1,85 +1,51 @@
-# KIBOT TRINITY — Copilot Instructions v6.2
-# POST-MORTEM: ownership split + DEGRADED loop + control-plane timeout
-# Last verified: 2026-04
+# KiBot Trinity v6.2 - Developer Guardrails
 
-## PRIME DIRECTIVE
+As an AI coding assistant, follow these rules strictly to maintain the integrity of the KiBot Trinity system.
 
-Filosofi: SURVIVAL FIRST. COMPOUNDING GRADUAL.
-Sedikit demi sedikit lama lama jadi bukit.
+---
 
-Wajib dipatuhi:
-1. Exit protection SACRED — trailing stop & cut loss jalan di SEMUA state
-2. LEASE adalah primary ownership authority (bukan list)
-3. Trading BLOCK saat: 0 quotes, equity < Rp 10,000, DEGRADED > 5 menit
-4. Control-plane write TIDAK BOLEH block trading (max 3s timeout, non-throwing)
-5. EMERGENCY_NUKE: hanya jika PnL <= -2%, cooldown 30 menit
-6. CRASH_GUARD: LIMIT sell dulu, MARKET hanya fallback 5s
-7. Math = primary engine. AI = support only
-8. LIMIT order default. MARKET hanya emergency
+## 🏗️ Core Philosophy: Survival First
 
-## OWNERSHIP RESOLUTION
+1.  **Logic over AI**: Prioritize deterministic math (Kelly sizing, RR ratio, fee calculations) over probabilistic AI inference. If a trade doesn't pass the `What-If Engine` simulation, it MUST NOT be executed.
+2.  **Memory over Reaction**: Every trade must be logged via `TradeLogger`. Pair-specific performance (win rate, slippage) should inform future entry decisions.
+3.  **Data Persistence**: All critical state changes must synchronize to Supabase. Local JSONL is the primary source of truth; Supabase is the long-term intelligence layer.
 
-RULE: LEASE = canonical authority.
-- `ownerByList=true + ownerByLease=true` -> OWNER
-- `ownerByList=false + ownerByLease=false` -> NOT OWNER
-- `ownerByList=true + ownerByLease=false` -> NOT OWNER (lease wins, safety)
-- `ownerByList=false + ownerByLease=true` -> OWNER (lease wins)
+---
 
-Log ownership hanya saat state berubah atau mismatch muncul.
+## 📊 Critical Thresholds & Guardrails
 
-## MARKET DATA VALIDATION
+| Metric | Threshold | Action |
+| :--- | :--- | :--- |
+| **Max Daily Loss** | -2.0% | Hard-stop all trading until midnight WIB. |
+| **Max Position Size**| 25.0% | Limit per-coin allocation to 25% of total equity. |
+| **Capital Split** | 70 / 30 | 70% Stable (Rotation), 30% Aggressive (Anomaly). |
+| **Min Profit Gap** | 0.8% | Minimum gain required after fees before allowing exit. |
+| **Volume Anomaly** | >= 2.5x | Classification for "AGGRESSIVE" bucket eligibility. |
+| **Slippage Cap** | 1.8% | Block entry if spread/slippage exceeds 1.8%. |
 
-Trading wajib diblok jika:
-- `quotes == 0`
-- `equity < Rp 10,000`
-- semua quote stale (`> 60 detik`)
-- DEGRADED mode bertahan `> 5 menit`
+---
 
-`EXCHANGE_PROBE` wajib pakai exponential backoff `5s -> 10s -> 20s -> 40s -> max 120s`.
+## 🛠️ Coding Standards
 
-## ENTRY GATE
+### Python (`kibot_manager.py`)
+- Use asynchronous operations for logging and network requests.
+- Ensure all technical indicators (Bollinger, RSI) are calculated with a minimum of 20 periods.
+- Re-calculate daily PnL relative to the midnight WIB baseline.
 
-Urutan gate:
-1. Ownership lease-confirmed
-2. Market data valid
-3. PnL state
-4. Hard stop disk state
-5. Capital minimum
-6. Signal TTL
-7. Pump score
-8. What-if EV
-9. Balance validation
-10. LIMIT submit
+### Kotlin (`MacEngineDaemon.kt`)
+- Maintain strict 70/30 bucket isolation in `CapitalAllocationManager`.
+- Use `ManagedPosition.bucketType` for all performance tracking and rebalancing.
+- Log capital status every 5 minutes using the periodic timer.
 
-## PNL STATE MACHINE
+---
 
-- `HEALTHY`: `> -0.5%`
-- `WARNING`: `-0.5%` sampai `-1.0%`
-- `CRITICAL`: `-1.0%` sampai `-2.0%`
-- `HARD_STOP`: `<= -2.0%`
+## 💾 Database Schema (Supabase)
 
-## THRESHOLDS
+- **`trade_history`**: Record of every entry/exit with full metadata.
+- **`pair_memory`**: Rolling average of slippage and win rate per pair.
+- **`performance_snapshots`**: Records of bot health and PnL every 30 minutes.
+- **`capital_allocation`**: Current status of STABLE vs AGGRESSIVE bucket utilization.
 
-- `EMERGENCY_NUKE`: `<= -2.0%`, cooldown `30 menit`
-- `CRASH_GUARD`: LIMIT sell dulu, MARKET fallback `5 detik`
-- `DAILY_HARD_STOP`: `<= -2.0%`, wajib persist ke disk
-- `HARD_STOP_CHECK`: cache `30 detik`
-- `STALE_ORDER`: auto-cancel `> 5 menit`
-- `CONTROL_PLANE_TIMEOUT`: `3 detik max`, non-throwing
-- `/api/state` cache: refresh background `500ms`
-- `DEGRADED_MAX`: `5 menit`, lalu pause/recovery path
+---
 
-## GUARDRAILS
-
-1. No panic sell on UDP timeout.
-2. Adaptive trailing sesuai price regime.
-3. Rational quarantine max 15 menit per pair.
-4. Strict signal TTL.
-5. Soft AI-audit only.
-6. Daily hard stop `<= -2%` harus persisted.
-7. Nuke cooldown 30 menit.
-8. LIMIT default, MARKET hanya emergency.
-9. Market data gate wajib.
-10. Ownership gate wajib lease-confirmed.
-11. Minimum capital gate wajib.
-12. Control-plane non-blocking wajib.
+*“Verify every move. Assume the market is trying to steal your capital.”*

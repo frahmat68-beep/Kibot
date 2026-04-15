@@ -253,21 +253,17 @@ class TrinityBotMathValidation {
         val totalCapital = 100_000.0
         val maxPerCoin = totalCapital * 0.25  // 25% max per coin
         
-        assertEquals(25_000.0, maxPerCoin, 0.01, "Max 25k per coin")
+        assertEquals(25_000.0, maxPerCoin, 0.01, "Max 25k per coin bound check")
         
         // STABLE bucket: 70k available
-        // If trying to allocate 30k (>25% of total), should be capped
+        // If trying to allocate 30k (>25% of total), should be capped at 25k
         val manager = CapitalAllocationManager(totalCapitalIdr = totalCapital)
         
         // Request 30k from STABLE (but should respect 25% rule)
-        // Note: CapitalAllocationManager doesn't enforce this yet - this is a reminder
-        // Enforcement happens in CapitalDeploymentEngine
         val alloc = manager.allocate(isAnomalyCoin = false, requestedAmountIdr = 30_000.0)
         
-        // Current implementation allows 30k (will allocate from bucket)
-        // But integration with CapitalDeploymentEngine should cap at 25k
-        assertEquals(30_000.0, alloc.allocatedIdr, 0.01, "Allocated 30k from bucket")
-        
-        // TODO: Add 25% per-coin cap enforcement in CapitalAllocationManager
+        // TRINITY v6.2: Should now be capped at 25k
+        assertEquals(25_000.0, alloc.allocatedIdr, 0.01, "Allocated 25k (capped by single-coin rule)")
+        assertEquals(45_000.0, alloc.currentAvailable, 0.01, "45k left in STABLE (70k - 25k used)")
     }
 }
