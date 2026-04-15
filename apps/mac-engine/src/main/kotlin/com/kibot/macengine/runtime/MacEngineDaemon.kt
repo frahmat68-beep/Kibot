@@ -411,6 +411,7 @@ class MacEngineDaemon(
         val forceRotation: Boolean = true,
         val sentAtEpochMs: Long,
         val expiresAtEpochMs: Long,
+        val category: String? = null,
         val payload: JsonObject? = null,
     )
 
@@ -4628,11 +4629,12 @@ class MacEngineDaemon(
 	                val rememberedBucket = positionBucketTypeByPair[pairKey]?.uppercase()
 	                val classifyAggressive =
 	                    rememberedBucket == "AGGRESSIVE" ||
-	                        normalizedAsset in dynamicAnomalyCoins
+	                        normalizedAsset in dynamicAnomalyCoins ||
+	                        trinityPendingSignals.any { it.pairId.equals(pairKey, ignoreCase = true) && it.msgType == "VETO_APPROVED" }
 	                if (classifyAggressive) {
-	                    aggressiveHoldingsIdr += coinValueIdr  // Volume anomaly = aggressive (30%)
+	                    aggressiveHoldingsIdr += coinValueIdr  // Global Consensus / Anomaly = aggressive (50%)
 	                } else {
-	                    stableHoldingsIdr += coinValueIdr  // Normal = stable (70%)
+	                    stableHoldingsIdr += coinValueIdr  // Local Sniper = stable (50%)
 	                }
 	            }
 	        } catch (ex: Exception) {
