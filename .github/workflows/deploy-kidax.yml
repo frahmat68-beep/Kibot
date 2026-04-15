@@ -123,7 +123,7 @@ jobs:
             ensure_env KIBOT_DASHBOARD_PORT ${RUNTIME_PORT}
             ensure_env KIBOT_ENV_FILE ${REMOTE_ROOT}/${ENV_FILE}
             mv ${REMOTE_ROOT}/mac-engine-all.jar ${REMOTE_ROOT}/server/mac-engine-all.jar
-            chmod +x ${REMOTE_ROOT}/engine-recovery.sh ${REMOTE_ROOT}/setup-autorecover.sh ${REMOTE_ROOT}/scripts/ai_learning_cycle.sh ${REMOTE_ROOT}/scripts/run_ai_auditors_hourly.sh ${REMOTE_ROOT}/scripts/test_ai_auditors.sh ${REMOTE_ROOT}/scripts/sync_env_to_server.sh
+            chmod +x ${REMOTE_ROOT}/engine-recovery.sh ${REMOTE_ROOT}/setup-autorecover.sh ${REMOTE_ROOT}/scripts/sync_env_to_server.sh || true
             sudo cp ${REMOTE_ROOT}/infra/systemd/kidax-engine.service /etc/systemd/system/${SERVICE_NAME}.service
             sudo systemctl stop ${SERVICE_NAME} || true
             sudo fuser -k ${RUNTIME_PORT}/tcp || true
