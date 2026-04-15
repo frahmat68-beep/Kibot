@@ -7535,7 +7535,6 @@ class MacEngineDaemon(
                     slippagePct = null,
                     finalPnlIdr = pnlIdr,
                 )
-                }
                 
                 // [70/30 CAPITAL ALLOCATION] Return capital to appropriate bucket after exit
                 if (pnlIdr != null && !isPartialExit) {
