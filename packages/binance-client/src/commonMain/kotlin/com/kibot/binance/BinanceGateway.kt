@@ -66,7 +66,7 @@ class BinanceGateway internal constructor(
             credentials.apiSecret.isNotBlank()
     private val marketDataCacheTtlMs = 30_000L
     private val marketDataTimeoutMs = 5_000L
-    private val selectiveTickerSymbolsJson = buildTicker24hSymbolsPayload()
+    private val selectiveTickerSymbolBatches = buildTicker24hSymbolBatches()
     @Volatile private var cachedMarketQuotes: CachedMarketQuotes? = null
 
     override suspend fun ping(): Boolean {
@@ -84,14 +84,19 @@ class BinanceGateway internal constructor(
         }
 
         val response = runCatching {
+            val aggregatedRows = mutableListOf<Ticker24hRow>()
             withUrlFailover(config.publicRestUrls("ticker/24hr")) { url ->
-                client.get(url) {
-                    timeout {
-                        requestTimeoutMillis = marketDataTimeoutMs
-                        socketTimeoutMillis = marketDataTimeoutMs
-                    }
-                    parameter("symbols", selectiveTickerSymbolsJson)
-                }.body<List<Ticker24hRow>>()
+                selectiveTickerSymbolBatches.forEach { batchSymbolsJson ->
+                    val batchRows = client.get(url) {
+                        timeout {
+                            requestTimeoutMillis = marketDataTimeoutMs
+                            socketTimeoutMillis = marketDataTimeoutMs
+                        }
+                        parameter("symbols", batchSymbolsJson)
+                    }.body<List<Ticker24hRow>>()
+                    aggregatedRows += batchRows
+                }
+                aggregatedRows
             }
         }.getOrElse { error ->
             cachedMarketQuotes?.let { cached -> return cached.quotes }
@@ -471,6 +476,17 @@ internal fun buildTicker24hSymbolsPayload(): String {
         .sorted()
         .toList()
     return Json.encodeToString(ListSerializer(String.serializer()), symbols)
+}
+
+internal fun buildTicker24hSymbolBatches(batchSize: Int = 8): List<String> {
+    val symbols = CoinUniverse.byBinance.keys
+        .asSequence()
+        .filterNot { it.equals("USDTUSDT", ignoreCase = true) }
+        .sorted()
+        .toList()
+    return symbols
+        .chunked(batchSize.coerceAtLeast(1))
+        .map { Json.encodeToString(ListSerializer(String.serializer()), it) }
 }
 
 private data class SignedQuery(

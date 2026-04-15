@@ -1153,7 +1153,12 @@ class MacEngineDaemon(
                 block()
                 true
             }.getOrElse { error ->
-                logger.warn("Control-plane write failed during {}: {}", context, error.message ?: "unknown")
+                val message = error.message ?: "unknown"
+                if (message.contains("Timed out waiting", ignoreCase = true) || message.contains("timeout", ignoreCase = true)) {
+                    logger.debug("Control-plane write timed out during {}: {}", context, message)
+                } else {
+                    logger.warn("Control-plane write failed during {}: {}", context, message)
+                }
                 false
             }
         } ?: false

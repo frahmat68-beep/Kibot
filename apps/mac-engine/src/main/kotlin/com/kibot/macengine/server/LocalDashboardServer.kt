@@ -505,6 +505,12 @@ class LocalDashboardServer(
             relaxedJson.parseToJsonElement(file.readText())
         }.onFailure { error ->
             logger.warn("Ignoring malformed dashboard JSON file {}: {}", path, error.message)
+            runCatching {
+                file.parentFile?.mkdirs()
+                file.writeText("{}")
+            }.onFailure { rewriteError ->
+                logger.debug("Failed to self-heal malformed dashboard JSON file {}: {}", path, rewriteError.message)
+            }
         }.getOrElse {
             JsonObject(emptyMap())
         }
