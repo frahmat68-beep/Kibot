@@ -11071,7 +11071,7 @@ class MacEngineDaemon(
             profitableRange <= 0.0 || currentEquity >= highWatermark -> 0.0
             else -> ((highWatermark - currentEquity) / profitableRange).coerceIn(0.0, 1.0)
         }
-        val hardLimitPct = previous?.hardDailyLossLimitPct ?: 0.05
+        val hardLimitPct = previous?.hardDailyLossLimitPct ?: 0.03  // FIXED: was 0.05 (5%) → 0.03 (3%) on cold start
         val drawdownPct = if (openingEquity > 0.0 && currentEquity < openingEquity) {
             ((openingEquity - currentEquity) / openingEquity).coerceIn(0.0, 1.0)
         } else {
