@@ -223,10 +223,10 @@ class LocalDashboardServer(
                 val state = repository.state.value
                 val hardStopActive = state.statusMessage.contains("hard stop", ignoreCase = true)
                 val degraded = hardStopActive ||
-                    state.effectiveState.name == "DEGRADED" ||
-                    state.syncHealth.equals("DEGRADED", ignoreCase = true) ||
-                    state.kidaxNodeStatus.contains("down", ignoreCase = true) ||
-                    state.kinanceNodeStatus.contains("down", ignoreCase = true)
+                    state.effectiveState.name == "SAFE_MODE" ||
+                    state.effectiveState.name == "STOPPED" ||
+                    state.syncHealth.equals("BROKEN", ignoreCase = true) ||
+                    state.statusMessage.contains("safe mode", ignoreCase = true)
                 val payload = HealthResponse(
                     status = if (degraded) "degraded" else "ok",
                     timestamp = java.time.Instant.now().toString(),
