@@ -134,6 +134,7 @@ class LiveExecutionCoordinator(
         return try {
             var placedOrder: OrderSnapshot? = null
             var lastPlaceError: Throwable? = null
+            var permanentRejection = false
             for (attempt in 0 until 3) {
                 println(
                     "[LIVE_EXECUTION] placeOrder attempt=${attempt + 1} pair=${executionPlan.signal.pairId.value} " +
@@ -145,6 +146,10 @@ class LiveExecutionCoordinator(
                     }
                 }.getOrElse { error ->
                     lastPlaceError = error
+                    val message = error.message?.lowercase().orEmpty()
+                    if (message.contains("insufficient balance")) {
+                        permanentRejection = true
+                    }
                     println(
                         "[LIVE_EXECUTION] placeOrder exception attempt=${attempt + 1} pair=${executionPlan.signal.pairId.value} " +
                             "error=${error.message ?: error::class.simpleName ?: "unknown"}",
@@ -162,6 +167,9 @@ class LiveExecutionCoordinator(
                 println(
                     "[LIVE_EXECUTION] placeOrder returned null attempt=${attempt + 1} pair=${executionPlan.signal.pairId.value}",
                 )
+                if (permanentRejection) {
+                    break
+                }
                 if (attempt < 2) {
                     delay(500L * (attempt + 1))
                 }
