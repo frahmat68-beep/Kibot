@@ -1,51 +1,50 @@
-# KiBot Trinity v6.2 - Developer Guardrails
+# KiBot Trinity v7.0 — Dual-Bucket Core Instructions
 
-As an AI coding assistant, follow these rules strictly to maintain the integrity of the KiBot Trinity system.
+You are the AI co-pilot for KiBot, an autonomous trading system optimized for Indodax. Phase 7.0 introduces the **Dual-Bucket Trinity Architecture** with a strictly mathematical focus.
 
----
+## 1. Architecture: Dual-Bucket System (50/50 Split)
+All trading decisions MUST belong to one of these two buckets:
 
-## 🏗️ Core Philosophy: Survival First
+### Bucket A: Global Lead-Lag (50% Allocation)
+- **Goal**: Capture 1-3% profits using confirmations from global markets.
+- **AND-Gate Logic**: BOTH a Kinance (Binance) signal AND a KiCom (Crypto.com) confirmation are REQUIRED.
+- **Execution**: LIMIT orders only. Max 3 concurrent positions.
+- **Stop Loss**: -1.5% hard stop or 2% trailing.
 
-1.  **Logic over AI**: Prioritize deterministic math (Kelly sizing, RR ratio, fee calculations) over probabilistic AI inference. If a trade doesn't pass the `What-If Engine` simulation, it MUST NOT be executed.
-2.  **Memory over Reaction**: Every trade must be logged via `TradeLogger`. Pair-specific performance (win rate, slippage) should inform future entry decisions.
-3.  **Data Persistence**: All critical state changes must synchronize to Supabase. Local JSONL is the primary source of truth; Supabase is the long-term intelligence layer.
+### Bucket B: Local Indodax-Only (50% Allocation)
+- **Goal**: Capture 3-8% profits on local IDR pairs.
+- **Conviction Score**: Pure mathematical score (0.0 - 1.0) derived from Volume Spike, Breakout Velocity, Orderbook Depth, and Momentum.
+- **Entry Threshold**: Score >= 0.85 REQUIRED.
+- **Execution**: 20% cash reserve strictly maintained. Max 2 concurrent positions.
+- **Stop Loss**: -3% hard stop or 5% trailing.
 
----
+## 2. Risk Intelligence: Cascade Loss System
+The system MUST dynamically scale risk based on PnL history:
+- **State Machine**: `GROWTH` → `CAUTION` → `DEFENSIVE` → `RESTRICTED` → `HARD_STOP`.
+- **Kelly Multiplier**: Scales from 1.0 (Growth) down to 0.0 (Hard Stop).
+- **Circuit Breaker**: Daily PnL <= -2.0% triggers `HARD_STOP` (blocks all new entries).
+- **Bucket B Restriction**: `DEFENSIVE` mode and lower disables Bucket B entries entirely.
 
-## 📊 Critical Thresholds & Guardrails
+## 3. Exit Strategy: Multi-Level Ladder
+- **Ladder Targets**: Partial profit taking at +3% (30%), +6% (30%), +10% (20%), +15% (all remaining).
+- **Volume Crash Detector**: If 15m volume drops >70% below average while in profit, exit immediately.
+- **Post-Mortem**: Every loss MUST be classified: `TIMING`, `PEAK_ENTRY`, or `STOP_LOSS` for learning.
 
-| Metric | Threshold | Action |
-| :--- | :--- | :--- |
-| **Max Daily Loss** | -2.0% | Hard-stop all trading until midnight WIB. |
-| **Max Position Size**| 25.0% | Limit per-coin allocation to 25% of total equity. |
-| **Capital Split** | 70 / 30 | 70% Stable (Rotation), 30% Aggressive (Anomaly). |
-| **Min Profit Gap** | 0.8% | Minimum gain required after fees before allowing exit. |
-| **Volume Anomaly** | >= 2.5x | Classification for "AGGRESSIVE" bucket eligibility. |
-| **Slippage Cap** | 1.8% | Block entry if spread/slippage exceeds 1.8%. |
+## 4. Coding Standards (Trinity v7.0)
+- **Mathematical Determinism**: Logic MUST be 100% deterministic based on `kibot_engine_v2.py`.
+- **Zero Placeholder Policy**: Never use `TODO` or placeholders. Implement complete logic immediately.
+- **Logging**: All trades MUST be logged to `STATE_DIR/trade_log.jsonl` and synced to Supabase.
+- **Safety Guards**: Always enforce the 20% global cash reserve in `CapitalAllocationManager`.
 
----
+## 5. Technical Stack
+- **Engine**: Python 3.14 (kibot_manager.py, kibot_engine_v2.py).
+- **Core**: Kotlin KMP (MacEngineDaemon, KiComScanner).
+- **Database**: Supabase (trade_history, pair_memory, performance_snapshots).
+- **Protocol**: UDP for low-latency signal transit between scanners and manager.
 
-## 🛠️ Coding Standards
+## 6. Mathematical Formulas to Enforce
+- **Conviction Score**: `(0.3*Vol_Spike) + (0.25*Breakout) + (0.25*Orderbook) + (0.2*Momentum)`.
+- **Expected Value (EV)**: `(WR * Avg_Win) - ((1-WR) * Avg_Loss) - Fees`.
+- **Position Size**: `Half-Kelly` multiplier scaled by `Cascade Multiplier`.
 
-### Python (`kibot_manager.py`)
-- Use asynchronous operations for logging and network requests.
-- Ensure all technical indicators (Bollinger, RSI) are calculated with a minimum of 20 periods.
-- Re-calculate daily PnL relative to the midnight WIB baseline.
-
-### Kotlin (`MacEngineDaemon.kt`)
-- Maintain strict 70/30 bucket isolation in `CapitalAllocationManager`.
-- Use `ManagedPosition.bucketType` for all performance tracking and rebalancing.
-- Log capital status every 5 minutes using the periodic timer.
-
----
-
-## 💾 Database Schema (Supabase)
-
-- **`trade_history`**: Record of every entry/exit with full metadata.
-- **`pair_memory`**: Rolling average of slippage and win rate per pair.
-- **`performance_snapshots`**: Records of bot health and PnL every 30 minutes.
-- **`capital_allocation`**: Current status of STABLE vs AGGRESSIVE bucket utilization.
-
----
-
-*“Verify every move. Assume the market is trying to steal your capital.”*
+Follow these rules strictly. Any deviation from the Dual-Bucket logic or mathematical guardrails is a critical failure.
