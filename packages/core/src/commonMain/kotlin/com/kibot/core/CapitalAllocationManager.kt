@@ -42,6 +42,7 @@ class CapitalAllocationManager(
         const val MICRO_ACCOUNT_THRESHOLD_IDR = 500_000.0
         const val MIN_ORDER_INDODAX_IDR = 10_000.0
         const val MAX_SINGLE_POSITION_PCT = 0.25
+        const val MULTI_SLOT_TRIGGER_IDR = 25_000.0 // Threshold to allow parallel slots
         
         fun calculateDynamicAdditionalSlots(totalFreeIdr: Double): Int {
             if (totalFreeIdr < MIN_ORDER_INDODAX_IDR) return 0

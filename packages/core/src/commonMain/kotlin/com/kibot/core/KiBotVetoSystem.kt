@@ -87,7 +87,12 @@ class KiBotVetoSystem(
         
         // Rule 2: Capital allocation check (PHASE 1)
         val isAnomalyCoin = positionStrategy == PositionStrategy.ANOMALY
-        val allocResult = capitalAllocator.allocate(isAnomalyCoin, costIdr)
+        // Trinity v7.0: Anomaly maps to Bucket B, Stable to Bucket A
+        val allocResult = if (isAnomalyCoin) {
+            capitalAllocator.allocateB(costIdr)
+        } else {
+            capitalAllocator.allocateA(costIdr)
+        }
         
         if (allocResult.allocatedIdr < costIdr) {
             return BuyApproval(
