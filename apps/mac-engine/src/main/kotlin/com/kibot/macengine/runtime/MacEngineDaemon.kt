@@ -4027,22 +4027,37 @@ class MacEngineDaemon(
         runCatching {
             val initialRisk = cachedDailyRisk
             if (initialRisk != null) {
-                logger.info("[HYDRATION] Seeding repository with persistent risk snapshot: Equity={} PnL={}", 
-                    initialRisk.currentEquityIdr, initialRisk.realizedPnlIdr)
+                logger.info("[HYDRATION] Seeding repository with persistent risk snapshot: Equity={}", 
+                    initialRisk.currentEquityIdr)
+                
+                // Synthesize a minimal stable state for first UI paint
+                val initialTerm = lastObservedLeaseTerm ?: LeaseTerm(0)
+                val initialBotState = BotStateSnapshot(
+                    botId = config.controlPlane.botId,
+                    desiredState = BotDesiredState.OFF,
+                    effectiveState = BotEffectiveState.DEGRADED,
+                    activeDeviceId = config.device.deviceId,
+                    standbyDeviceId = null,
+                    currentTerm = initialTerm,
+                    syncHealth = SyncHealth.DEGRADED,
+                    strategyMode = StrategyMode.GROWTH
+                )
+
                 repository.applyRuntimeState(
                     buildDashboardState(
                         now = clock.now(),
                         jakartaDate = jakartaNowDate(clock.now()),
-                        botState = currentBotState ?: BotStateSnapshot(
-                            botId = config.controlPlane.botId,
-                            desiredState = BotDesiredState.PAUSED,
-                            effectiveState = BotEffectiveState.DEGRADED,
-                            currentTerm = LeaseTerm(0),
-                            syncHealth = SyncHealth.DEGRADED,
-                            strategyMode = StrategyMode.MOMENTUM
-                        ),
+                        botState = initialBotState,
                         peerBotStates = emptyMap(),
-                        lease = runtimeLease,
+                        lease = EngineLeaseSnapshot(
+                            botId = config.controlPlane.botId,
+                            currentHolder = config.device.deviceId,
+                            term = initialTerm,
+                            state = LeaseState.HELD,
+                            expiresAt = clock.now().plus(config.leaseTtlSeconds.seconds),
+                            lastHeartbeatAt = clock.now(),
+                            conflictDetected = false
+                        ),
                         devices = emptyList(),
                         localHealth = EngineHealthSnapshot(HealthStatus.HEALTHY, SyncHealth.DEGRADED, false, false, false),
                         dailyRisk = initialRisk,
