@@ -142,8 +142,8 @@ jobs:
             sudo systemctl is-active "${SERVICE_NAME}"
 
             echo "Waiting for health check on port ${RUNTIME_PORT}..."
-            sleep 10
-            if ! curl -fsS --retry 20 --retry-connrefused --retry-delay 5 http://127.0.0.1:${RUNTIME_PORT}/api/state >/tmp/kinance-state.json; then
+            sleep 15
+            if ! curl -fsS --max-time 15 --retry 40 --retry-connrefused --retry-delay 5 http://127.0.0.1:${RUNTIME_PORT}/api/state >/tmp/kinance-state.json; then
               echo "❌ Health check failed! Logs:"
               sudo journalctl -u ${SERVICE_NAME} -n 100 --no-pager
               exit 1
