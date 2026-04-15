@@ -695,6 +695,7 @@ class MacEngineDaemon(
         val pendingHeartbeat: EngineHeartbeatSnapshot? = null,
         val pendingDailyRisk: BufferedDailyRiskWrite? = null,
         val pendingFastTelemetry: BufferedFastTelemetryWrite? = null,
+        val lastKnownPriceCache: Map<String, Double> = emptyMap(),
     )
 
     private data class ForcedSellSignal(
@@ -1184,28 +1185,32 @@ class MacEngineDaemon(
 
     private fun loadNonCriticalControlPlaneBuffer(): NonCriticalControlPlaneBufferSnapshot {
         val path = nonCriticalControlPlaneBufferPath()
-        return runCatching {
+        val buffer = runCatching {
             if (!Files.exists(path)) {
-                return NonCriticalControlPlaneBufferSnapshot(
-                    botId = config.controlPlane.botId.value,
-                    deviceId = config.device.deviceId.value,
-                )
+                return@runCatching null
             }
             json.decodeFromString<NonCriticalControlPlaneBufferSnapshot>(Files.readString(path))
-        }.getOrElse {
-            logger.warn("Failed to load control-plane non-critical buffer: {}", it.message)
-            NonCriticalControlPlaneBufferSnapshot(
-                botId = config.controlPlane.botId.value,
-                deviceId = config.device.deviceId.value,
-            )
+        }.getOrNull() ?: NonCriticalControlPlaneBufferSnapshot(
+            botId = config.controlPlane.botId.value,
+            deviceId = config.device.deviceId.value,
+        )
+        
+        // Initialize in-memory cache from persisted data
+        buffer.lastKnownPriceCache.forEach { (asset, price) ->
+            lastKnownPriceCache[asset] = price
         }
+        return buffer
     }
 
     private fun persistNonCriticalControlPlaneBuffer() {
         runCatching {
             val path = nonCriticalControlPlaneBufferPath()
             path.parent?.let { Files.createDirectories(it) }
-            Files.writeString(path, json.encodeToString(nonCriticalControlPlaneBuffer))
+            // Sync in-memory cache before persisting
+            val bufferToPersist = nonCriticalControlPlaneBuffer.copy(
+                lastKnownPriceCache = lastKnownPriceCache.toMap()
+            )
+            Files.writeString(path, json.encodeToString(bufferToPersist))
         }.onFailure {
             logger.warn("Failed to persist control-plane non-critical buffer: {}", it.message)
         }
@@ -1339,17 +1344,27 @@ class MacEngineDaemon(
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
     ): Double {
         val lowerBase = base.lowercase()
-        return marketQuotes.firstOrNull { it.pairId.value.equals("${lowerBase}_idr", ignoreCase = true) }
+        val price = marketQuotes.firstOrNull { it.pairId.value.equals("${lowerBase}_idr", ignoreCase = true) }
             ?.midPrice
             ?.toDoubleOrZero()
             ?.takeIf { it > 0.0 }
-            ?: when (lowerBase) {
-                "usdt", "usdc" -> 16_200.0
-                "btc" -> 1_000_000_000.0
-                "eth" -> 50_000_000.0
-                "bnb" -> 8_000_000.0
-                else -> 1.0
-            }
+        
+        if (price != null) {
+            lastKnownPriceCache[lowerBase] = price
+            return price
+        }
+        
+        // Fallback to LKP Cache
+        lastKnownPriceCache[lowerBase]?.let { return it }
+
+        // Last resort: Hardcoded fallbacks (Conservative)
+        return when (lowerBase) {
+            "usdt", "usdc" -> 16_000.0
+            "btc" -> 900_000_000.0
+            "eth" -> 45_000_000.0
+            "bnb" -> 7_500_000.0
+            else -> 1.0
+        }
     }
 
     private fun isLeadLagClassEnabled(coinClass: CoinClass): Boolean = when (coinClass) {
@@ -3987,6 +4002,10 @@ class MacEngineDaemon(
     }
     private var leadLagListenerSocket: DatagramSocket? = null
     private val leadLagListenerReady = AtomicBoolean(false)
+    private val lastKnownPriceCache = mutableMapOf<String, Double>()
+    private var lastHeartbeatAtValue: Instant? = null
+    private val HEARTBEAT_INTERVAL_SEC = 300 // 5 minutes
+
     private var lastEngineHeartbeatLogAt: Instant? = null
     private var lastKingDashboardFastTelemetryAt: Instant? = null
     private var lastControlPlaneHeartbeatAt: Instant? = null
@@ -4163,6 +4182,20 @@ class MacEngineDaemon(
             val commands = refreshPendingCommands(now)
             val weeklyReview = refreshWeeklyReview(now)
             lastSuccessfulControlPlaneAt = now
+
+            // HEARTBEAT LOGGING
+            if (lastHeartbeatAtValue == null || (now - (lastHeartbeatAtValue!!)).inWholeSeconds >= HEARTBEAT_INTERVAL_SEC) {
+                lastHeartbeatAtValue = now
+                val pnlStr = formatDecimal((dailyRisk?.drawdownPct ?: 0.0) * -100.0, 2)
+                logger.info(
+                    "[HEARTBEAT] Bot: {} | PnL: {}% | Equity: {} IDR | Mode: {} | Uptime: {}s",
+                    config.controlPlane.botId.value,
+                    pnlStr,
+                    formatDecimal(dailyRisk?.currentEquityIdr?.toDoubleOrZero() ?: 0.0, 0),
+                    botState.currentMode,
+                    (now - (degradedModeEnteredAt ?: lifecycleRegisteredAt ?: now)).inWholeSeconds
+                )
+            }
 
             logger.info("DEAD_ZONE_TRACE: probing market reachability and orderbook cache")
             val (exchangeReachable, exchangePingMs) = probeExchange(now)
@@ -11193,7 +11226,13 @@ class MacEngineDaemon(
                 quantity <= 0.0 -> 0.0
                 balance.asset.equals("idr", ignoreCase = true) -> quantity
                 balance.asset.equals(referenceQuoteAsset, ignoreCase = true) -> quantity
-                else -> quantity * (quoteAssetReferencePrice(balance.asset, marketQuotes) ?: 0.0)
+                else -> {
+                    val price = quoteAssetReferencePrice(balance.asset, marketQuotes) ?: 0.0
+                    val value = quantity * price
+                    // Apply a 0.3% liquidation fee buffer for speculative/volatile assets
+                    // to ensure risk management accounts for 'realizable' equity.
+                    if (value > 0.0) value * 0.997 else 0.0
+                }
             }
         }
         if (currentEquity <= 0.0) return previous
@@ -11219,7 +11258,7 @@ class MacEngineDaemon(
             profitableRange <= 0.0 || currentEquity >= highWatermark -> 0.0
             else -> ((highWatermark - currentEquity) / profitableRange).coerceIn(0.0, 1.0)
         }
-        val hardLimitPct = previous?.hardDailyLossLimitPct ?: 0.03  // FIXED: was 0.05 (5%) → 0.03 (3%) on cold start
+        val hardLimitPct = previous?.hardDailyLossLimitPct ?: 0.03
         val drawdownPct = if (openingEquity > 0.0 && currentEquity < openingEquity) {
             ((openingEquity - currentEquity) / openingEquity).coerceIn(0.0, 1.0)
         } else {
