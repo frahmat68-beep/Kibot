@@ -1,0 +1,68 @@
+name: Deploy Monitoring Stack
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy-grafana:
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_HOST: ${{ secrets.KIDAX_HOST }}
+      DEPLOY_USER: ${{ secrets.KIDAX_USER }}
+      DEPLOY_KEY: ${{ secrets.KIDAX_SSH }}
+      DEPLOY_PORT: ${{ secrets.KIDAX_SSH_PORT || '22' }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Upload Configuration
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ env.DEPLOY_HOST }}
+          username: ${{ env.DEPLOY_USER }}
+          key: ${{ env.DEPLOY_KEY }}
+          port: ${{ env.DEPLOY_PORT }}
+          source: "infra/grafana/*"
+          target: "/tmp/grafana-config"
+
+      - name: Install and Configure Grafana
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ env.DEPLOY_HOST }}
+          username: ${{ env.DEPLOY_USER }}
+          key: ${{ env.DEPLOY_KEY }}
+          port: ${{ env.DEPLOY_PORT }}
+          script: |
+            echo "Installing Grafana dependencies..."
+            sudo apt-get update
+            sudo apt-get install -y apt-transport-https software-properties-common wget
+            
+            echo "Adding Grafana GPG key..."
+            sudo mkdir -p /etc/apt/keyrings/
+            if [ ! -f /etc/apt/keyrings/grafana.gpg ]; then
+              wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg > /dev/null
+            fi
+            
+            echo "Adding Grafana repository..."
+            echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
+            
+            sudo apt-get update
+            sudo apt-get install -y grafana
+            
+            echo "Installing Grafana plugins..."
+            sudo grafana-cli plugins install yesoreyeram-infinity-datasource
+            
+            echo "Applying provisioning files..."
+            sudo mkdir -p /etc/grafana/provisioning/datasources/
+            sudo mkdir -p /etc/grafana/provisioning/dashboards/
+            sudo cp /tmp/grafana-config/infra/grafana/provisioning/datasources/*.yaml /etc/grafana/provisioning/datasources/
+            sudo cp /tmp/grafana-config/infra/grafana/provisioning/dashboards/*.yaml /etc/grafana/provisioning/dashboards/
+            sudo cp /tmp/grafana-config/infra/grafana/dashboard-v1.json /etc/grafana/provisioning/dashboards/kibot-v1.json
+            
+            echo "Enabling and Starting Grafana..."
+            sudo systemctl daemon-reload
+            sudo systemctl enable grafana-server
+            sudo systemctl restart grafana-server
+            
+            echo "Grafana installation complete. Checking status..."
+            sudo systemctl is-active grafana-server
