@@ -826,6 +826,7 @@ class MacEngineDaemon(
 	    @Volatile private var forcedSafeModeReason: String? = null
 	    @Volatile private var forcedSafeModeAt: Instant? = null
     @Volatile private var lastPipelineMarkerLabel: String = ""
+    @Volatile private var lastCapitalStatusLogAt: Instant? = null
     private val sinBinUntilByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
     private val crashGuardTriggerTimeline = ArrayDeque<Instant>()
     @Volatile private var globalCooldownUntil: Instant? = null
@@ -4650,10 +4651,21 @@ class MacEngineDaemon(
 	            aggressiveHoldingsIdr,
 	        )
         
-        // DEBUG: Log capital allocation status
-        val capStatus = capitalAllocationManager?.getStatus()
-        if (capStatus != null) {
-            logger.info("[CAPITAL_REBALANCE] stable_available=${capStatus.stableCapitalIdr.toLong()} aggressive_available=${capStatus.aggressiveCapitalIdr.toLong()} stable_deployed=${capStatus.totalDeployedStable.toLong()} aggressive_deployed=${capStatus.totalDeployedAggressive.toLong()}")
+        // [TRINITY v6.2] Periodic 5-minute capital status report
+        val shouldLogCapStatus = lastCapitalStatusLogAt == null || 
+            (now.toEpochMilliseconds() - lastCapitalStatusLogAt!!.toEpochMilliseconds()) >= 300_000L
+            
+        if (shouldLogCapStatus) {
+            capitalAllocationManager?.getStatus()?.let { capStatus ->
+                logger.info(
+                    "[CAPITAL_STATUS] TRINITY_v6.2 | buckets: STABLE={}idr AGGRESSIVE={}idr | deployed: STABLE={}idr AGGRESSIVE={}idr | drift: ${formatDecimal(capStatus.driftPercent, 2)}% rebalances: ${capStatus.rebalanceCount}",
+                    formatDecimal(capStatus.stableCapitalIdr, 0),
+                    formatDecimal(capStatus.aggressiveCapitalIdr, 0),
+                    formatDecimal(capStatus.totalDeployedStable, 0),
+                    formatDecimal(capStatus.totalDeployedAggressive, 0),
+                )
+                lastCapitalStatusLogAt = now
+            }
         }
 
         emitEngineHeartbeat(
@@ -13561,48 +13573,18 @@ class MacEngineDaemon(
         
         // [70/30 CAPITAL ALLOCATION] Determine if this is anomaly/pump or stable trade
         val isAnomalyCoin = isAggressiveBucketPlan(executionPlan)
+        val currentBudget = executionPlan.quoteBudget?.toDoubleOrZero() ?: totalEquityIdr
         
-        return when (config.exchangeKind) {
-            ExchangeKind.INDODAX -> {
-                val budgetCapIdr = when {
-                    totalEquityIdr < 90_000.0 -> 25_000.0  // Increase from 11,500 → 25k for emergency
-                    totalEquityIdr < 180_000.0 -> 27_000.0  // Increase from 18,000 → 27k for emergency
-                    else -> totalEquityIdr * 0.22
-                }.coerceAtLeast(25_000.0)  // Increase floor from 10,250 → 25k to ensure min order met
-                val current = executionPlan.quoteBudget?.toDoubleOrZero() ?: budgetCapIdr
-                val prelimBudget = minOf(current, budgetCapIdr)
-                
-                // [70/30] Apply capital allocation from bucket
-                val allocatedBudget = allocateCapitalForEntry(
-                    requestedAmountIdr = prelimBudget,
-                    isAnomalyCoin = isAnomalyCoin,
-                    pairId = executionPlan.signal.pairId.value
-                )
-                
-                executionPlan.copy(
-                    quoteBudget = DecimalValue.fromDouble(allocatedBudget),
-                )
-            }
-            ExchangeKind.BINANCE_SPOT -> {
-                val budgetCapIdr = when {
-                    totalEquityIdr < 250_000.0 -> totalEquityIdr * 0.35
-                    else -> totalEquityIdr * 0.22
-                }.coerceAtLeast(12_000.0)
-                val current = executionPlan.quoteBudget?.toDoubleOrZero() ?: budgetCapIdr
-                val prelimBudget = minOf(current, budgetCapIdr)
-                
-                // [70/30] Apply capital allocation from bucket
-                val allocatedBudget = allocateCapitalForEntry(
-                    requestedAmountIdr = prelimBudget,
-                    isAnomalyCoin = isAnomalyCoin,
-                    pairId = executionPlan.signal.pairId.value
-                )
-                
-                executionPlan.copy(
-                    quoteBudget = DecimalValue.fromDouble(allocatedBudget),
-                )
-            }
-        }
+        // [70/30] Apply capital allocation from bucket (handles 25% cap, 70/30 split, and micro-mode)
+        val allocatedBudget = allocateCapitalForEntry(
+            requestedAmountIdr = currentBudget,
+            isAnomalyCoin = isAnomalyCoin,
+            pairId = executionPlan.signal.pairId.value
+        )
+        
+        return executionPlan.copy(
+            quoteBudget = DecimalValue.fromDouble(allocatedBudget),
+        )
     }
 
     private fun deriveCapitalAwareness(

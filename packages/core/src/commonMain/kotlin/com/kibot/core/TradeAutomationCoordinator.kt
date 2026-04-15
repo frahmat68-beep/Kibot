@@ -101,6 +101,7 @@ data class ManagedPosition(
     val setupType: SetupType,
     val pairTier: com.kibot.shared.models.PairTier,
     val speculativePocket: Boolean,
+    val bucketType: String? = null, // "STABLE" or "AGGRESSIVE"
     val expectedHoldingHours: Double,
     val chartEntryScore: Double = 0.0,
     val chartExitUrgencyScore: Double = 0.0,
@@ -342,6 +343,7 @@ class TradeAutomationCoordinator(
                 },
                 pairTier = rankedPair?.pairTier ?: com.kibot.shared.models.PairTier.TIER_B,
                 speculativePocket = speculativePocket,
+                bucketType = if (speculativePocket) "AGGRESSIVE" else "STABLE",
                 expectedHoldingHours = when {
                     speculativePocket -> 8.0
                     horizon == TradingHorizon.SWING -> 72.0

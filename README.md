@@ -1,67 +1,56 @@
-# KiBot Trinity (v5.0)
+# KiBot Trinity v6.2 (Survival First)
 
-**Lead-Lag trading system** berbasis microservices untuk market **Indodax** dengan sinyal prediktif dari market global **Binance**. Sistem berjalan di **Oracle Cloud** (Singapore) dengan arsitektur 3-bot (Trinity).
+KiBot Trinity is a high-performance, math-first trading architecture designed for Indodax and Binance markets. Version 6.2 ("Trinity") transitions the system from AI-inference-reliance to a deterministic, memory-capable execution engine.
 
-## Architecture
+---
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    ORACLE CLOUD (Singapore)                     │
-│                                                                 │
-│  ┌─────────────────┐  UDP   ┌─────────────────┐                │
-│  │  KIBOT MANAGER  │◄──────►│     KIDAX       │                │
-│  │  (Python 🐍)    │        │ (Kotlin/JVM ☕)  │                │
-│  │  Port: 9998     │        │ Port: 8787      │                │
-│  │  AI Veto Gate   │        │ Indodax Exec    │                │
-│  └────────┬────────┘        └─────────────────┘                │
-│           │ UDP                                                 │
-│           ▼                                                     │
-│  ┌─────────────────┐                                           │
-│  │    KINANCE      │                                           │
-│  │ (Kotlin/JVM ☕)  │                                           │
-│  │ Port: 8788      │                                           │
-│  │ Binance Radar   │                                           │
-│  └─────────────────┘                                           │
-└─────────────────────────────────────────────────────────────────┘
-```
+## 🏗️ Architecture
 
-## Core Trading Logic (v5.0 Overhaul)
+- **`kibot_manager.py` (Brain)**:
+  - **TradeLogger**: Persistent memory of wins, losses, and real-time Learning Engine updates.
+  - **What-If Engine**: Pre-trade mathematical simulation (Kelly, RR, EV) acting as a Veto Gate.
+  - **Universal Vision**: Real-time technical scanner for all 200+ Indodax assets (not just whitelists).
+  - **Depth Vision**: Order Book imbalance detection (Bid/Ask ratio) to filter pump-fakeouts.
+  - **Pump Reversal Guard**: Automatic Volume Collapse and Peak zone profit locking.
+  - **30-min Math Review**: Automated performance tracking and threshold adaptation.
+- **`MacEngineDaemon.kt` (Executor)**:
+  - **70/30 Capital Split**: Automated STABLE (70%) and AGGRESSIVE (30%) bucket management.
+  - **25% Single-Coin Cap**: Hard diversification guardrail.
+  - **Lead-Lag Radar**: Real-time signal execution from Kinance (Binance) UDP stream.
 
-### 🛡️ Survival-First Mindset
-Sistem tidak lagi menggunakan "Zero-Cash" mindset agresif. Trinity v5.0 fokus pada **modal perlindungan**:
-- **Math-First Decision**: Perhitungan EV (Expected Value) mendahului AI.
-- **Strict Data Retention**: Rolling history TTL (max 100 samples) untuk menjamin performa di server RAM terbatas.
-- **Reliable Symbol Mapping**: Koreksi bug mapping (e.g., `xlm_idr` → `XLMUSDT`) untuk akurasi lead-lag global.
+---
 
-### AI Approval Thresholds (Updated)
-Kami telah menaikkan standar kualitas sinyal:
-* **Standard**: score ≥ 0.70, expected net ≥ 0.25%
-* **Strict**: score ≥ 0.80, expected net ≥ 0.40%
-* **Instant approval dilarang total** — semua sinyal wajib melewati Veto Gate.
+## 📊 Core Strategies
 
-## Daily Risk Management
+1.  **Stable Rotation (70%)**:
+    - Low-volatility pairs with tight spread.
+    - 1.8% profit targets.
+    - Limit order execution (maker fee optimization).
+2.  **Aggressive Anomalies (30%)**:
+    - High-volume pumps (>= 2.5x volume spikes).
+    - 3.5% - 5.0% profit targets.
+    - Market order execution (speed priority).
+3.  **Survival First Mode**:
+    - Auto-reset daily baseline at midnight WIB.
+    - Hard-stop if daily PnL drops below -2.0%.
+    - Dynamic entry thresholds (standard increases if daily PnL < 0).
 
-| State | PnL Harian | Action |
-|-------|------------|--------|
-| HEALTHY | > -0.5% | Entry normal semua tier |
-| WARNING | -0.5% to -1% | Tier A+B only, size 70% |
-| CRITICAL | -1% to -2% | Tier A only, size 40% |
-| HARD_STOP | < -2% | Entry blocked, reset 00:00 WIB |
+---
 
-## Modules
+## 🛠️ Performance & Monitoring
 
-| Module | Description |
-|--------|-------------|
-| `apps/mac-engine` | KiDax/Kinance JVM daemon — Optimized shadow JAR deployment |
-| `scripts/kibot_manager.py` | Python veto daemon v5.0 — Math Review & Data Retention logic |
-| `infra/supabase` | Redacted Security Credentials guide included |
+- **Grafana Dashboard**: Real-time visualization of `trade_history` and `performance_snapshots`.
+- **Telegram Notifications**: Strategic move alerts and 30-minute math reviews.
+- **Supabase Persistence**: Automated synchronization for long-term intelligence gathering.
 
-## Quick Start (Deploy)
-```bash
-./gradlew :apps:mac-engine:shadowJar
-scp apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar ubuntu@213.35.118.26:/home/ubuntu/KiDax/server/
-```
+---
 
-## Documentation
-- [audit_remediation_plan.md](.gemini/antigravity/brain/fdf984b9-d1ac-4459-b26d-781000048390/audit_remediation_plan.md) — Solusi Audit Temuan Lengkap.
-- [.github/copilot-instructions.md](.github/copilot-instructions.md) — Trinity v5.0 AI Agent guidelines.
+## 🚀 Quick Start
+
+1.  Ensure `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set.
+2.  Run the manager: `python3 scripts/kibot_manager.py`
+3.  Verify the engine: `./gradlew :apps:mac-engine:run`
+
+---
+
+*“Logic is the shield that protects capital from the volatility of emotion.”*

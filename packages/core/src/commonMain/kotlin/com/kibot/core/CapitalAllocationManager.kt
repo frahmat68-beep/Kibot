@@ -39,6 +39,7 @@ class CapitalAllocationManager(
         const val MIN_ORDER_INDODAX_IDR = 20_000.0
         const val MULTI_SLOT_TRIGGER_IDR = 20_000.0
         const val DEPLOYABLE_PCT = 0.90
+        const val MAX_SINGLE_POSITION_PCT = 0.25 // Max 25% of total equity per coin
 
         fun calculateDynamicAdditionalSlots(totalFreeIdr: Double): Int {
             if (totalFreeIdr < MULTI_SLOT_TRIGGER_IDR) return 0
@@ -130,11 +131,14 @@ class CapitalAllocationManager(
             )
         }
         
-        // Use requested amount or full available bucket
+        // TRINITY v6.2: Enforce 25% per-coin cap
+        val maxPerCoin = currentTotalEquityIdr * MAX_SINGLE_POSITION_PCT
+        
+        // Use requested amount or full available bucket, but NEVER exceed 25% total cap
         val allocateAmount = if (requestedAmountIdr > 0) {
-            minOf(requestedAmountIdr, currentBucket)
+            minOf(requestedAmountIdr, currentBucket, maxPerCoin)
         } else {
-            currentBucket
+            minOf(currentBucket, maxPerCoin)
         }
         
         // Deduct from current allocation
@@ -377,7 +381,11 @@ class CapitalAllocationManager(
         }
         
         // Check minimum order size
-        val allocationPerPos = deployable / maxPositions
+        // TRINITY v6.2: Enforce 25% per-coin cap even in micro-mode
+        val maxPerCoin = currentTotalEquityIdr * MAX_SINGLE_POSITION_PCT
+        val rawAllocationPerPos = deployable / maxPositions
+        val allocationPerPos = minOf(rawAllocationPerPos, maxPerCoin)
+
         if (allocationPerPos < MIN_ORDER_INDODAX_IDR) {
             println("[MICRO_MODE] Insufficient capital: allocation=$allocationPerPos < min=$MIN_ORDER_INDODAX_IDR")
             return AllocationResult(
