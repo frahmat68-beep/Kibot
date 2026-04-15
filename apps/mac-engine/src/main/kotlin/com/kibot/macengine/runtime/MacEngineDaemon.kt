@@ -191,14 +191,14 @@ private fun exchangePairSelectionPolicy(exchangeKind: ExchangeKind): PairSelecti
 
 private fun exchangeRiskConfig(exchangeKind: ExchangeKind): RiskConfig = when (exchangeKind) {
     ExchangeKind.INDODAX -> RiskConfig(
-        hardDailyLossLimitPct = 0.04,
-        hardRealizedLossLimitIdr = 15_000.0,
-        dailyProfitLockPct = 0.025,
-        warningDrawdownPct = 0.015,
-        reduceSizeDrawdownPct = 0.025,
-        defensiveDrawdownPct = 0.040,
-        restrictedEntriesDrawdownPct = 0.055,
-        stopNewEntriesDrawdownPct = 0.070,
+        hardDailyLossLimitPct = 0.03,             // TIGHTENED: was 0.04 → 0.03 (3%)
+        hardRealizedLossLimitIdr = 10_000.0,      // TIGHTENED: was 15k → 10k
+        dailyProfitLockPct = 0.010,               // TIGHTENED: lock profit at 1%
+        warningDrawdownPct = 0.012,               // TIGHTENED: was 0.015 → 0.012
+        reduceSizeDrawdownPct = 0.018,            // TIGHTENED: was 0.025 → 0.018
+        defensiveDrawdownPct = 0.022,             // TIGHTENED: was 0.040 → 0.022
+        restrictedEntriesDrawdownPct = 0.026,     // TIGHTENED: was 0.055 → 0.026
+        stopNewEntriesDrawdownPct = 0.030,        // TIGHTENED: was 0.070 → 0.030 (3%)
         maxConcurrentPositions = 5,
         minimumCashReservePct = 0.05,
         defensiveCashReservePct = 0.10,
@@ -738,6 +738,7 @@ class MacEngineDaemon(
     private var commandsFetchedAt: Instant? = null
     private var cachedWeeklyReview: com.kibot.shared.models.WeeklyLearningSummary? = null
     private var weeklyReviewFetchedAt: Instant? = null
+    @Volatile private var lastEmergencyGarbageNukeAt: Instant? = null
     private var cachedEquityHistory: List<com.kibot.shared.models.DailyEquityHistoryPoint> = emptyList()
     private var equityHistoryFetchedAt: Instant? = null
     private var cachedBalances: List<BalanceSnapshot> = emptyList()
@@ -3027,6 +3028,14 @@ class MacEngineDaemon(
     ): com.kibot.core.ExitDecision? {
         if (config.exchangeKind != ExchangeKind.INDODAX) return null
         if (balances.isEmpty()) return null
+        val openingEquity = cycle.dailyRisk.openingEquityIdr.toDoubleOrZero().coerceAtLeast(1.0)
+        val currentEquity = cycle.dailyRisk.currentEquityIdr.toDoubleOrZero().coerceAtLeast(0.0)
+        val dailyPnlPct = (currentEquity - openingEquity) / openingEquity
+        if (dailyPnlPct > emergencyGarbageNukeDrawdownTriggerPct) return null
+        if (!cycle.dailyRisk.hardStopTriggered) return null
+        val now = clock.now()
+        val lastNukeAt = lastEmergencyGarbageNukeAt
+        if (lastNukeAt != null && (now - lastNukeAt).inWholeMilliseconds < emergencyGarbageNukeCooldownMs) return null
         val quoteByPair = marketQuotes.associateBy { it.pairId.value.lowercase() }
         val activeByPair = activeOrders.filter { it.status in activeOrderStatuses }.groupBy { it.pairId }
         val target = balances
@@ -3052,6 +3061,7 @@ class MacEngineDaemon(
             .sortedByDescending { (_, _, currentValue) -> currentValue }
             .firstOrNull()
             ?: return null
+        lastEmergencyGarbageNukeAt = now
         val pairId = com.kibot.shared.models.PairId(target.first)
         val quantity = DecimalValue.fromDouble(target.second)
         val currentBid = quoteByPair[target.first]?.bestBid?.toDoubleOrZero()
@@ -3103,9 +3113,9 @@ class MacEngineDaemon(
             executionPlan = com.kibot.shared.models.ExecutionPlan(
                 signal = signal,
                 side = com.kibot.shared.models.OrderSide.SELL,
-                orderType = com.kibot.shared.models.OrderType.MARKET,
+                orderType = com.kibot.shared.models.OrderType.LIMIT,  // CHANGED: was MARKET → LIMIT to avoid slippage
                 quantity = quantity,
-                limitPrice = null,
+                limitPrice = DecimalValue.fromDouble(currentBid * crashGuardFastLimitMultiplier),  // Aggressive sell: bid * 0.998
                 quoteBudget = null,
                 postOnlyPreferred = false,
                 expectedNetEdgePct = 0.0,
@@ -3125,6 +3135,7 @@ class MacEngineDaemon(
     ): com.kibot.core.ExitDecision? {
         if (managedPositions.isEmpty()) return null
         val activeByPair = activeOrders.filter { it.status in activeOrderStatuses }.groupBy { it.pairId }
+        val quoteByPair = marketQuotes.associateBy { it.pairId }
         val btcEthCrash = marketQuotes.any {
             val key = it.pairId.value.lowercase()
             (key == "btc_usdt" || key == "btc_idr" || key == "eth_usdt" || key == "eth_idr") &&
@@ -3179,9 +3190,14 @@ class MacEngineDaemon(
                 executionPlan = com.kibot.shared.models.ExecutionPlan(
                     signal = signal,
                     side = com.kibot.shared.models.OrderSide.SELL,
-                    orderType = com.kibot.shared.models.OrderType.MARKET,
+                    orderType = com.kibot.shared.models.OrderType.LIMIT,
                     quantity = position.quantity,
-                    limitPrice = null,
+                    limitPrice = quoteByPair[position.pairId]
+                        ?.bestBid
+                        ?.toDoubleOrZero()
+                        ?.takeIf { it > 0.0 }
+                        ?.let { DecimalValue.fromDouble(it * crashGuardFastLimitMultiplier) }
+                        ?: position.currentBidPrice,
                     quoteBudget = null,
                     postOnlyPreferred = false,
                     expectedNetEdgePct = kotlin.math.abs(position.unrealizedPnlPct),
@@ -9502,9 +9518,13 @@ class MacEngineDaemon(
             exitReasonMessage.contains("HARD_STOP", ignoreCase = true) ||
             exitReasonMessage.contains("BTC_DUMP", ignoreCase = true)
         if (crashStyleExit) {
+            val crashLimit = quote?.bestBid
+                ?.toDoubleOrZero()
+                ?.takeIf { it > 0.0 }
+                ?.let { DecimalValue.fromDouble(it * crashGuardFastLimitMultiplier) }
             return executionPlan.copy(
-                orderType = com.kibot.shared.models.OrderType.MARKET,
-                limitPrice = null,
+                orderType = if (crashLimit != null) com.kibot.shared.models.OrderType.LIMIT else com.kibot.shared.models.OrderType.MARKET,
+                limitPrice = crashLimit,
                 postOnlyPreferred = false,
             )
         }
@@ -14117,6 +14137,9 @@ class MacEngineDaemon(
         private const val leaseLockdownRetryCooldownMs = 5_000L
         private const val dynamicMultiSlotPerSymbolLeaseMs = 12_000L
         private const val hardStopLossPct = -3.5
+        private const val emergencyGarbageNukeDrawdownTriggerPct = -0.02
+        private const val emergencyGarbageNukeCooldownMs = 30 * 60 * 1_000L
+        private const val crashGuardFastLimitMultiplier = 0.998
         private const val sinBinHours = 3
         private const val crashGuardWindowMinutes = 15
         private const val crashGuardGlobalThreshold = 3
@@ -14185,16 +14208,12 @@ class MacEngineDaemon(
             "h2o_idr",
             "rvm_idr",
             "mpro_idr",
-            "dusk_idr",
-            "fet_idr",
             "wlfi_idr",
-            "kaito_idr",
             "plpa_idr",
             "xpr_idr",
-            "xrp_idr",
-            "whitewhale_idr",  // Add large stale position
-            "trx_idr",         // Add large stale position
-            "xlm_idr",         // Add large stale position
+            "whitewhale_idr",
+            // REMOVED: trx_idr, xlm_idr, xrp_idr, dusk_idr, fet_idr, kaito_idr
+            // These are A-List / tradeable coins — NUKE kills profitability
         )
         private val activeOrderStatuses = setOf(
             com.kibot.shared.models.OrderStatus.CREATED,
