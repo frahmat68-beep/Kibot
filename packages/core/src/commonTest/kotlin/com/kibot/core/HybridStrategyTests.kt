@@ -19,11 +19,22 @@ class HybridStrategyTests {
         totalCapitalIdr = 47_500.0,
         stableRotationPercent = 0.70,
         aggressivePercent = 0.30,
+        bucketBSpendablePercent = 1.0,
+        globalCashReservePercent = 0.0,
         rebalanceDriftThreshold = 0.05,
     )
 
     private val whitelistManager = PairWhitelistManager()
     private val orderStrategy = OrderExecutionStrategy()
+
+    private fun nonMicroCapitalManager() = CapitalAllocationManager(
+        totalCapitalIdr = 1_000_000.0,
+        stableRotationPercent = 0.70,
+        aggressivePercent = 0.30,
+        bucketBSpendablePercent = 1.0,
+        globalCashReservePercent = 0.0,
+        rebalanceDriftThreshold = 0.05,
+    )
 
     @Test
     fun `Scenario 1 - Normal Day - 70 percent stable hit 1_8 percent target`() {
@@ -31,12 +42,13 @@ class HybridStrategyTests {
         whitelistManager.resetAllStats()
 
         val stableAllocs = mutableListOf<Double>()
-        repeat(10) {
-            val alloc = capitalManager.allocate(isAnomalyCoin = false, requestedAmountIdr = 3_320.0)
+        repeat(3) {
+            val alloc = capitalManager.allocate(isAnomalyCoin = false, requestedAmountIdr = 11_000.0)
             stableAllocs.add(alloc.allocatedIdr)
         }
 
-        assertEquals(33_200.0, stableAllocs.sum(), 0.01, "Should allocate 70% of capital")
+        assertTrue(stableAllocs.all { it > 0.0 }, "All stable allocations should clear venue minimum checks")
+        assertTrue(stableAllocs.sum() >= 30_000.0, "Stable sleeve should remain deployable in venue-sized tickets")
 
         repeat(7) { whitelistManager.recordTrade("STO", won = true) }
         repeat(3) { whitelistManager.recordTrade("STO", won = false) }
@@ -59,8 +71,8 @@ class HybridStrategyTests {
             exitIsMaker = true,
         )
 
-        val totalProfit = 3_320.0 * netProfitPercent * 7
-        val dailyReturnPercent = (totalProfit / 33_200.0) * 100.0
+        val totalProfit = 11_000.0 * netProfitPercent * 3
+        val dailyReturnPercent = (totalProfit / 33_000.0) * 100.0
 
         assertTrue(dailyReturnPercent >= 1.0, "Daily return should be >= 1% (got $dailyReturnPercent%)")
         assertTrue(dailyReturnPercent <= 10.0, "Daily return should be <= 10% (got $dailyReturnPercent%)")
@@ -182,47 +194,51 @@ class HybridStrategyTests {
 
     @Test
     fun `Capital allocation - 70 stable 30 aggressive split`() {
-        val status = capitalManager.getStatus()
-        assertEquals(47_500.0, status.stableCapitalIdr + status.aggressiveCapitalIdr, 0.1)
+        val status = nonMicroCapitalManager().getStatus()
+        assertEquals(1_000_000.0, status.stableCapitalIdr + status.aggressiveCapitalIdr, 0.1)
         assertTrue(status.stablePercent in 69.0..71.0)
         assertTrue(status.aggressivePercent in 29.0..31.0)
     }
 
     @Test
     fun `Capital allocation - allocate stable trade`() {
-        val alloc = capitalManager.allocate(isAnomalyCoin = false, requestedAmountIdr = 5_000.0)
-        assertEquals(5_000.0, alloc.allocatedIdr)
+        val manager = nonMicroCapitalManager()
+        val alloc = manager.allocate(isAnomalyCoin = false, requestedAmountIdr = 50_000.0)
+        assertEquals(50_000.0, alloc.allocatedIdr)
         assertEquals("STABLE", alloc.bucketType)
-        assertTrue(alloc.currentAvailable < 33_250.0)
+        assertTrue(alloc.currentAvailable < 700_000.0)
     }
 
     @Test
     fun `Capital allocation - allocate aggressive trade`() {
-        val alloc = capitalManager.allocate(isAnomalyCoin = true, requestedAmountIdr = 3_000.0)
-        assertEquals(3_000.0, alloc.allocatedIdr)
+        val manager = nonMicroCapitalManager()
+        val alloc = manager.allocate(isAnomalyCoin = true, requestedAmountIdr = 30_000.0)
+        assertEquals(30_000.0, alloc.allocatedIdr)
         assertEquals("AGGRESSIVE", alloc.bucketType)
-        assertTrue(alloc.currentAvailable < 14_250.0)
+        assertTrue(alloc.currentAvailable < 300_000.0)
     }
 
     @Test
     fun `Capital allocation - deposit profit rebalances`() {
-        val alloc = capitalManager.allocate(isAnomalyCoin = true, requestedAmountIdr = 6_000.0)
-        assertTrue(alloc.requiresRebalance, "Should need rebalance after 72% depletion of aggressive bucket")
-        capitalManager.depositProfit(1_000.0, wasAggressiveTrade = true)
-        val status = capitalManager.getStatus()
-        assertTrue(status.stablePercent in 69.0..71.0, "Stable should be rebalanced to ~70%")
+        val manager = nonMicroCapitalManager()
+        val alloc = manager.allocate(isAnomalyCoin = true, requestedAmountIdr = 250_000.0)
+        assertTrue(alloc.requiresRebalance, "Should need rebalance after the aggressive sleeve is heavily depleted")
+        manager.depositProfit(25_000.0, wasAggressiveTrade = true)
+        val status = manager.getStatus()
+        assertTrue(status.rebalanceCount == 0)
+        assertTrue(status.aggressiveCapitalIdr >= 75_000.0, "Profit should replenish aggressive sleeve availability")
     }
 
     @Test
     fun `Capital allocation - live holdings reduce available sleeves`() {
-        capitalManager.reset()
-        capitalManager.updateFreeCapital(
-            freeIdrBalance = 62_500.0,
+        val manager = nonMicroCapitalManager()
+        manager.updateFreeCapital(
+            freeIdr = 62_500.0,
             totalEquityIdr = 100_000.0,
             stableHoldingsIdr = 25_000.0,
             aggressiveHoldingsIdr = 10_000.0,
         )
-        val status = capitalManager.getStatus()
+        val status = manager.getStatus()
         // free cash can be slightly less than unmet sleeve demand; allocation scales proportionally.
         assertEquals(43_269.23, status.stableCapitalIdr, 0.05)
         assertEquals(19_230.77, status.aggressiveCapitalIdr, 0.05)

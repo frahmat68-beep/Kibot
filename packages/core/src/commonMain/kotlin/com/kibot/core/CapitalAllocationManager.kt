@@ -20,12 +20,14 @@ import kotlin.math.floor
  */
 class CapitalAllocationManager(
     private val totalCapitalIdr: Double = 60_000.0,
-    private val bucketAPercent: Double = 0.50,
-    private val bucketBPercent: Double = 0.50,
+    private val stableRotationPercent: Double = 0.50,
+    private val aggressivePercent: Double = 0.50,
     private val bucketBSpendablePercent: Double = 0.60,
     private val globalCashReservePercent: Double = 0.20,
-    private val rebalanceDriftThreshold: Double = 0.05
+    private val rebalanceDriftThreshold: Double = 0.05,
 ) {
+    private val bucketAPercent = aggressivePercent
+    private val bucketBPercent = stableRotationPercent
     
     private var isMicroAccount: Boolean = false
     private var microModeMaxPositions: Int = 0
@@ -54,8 +56,28 @@ class CapitalAllocationManager(
         val allocatedIdr: Double,
         val bucketType: String, // "A", "B", or "MICRO"
         val availableInBucket: Double,
-        val role: String? = null
+        val role: String? = null,
+        val currentAvailable: Double = availableInBucket,
+        val requiresRebalance: Boolean = false,
+        val rebalanceMessage: String = "",
+        val positionRole: String? = role,
     )
+
+    data class CapitalStatus(
+        val totalEquityIdr: Double,
+        val stableCapitalIdr: Double,
+        val aggressiveCapitalIdr: Double,
+        val totalDeployedStable: Double,
+        val totalDeployedAggressive: Double,
+        val stablePercent: Double,
+        val aggressivePercent: Double,
+        val mode: String,
+        val driftPercent: Double,
+        val rebalanceCount: Int,
+        val requiresRebalance: Boolean,
+    )
+
+    private var rebalanceCount = 0
 
     /**
      * Allocate for Bucket A (Global Lead-Lag)
@@ -73,7 +95,14 @@ class CapitalAllocationManager(
             deployedAIdr += amount
         }
         
-        return AllocationResult(amount, "A", availableAIdr)
+        return AllocationResult(
+            allocatedIdr = amount,
+            bucketType = "AGGRESSIVE",
+            availableInBucket = availableAIdr,
+            currentAvailable = availableAIdr,
+            requiresRebalance = requiresRebalance(),
+            rebalanceMessage = buildRebalanceMessage(),
+        )
     }
 
     /**
@@ -93,7 +122,14 @@ class CapitalAllocationManager(
             deployedBIdr += amount
         }
         
-        return AllocationResult(amount, "B", availableBIdr)
+        return AllocationResult(
+            allocatedIdr = amount,
+            bucketType = "STABLE",
+            availableInBucket = availableBIdr,
+            currentAvailable = availableBIdr,
+            requiresRebalance = requiresRebalance(),
+            rebalanceMessage = buildRebalanceMessage(),
+        )
     }
 
     private fun checkMicroMode(): Boolean {
@@ -109,11 +145,20 @@ class CapitalAllocationManager(
         val amount = if (perPos >= MIN_ORDER_INDODAX_IDR) perPos else 0.0
         val role = if (isAggressive) "CHASER" else "HOLDER"
         
-        return AllocationResult(amount, "MICRO", deployable, role)
+        return AllocationResult(
+            allocatedIdr = amount,
+            bucketType = "MICRO_POOL",
+            availableInBucket = deployable,
+            role = role,
+            currentAvailable = deployable,
+            requiresRebalance = false,
+            rebalanceMessage = "",
+            positionRole = role,
+        )
     }
 
-    fun calculateMaxPositions(deployableIdr: Double): Int {
-        return (deployableIdr / MIN_ORDER_INDODAX_IDR).toInt().coerceAtLeast(0)
+    fun calculateMaxPositions(totalFreeIdr: Double): Int {
+        return (totalFreeIdr / MIN_ORDER_INDODAX_IDR).toInt().coerceAtLeast(0)
     }
 
     fun updateEquity(totalEquityIdr: Double, freeIdr: Double, deployedA: Double, deployedB: Double) {
@@ -138,12 +183,117 @@ class CapitalAllocationManager(
         }
     }
 
-    fun getStatus() = mapOf(
-        "total_equity" to currentTotalEquityIdr,
-        "available_a" to availableAIdr,
-        "available_b" to availableBIdr,
-        "deployed_a" to deployedAIdr,
-        "deployed_b" to deployedBIdr,
-        "mode" to if (isMicroAccount) "MICRO" else "TRINITY_V7"
+    fun reset() {
+        isMicroAccount = false
+        microModeMaxPositions = 0
+        currentTotalEquityIdr = totalCapitalIdr
+        rebalanceCount = 0
+        availableAIdr = totalCapitalIdr * (1 - globalCashReservePercent) * bucketAPercent
+        availableBIdr = totalCapitalIdr * (1 - globalCashReservePercent) * bucketBPercent * bucketBSpendablePercent
+        deployedAIdr = 0.0
+        deployedBIdr = 0.0
+    }
+
+    fun allocate(
+        isAnomalyCoin: Boolean,
+        requestedAmountIdr: Double,
+        totalFreeIdr: Double = availableAIdr + availableBIdr,
+        currentPositionCount: Int = 0,
+    ): AllocationResult {
+        if (currentPositionCount >= calculateMaxPositions(totalFreeIdr)) {
+            return AllocationResult(
+                allocatedIdr = 0.0,
+                bucketType = if (isAnomalyCoin) "AGGRESSIVE" else "STABLE",
+                availableInBucket = if (isAnomalyCoin) availableAIdr else availableBIdr,
+                currentAvailable = if (isAnomalyCoin) availableAIdr else availableBIdr,
+                requiresRebalance = requiresRebalance(),
+                rebalanceMessage = "Position limit reached for current free capital",
+            )
+        }
+        return if (isAnomalyCoin) allocateA(requestedAmountIdr) else allocateB(requestedAmountIdr)
+    }
+
+    fun updateFreeCapital(
+        freeIdr: Double,
+        totalEquityIdr: Double,
+        stableHoldingsIdr: Double,
+        aggressiveHoldingsIdr: Double,
+    ) {
+        updateEquity(
+            totalEquityIdr = totalEquityIdr,
+            freeIdr = freeIdr,
+            deployedA = aggressiveHoldingsIdr,
+            deployedB = stableHoldingsIdr,
+        )
+    }
+
+    fun depositProfit(profitIdr: Double, wasAggressiveTrade: Boolean) {
+        currentTotalEquityIdr += profitIdr
+        if (wasAggressiveTrade) {
+            availableAIdr = (availableAIdr + profitIdr).coerceAtLeast(0.0)
+            deployedAIdr = (deployedAIdr - profitIdr).coerceAtLeast(0.0)
+        } else {
+            availableBIdr = (availableBIdr + profitIdr).coerceAtLeast(0.0)
+            deployedBIdr = (deployedBIdr - profitIdr).coerceAtLeast(0.0)
+        }
+    }
+
+    fun rebalance() {
+        rebalanceCount += 1
+        updateEquity(
+            totalEquityIdr = currentTotalEquityIdr,
+            freeIdr = availableAIdr + availableBIdr,
+            deployedA = deployedAIdr,
+            deployedB = deployedBIdr,
+        )
+    }
+
+    fun allocateMicroMode(
+        totalFreeIdr: Double,
+        currentPositionCount: Int,
+        isHighPumpSignal: Boolean,
+    ): AllocationResult {
+        val maxPositions = calculateMaxPositions(totalFreeIdr)
+        if (maxPositions <= 0 || currentPositionCount >= maxPositions) {
+            val role = if (isHighPumpSignal) "CHASER" else "HOLDER"
+            return AllocationResult(
+                allocatedIdr = 0.0,
+                bucketType = "MICRO_POOL",
+                availableInBucket = totalFreeIdr,
+                role = role,
+                currentAvailable = totalFreeIdr,
+                requiresRebalance = false,
+                rebalanceMessage = "max_positions_reached",
+                positionRole = role,
+            )
+        }
+        return allocateMicro(isAggressive = isHighPumpSignal)
+    }
+
+    fun getStatus(): CapitalStatus = CapitalStatus(
+        totalEquityIdr = currentTotalEquityIdr,
+        stableCapitalIdr = availableBIdr,
+        aggressiveCapitalIdr = availableAIdr,
+        totalDeployedStable = deployedBIdr,
+        totalDeployedAggressive = deployedAIdr,
+        stablePercent = bucketBPercent * 100.0,
+        aggressivePercent = bucketAPercent * 100.0,
+        mode = if (isMicroAccount) "MICRO" else "TRINITY_V7",
+        driftPercent = currentDriftPercent(),
+        rebalanceCount = rebalanceCount,
+        requiresRebalance = requiresRebalance(),
     )
+
+    private fun currentDriftPercent(): Double {
+        val tradeableTotal = currentTotalEquityIdr * (1 - globalCashReservePercent)
+        if (tradeableTotal <= 0.0) return 0.0
+        val actualAPct = deployedAIdr / tradeableTotal
+        val actualBPct = deployedBIdr / tradeableTotal
+        return maxOf(abs(actualAPct - bucketAPercent), abs(actualBPct - (bucketBPercent * bucketBSpendablePercent)))
+    }
+
+    private fun requiresRebalance(): Boolean = currentDriftPercent() >= rebalanceDriftThreshold
+
+    private fun buildRebalanceMessage(): String =
+        if (requiresRebalance()) "Capital bucket drift exceeded threshold" else ""
 }

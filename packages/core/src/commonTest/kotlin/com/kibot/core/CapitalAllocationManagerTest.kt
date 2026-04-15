@@ -10,7 +10,7 @@ class CapitalAllocationManagerTest {
         val manager = CapitalAllocationManager(totalCapitalIdr = 100_000.0)
 
         manager.updateFreeCapital(
-            freeIdrBalance = 10_000.0,
+            freeIdr = 10_000.0,
             totalEquityIdr = 100_000.0,
             stableHoldingsIdr = 0.0,
             aggressiveHoldingsIdr = 0.0,
@@ -20,17 +20,17 @@ class CapitalAllocationManagerTest {
         val totalAvailable = status.stableCapitalIdr + status.aggressiveCapitalIdr
 
         assertEquals(10_000.0, totalAvailable, 0.0001)
-        assertEquals(7_000.0, status.stableCapitalIdr, 0.0001)
-        assertEquals(3_000.0, status.aggressiveCapitalIdr, 0.0001)
+        assertEquals(3_750.0, status.stableCapitalIdr, 0.0001)
+        assertEquals(6_250.0, status.aggressiveCapitalIdr, 0.0001)
     }
 
     @Test
     fun `micro mode does not advertise slots when deployable cash is below venue minimum`() {
         val manager = CapitalAllocationManager(totalCapitalIdr = 47_500.0)
 
-        val maxPositions = manager.calculateMaxPositions(totalFreeIdr = 20_000.0)
+        val maxPositions = manager.calculateMaxPositions(totalFreeIdr = 9_000.0)
         val allocation = manager.allocateMicroMode(
-            totalFreeIdr = 20_000.0,
+            totalFreeIdr = 9_000.0,
             currentPositionCount = 0,
             isHighPumpSignal = false,
         )

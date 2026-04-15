@@ -58,6 +58,9 @@ import com.kibot.shared.models.DeviceDescriptor
 import com.kibot.shared.models.DeviceId
 import com.kibot.shared.models.DeviceRole
 import com.kibot.shared.models.DailyRiskSnapshot
+import com.kibot.shared.models.EngineHealthSnapshot
+import com.kibot.shared.models.EngineHeartbeatSnapshot
+import com.kibot.shared.models.EngineLeaseSnapshot
 import com.kibot.shared.models.HealthStatus
 import com.kibot.shared.models.LeaseState
 import com.kibot.shared.models.LeaseTerm
@@ -70,7 +73,6 @@ import com.kibot.shared.models.ReconciliationReport
 import com.kibot.shared.models.ReconciliationState
 import com.kibot.shared.models.RuntimeIntelligenceUpdate
 import com.kibot.shared.models.SyncHealth
-import com.kibot.shared.models.StrategyMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -408,7 +410,6 @@ class MacEngineDaemon(
         val forceRotation: Boolean = true,
         val sentAtEpochMs: Long,
         val expiresAtEpochMs: Long,
-        val category: String? = null,
         val payload: JsonObject? = null,
     )
 
@@ -694,7 +695,6 @@ class MacEngineDaemon(
         val pendingHeartbeat: EngineHeartbeatSnapshot? = null,
         val pendingDailyRisk: BufferedDailyRiskWrite? = null,
         val pendingFastTelemetry: BufferedFastTelemetryWrite? = null,
-        val lastKnownPriceCache: Map<String, Double> = emptyMap(),
     )
 
     private data class ForcedSellSignal(
@@ -810,8 +810,6 @@ class MacEngineDaemon(
     )
     private val hyperAggressiveEntryReasonByPair = java.util.concurrent.ConcurrentHashMap<String, HyperTargetKind>()
     private val partialTakeProfitExecutedByPair = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-    private val trinityLadderStageByPair = java.util.concurrent.ConcurrentHashMap<String, Int>()
-    private val lastOneMinVolByPair = java.util.concurrent.ConcurrentHashMap<String, Double>()
     private var lastSuperSexyTarget: com.kibot.shared.models.PairId? = null
     private val hyperConfig = config.hyperAggressiveConfig
     @Volatile private var dynamicSectorCorrelationBook: Map<String, Set<String>> = emptyMap()
@@ -826,7 +824,6 @@ class MacEngineDaemon(
 	    @Volatile private var forcedSafeModeReason: String? = null
 	    @Volatile private var forcedSafeModeAt: Instant? = null
     @Volatile private var lastPipelineMarkerLabel: String = ""
-    @Volatile private var lastCapitalStatusLogAt: Instant? = null
     private val sinBinUntilByPair = java.util.concurrent.ConcurrentHashMap<String, Instant>()
     private val crashGuardTriggerTimeline = ArrayDeque<Instant>()
     @Volatile private var globalCooldownUntil: Instant? = null
@@ -1187,32 +1184,28 @@ class MacEngineDaemon(
 
     private fun loadNonCriticalControlPlaneBuffer(): NonCriticalControlPlaneBufferSnapshot {
         val path = nonCriticalControlPlaneBufferPath()
-        val buffer = runCatching {
+        return runCatching {
             if (!Files.exists(path)) {
-                return@runCatching null
+                return NonCriticalControlPlaneBufferSnapshot(
+                    botId = config.controlPlane.botId.value,
+                    deviceId = config.device.deviceId.value,
+                )
             }
             json.decodeFromString<NonCriticalControlPlaneBufferSnapshot>(Files.readString(path))
-        }.getOrNull() ?: NonCriticalControlPlaneBufferSnapshot(
-            botId = config.controlPlane.botId.value,
-            deviceId = config.device.deviceId.value,
-        )
-        
-        // Initialize in-memory cache from persisted data
-        buffer.lastKnownPriceCache.forEach { (asset, price) ->
-            lastKnownPriceCache[asset] = price
+        }.getOrElse {
+            logger.warn("Failed to load control-plane non-critical buffer: {}", it.message)
+            NonCriticalControlPlaneBufferSnapshot(
+                botId = config.controlPlane.botId.value,
+                deviceId = config.device.deviceId.value,
+            )
         }
-        return buffer
     }
 
     private fun persistNonCriticalControlPlaneBuffer() {
         runCatching {
             val path = nonCriticalControlPlaneBufferPath()
             path.parent?.let { Files.createDirectories(it) }
-            // Sync in-memory cache before persisting
-            val bufferToPersist = nonCriticalControlPlaneBuffer.copy(
-                lastKnownPriceCache = lastKnownPriceCache.toMap()
-            )
-            Files.writeString(path, json.encodeToString(bufferToPersist))
+            Files.writeString(path, json.encodeToString(nonCriticalControlPlaneBuffer))
         }.onFailure {
             logger.warn("Failed to persist control-plane non-critical buffer: {}", it.message)
         }
@@ -1346,27 +1339,17 @@ class MacEngineDaemon(
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
     ): Double {
         val lowerBase = base.lowercase()
-        val price = marketQuotes.firstOrNull { it.pairId.value.equals("${lowerBase}_idr", ignoreCase = true) }
+        return marketQuotes.firstOrNull { it.pairId.value.equals("${lowerBase}_idr", ignoreCase = true) }
             ?.midPrice
             ?.toDoubleOrZero()
             ?.takeIf { it > 0.0 }
-        
-        if (price != null) {
-            lastKnownPriceCache[lowerBase] = price
-            return price
-        }
-        
-        // Fallback to LKP Cache
-        lastKnownPriceCache[lowerBase]?.let { return it }
-
-        // Last resort: Hardcoded fallbacks (Conservative)
-        return when (lowerBase) {
-            "usdt", "usdc" -> 16_000.0
-            "btc" -> 900_000_000.0
-            "eth" -> 45_000_000.0
-            "bnb" -> 7_500_000.0
-            else -> 1.0
-        }
+            ?: when (lowerBase) {
+                "usdt", "usdc" -> 16_200.0
+                "btc" -> 1_000_000_000.0
+                "eth" -> 50_000_000.0
+                "bnb" -> 8_000_000.0
+                else -> 1.0
+            }
     }
 
     private fun isLeadLagClassEnabled(coinClass: CoinClass): Boolean = when (coinClass) {
@@ -4004,10 +3987,6 @@ class MacEngineDaemon(
     }
     private var leadLagListenerSocket: DatagramSocket? = null
     private val leadLagListenerReady = AtomicBoolean(false)
-    private val lastKnownPriceCache = mutableMapOf<String, Double>()
-    private var lastHeartbeatLogAt: Instant? = null
-    private val HEARTBEAT_INTERVAL_SEC = 300 // 5 minutes
-
     private var lastEngineHeartbeatLogAt: Instant? = null
     private var lastKingDashboardFastTelemetryAt: Instant? = null
     private var lastControlPlaneHeartbeatAt: Instant? = null
@@ -4024,59 +4003,6 @@ class MacEngineDaemon(
         startTelegramCommandPolling()
         startWhatIfSimulationPolling()
         ensureRegistered()
-        
-        // SEED REPOSITORY FROM BUFFER (Restore data after restart)
-        runCatching {
-            val initialRisk = cachedDailyRisk
-            if (initialRisk != null) {
-                logger.info("[HYDRATION] Seeding repository with persistent risk snapshot: Equity={}", 
-                    initialRisk.currentEquityIdr)
-                
-                // Synthesize a minimal stable state for first UI paint
-                val initialTerm = lastObservedLeaseTerm ?: LeaseTerm(0)
-                val initialBotState = BotStateSnapshot(
-                    botId = config.controlPlane.botId,
-                    desiredState = BotDesiredState.OFF,
-                    effectiveState = BotEffectiveState.DEGRADED,
-                    activeDeviceId = config.device.deviceId,
-                    standbyDeviceId = null,
-                    currentTerm = initialTerm,
-                    syncHealth = SyncHealth.DEGRADED,
-                    strategyMode = StrategyMode.GROWTH
-                )
-
-                repository.applyRuntimeState(
-                    buildDashboardState(
-                        now = clock.now(),
-                        jakartaDate = jakartaNowDate(clock.now()),
-                        botState = initialBotState,
-                        peerBotStates = emptyMap(),
-                        lease = EngineLeaseSnapshot(
-                            botId = config.controlPlane.botId,
-                            currentHolder = config.device.deviceId,
-                            term = initialTerm,
-                            state = LeaseState.HELD,
-                            expiresAt = clock.now().plus(config.leaseTtlSeconds.seconds),
-                            lastHeartbeatAt = clock.now(),
-                            conflictDetected = false
-                        ),
-                        devices = emptyList(),
-                        localHealth = EngineHealthSnapshot(HealthStatus.HEALTHY, SyncHealth.DEGRADED, false, false, false),
-                        dailyRisk = initialRisk,
-                        equityHistory = emptyList(),
-                        balances = emptyList(),
-                        marketQuotes = emptyList(),
-                        strategyCycle = null,
-                        weeklyReview = null,
-                        recentOrders = emptyList(),
-                        supportEval = null,
-                        healthDecisionSummary = "Restoring from persistent buffer...",
-                        upstreamMarker = "WARM_BOOT"
-                    )
-                )
-            }
-        }
-
         while (true) {
             val currentState = repository.state.value
             val lifecycleBlocked = isLifecycleBlocked(currentState, clock.now())
@@ -4237,20 +4163,6 @@ class MacEngineDaemon(
             val commands = refreshPendingCommands(now)
             val weeklyReview = refreshWeeklyReview(now)
             lastSuccessfulControlPlaneAt = now
-
-            // HEARTBEAT LOGGING
-            if (lastHeartbeatLogAt == null || (now - (lastHeartbeatLogAt!!)).inWholeSeconds >= HEARTBEAT_INTERVAL_SEC) {
-                lastHeartbeatLogAt = now
-                val pnlStr = formatDecimal((dailyRisk?.drawdownPct ?: 0.0) * -100.0, 2)
-                logger.info(
-                    "[HEARTBEAT] Bot: {} | PnL: {}% | Equity: {} IDR | Mode: {} | Uptime: {}s",
-                    config.controlPlane.botId.value,
-                    pnlStr,
-                    formatDecimal(dailyRisk?.currentEquityIdr?.toDoubleOrZero() ?: 0.0, 0),
-                    botState.operatingMode,
-                    (now - daemonStartedAt).inWholeSeconds
-                )
-            }
 
             logger.info("DEAD_ZONE_TRACE: probing market reachability and orderbook cache")
             val (exchangeReachable, exchangePingMs) = probeExchange(now)
@@ -4628,12 +4540,11 @@ class MacEngineDaemon(
 	                val rememberedBucket = positionBucketTypeByPair[pairKey]?.uppercase()
 	                val classifyAggressive =
 	                    rememberedBucket == "AGGRESSIVE" ||
-	                        normalizedAsset in dynamicAnomalyCoins ||
-	                        trinityPendingSignals.any { it.pairId.equals(pairKey, ignoreCase = true) && it.msgType == "VETO_APPROVED" }
+	                        normalizedAsset in dynamicAnomalyCoins
 	                if (classifyAggressive) {
-	                    aggressiveHoldingsIdr += coinValueIdr  // Global Consensus / Anomaly = aggressive (50%)
+	                    aggressiveHoldingsIdr += coinValueIdr  // Volume anomaly = aggressive (30%)
 	                } else {
-	                    stableHoldingsIdr += coinValueIdr  // Local Sniper = stable (50%)
+	                    stableHoldingsIdr += coinValueIdr  // Normal = stable (70%)
 	                }
 	            }
 	        } catch (ex: Exception) {
@@ -4652,21 +4563,10 @@ class MacEngineDaemon(
 	            aggressiveHoldingsIdr,
 	        )
         
-        // [TRINITY v6.2] Periodic 5-minute capital status report
-        val shouldLogCapStatus = lastCapitalStatusLogAt == null || 
-            (now.toEpochMilliseconds() - lastCapitalStatusLogAt!!.toEpochMilliseconds()) >= 300_000L
-            
-        if (shouldLogCapStatus) {
-            capitalAllocationManager?.getStatus()?.let { capStatus ->
-                logger.info(
-                    "[CAPITAL_STATUS] TRINITY_v6.2 | buckets: STABLE={}idr AGGRESSIVE={}idr | deployed: STABLE={}idr AGGRESSIVE={}idr | drift: ${formatDecimal(capStatus.driftPercent, 2)}% rebalances: ${capStatus.rebalanceCount}",
-                    formatDecimal(capStatus.stableCapitalIdr, 0),
-                    formatDecimal(capStatus.aggressiveCapitalIdr, 0),
-                    formatDecimal(capStatus.totalDeployedStable, 0),
-                    formatDecimal(capStatus.totalDeployedAggressive, 0),
-                )
-                lastCapitalStatusLogAt = now
-            }
+        // DEBUG: Log capital allocation status
+        val capStatus = capitalAllocationManager?.getStatus()
+        if (capStatus != null) {
+            logger.info("[CAPITAL_REBALANCE] stable_available=${capStatus.stableCapitalIdr.toLong()} aggressive_available=${capStatus.aggressiveCapitalIdr.toLong()} stable_deployed=${capStatus.totalDeployedStable.toLong()} aggressive_deployed=${capStatus.totalDeployedAggressive.toLong()}")
         }
 
         emitEngineHeartbeat(
@@ -7182,16 +7082,7 @@ class MacEngineDaemon(
             hungry = hyperAggressiveTracker.hungry,
             marketQuotes = marketQuotes,
         )
-        val trinityLadderExit = planTrinityLadderExit(
-            managedPositions = managedPositions,
-            marketQuotes = marketQuotes,
-            cycle = cycle
-        )
-        val volumeCrashExit = planVolumeCrashExit(
-            managedPositions = managedPositions,
-            marketQuotes = marketQuotes
-        )
-        val exitDecision = emergencyGarbageExit ?: volumeCrashExit ?: absoluteLossProtectionExit ?: barbarianMaxHoldExit ?: hardTimeoutExit ?: opportunityCostExit ?: emergencyLiquidityExit ?: crashHardStopExit ?: trinityLadderExit ?: localAutonomyTrailingExit ?: forcedSellExit ?: hyperAggressiveTrailingExit ?: hyperAggressiveRotationExit ?: leadLagTrailingExit ?: adaptiveCoordinator.planExit(
+        val exitDecision = emergencyGarbageExit ?: absoluteLossProtectionExit ?: barbarianMaxHoldExit ?: hardTimeoutExit ?: opportunityCostExit ?: emergencyLiquidityExit ?: crashHardStopExit ?: localAutonomyTrailingExit ?: forcedSellExit ?: hyperAggressiveTrailingExit ?: hyperAggressiveRotationExit ?: leadLagTrailingExit ?: adaptiveCoordinator.planExit(
             now = now,
             cycle = cycle,
             managedPositions = managedPositions,
@@ -7507,28 +7398,17 @@ class MacEngineDaemon(
                         )
                         else -> Unit
                     }
-                }
-                
-                // Track Ladder Stage for partial fills
-                if (isPartialExit) {
-                    val pairKey = filteredExitDecision.executionPlan.signal.pairId.value.lowercase()
-                    if (filteredExitDecision.message.contains("LADDER_STAGE_1")) trinityLadderStageByPair[pairKey] = 1
-                    if (filteredExitDecision.message.contains("LADDER_STAGE_2")) trinityLadderStageByPair[pairKey] = 2
-                    if (filteredExitDecision.message.contains("LADDER_STAGE_3")) trinityLadderStageByPair[pairKey] = 3
-                } else {
-                    trinityLadderStageByPair.remove(filteredExitDecision.position.pairId.value.lowercase())
-                }
-
-                emitLeadLagExecutionReport(
+                    emitLeadLagExecutionReport(
                     pairId = filteredExitDecision.executionPlan.signal.pairId,
                     status = "SUCCESS",
-                    t0DetectedAtMs = detectedAtMs,
-                    t1ReceivedAtMs = receivedAt?.toEpochMilliseconds(),
-                    t2BuyAtMs = entryAt?.toEpochMilliseconds(),
-                    t3SellAtMs = exitAt.toEpochMilliseconds(),
-                    slippagePct = null,
-                    finalPnlIdr = pnlIdr,
-                )
+                        t0DetectedAtMs = detectedAtMs,
+                        t1ReceivedAtMs = receivedAt?.toEpochMilliseconds(),
+                        t2BuyAtMs = entryAt?.toEpochMilliseconds(),
+                        t3SellAtMs = exitAt.toEpochMilliseconds(),
+                        slippagePct = null,
+                        finalPnlIdr = pnlIdr,
+                    )
+                }
                 
                 // [70/30 CAPITAL ALLOCATION] Return capital to appropriate bucket after exit
                 if (pnlIdr != null && !isPartialExit) {
@@ -7763,7 +7643,7 @@ class MacEngineDaemon(
                 logWhyNotBuy(now, "entry", "trinity_heartbeat_safe_mode")
                 return
             }
-        
+        }
         val hyperAggressivePriorityPair = superSexyTarget ?: sexyMomentumTargets.firstOrNull()
         logger.info(
             "EXECUTION_TRACE: About to prioritize candidate set. topCandidate={} executionPlans={}",
@@ -8477,7 +8357,6 @@ class MacEngineDaemon(
     private suspend fun maybeRunAutonomousResolver(
         now: Instant,
         lease: EngineLeaseSnapshot,
-    }
         activePersistedOrders: List<com.kibot.shared.models.OrderSnapshot>,
     ) {
         if (config.exchangeKind != ExchangeKind.INDODAX) return
@@ -10651,7 +10530,6 @@ class MacEngineDaemon(
         val pnlTodayPct = openingEquity
             ?.takeIf { it > 0.0 }
             ?.let { (pnlToday / it) * 100.0 }
-            ?.takeIf { it.isFinite() }
             ?: 0.0
         val pnlCircuit = evaluatePnlCircuit(pnlTodayPct)
         val localPositionState = loadLocalPositionState()
@@ -11315,13 +11193,7 @@ class MacEngineDaemon(
                 quantity <= 0.0 -> 0.0
                 balance.asset.equals("idr", ignoreCase = true) -> quantity
                 balance.asset.equals(referenceQuoteAsset, ignoreCase = true) -> quantity
-                else -> {
-                    val price = quoteAssetReferencePrice(balance.asset, marketQuotes) ?: 0.0
-                    val value = quantity * price
-                    // Apply a 0.3% liquidation fee buffer for speculative/volatile assets
-                    // to ensure risk management accounts for 'realizable' equity.
-                    if (value > 0.0) value * 0.997 else 0.0
-                }
+                else -> quantity * (quoteAssetReferencePrice(balance.asset, marketQuotes) ?: 0.0)
             }
         }
         if (currentEquity <= 0.0) return previous
@@ -11347,7 +11219,7 @@ class MacEngineDaemon(
             profitableRange <= 0.0 || currentEquity >= highWatermark -> 0.0
             else -> ((highWatermark - currentEquity) / profitableRange).coerceIn(0.0, 1.0)
         }
-        val hardLimitPct = previous?.hardDailyLossLimitPct ?: 0.03
+        val hardLimitPct = previous?.hardDailyLossLimitPct ?: 0.03  // FIXED: was 0.05 (5%) → 0.03 (3%) on cold start
         val drawdownPct = if (openingEquity > 0.0 && currentEquity < openingEquity) {
             ((openingEquity - currentEquity) / openingEquity).coerceIn(0.0, 1.0)
         } else {
@@ -13595,18 +13467,48 @@ class MacEngineDaemon(
         
         // [70/30 CAPITAL ALLOCATION] Determine if this is anomaly/pump or stable trade
         val isAnomalyCoin = isAggressiveBucketPlan(executionPlan)
-        val currentBudget = executionPlan.quoteBudget?.toDoubleOrZero() ?: totalEquityIdr
         
-        // [70/30] Apply capital allocation from bucket (handles 25% cap, 70/30 split, and micro-mode)
-        val allocatedBudget = allocateCapitalForEntry(
-            requestedAmountIdr = currentBudget,
-            isAnomalyCoin = isAnomalyCoin,
-            pairId = executionPlan.signal.pairId.value
-        )
-        
-        return executionPlan.copy(
-            quoteBudget = DecimalValue.fromDouble(allocatedBudget),
-        )
+        return when (config.exchangeKind) {
+            ExchangeKind.INDODAX -> {
+                val budgetCapIdr = when {
+                    totalEquityIdr < 90_000.0 -> 25_000.0  // Increase from 11,500 → 25k for emergency
+                    totalEquityIdr < 180_000.0 -> 27_000.0  // Increase from 18,000 → 27k for emergency
+                    else -> totalEquityIdr * 0.22
+                }.coerceAtLeast(25_000.0)  // Increase floor from 10,250 → 25k to ensure min order met
+                val current = executionPlan.quoteBudget?.toDoubleOrZero() ?: budgetCapIdr
+                val prelimBudget = minOf(current, budgetCapIdr)
+                
+                // [70/30] Apply capital allocation from bucket
+                val allocatedBudget = allocateCapitalForEntry(
+                    requestedAmountIdr = prelimBudget,
+                    isAnomalyCoin = isAnomalyCoin,
+                    pairId = executionPlan.signal.pairId.value
+                )
+                
+                executionPlan.copy(
+                    quoteBudget = DecimalValue.fromDouble(allocatedBudget),
+                )
+            }
+            ExchangeKind.BINANCE_SPOT -> {
+                val budgetCapIdr = when {
+                    totalEquityIdr < 250_000.0 -> totalEquityIdr * 0.35
+                    else -> totalEquityIdr * 0.22
+                }.coerceAtLeast(12_000.0)
+                val current = executionPlan.quoteBudget?.toDoubleOrZero() ?: budgetCapIdr
+                val prelimBudget = minOf(current, budgetCapIdr)
+                
+                // [70/30] Apply capital allocation from bucket
+                val allocatedBudget = allocateCapitalForEntry(
+                    requestedAmountIdr = prelimBudget,
+                    isAnomalyCoin = isAnomalyCoin,
+                    pairId = executionPlan.signal.pairId.value
+                )
+                
+                executionPlan.copy(
+                    quoteBudget = DecimalValue.fromDouble(allocatedBudget),
+                )
+            }
+        }
     }
 
     private fun deriveCapitalAwareness(
@@ -14471,88 +14373,6 @@ class MacEngineDaemon(
         )
     }
 
-    private fun planTrinityLadderExit(
-        managedPositions: List<com.kibot.shared.models.Position>,
-        marketQuotes: List<com.kibot.shared.models.MarketQuote>,
-        cycle: Long
-    ): ExitDecision? {
-        for (pos in managedPositions) {
-            val pairKey = pos.pairId.value.lowercase()
-            val currentProfit = pos.currentProfitPct
-            val stage = trinityLadderStageByPair[pairKey] ?: 0
-            
-            // Ladder Stage 1: +3% -> Sell 30%
-            if (stage < 1 && currentProfit >= 3.0) {
-                return ExitDecision(
-                    position = pos,
-                    executionPlan = com.kibot.shared.models.ExecutionPlan(
-                        signal = com.kibot.shared.models.ExecutionSignal(pos.pairId, pos.averageEntryPrice, com.kibot.shared.models.OrderSide.SELL),
-                        quantity = (pos.quantity.toDoubleOrZero() * 0.30).toBigDecimalIdr(),
-                        orderType = com.kibot.shared.models.OrderType.LIMIT,
-                        limitPrice = marketQuotes.firstOrNull { it.pairId == pos.pairId }?.bestBid ?: pos.averageEntryPrice
-                    ),
-                    message = "TRINITY_LADDER_STAGE_1: Profit +3% reached, locking 30%"
-                )
-            }
-            
-            // Ladder Stage 2: +6% -> Sell 30%
-            if (stage < 2 && currentProfit >= 6.0) {
-                return ExitDecision(
-                    position = pos,
-                    executionPlan = com.kibot.shared.models.ExecutionPlan(
-                        signal = com.kibot.shared.models.ExecutionSignal(pos.pairId, pos.averageEntryPrice, com.kibot.shared.models.OrderSide.SELL),
-                        quantity = (pos.quantity.toDoubleOrZero() * 0.30).toBigDecimalIdr(),
-                        orderType = com.kibot.shared.models.OrderType.LIMIT,
-                        limitPrice = marketQuotes.firstOrNull { it.pairId == pos.pairId }?.bestBid ?: pos.averageEntryPrice
-                    ),
-                    message = "TRINITY_LADDER_STAGE_2: Profit +6% reached, locking 30%"
-                )
-            }
-            
-            // Ladder Stage 3: +10% -> Sell 20%
-            if (stage < 3 && currentProfit >= 10.0) {
-                return ExitDecision(
-                    position = pos,
-                    executionPlan = com.kibot.shared.models.ExecutionPlan(
-                        signal = com.kibot.shared.models.ExecutionSignal(pos.pairId, pos.averageEntryPrice, com.kibot.shared.models.OrderSide.SELL),
-                        quantity = (pos.quantity.toDoubleOrZero() * 0.20).toBigDecimalIdr(),
-                        orderType = com.kibot.shared.models.OrderType.LIMIT,
-                        limitPrice = marketQuotes.firstOrNull { it.pairId == pos.pairId }?.bestBid ?: pos.averageEntryPrice
-                    ),
-                    message = "TRINITY_LADDER_STAGE_3: Profit +10% reached, locking 20%"
-                )
-            }
-        }
-        return null
-    }
-
-    private fun planVolumeCrashExit(
-        managedPositions: List<com.kibot.shared.models.Position>,
-        marketQuotes: List<com.kibot.shared.models.MarketQuote>
-    ): ExitDecision? {
-        for (pos in managedPositions) {
-            val pairKey = pos.pairId.value.lowercase()
-            val quote = marketQuotes.firstOrNull { it.pairId == pos.pairId } ?: continue
-            
-            val current1mVol = quote.volume24h.toDoubleOrZero() / (24 * 60)
-            val last1mVol = lastOneMinVolByPair[pairKey] ?: current1mVol
-            lastOneMinVolByPair[pairKey] = current1mVol
-            
-            if (current1mVol < last1mVol * 0.3 && pos.currentProfitPct > 0.5) {
-                return ExitDecision(
-                    position = pos,
-                    executionPlan = com.kibot.shared.models.ExecutionPlan(
-                        signal = com.kibot.shared.models.ExecutionSignal(pos.pairId, pos.averageEntryPrice, com.kibot.shared.models.OrderSide.SELL),
-                        quantity = pos.quantity,
-                        orderType = com.kibot.shared.models.OrderType.MARKET
-                    ),
-                    message = "VOLUME_CRASH_EXIT: 1m volume dropped > 70%, exiting immediately to bypass liquidity trap"
-                )
-            }
-        }
-        return null
-    }
-
     private fun startWhatIfSimulationPolling() {
         whatIfSimulationJob?.cancel()
         whatIfSimulationJob = CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
@@ -14574,12 +14394,12 @@ class MacEngineDaemon(
             }
         }
     }
+}
 
 internal data class OwnershipResolution(
     val resolvedIsOwner: Boolean,
     val mismatch: Boolean,
     val shouldLog: Boolean,
-}
 )
 
 internal data class MarketDataValidation(
