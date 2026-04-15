@@ -24,10 +24,11 @@ import kotlin.math.floor
  * Capital rebalancing when drift > 5% detected
  */
 class CapitalAllocationManager(
-    private val totalCapitalIdr: Double = 47_500.0,  // IDR 47.5K total
-    private val stableRotationPercent: Double = 0.50,  // 50% Local Sniper (STABLE)
-    private val aggressivePercent: Double = 0.50,     // 50% Global Consensus (AGGRESSIVE)
-    private val rebalanceDriftThreshold: Double = 0.05 // 5% drift threshold
+    private val totalCapitalIdr: Double = 50_000.0,
+    private val stableRotationPercent: Double = 0.50,  // 50% Local Sniper (Bucket B)
+    private val aggressivePercent: Double = 0.50,     // 50% Global Alpha (Bucket A)
+    private val stableSpendablePercent: Double = 0.60, // Only 60% of Bucket B is spendable (40% reserve)
+    private val rebalanceDriftThreshold: Double = 0.05
 ) {
     
     // Micro-account mode detection
@@ -131,14 +132,23 @@ class CapitalAllocationManager(
             )
         }
         
-        // TRINITY v6.2: Enforce 25% per-coin cap
+        // TRINITY v6.2.5: Enforce spendable limits
+        val bucketLimit = if (isAnomalyCoin) {
+            currentBucket // Aggressive (Bucket A) is 100% spendable of its 50% share
+        } else {
+            // Stable (Bucket B) is only 60% spendable of its 50% share
+            val totalBucketB = currentTotalEquityIdr * stableRotationPercent
+            val maxSpendableB = totalBucketB * stableSpendablePercent
+            minOf(currentBucket, maxSpendableB - totalDeployedStableIdr)
+        }
+
         val maxPerCoin = currentTotalEquityIdr * MAX_SINGLE_POSITION_PCT
         
-        // Use requested amount or full available bucket, but NEVER exceed 25% total cap
+        // Use requested amount or full available bucket, but NEVER exceed limits
         val allocateAmount = if (requestedAmountIdr > 0) {
-            minOf(requestedAmountIdr, currentBucket, maxPerCoin)
+            minOf(requestedAmountIdr, bucketLimit, maxPerCoin)
         } else {
-            minOf(currentBucket, maxPerCoin)
+            minOf(bucketLimit, maxPerCoin)
         }
         
         // Deduct from current allocation

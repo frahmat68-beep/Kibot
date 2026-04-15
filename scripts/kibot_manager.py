@@ -59,6 +59,7 @@ _metrics: Dict[str, float | int] = {
     "fee_bleed_est_idr": 0.0,
     "whatif_skips_today": 0,
     "whatif_enters_today": 0,
+    "risk_mode": "GROWTH", # GROWTH, CAUTION, DEFENSIVE, RESTRICTED, HARD_STOP
 }
 _one_shot_used_today = False
 _full_stop_active = False
@@ -71,6 +72,7 @@ _price_history: Dict[str, List[float]] = {}  # pair_id -> [price1, price2, ...]
 _last_screener_run_at = 0.0
 _active_trails: Dict[str, Dict[str, Any]] = {}  # pair_id -> {entry_price, max_price, trailing_pct, ...}
 _global_whiteboard: Dict[str, Dict[str, Any]] = {}  # symbol -> {binance: price, cryptocom: price, ts: time}
+_market_regime: str = "SIDEWAYS" # Updated by KiCryp Radar
 
 
 def _load_dotenv_if_exists() -> None:
@@ -837,31 +839,90 @@ def analyze_pure_technical(pair_id: str, ticker: dict) -> dict:
         score -= 15
         reasons.append(f"OB weak {ob_ratio:.1f}x")
 
-    # === DECISION ===
-    pos_range = (price - low_24h) / max(high_24h - low_24h, 0.001)
-    pump_phase = "MID"
-    if pos_range < 0.35: pump_phase = "EARLY"
-    elif pos_range > 0.85: pump_phase = "PEAK"
+# =============================================
+# CONVICTION SCORE ENGINE — Bucket B
+# =============================================
 
-    min_score = 55
-    if score >= min_score and ob_ratio >= 1.2:
-        recommendation = "ENTER"
-    elif score >= 40:
-        recommendation = "WATCH"
-    else:
-        recommendation = "SKIP"
+class ConvictionScoreCalculator:
+    """Algoritma scoring murni matematis untuk koin lokal."""
 
-    return {
-        "pair_id": pair_id,
-        "recommendation": recommendation,
-        "score": round(score, 1),
-        "pump_phase": pump_phase,
-        "rsi": round(rsi, 1),
-        "ob_ratio": round(ob_ratio, 2),
-        "trailing_stop_pct": 0.035 if pump_phase == "MID" else 0.05,
-        "target_pct": 0.05 if pump_phase == "MID" else 0.08,
-        "reasoning": " | ".join(reasons[:3])
-    }
+    @staticmethod
+    def compute(pair_id: str, ticker: dict, closes: list[float], 
+                volumes: list[float], depth: dict | None) -> dict:
+        price = float(ticker.get("last", 0))
+        vol_24h = float(ticker.get("vol_idr", 0))
+        high_24h = float(ticker.get("high", price))
+        low_24h = float(ticker.get("low", price))
+        
+        # 1. Volume Spike Score (0.30)
+        # avg_vol_7d (approx from 15m candles * 4 * 24 * 7 -> way too many, use last 24h avg)
+        avg_vol = statistics.mean(volumes) if volumes else 1.0
+        cur_vol = volumes[-1] if volumes else 0
+        volume_spike = min(1.0, cur_vol / max(avg_vol, 1e-9))
+        
+        # 2. Breakout Score (0.25)
+        bb = calc_bollinger(closes)
+        breakout = 0.5
+        if bb:
+            breakout = (price - bb["lower"]) / max(bb["upper"] - bb["lower"], 1e-9)
+            breakout = max(0.0, min(1.0, breakout))
+        
+        # 3. Orderbook Score (0.25)
+        bid_vol = sum(float(b[1]) for b in depth["buy"][:10]) if depth else 1.0
+        ask_vol = sum(float(s[1]) for s in depth["sell"][:10]) if depth else 1.0
+        ob_score = bid_vol / max(bid_vol + ask_vol, 1e-9)
+        
+        # 4. Momentum Score (0.20)
+        rsi = calc_rsi(closes)
+        momentum = max(0.0, min(1.0, (75 - rsi) / 75))
+        
+        final_score = (
+            0.30 * volume_spike +
+            0.25 * breakout +
+            0.25 * ob_score +
+            0.20 * momentum
+        )
+        
+        # === HARD BLOCKS ===
+        blocks = []
+        if (price - low_24h) / max(low_24h, 1e-9) > 0.50:
+            blocks.append("Pump > 50%")
+        if bb and price > bb["upper"]:
+            blocks.append("Price > Upper BB")
+        if rsi > 80:
+            blocks.append("RSI > 80")
+        if vol_24h < 500_000_000:
+            blocks.append("Vol < 500M IDR")
+        # BTC Regime Guard check will be in main logic
+        
+        return {
+            "score": round(final_score, 3),
+            "blocks": blocks,
+            "rsi": rsi,
+            "ob_ratio": bid_vol / max(ask_vol, 1e-9),
+            "recommendation": "ENTER" if (final_score >= 0.85 and not blocks) else "SKIP"
+        }
+
+class RiskLadder:
+    """Cascade Loss Intelligence state machine."""
+    
+    @staticmethod
+    def get_mode(daily_pnl_pct: float, wins_today: int, losses_today: int, consecutive_losses: int) -> str:
+        if daily_pnl_pct < -0.02: return "HARD_STOP"
+        if consecutive_losses >= 3: return "RESTRICTED"
+        if consecutive_losses >= 2: return "DEFENSIVE"
+        if losses_today >= 1: return "CAUTION"
+        return "GROWTH"
+
+    @staticmethod
+    def get_kelly_multiplier(mode: str) -> float:
+        return {
+            "GROWTH": 1.0,
+            "CAUTION": 0.8,
+            "DEFENSIVE": 0.5,
+            "RESTRICTED": 0.3,
+            "HARD_STOP": 0.0
+        }.get(mode, 0.5)
 
 # =============================================
 # WHAT-IF ENGINE — Matematis, tidak butuh AI
@@ -916,25 +977,30 @@ def simulate_what_if(
         if rr > 0:
             kelly_f = max(0.01, min(0.12, (win_rate - ((1 - win_rate) / rr)) * 0.5))
 
+    # Apply Risk Ladder Multiplier (Cascade Loss Protection)
+    risk_mode = _metrics.get("risk_mode", "GROWTH")
+    kelly_multiplier = RiskLadder.get_kelly_multiplier(risk_mode)
+    kelly_f *= kelly_multiplier
+
     # Decision Gate Trinity v6.2
     penalty = _learning_engine.score_penalty(pair_id) if _learning_engine else 0.0
     min_net = 0.015 # Hard floor for Trinity
     
     decision = "ENTER"
-    reason   = "EV Positive"
+    reason   = f"EV Positive (Mode: {risk_mode})"
     
-    if ev_idr <= 0:
+    if risk_mode == "HARD_STOP":
+        decision = "SKIP"
+        reason = "System HARD STOP active"
+    elif ev_idr <= 0:
         decision = "SKIP"
         reason   = f"EV Negative (Rp{ev_idr:,.0f})"
-    elif kelly_f <= 0.01:
+    elif kelly_f <= 0.005:
         decision = "SKIP"
-        reason   = "Kelly Sizing too small (no edge)"
+        reason   = f"Kelly Sizing too small ({kelly_f:.3f})"
     elif net_pct < min_net:
         decision = "SKIP"
         reason   = f"Net target too thin ({net_pct:.2%})"
-    elif rr < 1.0:
-        decision = "REDUCE"
-        reason   = f"Low RR ratio ({rr:.2f})"
 
     return {
         "decision": decision,
@@ -942,6 +1008,7 @@ def simulate_what_if(
         "ev_idr":   round(ev_idr, 0),
         "win_rate": round(win_rate, 3),
         "kelly_f":  round(kelly_f, 3),
+        "risk_mode": risk_mode,
         "rr":       round(rr, 2),
         "net_pct":  round(net_pct, 4),
         "penalty":  round(penalty, 2),
@@ -1240,57 +1307,83 @@ def _process_signal_multipos(msg: dict):
     category = get_pair_category(pair_id)
     raw_score = float(msg.get("pumpScore", msg.get("pump_score", 0)))
     
-    # === 2. VALIDASI KILAT (GLOBAL CONSENSUS) ===
-    if category != "INDODAX_ONLY":
+    # === 2. VALIDASI KILAT (GLOBAL CONSENSUS - BUCKET A) ===
+    if category == "LEAD_LAG":
         binance_sym = get_binance_symbol(pair_id)
         if binance_sym:
             wb = _global_whiteboard.get(binance_sym)
-            if wb and wb["binance"] and wb["cryptocom"]:
-                diff = abs(wb["binance"] - wb["cryptocom"]) / wb["binance"]
-                if diff > 0.015: # Arbitrage/Spread > 1.5% = Suspicious
-                    print(f"[KIBOT][VETO] Rejected {pair_id} - Consensus failed (Spread {diff:.2%})", flush=True)
-                    return
+            if not wb or not wb.get("binance") or not wb.get("cryptocom"):
+                print(f"[KIBOT][VETO] Rejected {pair_id} - Missing consensus data (AND gate failed)", flush=True)
+                return
+            
+            diff = abs(wb["binance"] - wb["cryptocom"]) / wb["binance"]
+            if diff > 0.015: # Arbitrage/Spread > 1.5% = Suspicious
+                print(f"[KIBOT][VETO] Rejected {pair_id} - Consensus failed (Spread {diff:.2%})", flush=True)
+                return
+                
+        # BTC Regime Guard
+        if _market_regime == "BREAKDOWN_PANIC":
+            print(f"[KIBOT][VETO] Rejected {pair_id} - Market Regime Panic", flush=True)
+            return
 
-    # === 3. GATE 1: DYNAMIC THRESHOLD (from 30min review) ===
+    # === 3. GATE 1: DYNAMIC THRESHOLD & RISK LADDER ===
+    risk_mode = _metrics["risk_mode"]
+    if risk_mode == "HARD_STOP": return
+    
     score = raw_score * _score_multiplier
     min_score = 55 if category == "INDODAX_ONLY" else 45
+    
+    # Defensive Mode: Bucket B Disabled
+    if risk_mode == "DEFENSIVE" and category == "INDODAX_ONLY":
+        return
+
     if score < min_score:
         return
 
-    # === GATE 2: PORTFOLIO & HARD STOP ===
+    # === GATE 2: PORTFOLIO & CAPACITY ===
     can_open, reason = portfolio_manager.can_open(pair_id, category)
     if not can_open: return
-    if _is_hard_stop_active(): return
 
-    # === GATE 3: PURE TECHNICAL (for local pairs) ===
+    # === GATE 3: CONVICTION SCORE (BUCKET B) ===
     if category == "INDODAX_ONLY":
         snapshot = _load_indodax_ticker_snapshot()
         ticker = snapshot.get(pair_id)
         if not ticker: return
-        analysis = analyze_pure_technical(pair_id, ticker)
-        if analysis["recommendation"] != "ENTER": return
-        msg.update(analysis) # merge trailing/target config
+        
+        # Fresh Technical Data
+        candles = fetch_candles(pair_id, tf=15, count=25)
+        closes = [c["c"] for c in candles]
+        volumes = [c["v"] for c in candles]
+        depth = fetch_order_book_depth(pair_id)
+        
+        analysis = ConvictionScoreCalculator.compute(pair_id, ticker, closes, volumes, depth)
+        if analysis["recommendation"] != "ENTER": 
+            print(f"[KIBOT][BUCKET_B] {pair_id} Rejected: {analysis['blocks']}", flush=True)
+            return
+            
+        msg.update(analysis) # merge results
     
     # === GATE 4: WHAT-IF & KELLY SIZING ===
     current_equity = _get_total_equity_estimate() or 0.0
     available_budget = portfolio_manager.get_available_budget(current_equity)
     
-    # Use Trinity What-If Engine
+    # Enforce Bucket B 60% Deployment Cap (40% reserve)
+    if category == "INDODAX_ONLY":
+        available_budget = min(available_budget, current_equity * 0.50 * 0.60) # 60% of 50% allocation
+    
     sim = simulate_what_if(
         pair_id, available_budget,
         target_pct=msg.get("target_pct", 0.025),
         trailing_stop_pct=msg.get("trailing_stop_pct", 0.05),
-        use_market_entry=(raw_score >= 75)
+        use_market_entry=(raw_score >= 80)
     )
     
     if sim["decision"] == "SKIP":
         _metric_inc("whatif_skips_today")
         return
     
-    # Final budget decision — Math-based
-    budget_idr = min(available_budget, sim["kelly_budget_idr"])
-    if sim["decision"] == "REDUCE":
-        budget_idr *= 0.5
+    # Kelly Sizing
+    budget_idr = min(available_budget, current_equity * sim["kelly_f"])
     
     if budget_idr < PORTFOLIO_CONFIG["min_budget_idr"]:
         return
@@ -1300,8 +1393,8 @@ def _process_signal_multipos(msg: dict):
     trade_id = trade_logger.record_entry(
         pair_id, float(msg.get("price", 0)), budget_idr,
         category, msg.get("pump_phase", "MID"), score,
-        "MARKET" if sim["use_market"] else "LIMIT",
-        "STABLE" if current_equity > 1_000_000 else "CONSERVATIVE"
+        "MARKET" if sim.get("use_market_entry") else "LIMIT",
+        "AGGRESSIVE" if category != "INDODAX_ONLY" else "STABLE"
     )
     
     portfolio_manager.open_position(
