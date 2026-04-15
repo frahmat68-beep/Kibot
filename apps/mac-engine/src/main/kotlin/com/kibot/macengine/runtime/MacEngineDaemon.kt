@@ -4003,7 +4003,7 @@ class MacEngineDaemon(
     private var leadLagListenerSocket: DatagramSocket? = null
     private val leadLagListenerReady = AtomicBoolean(false)
     private val lastKnownPriceCache = mutableMapOf<String, Double>()
-    private var lastHeartbeatAtValue: Instant? = null
+    private var lastHeartbeatLogAt: Instant? = null
     private val HEARTBEAT_INTERVAL_SEC = 300 // 5 minutes
 
     private var lastEngineHeartbeatLogAt: Instant? = null
@@ -4184,16 +4184,16 @@ class MacEngineDaemon(
             lastSuccessfulControlPlaneAt = now
 
             // HEARTBEAT LOGGING
-            if (lastHeartbeatAtValue == null || (now - (lastHeartbeatAtValue!!)).inWholeSeconds >= HEARTBEAT_INTERVAL_SEC) {
-                lastHeartbeatAtValue = now
+            if (lastHeartbeatLogAt == null || (now - (lastHeartbeatLogAt!!)).inWholeSeconds >= HEARTBEAT_INTERVAL_SEC) {
+                lastHeartbeatLogAt = now
                 val pnlStr = formatDecimal((dailyRisk?.drawdownPct ?: 0.0) * -100.0, 2)
                 logger.info(
                     "[HEARTBEAT] Bot: {} | PnL: {}% | Equity: {} IDR | Mode: {} | Uptime: {}s",
                     config.controlPlane.botId.value,
                     pnlStr,
                     formatDecimal(dailyRisk?.currentEquityIdr?.toDoubleOrZero() ?: 0.0, 0),
-                    botState.currentMode,
-                    (now - (degradedModeEnteredAt ?: lifecycleRegisteredAt ?: now)).inWholeSeconds
+                    botState.operatingMode,
+                    (now - daemonStartedAt).inWholeSeconds
                 )
             }
 
