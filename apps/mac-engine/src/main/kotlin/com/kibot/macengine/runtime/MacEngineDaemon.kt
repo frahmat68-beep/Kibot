@@ -4022,6 +4022,44 @@ class MacEngineDaemon(
         startTelegramCommandPolling()
         startWhatIfSimulationPolling()
         ensureRegistered()
+        
+        // SEED REPOSITORY FROM BUFFER (Restore data after restart)
+        runCatching {
+            val initialRisk = cachedDailyRisk
+            if (initialRisk != null) {
+                logger.info("[HYDRATION] Seeding repository with persistent risk snapshot: Equity={} PnL={}", 
+                    initialRisk.currentEquityIdr, initialRisk.realizedPnlIdr)
+                repository.applyRuntimeState(
+                    buildDashboardState(
+                        now = clock.now(),
+                        jakartaDate = jakartaNowDate(clock.now()),
+                        botState = currentBotState ?: BotStateSnapshot(
+                            botId = config.controlPlane.botId,
+                            desiredState = BotDesiredState.PAUSED,
+                            effectiveState = BotEffectiveState.DEGRADED,
+                            currentTerm = LeaseTerm(0),
+                            syncHealth = SyncHealth.DEGRADED,
+                            strategyMode = StrategyMode.MOMENTUM
+                        ),
+                        peerBotStates = emptyMap(),
+                        lease = runtimeLease,
+                        devices = emptyList(),
+                        localHealth = EngineHealthSnapshot(HealthStatus.HEALTHY, SyncHealth.DEGRADED, false, false, false),
+                        dailyRisk = initialRisk,
+                        equityHistory = emptyList(),
+                        balances = emptyList(),
+                        marketQuotes = emptyList(),
+                        strategyCycle = null,
+                        weeklyReview = null,
+                        recentOrders = emptyList(),
+                        supportEval = null,
+                        healthDecisionSummary = "Restoring from persistent buffer...",
+                        upstreamMarker = "WARM_BOOT"
+                    )
+                )
+            }
+        }
+
         while (true) {
             val currentState = repository.state.value
             val lifecycleBlocked = isLifecycleBlocked(currentState, clock.now())
@@ -10563,6 +10601,7 @@ class MacEngineDaemon(
         val pnlTodayPct = openingEquity
             ?.takeIf { it > 0.0 }
             ?.let { (pnlToday / it) * 100.0 }
+            ?.takeIf { it.isFinite() }
             ?: 0.0
         val pnlCircuit = evaluatePnlCircuit(pnlTodayPct)
         val localPositionState = loadLocalPositionState()

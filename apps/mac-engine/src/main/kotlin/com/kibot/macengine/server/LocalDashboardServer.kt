@@ -285,10 +285,14 @@ class LocalDashboardServer(
                         flush()
                         repository.state.collect { latest ->
                             if (!isActive) return@collect
-                            val payload = Json.encodeToString(latest)
-                            write("event: state\n")
-                            write("data: $payload\n\n")
-                            flush()
+                            runCatching {
+                                val payload = Json.encodeToString(latest)
+                                write("event: state\n")
+                                write("data: $payload\n\n")
+                                flush()
+                            }.onFailure { error ->
+                                logger.error("SSE state stream failed: ${error.message}")
+                            }
                         }
                     } catch (error: Throwable) {
                         if (isBenignClientDisconnect(error)) {
@@ -325,11 +329,12 @@ class LocalDashboardServer(
                 val job = launch {
                     repository.state.collect { latest ->
                         if (!isActive) return@collect
-                        send(
-                            Json.encodeToString(
-                                CommandCenterWsEnvelope.Snapshot(latest.toLiveSnapshot(host, port, botId)),
-                            ),
-                        )
+                        runCatching {
+                            val snapshot = latest.toLiveSnapshot(host, port, botId)
+                            send(Json.encodeToString(CommandCenterWsEnvelope.Snapshot(snapshot)))
+                        }.onFailure { error ->
+                            logger.error("WebSocket broadcast failed: ${error.message}")
+                        }
                     }
                 }
                 try {
@@ -370,11 +375,12 @@ class LocalDashboardServer(
                 val job = launch {
                     repository.state.collect { latest ->
                         if (!isActive) return@collect
-                        send(
-                            Json.encodeToString(
-                                CommandCenterWsEnvelope.Snapshot(latest.toLiveSnapshot(host, port, botId)),
-                            ),
-                        )
+                        runCatching {
+                            val snapshot = latest.toLiveSnapshot(host, port, botId)
+                            send(Json.encodeToString(CommandCenterWsEnvelope.Snapshot(snapshot)))
+                        }.onFailure { error ->
+                            logger.error("Legacy WebSocket broadcast failed: ${error.message}")
+                        }
                     }
                 }
                 try {
