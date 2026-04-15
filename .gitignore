@@ -37,3 +37,4 @@ SUPABASE_MIGRATION_GUIDE.md
 *.credentials.md
 *_GUIDE.md
 .env*
+.tmp-kidax-last6m.log
