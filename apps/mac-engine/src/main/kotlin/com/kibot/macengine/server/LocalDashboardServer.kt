@@ -155,6 +155,26 @@ class LocalDashboardServer(
             data class PairScoreState(val pair: String)
 
             @Serializable
+            data class HealthServicesResponse(
+                val kidax: String,
+                val kibot: String,
+                val kinance: String,
+            )
+
+            @Serializable
+            data class HealthResponse(
+                val status: String,
+                val timestamp: String,
+                val uptimeMs: Long,
+                val botId: String,
+                val effectiveState: String,
+                val syncHealth: String,
+                val tradingAllowed: Boolean,
+                val hardStopActive: Boolean,
+                val services: HealthServicesResponse,
+            )
+
+            @Serializable
             data class DashboardStateResponse(
                 val portfolioValueIdr: String,
                 val dailyPnlPct: Double,
@@ -211,19 +231,19 @@ class LocalDashboardServer(
                     state.syncHealth.equals("DEGRADED", ignoreCase = true) ||
                     state.kidaxNodeStatus.contains("down", ignoreCase = true) ||
                     state.kinanceNodeStatus.contains("down", ignoreCase = true)
-                val payload = mapOf(
-                    "status" to if (degraded) "degraded" else "ok",
-                    "timestamp" to java.time.Instant.now().toString(),
-                    "uptimeMs" to (System.currentTimeMillis() - startedAtMs),
-                    "botId" to botId.value,
-                    "effectiveState" to state.effectiveState.name,
-                    "syncHealth" to state.syncHealth,
-                    "tradingAllowed" to state.liveExecutionEnabled,
-                    "hardStopActive" to hardStopActive,
-                    "services" to mapOf(
-                        "kidax" to state.kidaxNodeStatus,
-                        "kibot" to state.kibotNodeStatus,
-                        "kinance" to state.kinanceNodeStatus,
+                val payload = HealthResponse(
+                    status = if (degraded) "degraded" else "ok",
+                    timestamp = java.time.Instant.now().toString(),
+                    uptimeMs = (System.currentTimeMillis() - startedAtMs),
+                    botId = botId.value,
+                    effectiveState = state.effectiveState.name,
+                    syncHealth = state.syncHealth,
+                    tradingAllowed = state.liveExecutionEnabled,
+                    hardStopActive = hardStopActive,
+                    services = HealthServicesResponse(
+                        kidax = state.kidaxNodeStatus,
+                        kibot = state.kibotNodeStatus,
+                        kinance = state.kinanceNodeStatus,
                     ),
                 )
                 call.respond(if (degraded) HttpStatusCode.ServiceUnavailable else HttpStatusCode.OK, payload)
