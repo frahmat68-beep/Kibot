@@ -25,8 +25,8 @@ import kotlin.math.floor
  */
 class CapitalAllocationManager(
     private val totalCapitalIdr: Double = 47_500.0,  // IDR 47.5K total
-    private val stableRotationPercent: Double = 0.70,  // 70% stable
-    private val aggressivePercent: Double = 0.30,     // 30% aggressive
+    private val stableRotationPercent: Double = 0.50,  // 50% Local Sniper (STABLE)
+    private val aggressivePercent: Double = 0.50,     // 50% Global Consensus (AGGRESSIVE)
     private val rebalanceDriftThreshold: Double = 0.05 // 5% drift threshold
 ) {
     

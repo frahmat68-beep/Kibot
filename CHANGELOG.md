@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Order Book Vision**: Bid/Ask volume imbalance detection (Ratio > 2.0).
 - **Pump Reversal Security**: Volume collapse detection and Dynamic Peak Locking (Tighten stop at 1%).
 - **Learning Bridge**: Hard-wired TradeLogger to LearningEngine for real-time Bayesian-Kelly updates.
+- **Global Consensus (Whiteboard)**: Integrated 'Papan Tulis' system for cross-exchange validation (Binance + Crypto.com).
+- **KiCryp Radar**: New real-time WebSocket streamer for high-confidence global signals.
+- **50/50 Capital Partitioning**: Reformulated core capital allocation into Local Sniper (50%) and Global Alpha (50%) buckets.
 
 ### Changed
 - **Refactored `kibot_manager.py`**: Integrated the Trinity Brain components into the main execution loop.

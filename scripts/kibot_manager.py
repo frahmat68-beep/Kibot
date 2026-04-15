@@ -70,6 +70,7 @@ _math_review_trade_journal: list[dict[str, Any]] = []
 _price_history: Dict[str, List[float]] = {}  # pair_id -> [price1, price2, ...]
 _last_screener_run_at = 0.0
 _active_trails: Dict[str, Dict[str, Any]] = {}  # pair_id -> {entry_price, max_price, trailing_pct, ...}
+_global_whiteboard: Dict[str, Dict[str, Any]] = {}  # symbol -> {binance: price, cryptocom: price, ts: time}
 
 
 def _load_dotenv_if_exists() -> None:
@@ -1213,15 +1214,44 @@ async def screen_indodax_only_pairs() -> list[dict]:
 def _process_signal_multipos(msg: dict):
     """
     Entry gate untuk multi-position system Trinity v6.2.
-    Math-first: Kelly sizing, What-If simulation, Pure Technical Detection.
+    Implementasi 'Papan Tulis' (Global Consensus) & Veto Logic.
     """
+    global _global_whiteboard
+
+    source = msg.get("source", "BINANCE")
+    msg_type = msg.get("msgType", msg.get("type", "SIGNAL"))
+
+    # === 1. UPDATE PAPAN TULIS (BACKGROUND) ===
+    if msg_type == "TICKER_UPDATE":
+        symbol = msg.get("symbol", "")
+        if not symbol: return
+        
+        wb_entry = _global_whiteboard.setdefault(symbol, {"binance": None, "cryptocom": None})
+        if source == "CRYPTOCOM":
+            wb_entry["cryptocom"] = msg.get("price")
+        else:
+            wb_entry["binance"] = msg.get("price")
+        wb_entry["ts"] = time.time()
+        return # Update papan tulis saja, jangan lanjut eksekusi
+
     pair_id = msg.get("pairId", msg.get("pair_id", ""))
     if not pair_id: return
     
     category = get_pair_category(pair_id)
     raw_score = float(msg.get("pumpScore", msg.get("pump_score", 0)))
     
-    # === GATE 1: DYNAMIC THRESHOLD (from 30min review) ===
+    # === 2. VALIDASI KILAT (GLOBAL CONSENSUS) ===
+    if category != "INDODAX_ONLY":
+        binance_sym = get_binance_symbol(pair_id)
+        if binance_sym:
+            wb = _global_whiteboard.get(binance_sym)
+            if wb and wb["binance"] and wb["cryptocom"]:
+                diff = abs(wb["binance"] - wb["cryptocom"]) / wb["binance"]
+                if diff > 0.015: # Arbitrage/Spread > 1.5% = Suspicious
+                    print(f"[KIBOT][VETO] Rejected {pair_id} - Consensus failed (Spread {diff:.2%})", flush=True)
+                    return
+
+    # === 3. GATE 1: DYNAMIC THRESHOLD (from 30min review) ===
     score = raw_score * _score_multiplier
     min_score = 55 if category == "INDODAX_ONLY" else 45
     if score < min_score:
@@ -1280,13 +1310,20 @@ def _process_signal_multipos(msg: dict):
     )
     
     _broadcast_udp({
+        "kind": "lead_lag_breakout",
         "msgType": "SMART_ENTRY",
         "pairId": pair_id,
         "price": msg.get("price"),
         "budget_idr": budget_idr,
         "orderType": "MARKET" if sim["use_market"] else "LIMIT",
-        "category": category,
-        "traceId": trade_id
+        "category": "AGGRESSIVE" if category != "INDODAX_ONLY" else "STABLE",
+        "confidence": float(msg.get("pumpScore", msg.get("pump_score", 0.70))),
+        "expectedNetPct": float(msg.get("target_pct", 0.025)),
+        "shortTermReturnPct": float(msg.get("pump_24h_pct", 0.0)),
+        "sentAtEpochMs": int(time.time() * 1000),
+        "expiresAtEpochMs": int((time.time() + 60) * 1000),
+        "traceId": trade_id,
+        "senderBotId": "kibot_manager_trinity"
     })
 
 def _check_portfolio_pnl():
