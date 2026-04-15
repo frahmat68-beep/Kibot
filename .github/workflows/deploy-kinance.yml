@@ -149,7 +149,7 @@ jobs:
               exit 1
             fi
             echo "✅ Deployment successful!"
-            cat /tmp/kinance-state.json | head -c 800
+            cat /tmp/kinance-state.json
 
       - name: Notify on Failure
         if: failure()
