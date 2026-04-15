@@ -1,3 +1,6 @@
+# 🔒 SYSTEM LOCKED - STABLE DEPLOYMENT WORKFLOW
+# DO NOT MODIFY without professional audit.
+# This workflow is part of the KiBot Risk Guardrail system.
 name: Deploy Kinance
 
 on:
@@ -150,6 +153,8 @@ jobs:
             fi
             echo "✅ Deployment successful!"
             cat /tmp/kinance-state.json
+            rm -rf ${REMOTE_ROOT}/.deploy
+            rm -rf ${REMOTE_ROOT}/.tmp/*
 
       - name: Notify on Failure
         if: failure()
