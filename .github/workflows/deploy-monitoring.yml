@@ -64,5 +64,12 @@ jobs:
             sudo systemctl enable grafana-server
             sudo systemctl restart grafana-server
             
+            echo "Optimizing Firewall for Grafana (Port 3000)..."
+            if command -v ufw > /dev/null; then
+              sudo ufw allow 3000/tcp
+            elif command -v iptables > /dev/null; then
+              sudo iptables -A INPUT -p tcp --dport 3000 -j ACCEPT
+            fi
+
             echo "Grafana installation complete. Checking status..."
             sudo systemctl is-active grafana-server
