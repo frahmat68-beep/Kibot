@@ -22,7 +22,7 @@ jobs:
       DEPLOY_USER: ${{ secrets.KINANCE_USER }}
       DEPLOY_KEY: ${{ secrets.KINANCE_SSH }}
       DEPLOY_PORT: ${{ secrets.KINANCE_SSH_PORT || '22' }}
-      REMOTE_ROOT: /home/ubuntu/KiBot
+      REMOTE_ROOT: /home/ubuntu/KiCryp
       SERVICE_NAME: kicryp-binance
       SERVICE_FILE: infra/systemd/kicryp-binance.service
       RUNTIME_PORT: "8788"
@@ -60,16 +60,7 @@ jobs:
 
       - name: Stage Runtime Bundle
         run: |
-          mkdir -p .deploy/scripts .deploy/infra/systemd
-          cp apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar .deploy/mac-engine-all.jar
-          cp "$SERVICE_FILE" .deploy/infra/systemd/
-          cp infra/scripts/engine-recovery.sh .deploy/engine-recovery.sh
-          cp infra/scripts/setup-engine-autorecover.sh .deploy/setup-autorecover.sh
-          cp scripts/sync_env_to_server.sh .deploy/scripts/
-          cp scripts/kicryp_manager.py .deploy/scripts/
-          cp scripts/kicryp_whatif_engine.py .deploy/scripts/
-          cp scripts/kicryp_learning_engine.py .deploy/scripts/
-          cp scripts/kicryp_timeframe_analyzer.py .deploy/scripts/
+          cp scripts/kicryp_*.py .deploy/scripts/
           cp scripts/dashboard_template.py .deploy/scripts/
 
       - name: Prepare Remote Directories
