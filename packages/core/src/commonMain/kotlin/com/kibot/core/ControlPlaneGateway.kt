@@ -52,6 +52,27 @@ data class TradeHistoryRecord(
     val createdAt: Instant? = null,
 )
 
+data class TradeLogSubmission(
+    val tradeId: String,
+    val pairId: String,
+    val category: String,
+    val entryPrice: Double,
+    val exitPrice: Double,
+    val budgetIdr: Double,
+    val pnlIdr: Double,
+    val pnlPct: Double,
+    val orderTypeEntry: String,
+    val orderTypeExit: String,
+    val pumpPhase: String,
+    val pumpScore: Double,
+    val holdMinutes: Long,
+    val win: Boolean,
+    val exitReason: String,
+    val bucketType: String,
+    val entryAt: Instant,
+    val exitAt: Instant,
+)
+
 data class DeviceRegistration(
     val deviceId: DeviceId,
     val displayName: String,
@@ -142,6 +163,8 @@ interface ControlPlaneGateway {
     suspend fun fetchKingDashboardSnapshot(): KingDashboardSnapshot?
 
     suspend fun fetchTradeHistory(limit: Int = 50, offset: Int = 0): List<TradeHistoryRecord>
+
+    suspend fun submitTradeLog(record: TradeLogSubmission)
 
     suspend fun fetchRecentLogs(botId: BotId, limit: Int = 50): List<AuditLogRecord>
 

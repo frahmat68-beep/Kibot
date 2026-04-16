@@ -40,6 +40,8 @@ data class Position(
 )
 
 @Serializable
+data class NetWorthPoint(
+    val timestamp: Long,
     val value: Double
 )
 

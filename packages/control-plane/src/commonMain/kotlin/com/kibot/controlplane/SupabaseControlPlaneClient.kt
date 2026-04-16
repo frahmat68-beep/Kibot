@@ -3,6 +3,7 @@ package com.kibot.controlplane
 import com.kibot.core.ControlPlaneGateway
 import com.kibot.core.DeviceRegistration
 import com.kibot.core.KingDashboardSnapshot
+import com.kibot.core.TradeLogSubmission
 import com.kibot.core.TradeHistoryRecord
 import com.kibot.shared.models.AdvisorySeverity
 import com.kibot.shared.models.AuditLogRecord
@@ -579,6 +580,56 @@ class SupabaseControlPlaneClient internal constructor(
         }.getOrDefault(emptyList())
     }
 
+    override suspend fun submitTradeLog(record: TradeLogSubmission) {
+        val primaryBody = buildJsonObject {
+            put("trade_id", record.tradeId)
+            put("pair_id", record.pairId)
+            put("bucket", normalizeTradeBucket(record.bucketType))
+            put("category", record.category)
+            put("entry_price", record.entryPrice)
+            put("exit_price", record.exitPrice)
+            put("budget_idr", record.budgetIdr)
+            put("pnl_idr", record.pnlIdr)
+            put("pnl_pct", record.pnlPct)
+            put("order_type_entry", record.orderTypeEntry)
+            put("order_type_exit", record.orderTypeExit)
+            put("pump_phase", record.pumpPhase)
+            put("conviction_score", record.pumpScore)
+            put("hold_minutes", record.holdMinutes)
+            put("win", record.win)
+            put("exit_reason", record.exitReason)
+            put("entry_at", record.entryAt.toString())
+            put("exit_at", record.exitAt.toString())
+        }
+
+        val fallbackBody = buildJsonObject {
+            put("pair_id", record.pairId)
+            put("entry_price", record.entryPrice)
+            put("exit_price", record.exitPrice)
+            put("budget_idr", record.budgetIdr)
+            put("pnl_idr", record.pnlIdr)
+            put("pnl_pct", record.pnlPct)
+            put("order_type", record.orderTypeExit.ifBlank { record.orderTypeEntry })
+            put("pump_phase", record.pumpPhase)
+            put("pump_score", record.pumpScore)
+            put("hold_minutes", record.holdMinutes)
+            put("win", record.win)
+            put("entry_at", record.entryAt.toString())
+        }
+
+        val inserted = runCatching {
+            upsertTable(
+                table = "trade_history",
+                body = primaryBody,
+                onConflict = "trade_id",
+            )
+        }.isSuccess
+
+        if (!inserted) {
+            insertIntoTable(table = "trade_history", body = fallbackBody)
+        }
+    }
+
     override suspend fun fetchRecentLogs(botId: BotId, limit: Int): List<AuditLogRecord> {
         return selectList<LogRow>(
             table = "logs",
@@ -595,6 +646,13 @@ class SupabaseControlPlaneClient internal constructor(
             orderBy = "updated_at.desc",
             limit = limit,
         ).map(OrderRow::toOrderSnapshot)
+    }
+
+    private fun normalizeTradeBucket(bucketType: String): String {
+        return when (bucketType.trim().uppercase()) {
+            "A", "STABLE", "HIGH", "HIGH_CONVICTION", "PRIMARY" -> "A"
+            else -> "B"
+        }
     }
 
     override suspend fun fetchOpenPersistedOrders(botId: BotId): List<OrderSnapshot> {

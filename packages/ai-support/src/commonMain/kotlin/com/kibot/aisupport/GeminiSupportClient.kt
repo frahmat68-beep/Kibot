@@ -64,7 +64,7 @@ class GeminiSupportClient private constructor(
         ),
     )
 
-    suspend fun analyze(candidates: List<AiSupportCandidate>): List<AiPairSupportHint> {
+    override suspend fun analyze(candidates: List<AiSupportCandidate>): List<AiPairSupportHint> {
         if (!config.isUsable || candidates.isEmpty()) return emptyList()
 
         val payload = GeminiGenerateContentRequest(
@@ -113,7 +113,7 @@ class GeminiSupportClient private constructor(
         }
     }
 
-    suspend fun researchHolding(request: HoldingResearchRequest): HoldingResearchDecision? {
+    override suspend fun researchHolding(request: HoldingResearchRequest): HoldingResearchDecision? {
         if (!config.isUsable) return null
 
         val payload = GeminiGenerateContentRequest(
@@ -429,24 +429,6 @@ private data class GeminiGenerateContentResponse(
 @Serializable
 private data class GeminiCandidate(
     val content: GeminiContent? = null,
-)
-
-@Serializable
-private data class AiSupportResponse(
-    val pairs: List<AiSupportResponseItem> = emptyList(),
-)
-
-@Serializable
-private data class AiSupportResponseItem(
-    @SerialName("pair_id")
-    val pairId: String,
-    @SerialName("support_bias")
-    val supportBias: Double = 0.0,
-    @SerialName("caution_bias")
-    val cautionBias: Double = 0.0,
-    @SerialName("cheap_nominal_watch")
-    val cheapNominalWatch: Boolean = false,
-    val rationale: String = "",
 )
 
 private fun Double.round3String(): String = (round(this * 1000.0) / 1000.0).toString()

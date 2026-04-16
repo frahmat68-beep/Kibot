@@ -101,14 +101,3 @@ class PublicFallbackProvider(
         } else text
     }
 }
-
-@Serializable
-private data class AiSupportResponse(val pairs: List<AiSupportResponseItem> = emptyList())
-
-@Serializable
-private data class AiSupportResponseItem(
-    val pair_id: String,
-    val support_bias: Double = 0.0,
-    val caution_bias: Double = 0.0,
-    val rationale: String = ""
-)

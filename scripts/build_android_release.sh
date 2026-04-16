@@ -2,12 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ANDROID_PROJECT_DIR="${ROOT_DIR}/apps/android"
 DIST_DIR="${ROOT_DIR}/.dist/android/stable"
 KEYSTORE_ENV="${ROOT_DIR}/.secrets/android-keystore.env"
-ANDROID_BUILD_DIR="${KIBOT_ANDROID_BUILD_DIR:-$HOME/.kibot-build/apps-android}"
 
-if [[ ! -f "${ROOT_DIR}/local.properties" ]]; then
-  echo "local.properties is missing. Run scripts/setup_android_sdk.sh first."
+if [[ ! -f "${ANDROID_PROJECT_DIR}/local.properties" ]]; then
+  echo "apps/android/local.properties is missing. Run scripts/setup_android_sdk.sh first."
   exit 1
 fi
 
@@ -28,10 +28,6 @@ export ANDROID_RELEASE_KEY_PASSWORD="$(env_value ANDROID_RELEASE_KEY_PASSWORD)"
 
 mkdir -p "${DIST_DIR}"
 
-if [[ -d "${ANDROID_BUILD_DIR}" ]]; then
-  rm -rf "${ANDROID_BUILD_DIR}"
-fi
-
 PREV_CODE=0
 if [[ -f "${DIST_DIR}/latest.json" ]]; then
   PREV_CODE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("versionCode",0))' "${DIST_DIR}/latest.json" 2>/dev/null || echo 0)"
@@ -40,10 +36,10 @@ NEXT_CODE=$((PREV_CODE + 1))
 export KIBOT_ANDROID_VERSION_CODE="${NEXT_CODE}"
 export KIBOT_ANDROID_VERSION_NAME="1.0.${NEXT_CODE}"
 
-"${ROOT_DIR}/gradlew" :apps:android:assembleRelease
+"${ANDROID_PROJECT_DIR}/gradlew" --project-dir "${ANDROID_PROJECT_DIR}" assembleRelease -x lintVitalRelease --no-daemon
 
-APK_PATH="${ANDROID_BUILD_DIR}/outputs/apk/release/android-release.apk"
-METADATA_PATH="${ANDROID_BUILD_DIR}/outputs/apk/release/output-metadata.json"
+APK_PATH="${ANDROID_PROJECT_DIR}/app/build/outputs/apk/release/app-release.apk"
+METADATA_PATH="${ANDROID_PROJECT_DIR}/app/build/outputs/apk/release/output-metadata.json"
 if [[ ! -f "${APK_PATH}" ]]; then
   echo "Release APK not found at ${APK_PATH}"
   exit 1

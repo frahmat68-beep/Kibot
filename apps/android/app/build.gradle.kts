@@ -5,6 +5,9 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val envVersionCode = System.getenv("KIBOT_ANDROID_VERSION_CODE")?.toIntOrNull()
+val envVersionName = System.getenv("KIBOT_ANDROID_VERSION_NAME")
+
 android {
     namespace = "com.kibot.android"
     compileSdk = 34
@@ -13,8 +16,8 @@ android {
         applicationId = "com.kibot.android"
         minSdk = 26
         targetSdk = 34
-        versionCode = 7
-        versionName = "7.0.0"
+        versionCode = envVersionCode ?: 7
+        versionName = envVersionName ?: "7.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

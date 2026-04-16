@@ -2,11 +2,12 @@ package com.kibot.core
 
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.*
 import java.io.File
 import java.util.UUID
@@ -165,8 +166,8 @@ class TradeLogger(
             lines.mapNotNull { line ->
                 try {
                     val node = json.parseToJsonElement(line)
-                    if (node.asObject()["tradeId"]?.asPrimitive()?.content == tradeId &&
-                        node.asObject()["status"]?.asPrimitive()?.content == "OPEN") {
+                    if (node.asObject()["tradeId"]?.asPrimitive()?.contentOrNull == tradeId &&
+                        node.asObject()["status"]?.asPrimitive()?.contentOrNull == "OPEN") {
                         json.decodeFromString<TradeEntryRecord>(line)
                     } else null
                 } catch (e: Exception) { null }
@@ -177,26 +178,28 @@ class TradeLogger(
     private fun syncToSupabase(record: TradeExitRecord) {
         scope.launch {
             try {
-                // Formatting for Supabase (Snake Case usually)
-                val payload = mapOf(
-                    "pair_id" to record.pairId,
-                    "category" to record.category,
-                    "entry_price" to record.entryPrice,
-                    "exit_price" to record.exitPrice,
-                    "budget_idr" to record.budgetIdr,
-                    "pnl_idr" to record.pnlIdr,
-                    "pnl_pct" to record.pnlPct,
-                    "order_type_entry" to record.orderTypeEntry,
-                    "order_type_exit" to record.orderTypeExit,
-                    "pump_phase" to record.pumpPhase,
-                    "pump_score" to record.pumpScore,
-                    "hold_minutes" to record.holdMinutes,
-                    "win" to record.win,
-                    "exit_reason" to record.exitReason,
-                    "bucket_type" to record.bucketType
+                controlPlane.submitTradeLog(
+                    TradeLogSubmission(
+                        tradeId = record.tradeId,
+                        pairId = record.pairId,
+                        category = record.category,
+                        entryPrice = record.entryPrice,
+                        exitPrice = record.exitPrice,
+                        budgetIdr = record.budgetIdr,
+                        pnlIdr = record.pnlIdr,
+                        pnlPct = record.pnlPct,
+                        orderTypeEntry = record.orderTypeEntry,
+                        orderTypeExit = record.orderTypeExit,
+                        pumpPhase = record.pumpPhase,
+                        pumpScore = record.pumpScore,
+                        holdMinutes = record.holdMinutes,
+                        win = record.win,
+                        exitReason = record.exitReason,
+                        bucketType = record.bucketType,
+                        entryAt = Instant.parse(record.entryAt),
+                        exitAt = Instant.parse(record.exitAt),
+                    ),
                 )
-                
-                controlPlane.submitTradeLog(payload)
             } catch (e: Exception) {
                 println("[TRADELOG][CLOUD][ERR] Supabase sync failed: ${e.message}")
             }
@@ -206,6 +209,6 @@ class TradeLogger(
     private fun Instant.toIsoString(): String = this.toString()
     
     // Helper extension for simple JSON parsing without heavy boilerplate
-    private fun kotlinx.serialization.json.JsonElement.asObject() = this.jsonObject
-    private fun kotlinx.serialization.json.JsonElement.asPrimitive() = this.jsonPrimitive
+    private fun kotlinx.serialization.json.JsonElement.asObject() = jsonObject
+    private fun kotlinx.serialization.json.JsonElement.asPrimitive() = jsonPrimitive
 }

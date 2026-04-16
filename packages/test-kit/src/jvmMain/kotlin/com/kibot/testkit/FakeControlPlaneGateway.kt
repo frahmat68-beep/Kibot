@@ -3,6 +3,7 @@ package com.kibot.testkit
 import com.kibot.core.ControlPlaneGateway
 import com.kibot.core.DeviceRegistration
 import com.kibot.core.KingDashboardSnapshot
+import com.kibot.core.TradeLogSubmission
 import com.kibot.core.TradeHistoryRecord
 import com.kibot.shared.models.AuditLogRecord
 import com.kibot.shared.models.BotDesiredState
@@ -337,6 +338,8 @@ class FakeControlPlaneGateway(
     }
 
     override suspend fun fetchTradeHistory(limit: Int, offset: Int): List<TradeHistoryRecord> = emptyList()
+
+    override suspend fun submitTradeLog(record: TradeLogSubmission) = Unit
 
     override suspend fun fetchRecentLogs(botId: BotId, limit: Int): List<AuditLogRecord> = logs.takeLast(limit).reversed()
 
