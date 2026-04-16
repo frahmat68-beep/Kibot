@@ -17,6 +17,7 @@ class LossPreventionSystem(
     private val config: LossPreventionConfig = LossPreventionConfig(),
 ) {
     private val lossHistory = mutableMapOf<String, MutableList<LossEvent>>()
+    private val globalLossHistory = mutableListOf<Long>() // Timestamps of global losses
     private val temporaryBlacklist = mutableMapOf<String, BlacklistEntry>()
     
     /**
@@ -30,47 +31,46 @@ class LossPreventionSystem(
         unrealizedPnlPct: Double,
         quote: MarketQuote?,
     ): ForceExitDecision {
-        // Fast loss cut - don't wait
-        if (unrealizedPnlPct <= -config.fastExitLossPct) {
+        // --- WHAT-IF MATRIX SCENARIOS ---
+        
+        // Scenario 1: VERTICAL_PUMP (>3% gain in short window)
+        // If gain is high, we don't necessarily exit, but we suggest tightening the trailing stop.
+        if (unrealizedPnlPct >= config.verticalPumpThresholdPct) {
             return ForceExitDecision(
-                shouldExit = true,
-                reason = "FAST_LOSS_CUT",
-                urgency = ExitUrgency.IMMEDIATE,
-                blockMinutes = 30,  // Block for 30min after fast loss
+                shouldExit = false, // Soft exit (trailing adjustment)
+                reason = "VERTICAL_PUMP",
+                trailingAdjustmentPct = config.tightTrailingStopPct 
             )
         }
-        
-        // Stagnant position eating capital
+
+        // Scenario 2: SUDDEN_FLUSH (Price dropping from peak with sell pressure)
+        if (quote != null) {
+            val bidDepth = quote.bidDepthTop5Idr.toDoubleOrZero()
+            val askDepth = quote.askDepthTop5Idr.toDoubleOrZero()
+            val volumeImbalance = askDepth > bidDepth * config.flushVolumeMultiplier
+            val rapidDrop = quote.shortTermReturnPct <= -config.flushDropThresholdPct
+            
+            if (rapidDrop && volumeImbalance && unrealizedPnlPct < 0.8) {
+                return ForceExitDecision(
+                    shouldExit = true,
+                    reason = "SUDDEN_FLUSH",
+                    urgency = ExitUrgency.IMMEDIATE,
+                    blockMinutes = 15
+                )
+            }
+        }
+
+        // Scenario 3: MOMENTUM_STALL (Zombie position in +/- 0.2% range for 90min)
         if (ageMinutes >= config.stagnantPositionMinutes && 
-            unrealizedPnlPct < config.minAcceptablePnlPct) {
+            abs(unrealizedPnlPct) <= config.stagnancyZombielandRange) {
             return ForceExitDecision(
                 shouldExit = true,
-                reason = "STAGNANT_CAPITAL",
+                reason = "MOMENTUM_STALL",
                 urgency = ExitUrgency.NORMAL,
-                blockMinutes = 15,
+                blockMinutes = 5
             )
         }
-        
-        // Death spiral detection (price keeps dropping)
-        if (quote != null && isInDeathSpiral(pairId, quote, unrealizedPnlPct)) {
-            return ForceExitDecision(
-                shouldExit = true,
-                reason = "DEATH_SPIRAL",
-                urgency = ExitUrgency.IMMEDIATE,
-                blockMinutes = 60,  // Block for 1 hour
-            )
-        }
-        
-        // Repeat loser - this coin keeps losing
-        if (isRepeatLoser(pairId)) {
-            return ForceExitDecision(
-                shouldExit = true,
-                reason = "REPEAT_LOSER",
-                urgency = ExitUrgency.IMMEDIATE,
-                blockMinutes = 120,  // Block for 2 hours
-            )
-        }
-        
+
         return ForceExitDecision(shouldExit = false)
     }
     
@@ -80,6 +80,7 @@ class LossPreventionSystem(
     fun recordLoss(event: LossEvent) {
         val history = lossHistory.getOrPut(event.pairId) { mutableListOf() }
         history.add(event)
+        globalLossHistory.add(event.timestamp)
         
         // Keep only recent history (last 24 hours)
         val cutoff = System.currentTimeMillis() - 86_400_000L
@@ -183,7 +184,26 @@ class LossPreventionSystem(
             lastLossMinutesAgo = (System.currentTimeMillis() - history.last().timestamp) / 60_000L,
         )
     }
+
+    /**
+     * Check if global circuit breaker is active (3+ losses in 1 hour)
+     */
+    fun isGlobalCircuitBreakerActive(): Boolean {
+        val oneHourAgo = System.currentTimeMillis() - 3_600_000L
+        
+        // Cleanup old global history
+        globalLossHistory.removeAll { it < oneHourAgo }
+        
+        return globalLossHistory.size >= 3
+    }
     
+    /**
+     * Get the timestamp of the last global loss event
+     */
+    fun getLastLossTimestamp(): Long? {
+        return globalLossHistory.lastOrNull()
+    }
+
     /**
      * Clear expired blacklist entries
      */
@@ -200,6 +220,13 @@ data class LossPreventionConfig(
     val maxLossesBeforeBlacklist: Int = 3,  // 3 losses = blacklist
     val blacklistLossThresholdIdr: Double = 5000.0,  // Blacklist if total loss >= Rp5K
     val repeatLoserBlockMinutes: Int = 240,  // Block repeat losers for 4 hours
+    
+    // What-If Matrix Thresholds
+    val verticalPumpThresholdPct: Double = 3.0,
+    val tightTrailingStopPct: Double = 0.7,
+    val flushDropThresholdPct: Double = 1.5,
+    val flushVolumeMultiplier: Double = 2.0,
+    val stagnancyZombielandRange: Double = 0.2, // +/- 0.2% PnL range
 )
 
 data class ForceExitDecision(
@@ -207,6 +234,7 @@ data class ForceExitDecision(
     val reason: String = "",
     val urgency: ExitUrgency = ExitUrgency.NORMAL,
     val blockMinutes: Int = 0,  // How long to block this pair after exit
+    val trailingAdjustmentPct: Double? = null, // Suggested new trailing stop
 )
 
 enum class ExitUrgency {

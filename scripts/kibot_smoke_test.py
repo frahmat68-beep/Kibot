@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 import os
 import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def project_path(*parts: str) -> Path:
+    return PROJECT_ROOT.joinpath(*parts)
 
 def smoke_test():
     """
@@ -21,10 +28,11 @@ def smoke_test():
     # 2. Check Core Directory Structure
     required_dirs = ["state", "scripts", "logs"]
     for d in required_dirs:
-        if not os.path.exists(d):
+        dir_path = project_path(d)
+        if not dir_path.exists():
             print(f"⚠️ Directory '{d}' missing. Attempting to create...")
             try:
-                os.makedirs(d, exist_ok=True)
+                dir_path.mkdir(parents=True, exist_ok=True)
                 print(f"✅ Created '{d}'")
             except Exception as e:
                 print(f"❌ FAILED to create '{d}': {e}")
@@ -53,7 +61,7 @@ def smoke_test():
     # 4. Check critical script availability
     core_scripts = ["scripts/kibot_manager.py", "scripts/kibot_engine_v2.py"]
     for s in core_scripts:
-        if not os.path.exists(s):
+        if not project_path(*s.split("/")).exists():
             print(f"❌ CRITICAL: Missing core script: {s}")
             sys.exit(1)
     

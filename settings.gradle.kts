@@ -19,6 +19,7 @@ rootProject.name = "kicryp"
 include(
     ":apps:android",
     ":apps:mac-engine",
+    ":apps:kicom-daemon",
     ":packages:ai-support",
     ":packages:shared-models",
     ":packages:core",

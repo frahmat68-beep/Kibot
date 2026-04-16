@@ -1,124 +1,92 @@
 #!/usr/bin/env python3
-import asyncio
-import json
-import os
-import socket
 import time
-import websockets
-from collections import deque, defaultdict
+import json
+import socket
+import requests
+import math
+import os
+from datetime import datetime
 
-# === CONFIGURATION ===
-INDODAX_WS_URL = "wss://ws.indodax.com/ws/public"
-# UDP transmission to KiBot/KiBot Manager
-MANAGER_UDP_HOST = os.getenv("KIBOT_MANAGER_HOST", "127.0.0.1")
-MANAGER_UDP_PORT = int(os.getenv("KIBOT_MANAGER_PORT", "9999"))
+# CONFIGURATION
+INDODAX_TICKER_API = "https://indodax.com/api/tickers"
+MANAGER_UDP_IP = "127.0.0.1"
+MANAGER_UDP_PORT = 9998
+SCAN_INTERVAL = 30
+CONVICTION_THRESHOLD = 0.85
 
-# Early Pump Thresholds (Trinity v7.0 Tune)
-VOL_SPIKE_THRESHOLD = 5.0  # 5x average volume
-PRICE_MOVE_THRESHOLD = 0.02 # 2% move
-WINDOW_SECONDS = 60         # 1 minute window for average
-DETECT_WINDOW = 10          # 10 second window for detection
+def get_tickers():
+    try:
+        response = requests.get(INDODAX_TICKER_API, timeout=10)
+        return response.json().get('tickers', {})
+    except Exception as e:
+        print(f"[{datetime.now()}] Error fetching tickers: {e}")
+        return {}
 
-class KiBotLocalSignalEngine:
-    def __init__(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.trade_history = defaultdict(lambda: deque(maxlen=WINDOW_SECONDS*10)) # symbol -> deque of (ts, volume, price)
-        self.last_signal_at = {} # symbol -> timestamp
+def calculate_conviction(symbol, ticker, history):
+    """
+    Gaussian-based ConvictionScore calculation.
+    Factors: 24h Volatility, 1h Momentum, Volume Spike, and Spread.
+    """
+    last = float(ticker.get('last', 0))
+    high = float(ticker.get('high', 0))
+    low = float(ticker.get('low', 0))
+    vol_idr = float(ticker.get('vol_idr', 0))
+    
+    if last == 0 or vol_idr < 50_000_000: # Min 50jt volume for local bucket
+        return 0.0
 
-    def broadcast_signal(self, symbol, current_price, score, reason):
-        """Send pump signal to the Manager."""
-        now = time.time()
-        # Cooldown: Don't spam signals for the same coin
-        if now - self.last_signal_at.get(symbol, 0) < 300: # 5 minute cooldown
-            return
+    # 1. Momentum (Distance from 24h Low)
+    range_24h = high - low
+    if range_24h == 0: return 0.0
+    dist_from_low = (last - low) / range_24h
+    
+    # 2. Volume Spike (Relative to history if available)
+    # Simplified for v7.0: purely based on 24h intensity
+    vol_score = min(vol_idr / 500_000_000, 1.0) 
 
-        msg = {
-            "source": "KIBOT_LOCAL_ENGINE",
-            "type": "LOCAL_PUMP_SIGNAL",
-            "symbol": symbol,
-            "price": current_price,
-            "score": score,
-            "reason": reason,
-            "timestamp": now
-        }
-        try:
-            self.sock.sendto(json.dumps(msg).encode(), (MANAGER_UDP_HOST, MANAGER_UDP_PORT))
-            print(f"[LOCAL_SIGNAL][DETECTED] {symbol} @ {current_price} score={score:.2f} reason={reason}", flush=True)
-            self.last_signal_at[symbol] = now
-        except Exception as e:
-            print(f"[LOCAL_SIGNAL][UDP-ERR] {e}", flush=True)
+    # 3. Spread Factor
+    buy = float(ticker.get('buy', 0))
+    sell = float(ticker.get('sell', 0))
+    spread = (sell - buy) / last if last > 0 else 1.0
+    spread_score = max(0, 1.0 - (spread / 0.02)) # Penalty if spread > 2%
 
-    async def process_trade(self, symbol, data):
-        """Analyze trade stream for anomalous patterns."""
-        now = time.time()
-        price = float(data.get("price", 0))
-        volume = float(data.get("quantity", 0))
-        
-        if price <= 0 or volume <= 0: return
+    # Final Gaussian-like smoothing
+    raw_score = (dist_from_low * 0.4) + (vol_score * 0.4) + (spread_score * 0.2)
+    conviction = 1 / (1 + math.exp(-10 * (raw_score - 0.5))) # Sigmoid centered at 0.5
+    
+    return round(conviction, 4)
 
-        # Record trade
-        self.trade_history[symbol].append((now, volume, price))
-        
-        # Analyze windows
-        history = list(self.trade_history[symbol])
-        if not history: return
+def send_signal(pair, conviction):
+    payload = {
+        "kind": "local_signal",
+        "pair": pair,
+        "conviction": conviction,
+        "timestamp": int(time.time()),
+        "source": "kibot_local_scanner"
+    }
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.sendto(json.dumps(payload).encode(), (MANAGER_UDP_IP, MANAGER_UDP_PORT))
+        print(f"[{datetime.now()}] SIGNAL SENT: {pair} (Conviction: {conviction})")
+    except Exception as e:
+        print(f"[{datetime.now()}] UDP Send failed: {e}")
 
-        # 1. Calculate Baseline Volume (last 60s)
-        total_vol = sum(t[1] for t in history if now - t[0] <= WINDOW_SECONDS)
-        avg_vol_per_sec = total_vol / WINDOW_SECONDS
-        
-        # 2. Calculate Recent Volume (last 10s)
-        recent_trades = [t for t in history if now - t[0] <= DETECT_WINDOW]
-        recent_vol = sum(t[1] for t in recent_trades)
-        recent_vol_per_sec = recent_vol / DETECT_WINDOW if recent_trades else 0
-        
-        # 3. Calculate Price Move
-        if len(recent_trades) < 2: return
-        start_price = recent_trades[0][2]
-        move_pct = (price - start_price) / start_price
-
-        # DETECTION CRITERIA
-        vol_spike = recent_vol_per_sec / max(0.0000001, avg_vol_per_sec)
-        
-        if vol_spike >= VOL_SPIKE_THRESHOLD and move_pct >= PRICE_MOVE_THRESHOLD:
-            score = (vol_spike / VOL_SPIKE_THRESHOLD) + (move_pct / PRICE_MOVE_THRESHOLD * 2)
-            self.broadcast_signal(symbol, price, score, f"VOL_SPIKE_{vol_spike:.1f}x_MOVE_{move_pct*100:.1f}%")
-
-    async def run(self):
-        print(f"[LOCAL_SIGNAL] Initializing Indodax Local Signal Engine...", flush=True)
-        print(f"[LOCAL_SIGNAL] Connecting to {INDODAX_WS_URL}...", flush=True)
-        
-        # Indodax WS requires subscription after connection
-        async for ws in websockets.connect(INDODAX_WS_URL):
-            try:
-                # Get coin list or just subscribe to everything (Indodax WS can be heavy)
-                # For BIO_IDR fix, we must ensure it's in the whitelist or we listen to all
-                print("[LOCAL_SIGNAL] Connected. Subscribing to public trade streams...", flush=True)
+def main():
+    print(f"[{datetime.now()}] KiBot Local Signal Engine v7.0 Started")
+    history = {}
+    
+    while True:
+        tickers = get_tickers()
+        for symbol, data in tickers.items():
+            if not symbol.endswith('_idr'): continue
+            
+            conviction = calculate_conviction(symbol, data, history)
+            
+            if conviction >= CONVICTION_THRESHOLD:
+                send_signal(symbol, conviction)
                 
-                # In Indodax WS, we subscribe symbol by symbol or use a wildcard if available
-                # Here we simulate subscription to active pairs
-                # (Actual Indodax WS protocol: {"type": "subscribe", "channel": "trades", "pair": "btcidr"})
-                
-                # We'll poll a subset for this demonstration or listen to the dispatcher
-                pass 
-                
-                async for message in ws:
-                    data = json.loads(message)
-                    # Process trade message...
-                    # (Implementation details for specific WS parser)
-                    
-            except websockets.ConnectionClosed:
-                print("[LOCAL_SIGNAL][RECONNECTING] Connection lost...", flush=True)
-                await asyncio.sleep(5)
-            except Exception as e:
-                print(f"[LOCAL_SIGNAL][ERR] {e}", flush=True)
-                await asyncio.sleep(5)
+        # Simple history tracking for next cycle volume delta
+        time.sleep(SCAN_INTERVAL)
 
 if __name__ == "__main__":
-    engine = KiBotLocalSignalEngine()
-    try:
-        # Placeholder for pairs - ideally should fetch dynamic list from exchange
-        # For now, targeting common pump candidates
-        asyncio.run(engine.run())
-    except KeyboardInterrupt:
-        print("[LOCAL_SIGNAL] Shutting down.")
+    main()

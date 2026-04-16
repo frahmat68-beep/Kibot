@@ -321,6 +321,12 @@ class MacStateRepository {
             serverUptime = uptimeText,
             liveTimeline = resolvedTimeline,
             recentOrders = resolvedRecentOrders,
+            globalCircuitBreakerActive = if (preservePreviousRuntime) prev.globalCircuitBreakerActive else next.globalCircuitBreakerActive,
+            bucketAAllocationPct = if (preservePreviousRuntime) prev.bucketAAllocationPct else next.bucketAAllocationPct,
+            bucketBAllocationPct = if (preservePreviousRuntime) prev.bucketBAllocationPct else next.bucketBAllocationPct,
+            bucketAUsageIdr = if (preservePreviousRuntime || keepPortfolioFallback) prev.bucketAUsageIdr else next.bucketAUsageIdr,
+            bucketBUsageIdr = if (preservePreviousRuntime || keepPortfolioFallback) prev.bucketBUsageIdr else next.bucketBUsageIdr,
+            lastLossTimestampEpochMs = if (preservePreviousRuntime) prev.lastLossTimestampEpochMs else next.lastLossTimestampEpochMs,
             netWorthHistory = if ((looksLikeBootSnapshot || keepPortfolioFallback) && prev.netWorthHistory.isNotEmpty()) {
                 prev.netWorthHistory
             } else {
