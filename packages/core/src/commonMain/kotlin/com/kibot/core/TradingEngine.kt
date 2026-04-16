@@ -24,6 +24,7 @@ data class KinanceSignal(
     val momentumScore: Double = 0.0,
     val rsi: Double = 50.0,
     val isBreakout: Boolean = false,
+    val convictionScore: Double = 0.0, // KiBot v7.0 Local Signal
     val sentAtEpochMs: Long = 0L,
     val expiresAtEpochMs: Long = 0L,
 )

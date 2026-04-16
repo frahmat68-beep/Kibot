@@ -154,7 +154,6 @@ class LocalDashboardServer(
         val bucketBAllocationPct: Double = 50.0,
         val bucketAUsageIdr: Double = 0.0,
         val bucketBUsageIdr: Double = 0.0,
-        val rawState: JsonElement,
         val stale: Boolean = false,
         val cacheAgeMs: Long = 0L,
     )
@@ -518,7 +517,6 @@ class LocalDashboardServer(
             bucketBAllocationPct = state.bucketBAllocationPct,
             bucketAUsageIdr = state.bucketAUsageIdr,
             bucketBUsageIdr = state.bucketBUsageIdr,
-            rawState = Json.encodeToJsonElement(MacDashboardState.serializer(), state),
         )
     }
 

@@ -1,45 +1,31 @@
-# 🔥 KIBOT TRINITY — MICRO-CAP OPTIMIZATION (v5.0 READY)
+# KiBot Trinity v7.0 Development Status
 
-**Last Updated:** 2026-04-14 (Post-Audit Remediation)  
-**Status:** Audit Fixed, Logic Hardened, Credentials Redacted, Ready for Production Clean-up.
+## [PHASE 0] REPO CLEANUP & REBRANDING
+- [x] Remove obsolete files (25+ files)
+- [x] Rebrand scripts (kicryp -> kibot)
+- [x] Update .gitignore
+- [x] Update README.md (Architecture v7.0)
+- [x] Update TODO.md
 
----
+## [PHASE 1] TRADE LOGGER
+- [ ] Implement `TradeRecord` (Kotlin)
+- [ ] Implement `TradeLogger` with Atomic Write
+- [ ] Integrate to `MacEngineDaemon.kt`
+- [ ] Expose via `/api/state`
 
-## ✅ COMPLETED REMEDIATIONS (Audit Items)
+## [PHASE 2] LOCAL COIN SIGNAL ENGINE
+- [ ] Implement `kibot_local_signal.py` (ConvictionScore logic)
+- [ ] Create systemd service
+- [ ] Manager UDP integration
 
-### Security & Privacy
-- [x] **SUPABASE_MIGRATION_GUIDE.md**: (URGENT) Redacted all plain-text credentials.
-- [x] **README.md**: Updated to Trinity v5.0 mindset (removed Zero-Cash legacy).
-- [x] **copilot-instructions.md**: Upgraded to v5.0 logic and thresholds.
+## [PHASE 3] DUAL BUCKET MANAGER 50/50
+- [ ] Implement `DualBucketManager.kt`
+- [ ] Wire to `MacEngineDaemon.kt`
 
-### Bug Fixes & Infrastructure
-- [x] **XLM Mapping Bug**: Fixed `xlm_idr` mapping to hit Binance `XLMUSDT` (not `XLMIDR`).
-- [x] **Data Retention**: Implemented 100-point TTL rolling delete for `_price_history`.
-- [x] **Recovery Loop**: Fixed Binance server CPU drain (plugged orphaned infinite loops).
-
-### Optimization
-- [x] **Indodax Deploy**: Moved hunter process to Indodax server for resource balancing.
-- [x] **Telegram Alerts**: Verified success-only notification logic for Ampere hunting.
-
----
-
-## 📋 REMAINING ACTIONS
-
-### Critical (CI/CD)
-- [ ] Debug failing GitHub Actions (currently failing at health check step #61).
-- [ ] Ensure all latest local fixes are pushed to GitHub repository.
-
-### Enhancements
-- [ ] Implement AI batch review every 6 hours (scheduled via crontab).
-- [ ] Add UDP ACK protocol for signal reliability.
-- [ ] Add BTC/ETH pump-dump correlation alerts.
-
----
-
-## 🚀 CURRENT STABLE DEPLOY (Manual)
-
-```bash
-# Verify Infrastructure
-ssh ubuntu@213.35.118.26 'uptime' # Indodax (Stable)
-ssh ubuntu@152.69.218.198 'uptime' # Binance (Recovered)
-```
+## [PHASE 4-11] ADVANCED FEATURES
+- [ ] KiCom Crypto.com Scanner
+- [ ] Exit Strategy / What-If Engine
+- [ ] Cascade Loss Guard
+- [ ] UDP ACK Protocol
+- [ ] GitHub Actions CI/CD (Gated)
+- [ ] Web Dashboard v7.0 (Zero-Egress)

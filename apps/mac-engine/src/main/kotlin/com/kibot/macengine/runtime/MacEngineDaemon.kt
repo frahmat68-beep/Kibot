@@ -11125,7 +11125,7 @@ class MacEngineDaemon(
             bucketBAllocationPct = capitalStatus?.stablePercent ?: 50.0,
             bucketAUsageIdr = capitalStatus?.totalDeployedAggressive ?: 0.0,
             bucketBUsageIdr = capitalStatus?.totalDeployedStable ?: 0.0,
-            lastLossTimestampEpochMs = null,
+            lastLossTimestampEpochMs = lossPreventionSystem.getLastLossTimestamp(),
             whatIfSimulation = whatIfSimulationSummary,
         )
     }
