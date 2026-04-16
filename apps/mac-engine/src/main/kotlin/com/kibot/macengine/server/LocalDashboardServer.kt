@@ -5,6 +5,7 @@ import com.kibot.macengine.state.MacDashboardState
 import com.kibot.macengine.state.MacCommand
 import com.kibot.macengine.state.MacStateRepository
 import com.kibot.macengine.runtime.MacEngineDaemon
+import com.kibot.core.logging.TradeLogger
 import com.kibot.shared.models.BotId
 import com.kibot.shared.models.BotDesiredState
 import com.kibot.shared.models.CommandCenterCommandReply
@@ -148,6 +149,11 @@ class LocalDashboardServer(
         val learningState: JsonObject,
         val whatIfSimulation: JsonElement,
         val tradeHistory: JsonElement,
+        val globalCircuitBreakerActive: Boolean = false,
+        val bucketAAllocationPct: Double = 50.0,
+        val bucketBAllocationPct: Double = 50.0,
+        val bucketAUsageIdr: Double = 0.0,
+        val bucketBUsageIdr: Double = 0.0,
         val rawState: JsonElement,
         val stale: Boolean = false,
         val cacheAgeMs: Long = 0L,
@@ -249,17 +255,17 @@ class LocalDashboardServer(
                 applyDashboardSecurityHeaders(call)
                 val days = call.request.queryParameters["days"]?.toIntOrNull() ?: 7
                 val trades = when (days) {
-                    1 -> com.kibot.macengine.logging.TradeLogger.getTodayTrades()
-                    7 -> com.kibot.macengine.logging.TradeLogger.getLast7DaysTrades()
-                    20, 30 -> com.kibot.macengine.logging.TradeLogger.getLast30DaysTrades()
-                    else -> com.kibot.macengine.logging.TradeLogger.getLast7DaysTrades()
+                    1 -> TradeLogger.getTodayTrades()
+                    7 -> TradeLogger.getLast7DaysTrades()
+                    20, 30 -> TradeLogger.getLast30DaysTrades()
+                    else -> TradeLogger.getLast7DaysTrades()
                 }
                 call.respond(trades)
             }
 
             get("/api/trade-history/today") {
                 applyDashboardSecurityHeaders(call)
-                val trades = com.kibot.macengine.logging.TradeLogger.getTodayTrades()
+                val trades = TradeLogger.getTodayTrades()
                 call.respond(trades)
             }
             
@@ -507,6 +513,11 @@ class LocalDashboardServer(
             learningState = JsonObject(emptyMap()),
             whatIfSimulation = whatIfJson,
             tradeHistory = tradeSummaryJson,
+            globalCircuitBreakerActive = state.globalCircuitBreakerActive,
+            bucketAAllocationPct = state.bucketAAllocationPct,
+            bucketBAllocationPct = state.bucketBAllocationPct,
+            bucketAUsageIdr = state.bucketAUsageIdr,
+            bucketBUsageIdr = state.bucketBUsageIdr,
             rawState = Json.encodeToJsonElement(MacDashboardState.serializer(), state),
         )
     }

@@ -20,7 +20,7 @@
   "graphTooltip": 0,
   "id": null,
   "links": [],
-  "liveNow": false,
+  "liveNow": true,
   "panels": [
     {
       "datasource": {
@@ -41,55 +41,18 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "currencyIDR"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
+        "h": 6,
         "w": 6,
         "x": 0,
         "y": 0
       },
-      "id": 1,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "kibot-api"
-          },
-          "refId": "A",
-          "type": "json",
-          "source": "url",
-          "url": "http://localhost:8787/api/state",
-          "root_selector": "",
-          "columns": [
-            {
-              "text": "Equity",
-              "type": "string",
-              "selector": "portfolioValueIdr"
-            }
-          ]
-        }
-      ],
-      "title": "Current Equity",
-      "type": "stat"
-    },
+// ... suppressed panels 1 and 2 ...
     {
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
@@ -100,67 +63,85 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "options": {
+                "false": { "color": "green", "index": 0, "text": "SAFE (ACTIVE)" },
+                "true": { "color": "red", "index": 1, "text": "HALTED (COOLDOWN)" }
+              },
+              "type": "value"
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 0
-              }
+              { "color": "green", "value": null }
             ]
           }
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 6,
-        "y": 0
-      },
-      "id": 2,
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "id": 4,
       "options": {
-        "colorMode": "value",
-        "graphMode": "area",
+        "colorMode": "background",
+        "graphMode": "none",
         "justifyMode": "center",
         "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
       },
-      "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "kibot-api"
-          },
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "kibot-api" },
           "refId": "A",
           "type": "json",
           "source": "url",
           "url": "http://localhost:8787/api/state",
           "root_selector": "",
           "columns": [
-            {
-              "text": "PnL %",
-              "type": "number",
-              "selector": "dailyPnlPct"
-            }
+            { "text": "Circuit Breaker", "type": "string", "selector": "globalCircuitBreakerActive" }
           ]
         }
       ],
-      "title": "Daily PnL %",
+      "title": "🛡️ Loss Guard",
       "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "kibot-api" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "currencyIDR"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "id": 5,
+      "options": {
+        "displayMode": "basic",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "kibot-api" },
+          "refId": "A",
+          "type": "json",
+          "source": "url",
+          "url": "http://localhost:8787/api/state",
+          "root_selector": "",
+          "columns": [
+            { "text": "Bucket A (Lead-Lag)", "type": "number", "selector": "bucketAUsageIdr" },
+            { "text": "Bucket B (Local)", "type": "number", "selector": "bucketBUsageIdr" }
+          ]
+        }
+      ],
+      "title": "📊 Capital Allocation (A/B)",
+      "type": "bargauge"
     },
     {
       "datasource": {
@@ -168,13 +149,20 @@
         "uid": "kibot-api"
       },
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 12,
+        "w": 24,
         "x": 0,
-        "y": 4
+        "y": 6
       },
       "id": 3,
       "options": {
+        "footer": {
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
         "showHeader": true
       },
       "pluginVersion": "10.0.0",
@@ -190,34 +178,36 @@
           "url": "http://localhost:8787/api/state",
           "root_selector": "activePositions",
           "columns": [
-            { "text": "Pair", "type": "string", "selector": "pair" },
-            { "text": "Price", "type": "string", "selector": "currentPrice" },
-            { "text": "PnL %", "type": "string", "selector": "pnlPct" },
-            { "text": "Size", "type": "string", "selector": "size" }
+            { "text": "Trade Pair", "type": "string", "selector": "pair" },
+            { "text": "Live Price", "type": "number", "selector": "currentPrice" },
+            { "text": "Entry Price", "type": "number", "selector": "entryPrice" },
+            { "text": "Profit/Loss (%)", "type": "number", "selector": "pnlPct" },
+            { "text": "Amount", "type": "number", "selector": "size" }
           ]
         }
       ],
-      "title": "Active Positions",
+      "title": "🚀 Active Trading Positions",
       "type": "table"
     }
   ],
-  "refresh": "10s",
+  "refresh": "5s",
   "schemaVersion": 38,
   "style": "dark",
   "tags": [
-    "kibot"
+    "kibot",
+    "zero-egress"
   ],
   "templating": {
     "list": []
   },
   "time": {
-    "from": "now-6h",
+    "from": "now-1h",
     "to": "now"
   },
   "timepicker": {},
-  "timezone": "",
-  "title": "KiCryp Command Center v1",
+  "timezone": "browser",
+  "title": "KiBot Trinity v7.0 | Matrix Hub",
   "uid": "kibot-v1",
-  "version": 1,
+  "version": 7,
   "weekStart": ""
 }
