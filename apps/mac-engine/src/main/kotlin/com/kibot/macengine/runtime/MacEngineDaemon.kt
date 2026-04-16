@@ -608,6 +608,7 @@ class MacEngineDaemon(
         val confidence: Double,
         val expectedNetPct: Double,
         val forceRotation: Boolean,
+        val conviction: Double = 0.0,
         val volumeAnomalyMultiplier: Double = 0.0,  // FIX: Track volume spike dari Kinance signal
     )
 
@@ -4498,7 +4499,7 @@ class MacEngineDaemon(
                 // [TRINITY V7.0] GLOBAL LOOP TELEMETRY VARIABLES
                 val currentRegime = strategyCycle?.marketSnapshot?.regime
                 val currentBalanceIdr = freeQuoteBalance
-                val wasAggressiveTrade = (strategyCycle?.modeSnapshot?.mode == com.kibot.shared.models.BotMode.HYPER_AGGRESSIVE)
+                val wasAggressiveTrade = (strategyCycle?.modeSnapshot?.mode == com.kibot.shared.models.BotMode.ATTACK)
 
                 if (strategyCycle != null && resolvedMarketQuotes.isNotEmpty()) {
                     refreshLocalLearningSnapshot(
