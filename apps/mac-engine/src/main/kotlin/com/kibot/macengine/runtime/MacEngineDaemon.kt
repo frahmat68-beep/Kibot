@@ -7399,13 +7399,13 @@ class MacEngineDaemon(
                     
                     com.kibot.core.logging.TradeLogger.record(com.kibot.core.logging.TradeRecord(
                         id = java.util.UUID.randomUUID().toString(),
-                        timestamp = now.toString(),
+                        timestampUtc = now.toString(),
                         pair = pairKey,
                         side = "SELL",
                         orderType = smartRoutedExitPlan.orderType.name,
                         requestedPrice = exitExpectedPrice,
                         filledPrice = sellPrice ?: exitExpectedPrice,
-                        filledAmount = executionFillQty,
+                        filledBaseAmount = executionFillQty,
                         filledIdr = (sellPrice ?: exitExpectedPrice) * executionFillQty,
                         feeIdr = estimatedFees / 2.0,
                         feeType = if (smartRoutedExitPlan.orderType.name == "LIMIT") "MAKER" else "TAKER",
@@ -7415,9 +7415,10 @@ class MacEngineDaemon(
                         holdingDurationMs = ((exitAt.toEpochMilliseconds() - filteredExitDecision.position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L)),
                         exitReason = filteredExitDecision.message,
                         signalSource = "EXIT",
-                        entryScore = 0.0,
-                        balanceAfter = 0.0,
-                        marketRegime = "UNKNOWN"
+                        bucket = if (wasAggressiveTrade) "BUCKET_A" else "BUCKET_B",
+                        entryConvictionScore = 0.0,
+                        balanceAfterIdr = 0.0,
+                        marketRegimeAtEntry = "UNKNOWN"
                     ))
                     
                     notifyManagerExecutionFilled(
@@ -11147,7 +11148,7 @@ class MacEngineDaemon(
             bucketBAllocationPct = capitalStatus?.stablePercent ?: 50.0,
             bucketAUsageIdr = capitalStatus?.totalDeployedAggressive ?: 0.0,
             bucketBUsageIdr = capitalStatus?.totalDeployedStable ?: 0.0,
-            lastLossTimestampEpochMs = lossPreventionSystem.getLastLossTimestamp(),
+            lastLossTimestampEpochMs = lossPreventionSystem.getLastLossTimestamp() ?: 0L,
             whatIfSimulation = whatIfSimulationSummary,
         )
     }
