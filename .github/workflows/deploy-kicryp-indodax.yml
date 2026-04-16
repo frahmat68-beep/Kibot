@@ -22,7 +22,7 @@ jobs:
       DEPLOY_USER: ${{ secrets.KIDAX_USER }}
       DEPLOY_KEY: ${{ secrets.KIDAX_SSH }}
       DEPLOY_PORT: ${{ secrets.KIDAX_SSH_PORT || '22' }}
-      REMOTE_ROOT: /home/ubuntu/KiBot
+      REMOTE_ROOT: /home/ubuntu/KiCryp
       SERVICE_NAME: kicryp-indodax
       SERVICE_FILE: infra/systemd/kicryp-indodax.service
       RUNTIME_PORT: "8787"
@@ -57,15 +57,8 @@ jobs:
 
       - name: Stage Runtime Bundle
         run: |
-          mkdir -p .deploy/scripts .deploy/infra/systemd
-          cp apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar .deploy/mac-engine-all.jar
-          cp "$SERVICE_FILE" .deploy/infra/systemd/
-          cp infra/scripts/engine-recovery.sh .deploy/engine-recovery.sh || true
-          cp infra/scripts/setup-engine-autorecover.sh .deploy/setup-autorecover.sh || true
-          mkdir -p scripts
-          # Ensure necessary scripts exist or provide placeholder
-          touch scripts/sync_env_to_server.sh
-          cp scripts/sync_env_to_server.sh .deploy/scripts/ || true
+          cp scripts/kicryp_*.py .deploy/scripts/
+          cp scripts/dashboard_template.py .deploy/scripts/
 
       - name: Prepare Remote Directories
         uses: appleboy/ssh-action@v1.0.3
