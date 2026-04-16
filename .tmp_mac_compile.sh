@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "/Users/kiki/Documents/Web Develop/KiCryp"
+cd "/Users/kiki/Documents/Web Develop/KiBot"
 ./gradlew :apps:mac-engine:compileKotlin --no-daemon --console=plain --stacktrace
 status=$?
 echo "$status" > /tmp/mac_compile.exit

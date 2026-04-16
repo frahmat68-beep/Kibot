@@ -1,8 +1,8 @@
 #!/bin/bash
-# KiCryp Emergency Fix & Push Script
+# KiBot Emergency Fix & Push Script
 # Purpose: Resolve CI/CD port mismatch and deployment failures.
 
-BASE_DIR="/Users/kiki/Documents/Web Develop/KiCryp"
+BASE_DIR="/Users/kiki/Documents/Web Develop/KiBot"
 cd "$BASE_DIR"
 
 echo "🚀 Starting Emergency Fix and Push..."
@@ -19,7 +19,7 @@ git add .
 # 3. Create a clean commit
 COMMIT_MSG="fix: resolve CI/CD port mismatch and deployment brittleness
 
-- Removed hardcoded KICRYP_DASHBOARD_PORT and MAC_ENGINE_PORT from .service files
+- Removed hardcoded KIBOT_DASHBOARD_PORT and MAC_ENGINE_PORT from .service files
 - Updated workflows to manage MAC_ENGINE_PORT correctly via .env
 - Added detailed logging and netstat check on health check failure
 - Fixed KiDax using port 8787 in workflow but 8788 in service"

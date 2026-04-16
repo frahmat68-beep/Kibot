@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APK_PATH="${ROOT_DIR}/.dist/android/stable/kicryp-android-latest.apk"
+APK_PATH="${ROOT_DIR}/.dist/android/stable/kibot-android-latest.apk"
 
 if [[ ! -f "${APK_PATH}" ]]; then
   echo "Release APK not found. Run scripts/build_android_release.sh first."

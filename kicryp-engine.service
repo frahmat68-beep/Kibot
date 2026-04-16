@@ -1,5 +1,5 @@
 [Unit]
-Description=KiCryp Oracle Trading Engine
+Description=KiBot Oracle Trading Engine
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=300
@@ -10,10 +10,10 @@ StartLimitAction=none
 Type=simple
 User=ubuntu
 PermissionsStartOnly=true
-WorkingDirectory=/home/ubuntu/KiCryp
-EnvironmentFile=-/home/ubuntu/KiCryp/.env.server
+WorkingDirectory=/home/ubuntu/KiBot
+EnvironmentFile=-/home/ubuntu/KiBot/.env.server
 # Secrets loaded from env file — do NOT hardcode credentials here
-EnvironmentFile=/opt/kicryp/.env
+EnvironmentFile=/opt/kibot/.env
 Environment=DEVICE_ID=oracle-main
 Environment=DEVICE_DISPLAY_NAME="Oracle Cloud Server"
 Environment=DEVICE_ROLE=PRIMARY
@@ -45,11 +45,11 @@ Environment=MAC_DASHBOARD_STATE_POLL_INTERVAL_MS=15000
 Environment=MAC_DASHBOARD_LOG_POLL_INTERVAL_MS=20000
 Environment="JAVA_OPTS=-XX:+UseSerialGC -XX:MaxRAMPercentage=60 -XX:InitialRAMPercentage=15 -XX:ActiveProcessorCount=1 -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
 ExecStartPre=-/usr/bin/pkill -f gradle.*:apps:mac-engine:run
-ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/KiCryp/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar
+ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/KiBot/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar
 ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/mac-engine-0.1.0-all.jar
-ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/KiCryp/server/mac-engine-all.jar
+ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/KiBot/server/mac-engine-all.jar
 ExecStartPre=-/usr/bin/fuser -k 8787/tcp
-ExecStart=/bin/bash -lc '/usr/bin/java $JAVA_OPTS -jar /home/ubuntu/KiCryp/server/mac-engine-all.jar'
+ExecStart=/bin/bash -lc '/usr/bin/java $JAVA_OPTS -jar /home/ubuntu/KiBot/server/mac-engine-all.jar'
 Restart=on-failure
 RestartSec=5
 # Memory limit to prevent OOM
@@ -60,7 +60,7 @@ KillSignal=SIGTERM
 SuccessExitStatus=143
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=kicryp-engine
+SyslogIdentifier=kibot-engine
 
 [Install]
 WantedBy=multi-user.target

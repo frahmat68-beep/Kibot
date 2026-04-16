@@ -96,16 +96,16 @@ printf 'warn_oom=%s\n' \"\$(journalctl -u kidax-engine --since '$LOG_WINDOW' --n
 printf 'warn_health_500=%s\n' \"\$(journalctl -u kidax-engine --since '$LOG_WINDOW' --no-pager | grep -c '500 Internal Server Error: GET - /api/health' || true)\"
 "
 
-safe_ssh_section "Kinance" "$BINANCE_HOST" "$BINANCE_KEY" "
+safe_ssh_section "KiNance" "$BINANCE_HOST" "$BINANCE_KEY" "
 set -e
 printf 'host=%s\n' '$BINANCE_HOST'
 printf 'kinance_service=%s\n' \"\$(systemctl is-active kinance-engine)\"
-printf 'kicryp_service=%s\n' \"\$(systemctl is-active kicryp-engine)\"
-printf 'manager_service=%s\n' \"\$(systemctl is-active kicryp-manager)\"
+printf 'kibot_service=%s\n' \"\$(systemctl is-active kibot-engine)\"
+printf 'manager_service=%s\n' \"\$(systemctl is-active kibot-manager)\"
 printf 'failed_units=%s\n' \"\$(systemctl --failed --no-legend | wc -l | tr -d ' ')\"
 printf 'api_state=%s\n' \"\$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 http://127.0.0.1:8788/api/state || true)\"
 printf 'api_health=%s\n' \"\$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 http://127.0.0.1:8788/api/health || true)\"
-printf 'jar_sha=%s\n' \"\$(sha256sum /home/ubuntu/Kinance/server/mac-engine-all.jar | cut -d' ' -f1)\"
+printf 'jar_sha=%s\n' \"\$(sha256sum /home/ubuntu/KiNance/server/mac-engine-all.jar | cut -d' ' -f1)\"
 printf 'warn_cp_12s=%s\n' \"\$(journalctl -u kinance-engine --since '$LOG_WINDOW' --no-pager | grep -c 'Timed out waiting for 12000 ms' || true)\"
 printf 'warn_stopped=%s\n' \"\$(journalctl -u kinance-engine --since '$LOG_WINDOW' --no-pager | grep -c 'LIFECYCLE_BLOCK: Cannot start sync cycle' || true)\"
 printf 'warn_json=%s\n' \"\$(journalctl -u kinance-engine --since '$LOG_WINDOW' --no-pager | grep -c 'Ignoring malformed dashboard JSON file' || true)\"

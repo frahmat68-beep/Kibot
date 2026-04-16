@@ -41,7 +41,7 @@ PY
 fi'
 
 echo
-echo "=== KiCryp Manager /api/state ==="
+echo "=== KiBot Manager /api/state ==="
 ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'payload="$(curl -sf --max-time 3 http://localhost:9998/api/state || true)"; if [ -z "$payload" ]; then echo "ERROR: empty response"; else PAYLOAD="$payload" python3 - <<'"'"'PY'"'"' | head -30
 import json
 import os
@@ -57,11 +57,11 @@ ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'journalctl -u kidax-engine --since "5 mi
 
 echo
 echo "=== Service status ==="
-ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'systemctl is-active kidax-engine kicryp-manager kicryp-recovery || true'
+ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'systemctl is-active kidax-engine kibot-manager kibot-recovery || true'
 
 echo
 echo "=== Binance side ==="
-ssh_run "$BINANCE_HOST" "$BINANCE_KEY" 'systemctl is-active kinance-engine kicryp-recovery || true'
+ssh_run "$BINANCE_HOST" "$BINANCE_KEY" 'systemctl is-active kinance-engine kibot-recovery || true'
 ssh_run "$BINANCE_HOST" "$BINANCE_KEY" 'payload="$(curl -sf --max-time 3 http://localhost:8788/api/state || true)"; if [ -z "$payload" ]; then echo "ERROR: empty response"; else PAYLOAD="$payload" python3 - <<'"'"'PY'"'"'
 import json
 import os
@@ -74,5 +74,5 @@ fi'
 
 echo
 echo "=== Learning hooks ==="
-ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'test -f /home/ubuntu/KiCryp/state/pair_memory.json && echo "pair_memory: EXISTS" || echo "pair_memory: NOT FOUND"'
-ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'journalctl -u kicryp-manager --since "1 hour ago" --no-pager | grep -iE "WHATIF|pair_memory|LEARNING|AI REVIEW|batch_review" || true'
+ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'test -f /home/ubuntu/KiBot/state/pair_memory.json && echo "pair_memory: EXISTS" || echo "pair_memory: NOT FOUND"'
+ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'journalctl -u kibot-manager --since "1 hour ago" --no-pager | grep -iE "WHATIF|pair_memory|LEARNING|AI REVIEW|batch_review" || true'

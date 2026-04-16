@@ -28,7 +28,7 @@ values (1, '{}'::jsonb)
 on conflict (id) do nothing;
 
 insert into public.king_dashboard (id, latest_manager_log)
-values (1, 'KiCryp manager siap. Menunggu evaluasi jam berikutnya.')
+values (1, 'KiBot manager siap. Menunggu evaluasi jam berikutnya.')
 on conflict (id) do nothing;
 
 grant select, insert, update on table public.app_config to anon, authenticated, service_role;

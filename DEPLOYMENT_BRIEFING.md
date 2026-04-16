@@ -1,4 +1,4 @@
-# KiCryp Trinity - DEPLOYMENT BRIEFING
+# KiBot Trinity - DEPLOYMENT BRIEFING
 
 > **DATE**: 2026-04-05 01:25 UTC+7  
 > **STATUS**: ✅ READY FOR PRODUCTION DEPLOYMENT  
@@ -36,7 +36,7 @@ What happens:
 2. Creates/updates `staging` branch ✅
 3. Pushes to Oracle repository ✅
 4. SSH deploys to staging server ✅
-5. Starts all 3 bots (KINANCE, KIDAX, KICRYP) ✅
+5. Starts all 3 bots (KINANCE, KIDAX, KIBOT) ✅
 6. Verifies health checks ✅
 
 Expected outcome: All bots active and trading on staging.
@@ -188,7 +188,7 @@ git push origin main
 ./deploy-production.sh
 
 # 3. Monitor first 4 hours
-tail -f /var/log/kicryp/*.log
+tail -f /var/log/kibot/*.log
 
 # 4. Check critical metrics
 curl http://prod-server:9998/status
@@ -259,15 +259,15 @@ Daily Loss >5%:      Entries blocked, exits only
 ssh root@prod-server
 
 # Check services
-systemctl status kicryp-*
+systemctl status kibot-*
 
 # View logs
-journalctl -u kicryp-manager -f
+journalctl -u kibot-manager -f
 journalctl -u kinance-engine -f
 journalctl -u kidax-engine -f
 
 # Check P&L
-tail -100 /var/log/kicryp/balance.json
+tail -100 /var/log/kibot/balance.json
 ```
 
 ---
@@ -298,9 +298,9 @@ tail -100 /var/log/kicryp/balance.json
 6. **979faa1** - Deployment scripts + enhanced learning (NEW)
 
 ### Code Added
-- **scripts/kicryp_alert_manager.py** (11.3 KB, 400+ lines)
-- **scripts/kicryp_state_validator.py** (11.8 KB, 350+ lines)
-- **scripts/kicryp_command_handler.py** (updated with alerts)
+- **scripts/kibot_alert_manager.py** (11.3 KB, 400+ lines)
+- **scripts/kibot_state_validator.py** (11.8 KB, 350+ lines)
+- **scripts/kibot_command_handler.py** (updated with alerts)
 - **packages/core/.../EnhancedSelfLearningSystem.kt** (NEW, 13.2 KB)
 - **deploy-staging.sh** (NEW, 5.2 KB)
 - **docs/TIER1_IMPLEMENTATION.md** (11.1 KB)
@@ -388,12 +388,12 @@ System is production-ready when:
 **Emergency Stop**:
 ```
 /emergency     # Via Telegram (safest)
-ssh root@server "systemctl stop kicryp-*"  # Manual
+ssh root@server "systemctl stop kibot-*"  # Manual
 ```
 
 **Issues**:
-- Check logs: `journalctl -u kicryp-manager -f`
-- Restart services: `systemctl restart kicryp-manager`
+- Check logs: `journalctl -u kibot-manager -f`
+- Restart services: `systemctl restart kibot-manager`
 - Check state file: `cat state/state.json`
 
 ---

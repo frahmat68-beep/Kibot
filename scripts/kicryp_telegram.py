@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KiCryp Trinity - Telegram Notification Bot
+KiBot Trinity - Telegram Notification Bot
 =========================================
 Premium notification system with elegant formatting.
 Sends trade alerts, system status, and daily summaries to Telegram.
@@ -69,7 +69,7 @@ logging.basicConfig(
     format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger("KiCryp.Telegram")
+logger = logging.getLogger("KiBot.Telegram")
 
 # ============================================================================
 # DATA CLASSES
@@ -497,12 +497,12 @@ class TelegramNotifier:
     async def notify_startup(self, balance: float):
         """Send bot startup notification with premium formatting."""
         msg = (
-            f"{ICONS['rocket']} <b>KICRYP TRINITY ONLINE</b>\n"
+            f"{ICONS['rocket']} <b>KIBOT TRINITY ONLINE</b>\n"
             f"{make_separator()}\n"
             f"\n"
             f"├ {ICONS['clock']} Time: <code>{get_timestamp()}</code>\n"
             f"├ {ICONS['money']} Balance: <b>{format_idr(balance)}</b>\n"
-            f"├ {ICONS['link']} Kinance: Connecting...\n"
+            f"├ {ICONS['link']} KiNance: Connecting...\n"
             f"├ {ICONS['link']} KiDax: Connecting...\n"
             f"└ {ICONS['gear']} Status: Initializing\n"
             f"\n"
@@ -780,9 +780,9 @@ async def test_notifications():
         # Test 8: Heartbeat
         print("📤 Sending heartbeat...")
         await notifier.notify_heartbeat({
-            "KiCryp Manager": {"healthy": True, "ping_ms": 12},
+            "KiBot Manager": {"healthy": True, "ping_ms": 12},
             "KiDax": {"healthy": True, "ping_ms": 137},
-            "Kinance": {"healthy": True, "ping_ms": 45}
+            "KiNance": {"healthy": True, "ping_ms": 45}
         })
         await asyncio.sleep(2)
         
@@ -820,7 +820,7 @@ async def test_notifications():
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("  KiCryp Trinity - Telegram Notification Bot")
+    print("  KiBot Trinity - Telegram Notification Bot")
     print("  Premium Notification System v2.0")
     print("=" * 50)
     asyncio.run(test_notifications())

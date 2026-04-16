@@ -8,10 +8,10 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 try:
-    import kicryp_manager as manager
+    import kibot_manager as manager
 except Exception:
     manager = None
-from kicryp_learning_engine import (
+from kibot_learning_engine import (
     LearningEngine,
     PairStats,
     ROUND_TRIP_MAKER,
@@ -58,7 +58,7 @@ check("cooldown after big loss", not allowed)
 check("maker fee round trip", abs(ROUND_TRIP_MAKER - 0.003) < 1e-9)
 check("taker fee round trip", abs(ROUND_TRIP_TAKER - 0.006) < 1e-9)
 
-engine = LearningEngine("/tmp/kicryp_learning_state.json")
+engine = LearningEngine("/tmp/kibot_learning_state.json")
 random.seed(42)
 for _ in range(20):
     if random.random() < 0.6:
@@ -71,14 +71,14 @@ check("engine kelly capped", engine.kelly_size("eth_idr") <= 0.12)
 if manager is not None:
     check("effective fee pct sane", 0.0004 < manager._effective_fee_pct() < 0.0055)
 
-    with patch("kicryp_manager.requests.get") as mocked_get:
+    with patch("kibot_manager.requests.get") as mocked_get:
         mocked_response = MagicMock()
         mocked_response.raise_for_status.return_value = None
         mocked_response.json.return_value = {"totalEquityIdr": 84_000}
         mocked_get.return_value = mocked_response
         check("minimum capital blocks tiny equity", not manager._check_minimum_capital())
 
-    with patch("kicryp_manager.requests.get") as mocked_get:
+    with patch("kibot_manager.requests.get") as mocked_get:
         mocked_response = MagicMock()
         mocked_response.raise_for_status.return_value = None
         mocked_response.json.return_value = {"totalEquityIdr": 500_000}

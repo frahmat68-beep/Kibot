@@ -28,12 +28,12 @@ ssh_run() {
 }
 
 deploy_kinance() {
-  echo "==> Deploy Kinance ($KINANCE_HOST)"
+  echo "==> Deploy KiNance ($KINANCE_HOST)"
   ssh_run "$KINANCE_KEY" "$KINANCE_USER" "$KINANCE_HOST" "$KINANCE_PORT" "bash -se" <<'REMOTE'
 set -euo pipefail
-APP_ROOT="/home/ubuntu/Kinance"
-REPO_ROOT="/home/ubuntu/Kinance/repo"
-ENV_FILE="/home/ubuntu/Kinance/.env.kinance"
+APP_ROOT="/home/ubuntu/KiNance"
+REPO_ROOT="/home/ubuntu/KiNance/repo"
+ENV_FILE="/home/ubuntu/KiNance/.env.kinance"
 SERVICE_NAME="kinance-engine"
 RUNTIME_PORT="8788"
 REPO_URL="https://github.com/frahmat68-beep/Kibot.git"
@@ -107,20 +107,20 @@ touch "$ENV_FILE"
     printf '\nSHADOW_MODE=false\n' >> "$ENV_FILE"
   fi
 
-  if grep -q '^KICRYP_HIVE_UDP_PEERS=' "$ENV_FILE"; then
-    sed -i 's|^KICRYP_HIVE_UDP_PEERS=.*|KICRYP_HIVE_UDP_PEERS=213.35.118.26:9997,213.35.118.26:9999|' "$ENV_FILE"
+  if grep -q '^KIBOT_HIVE_UDP_PEERS=' "$ENV_FILE"; then
+    sed -i 's|^KIBOT_HIVE_UDP_PEERS=.*|KIBOT_HIVE_UDP_PEERS=213.35.118.26:9997,213.35.118.26:9999|' "$ENV_FILE"
   else
-    printf '\nKICRYP_HIVE_UDP_PEERS=213.35.118.26:9997,213.35.118.26:9999\n' >> "$ENV_FILE"
+    printf '\nKIBOT_HIVE_UDP_PEERS=213.35.118.26:9997,213.35.118.26:9999\n' >> "$ENV_FILE"
   fi
 
-  if grep -q '^KICRYP_HIVE_EXPECTED_BOT_IDS=' "$ENV_FILE"; then
-    sed -i 's/^KICRYP_HIVE_EXPECTED_BOT_IDS=.*/KICRYP_HIVE_EXPECTED_BOT_IDS=kidax,kicryp/' "$ENV_FILE"
+  if grep -q '^KIBOT_HIVE_EXPECTED_BOT_IDS=' "$ENV_FILE"; then
+    sed -i 's/^KIBOT_HIVE_EXPECTED_BOT_IDS=.*/KIBOT_HIVE_EXPECTED_BOT_IDS=kidax,kibot/' "$ENV_FILE"
   else
-    printf '\nKICRYP_HIVE_EXPECTED_BOT_IDS=kidax,kicryp\n' >> "$ENV_FILE"
+    printf '\nKIBOT_HIVE_EXPECTED_BOT_IDS=kidax,kibot\n' >> "$ENV_FILE"
   fi
 
   if ! grep -q '^SHADOW_MODE=false$' "$ENV_FILE"; then
-    echo "[FATAL] SHADOW_MODE lock failed on Kinance."
+    echo "[FATAL] SHADOW_MODE lock failed on KiNance."
     exit 1
   fi
 
@@ -132,7 +132,7 @@ sudo -n systemctl daemon-reload
 sudo -n systemctl restart "$SERVICE_NAME"
 sudo -n systemctl is-active --quiet "$SERVICE_NAME"
 curl -fsS --max-time 5 --retry 5 --retry-delay 2 "http://127.0.0.1:${RUNTIME_PORT}/api/state" >/tmp/kinance-state.json
-echo "Kinance state: $(head -c 220 /tmp/kinance-state.json)"
+echo "KiNance state: $(head -c 220 /tmp/kinance-state.json)"
 REMOTE
 }
 
@@ -207,10 +207,10 @@ touch "$ENV_FILE"
     printf '\nSHADOW_MODE=false\n' >> "$ENV_FILE"
   fi
 
-  if grep -q '^KICRYP_HIVE_UDP_PEERS=' "$ENV_FILE"; then
-    sed -i 's|^KICRYP_HIVE_UDP_PEERS=.*|KICRYP_HIVE_UDP_PEERS=213.35.118.26:9999|' "$ENV_FILE"
+  if grep -q '^KIBOT_HIVE_UDP_PEERS=' "$ENV_FILE"; then
+    sed -i 's|^KIBOT_HIVE_UDP_PEERS=.*|KIBOT_HIVE_UDP_PEERS=213.35.118.26:9999|' "$ENV_FILE"
   else
-    printf '\nKICRYP_HIVE_UDP_PEERS=213.35.118.26:9999\n' >> "$ENV_FILE"
+    printf '\nKIBOT_HIVE_UDP_PEERS=213.35.118.26:9999\n' >> "$ENV_FILE"
   fi
 
   if ! grep -q '^SHADOW_MODE=false$' "$ENV_FILE"; then

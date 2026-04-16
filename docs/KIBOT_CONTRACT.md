@@ -114,9 +114,9 @@ Gunakan environment variable, contoh:
 - `COHERE_API_KEY`
 - `OPENROUTER_API_KEY`
 - `BLACKBOX_API_KEY`
-- `KICRYP_CORRELATION_API_URL`
-- `KICRYP_CORRELATION_API_KEY`
-- `KICRYP_CORRELATION_MODEL`
+- `KIBOT_CORRELATION_API_URL`
+- `KIBOT_CORRELATION_API_KEY`
+- `KIBOT_CORRELATION_MODEL`
 
 Catatan keamanan:
 - Jika key pernah terekspos di chat/log, lakukan rotate key.
@@ -178,7 +178,7 @@ Format approval yang dianggap sah:
 ## 15) Change Log
 
 - `2026-03-31` — Multi-Provider AI Integration (`V7.0.0`):
-  - **KiCryp AI Router** (`scripts/kicryp_manager.py`) kini aktif failover berurutan lintas provider: `Blackbox -> Groq -> OpenRouter -> Cohere -> Gemini` (urutan bisa diatur via env `KICRYP_AI_PROVIDER_ORDER`).
+  - **KiCryp AI Router** (`scripts/kicryp_manager.py`) kini aktif failover berurutan lintas provider: `Blackbox -> Groq -> OpenRouter -> Cohere -> Gemini` (urutan bisa diatur via env `KIBOT_AI_PROVIDER_ORDER`).
   - **Post-mortem AI** dan **Correlation Matrix AI** sudah memakai router provider yang sama, tidak lagi single endpoint statis.
   - Tambah dukungan provider baru **Blackbox** (`BLACKBOX_API_KEY`, `BLACKBOX_MODEL`, `BLACKBOX_API_URL`) dengan fallback aman ke jalur legacy jika router gagal.
   - KiCryp broadcast status provider aktif via UDP (`AI_PROVIDER_STATUS`) agar KiDax/Kinance dapat visibilitas runtime AI yang sedang dipakai.

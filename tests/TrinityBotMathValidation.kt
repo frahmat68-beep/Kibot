@@ -1,6 +1,6 @@
-package com.kicryp.tests
+package com.kibot.tests
 
-import com.kicryp.core.CapitalAllocationManager
+import com.kibot.core.CapitalAllocationManager
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue

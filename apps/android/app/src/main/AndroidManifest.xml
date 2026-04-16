@@ -10,7 +10,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
-        android:name=".KiCrypApplication"
+        android:name=".KiBotApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -18,13 +18,13 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.KiCryp"
+        android:theme="@style/Theme.KiBot"
         android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.KiCryp"
+            android:theme="@style/Theme.KiBot"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -34,7 +34,7 @@
 
         <!-- Widget Receiver -->
         <receiver
-            android:name=".widget.KiCrypWidgetReceiver"
+            android:name=".widget.KiBotWidgetReceiver"
             android:exported="true"
             android:label="@string/widget_name">
             <intent-filter>

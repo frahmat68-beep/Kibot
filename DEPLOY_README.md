@@ -14,15 +14,15 @@
 
 ### Indodax Server (213.35.118.26)
 - **JAR Deployed `/home/ubuntu/KiDax/mac-engine-0.1.0-all.jar`:** 
-- **UDP Port 9997 recv-Q = 0 (no overflow):** - **kicryp-manager:** - **KiDax Service:** 
+- **UDP Port 9997 recv-Q = 0 (no overflow):** - **kibot-manager:** - **KiDax Service:** 
 - **Telegram Bot:** - **HTTP Port 8787:** 
 ### Binance Server (152.69.218.198)
 - **JAR Deployed `/home/ubuntu/Kinance/mac-engine-0.1.0-all.jar`:** 
-- **UDP Port 9998 recv-Q = 0 (no overflow):** - **kicryp-manager:** - **Kinance Service:** 
+- **UDP Port 9998 recv-Q = 0 (no overflow):** - **kibot-manager:** - **Kinance Service:** 
 - **HTTP Port 8788:** 
 ### Android App
 - **APK Installed (device 40d203460421):** 
-- **Package:** com.kicryp.android v2.0.0
+- **Package:** com.kibot.android v2.0.0
 - **Size:** 19MB
 - **Screens:** Dashboard, Portfolio, Ledger, Settings 
 - **Widget:** Home screen widget 
@@ -33,7 +33,7 @@
 **Critical (4):**
 1 Division by zero - LatePumpEntryStrategy (peakPrice guard). 
 2 Division by zero - MultiWavePumpRider (waveHigh guard). 
-3 Inverted loss limit - KiCrypVetoSystem (< to <=). 
+3 Inverted loss limit - KiBotVetoSystem (< to <=). 
 50ms, 8MB buffer)
 
 **High Priority (12):**
@@ -68,7 +68,7 @@
 - Profit/loss alerts in Indonesian
 - System status updates
 - Daily summary at 8 AM
-- **File:** `kicryp_telegram.py`
+- **File:** `kibot_telegram.py`
 
 ---
 
@@ -136,7 +136,7 @@
 ### Server Health 
 - [x] KiDax service running (PID 34734)
 - [x] Kinance service running (PID 327211)
-- [x] kicryp-manager active on both servers
+- [x] kibot-manager active on both servers
 - [x] UDP recv-Q = 0 (no overflow)
 - [x] HTTP endpoints responding
 
@@ -163,7 +163,7 @@
 ## 
 ### Real-Time
 - **Android App:** Dashboard screen (pending WebSocket fix)
-- **Telegram Bot:** @KiCryp_Trinity_Bot (starting...)
+- **Telegram Bot:** @KiBot_Trinity_Bot (starting...)
 - **Logs:** `journalctl -u kidax-engine -f`
 
 ### Health Checks

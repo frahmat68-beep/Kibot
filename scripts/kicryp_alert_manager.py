@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KiCryp Trinity - Alert Manager
+KiBot Trinity - Alert Manager
 ==============================
 Real-time alert propagation to Telegram with intelligent throttling.
 
@@ -303,7 +303,7 @@ if __name__ == "__main__":
             alert_type=AlertType.HEARTBEAT_DELAYED,
             severity=AlertSeverity.WARNING,
             title="Heartbeat Delayed",
-            message="Kinance heartbeat delayed by 523ms",
+            message="KiNance heartbeat delayed by 523ms",
             metadata={"delay_ms": 523},
         )
         

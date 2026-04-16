@@ -6,15 +6,15 @@ plugins {
 }
 
 android {
-    namespace = "com.kicryp.android"
+    namespace = "com.kibot.android"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.kicryp.android"
+        applicationId = "com.kibot.android"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 7
+        versionName = "7.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

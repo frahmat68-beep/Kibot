@@ -37,7 +37,7 @@ kotlin {
 }
 
 android {
-    namespace = "com.kicryp.binance"
+    namespace = "com.kibot.binance"
     compileSdk = 35
 
     defaultConfig {

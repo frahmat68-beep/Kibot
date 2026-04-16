@@ -38,7 +38,7 @@ kotlin {
 }
 
 android {
-    namespace = "com.kicryp.indodax"
+    namespace = "com.kibot.indodax"
     compileSdk = 35
 
     defaultConfig {

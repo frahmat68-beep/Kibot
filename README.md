@@ -1,4 +1,4 @@
-# KiCryp Trinity v7.0
+# KiBot Trinity v7.0
 
 Dual Bucket autonomous trading — Indodax + Binance lead-lag + Crypto.com confirmation.
 
@@ -11,7 +11,7 @@ Dual Bucket autonomous trading — Indodax + Binance lead-lag + Crypto.com confi
 *   **Bucket B (50%) — Local Indodax-Only**: ConvictionScore 7-layer ≥ 0.85 (pure math, no AI). Target: +3-8% per trade, Stop: -3%, Max 2 posisi.
 
 ## Architecture
-KINANCE (Binance radar, 8788) ───┬─── AND ────→ KICRYP MANAGER (9998) ────→ KIDAX (8787) → Indodax
+KINANCE (Binance radar, 8788) ───┬─── AND ────→ KIBOT MANAGER (9998) ────→ KIDAX (8787) → Indodax
 KICOM (Crypto.com REST API)      ───┘
 
 ## Servers
@@ -20,13 +20,13 @@ KICOM (Crypto.com REST API)      ───┘
 - Supabase: vptlelbgyxwieyfdpuja.supabase.co
 
 ## Files
-- `scripts/kicryp_engine_v2.py` — Engine utama (TradeLogger, ConvictionScore, dll)
-- `scripts/kicryp_manager.py` — Python brain + integration
+- `scripts/kibot_engine_v2.py` — Engine utama (TradeLogger, ConvictionScore, dll)
+- `scripts/kibot_manager.py` — Python brain + integration
 - `packages/core/` — Kotlin business logic
 - `state/` — Runtime state (posisi, cascade, trade log)
 - `infra/supabase/` — SQL schema
 
 ## Services
 ```bash
-sudo systemctl status kidax-engine kinance-engine kicryp-manager oracle-keepalive
+sudo systemctl status kidax-engine kinance-engine kibot-manager oracle-keepalive
 ```

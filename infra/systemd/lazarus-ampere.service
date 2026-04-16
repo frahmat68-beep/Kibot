@@ -8,8 +8,8 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/ampere-hunt
 Environment=PATH=/home/ubuntu/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=KICRYP_TELEGRAM_BOT_TOKEN=8583424689:AAHRe8drD2hmuyN48RoFv9Me0oXwcXnSoSE
-Environment=KICRYP_TELEGRAM_CHAT_ID=1346696386
+Environment=KIBOT_TELEGRAM_BOT_TOKEN=8583424689:AAHRe8drD2hmuyN48RoFv9Me0oXwcXnSoSE
+Environment=KIBOT_TELEGRAM_CHAT_ID=1346696386
 ExecStart=/bin/bash -lc 'cd /home/ubuntu/ampere-hunt && ./lazarus_ampere.sh >> /home/ubuntu/logs/lazarus_ampere.log 2>&1'
 Restart=on-failure
 RestartSec=20

@@ -1,12 +1,12 @@
 #!/bin/bash
-# KiCryp Trinity - Staging Deployment Script
+# KiBot Trinity - Staging Deployment Script
 # Purpose: Deploy TIER 1 complete system to Oracle staging environment
 
 set -e
 
 echo "╔════════════════════════════════════════════════════════════════════════════╗"
 echo "║                                                                            ║"
-echo "║              KiCryp Trinity - Staging Deployment (PHASE A)                  ║"
+echo "║              KiBot Trinity - Staging Deployment (PHASE A)                  ║"
 echo "║                                                                            ║"
 echo "║                  TIER 1 Complete + Daily Profit Ready                      ║"
 echo "║                                                                            ║"
@@ -18,8 +18,8 @@ REPO_ROOT="$(pwd)"
 STAGING_BRANCH="staging"
 MAIN_BRANCH="main"
 DEPLOY_USER="${DEPLOY_USER:-root}"
-DEPLOY_HOST="${DEPLOY_HOST:-staging.kicryp.oracle}"
-DEPLOY_PATH="/opt/kicryp/trinity"
+DEPLOY_HOST="${DEPLOY_HOST:-staging.kibot.oracle}"
+DEPLOY_PATH="/opt/kibot/trinity"
 
 echo "📋 PRE-DEPLOYMENT CHECKLIST"
 echo "════════════════════════════════════════════════════════════════════════════"
@@ -88,7 +88,7 @@ ssh $DEPLOY_USER@$DEPLOY_HOST << 'DEPLOY_SCRIPT'
 set -e
 
 echo "📂 Preparing deployment directory..."
-cd /opt/kicryp/trinity || mkdir -p /opt/kicryp/trinity && cd /opt/kicryp/trinity
+cd /opt/kibot/trinity || mkdir -p /opt/kibot/trinity && cd /opt/kibot/trinity
 
 echo "📥 Pulling latest code..."
 git fetch origin
@@ -101,16 +101,16 @@ echo "🔨 Building on server..."
 echo "🛑 Stopping existing services..."
 systemctl stop kinance-engine.service || true
 systemctl stop kidax-engine.service || true
-systemctl stop kicryp-manager.service || true
-systemctl stop kicryp-engine.service || true
+systemctl stop kibot-manager.service || true
+systemctl stop kibot-engine.service || true
 sleep 2
 
 echo "📦 Installing artifacts..."
-cp build/libs/*.jar /opt/kicryp/trinity/lib/ 2>/dev/null || true
-cp scripts/*.py /opt/kicryp/trinity/scripts/ || true
+cp build/libs/*.jar /opt/kibot/trinity/lib/ 2>/dev/null || true
+cp scripts/*.py /opt/kibot/trinity/scripts/ || true
 
 echo "🟢 Starting services..."
-systemctl start kicryp-engine.service
+systemctl start kibot-engine.service
 sleep 3
 systemctl start kinance-engine.service
 sleep 3
@@ -121,13 +121,13 @@ echo "✅ Services started"
 sleep 5
 
 echo "🔍 Checking service status..."
-systemctl status kicryp-engine.service --no-pager | head -5
+systemctl status kibot-engine.service --no-pager | head -5
 systemctl status kinance-engine.service --no-pager | head -5
 systemctl status kidax-engine.service --no-pager | head -5
 
 echo "📊 Initial system check..."
 curl -s http://localhost:8787/health || echo "KiDax health endpoint not responding yet"
-curl -s http://localhost:8788/health || echo "Kinance health endpoint not responding yet"
+curl -s http://localhost:8788/health || echo "KiNance health endpoint not responding yet"
 
 DEPLOY_SCRIPT
 
@@ -148,12 +148,12 @@ echo "╚═══════════════════════�
 echo ""
 echo "🔍 NEXT STEPS:"
 echo "─────────────"
-echo "1. Monitor logs: ssh $DEPLOY_USER@$DEPLOY_HOST 'tail -f /var/log/kicryp/*.log'"
+echo "1. Monitor logs: ssh $DEPLOY_USER@$DEPLOY_HOST 'tail -f /var/log/kibot/*.log'"
 echo "2. Check alerts: Monitor your Telegram for bot status updates"
 echo "3. Run tests: ./scripts/test-staging.sh"
 echo "4. Monitor 1+ hour before moving to production"
 echo ""
 echo "📊 Commands:"
-echo "   Check status:    ssh $DEPLOY_USER@$DEPLOY_HOST 'systemctl status kicryp-*'"
-echo "   View logs:       ssh $DEPLOY_USER@$DEPLOY_HOST 'journalctl -u kicryp-engine'"
+echo "   Check status:    ssh $DEPLOY_USER@$DEPLOY_HOST 'systemctl status kibot-*'"
+echo "   View logs:       ssh $DEPLOY_USER@$DEPLOY_HOST 'journalctl -u kibot-engine'"
 echo ""

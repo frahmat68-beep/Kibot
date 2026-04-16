@@ -14,7 +14,7 @@ KiCryp sekarang disiapkan untuk menjalankan beberapa bot dengan logic inti yang 
 - `BOT_ID`
 - `DEVICE_ID`
 - `MAC_ENGINE_PORT`
-- `KICRYP_RELEASE_LABEL`
+- `KIBOT_RELEASE_LABEL`
 - AI config per bot
 - credential exchange per bot
 

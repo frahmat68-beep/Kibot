@@ -2,7 +2,7 @@
 
 **Date:** April 6, 2026  
 **Auditor:** GitHub Copilot CLI  
-**System:** KiCryp Trinity (KINANCE + KIDAX + KICRYP MANAGER)  
+**System:** KiCryp Trinity (KINANCE + KIDAX + KIBOT MANAGER)  
 **Live Server:** http://213.35.118.26:8787/api/state  
 **Current Capital:** Rp 110,345
 

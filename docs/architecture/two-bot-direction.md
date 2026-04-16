@@ -33,7 +33,7 @@
 
 ## Lead-Lag Callout
 - Kinance emits breakout callout to KiDax over UDP (private IP) when configured.
-- Callout is throttled by cooldown (`KICRYP_LEAD_LAG_SIGNAL_COOLDOWN_MS`) to prevent spam.
-- KiDax accepts callout within TTL (`KICRYP_LEAD_LAG_SIGNAL_TTL_MS`) and immediately boosts that pair into decision hints.
-- If `KICRYP_LEAD_LAG_FORCE_ROTATION_ON_RECEIVE=true`, KiDax is allowed to bypass full-slot hesitation for the callout pair so momentum is not missed.
+- Callout is throttled by cooldown (`KIBOT_LEAD_LAG_SIGNAL_COOLDOWN_MS`) to prevent spam.
+- KiDax accepts callout within TTL (`KIBOT_LEAD_LAG_SIGNAL_TTL_MS`) and immediately boosts that pair into decision hints.
+- If `KIBOT_LEAD_LAG_FORCE_ROTATION_ON_RECEIVE=true`, KiDax is allowed to bypass full-slot hesitation for the callout pair so momentum is not missed.
 - If UDP delivery fails, Kinance automatically falls back to control-plane `command_queue` (`SYNC_NOW` payload).

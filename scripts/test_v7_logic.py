@@ -3,14 +3,14 @@ from pathlib import Path
 
 # Setup test environment
 os.environ["SUPABASE_URL"] = ""  # disable sync
-os.environ["KICRYP_STATE_DIR"] = "/tmp/kicryp_test"
+os.environ["KIBOT_STATE_DIR"] = "/tmp/kibot_test"
 sys.path.insert(0, "scripts")
 
-test_state = Path("/tmp/kicryp_test")
+test_state = Path("/tmp/kibot_test")
 test_state.mkdir(parents=True, exist_ok=True)
 
 # ─── Import test ───
-from kicryp_engine_v2 import (
+from kibot_engine_v2 import (
     safe_float, calc_bollinger, calc_rsi, calc_volume_trend,
     compute_conviction, simulate_what_if, CascadeState,
     evaluate_exit, OpenPosition, TradeLogger, dual_scanner_agree,

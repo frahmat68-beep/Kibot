@@ -3,10 +3,10 @@ import os
 from aiohttp import web, ClientSession, WSMsgType, ClientConnectorError
 
 
-UPSTREAM = os.environ.get("KICRYP_PROXY_UPSTREAM", "http://127.0.0.1:8788").rstrip("/")
-LISTEN_HOST = os.environ.get("KICRYP_PROXY_LISTEN_HOST", "0.0.0.0")
-LISTEN_PORT = int(os.environ.get("KICRYP_PROXY_LISTEN_PORT", "8787"))
-AUTH_TOKEN = os.environ.get("KICRYP_DASHBOARD_AUTH_TOKEN", "").strip()
+UPSTREAM = os.environ.get("KIBOT_PROXY_UPSTREAM", "http://127.0.0.1:8788").rstrip("/")
+LISTEN_HOST = os.environ.get("KIBOT_PROXY_LISTEN_HOST", "0.0.0.0")
+LISTEN_PORT = int(os.environ.get("KIBOT_PROXY_LISTEN_PORT", "8787"))
+AUTH_TOKEN = os.environ.get("KIBOT_DASHBOARD_AUTH_TOKEN", "").strip()
 
 
 def upstream_headers(request: web.Request) -> dict[str, str]:

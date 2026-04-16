@@ -32,7 +32,7 @@ echo "✅ Indodax deployment complete"
 
 # Step 3: Deploy to Binance
 echo -e "\n[3/6] Deploying to Binance server (152.69.218.198)..."
-scp -i "$BINANCE_KEY" "$JAR_FILE" ubuntu@$BINANCE_SERVER:~/Kinance/
+scp -i "$BINANCE_KEY" "$JAR_FILE" ubuntu@$BINANCE_SERVER:~/KiNance/
 echo "✅ Binance deployment complete"
 
 # Step 4: Restart Indodax services
@@ -49,10 +49,10 @@ ssh -i "$INDODAX_KEY" ubuntu@$INDODAX_SERVER << 'EOF'
     systemctl status kidax-engine --no-pager || echo "Status check failed"
     echo "✅ KiDax restarted"
     
-    echo "Checking KiCryp Manager..."
-    sudo -n systemctl restart kicryp-manager || true
+    echo "Checking KiBot Manager..."
+    sudo -n systemctl restart kibot-manager || true
     sleep 2
-    echo "✅ KiCryp Manager restarted"
+    echo "✅ KiBot Manager restarted"
 EOF
 
 # Step 5: Restart Binance services
@@ -60,14 +60,14 @@ echo -e "\n[5/6] Restarting Binance services..."
 ssh -i "$BINANCE_KEY" ubuntu@$BINANCE_SERVER << 'EOF'
     echo "Reloading daemon..."
     sudo -n systemctl daemon-reload
-    echo "Stopping Kinance..."
+    echo "Stopping KiNance..."
     sudo -n systemctl stop kinance-engine || true
     sleep 2
-    echo "Starting Kinance..."
+    echo "Starting KiNance..."
     sudo -n systemctl start kinance-engine
     sleep 3
     systemctl status kinance-engine --no-pager || echo "Status check failed"
-    echo "✅ Kinance restarted"
+    echo "✅ KiNance restarted"
 EOF
 
 # Step 6: Verify deployment
@@ -77,7 +77,7 @@ sleep 5
 echo -e "\n📊 KiDax Status:"
 ssh -i "$INDODAX_KEY" ubuntu@$INDODAX_SERVER 'curl -fsS http://localhost:8787/api/state | python3 -c "import sys, json; d=json.load(sys.stdin); print(f\"  Equity: Rp{d.get(\"portfolioValueIdr\", 0)}\"); print(f\"  Free: Rp{d.get(\"freeIdrLabel\", 0)}\"); print(f\"  Status: {d.get(\"effectiveState\", \"unknown\")}\"); print(f\"  AI: {d.get(\"aiProviderSummary\", \"unknown\")}\")" 2>/dev/null || echo "  (API not yet ready)"'
 
-echo -e "\n📊 Kinance Status:"
+echo -e "\n📊 KiNance Status:"
 ssh -i "$BINANCE_KEY" ubuntu@$BINANCE_SERVER 'curl -fsS http://localhost:8788/api/state | python3 -c "import sys, json; d=json.load(sys.stdin); print(f\"  Status: {d.get(\"effectiveState\", \"unknown\")}\"); print(f\"  Scan Universe: {d.get(\"scanUniverseCount\", 0)}\"); print(f\"  Top Candidate: {d.get(\"topCandidate\", \"N/A\")}\")" 2>/dev/null || echo "  (API not yet ready)"'
 
 echo -e "\n✅ DEPLOYMENT COMPLETE!"
@@ -86,7 +86,7 @@ echo "Recovery system deployed to both servers."
 echo ""
 echo "Monitor logs:"
 echo "  KiDax:   ssh -i $INDODAX_KEY ubuntu@$INDODAX_SERVER 'journalctl -u kidax-engine -f'"
-echo "  Kinance: ssh -i $BINANCE_KEY ubuntu@$BINANCE_SERVER 'journalctl -u kinance-engine -f'"
+echo "  KiNance: ssh -i $BINANCE_KEY ubuntu@$BINANCE_SERVER 'journalctl -u kinance-engine -f'"
 echo ""
 echo "Check Indodax API:"
 echo "  curl http://$INDODAX_SERVER:8787/api/state | python3 -m json.tool"

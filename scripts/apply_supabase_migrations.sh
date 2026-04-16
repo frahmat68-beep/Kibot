@@ -51,21 +51,21 @@ if command -v psql >/dev/null 2>&1; then
 fi
 
 if python3 -c "import psycopg" >/dev/null 2>&1; then
-  KICRYP_DIRECT_URL="${DIRECT_URL}" \
-  KICRYP_POOLER_URL="${POOLER_URL}" \
-  KICRYP_FALLBACK_URL="${FALLBACK_URL}" \
-  KICRYP_SQL_BUNDLE="${BUNDLE_PATH}" \
+  KIBOT_DIRECT_URL="${DIRECT_URL}" \
+  KIBOT_POOLER_URL="${POOLER_URL}" \
+  KIBOT_FALLBACK_URL="${FALLBACK_URL}" \
+  KIBOT_SQL_BUNDLE="${BUNDLE_PATH}" \
   python3 - <<'PY'
 import os
 from pathlib import Path
 import psycopg
 
-bundle_path = Path(os.environ["KICRYP_SQL_BUNDLE"])
+bundle_path = Path(os.environ["KIBOT_SQL_BUNDLE"])
 sql = bundle_path.read_text()
 candidate_urls = [
-    ("direct", os.environ.get("KICRYP_DIRECT_URL", "").strip()),
-    ("pooler", os.environ.get("KICRYP_POOLER_URL", "").strip()),
-    ("fallback", os.environ.get("KICRYP_FALLBACK_URL", "").strip()),
+    ("direct", os.environ.get("KIBOT_DIRECT_URL", "").strip()),
+    ("pooler", os.environ.get("KIBOT_POOLER_URL", "").strip()),
+    ("fallback", os.environ.get("KIBOT_FALLBACK_URL", "").strip()),
 ]
 
 attempt_errors = []

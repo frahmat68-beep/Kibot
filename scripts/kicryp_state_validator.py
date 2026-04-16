@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KiCryp Trinity - State File Validator & Recovery
+KiBot Trinity - State File Validator & Recovery
 ================================================
 Ensures state.json consistency with backup/recovery capabilities.
 

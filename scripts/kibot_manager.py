@@ -1,0 +1,5967 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import re
+import signal
+import socket
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import asyncio
+
+import requests
+import kibot_engine_v2 as engine
+from kibot_engine_v2 import (
+    trade_logger, cascade_state, position_manager,
+    screen_bucket_b, dual_scanner_agree, fetch_kicom,
+    compute_conviction, evaluate_exit, run_math_review,
+    simulate_what_if, update_btc, btc_change_1h,
+    size_bucket_a, size_bucket_b, is_btc_ok,
+    LEAD_LAG_PAIRS, INDODAX_ONLY_PAIRS, ROUND_TRIP_LIMIT,
+    _shutting_down, SCREEN_INTERVAL_S, BTC_UPDATE_S, REVIEW_INTERVAL_S
+)
+
+TRADING_CAPITAL_PCT = 0.50
+MIN_POSITION_IDR = 50_000
+MAX_POSITION_IDR = 1_000_000
+
+# Use defusedxml to prevent XXE attacks
+try:
+    import defusedxml.ElementTree as ET
+except ImportError:
+    from xml.etree import ElementTree as ET
+    print("[KIBOT][WARN] defusedxml not installed, using stdlib xml (XXE risk)", flush=True)
+
+# Global lock for thread-safe access to shared state
+_state_lock = threading.RLock()
+_shutdown_event = threading.Event()
+_main_socket: Optional[socket.socket] = None
+_http_server: Optional[ThreadingHTTPServer] = None
+_bot_start_time = time.time()
+_last_daily_guard_check_at = 0.0
+_learning_engine = None
+_regime_detector = None
+_learning_enabled = False
+_metrics: Dict[str, Union[float, int]] = {
+    "market_orders_today": 0,
+    "limit_orders_today": 0,
+    "entries_blocked_hard_stop": 0,
+    "entries_blocked_learn_gate": 0,
+    "entries_blocked_whatif": 0,
+    "fee_bleed_est_idr": 0.0,
+    "whatif_skips_today": 0,
+    "whatif_enters_today": 0,
+    "risk_mode": "GROWTH", # GROWTH, CAUTION, DEFENSIVE, RESTRICTED, HARD_STOP
+}
+_one_shot_used_today = False
+_full_stop_active = False
+_one_shot_result: Optional[str] = None
+_last_math_review_at = 0.0
+_math_review_last_action = "INIT"
+_math_review_last_reason = ""
+_math_review_trade_journal: List[Dict[str, Any]] = []
+_price_history: Dict[str, List[float]] = {}  # pair_id -> [price1, price2, ...]
+_last_screener_run_at = 0.0
+_active_trails: Dict[str, Dict[str, Any]] = {}  # pair_id -> {entry_price, max_price, trailing_pct, ...}
+_global_whiteboard: Dict[str, Dict[str, Any]] = {}  # symbol -> {binance: price, cryptocom: price, ts: time}
+_market_regime: str = "SIDEWAYS" # Updated by KiBot Radar
+LOCAL_SIGNAL_PORT = 9999
+_signal_engine_proc: Optional[threading.Thread] = None
+
+
+def _load_dotenv_if_exists() -> None:
+    candidates = []
+    explicit = os.getenv("KIBOT_MANAGER_ENV_FILE")
+    if explicit:
+        candidates.append(Path(explicit))
+    cwd = Path.cwd()
+    candidates.extend([cwd / ".env", cwd.parent / ".env", cwd / "apps/mac-engine/.env"])
+    for path in candidates:
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+            key, val = raw.split("=", 1)
+            key = key.strip()
+            val = val.strip().strip("'").strip('"')
+            if key and key not in os.environ:
+                os.environ[key] = val
+
+
+_load_dotenv_if_exists()
+
+try:
+    from kibot_learning_engine import get_engine as _get_learning_engine, get_regime_detector as _get_regime_detector
+
+    _learning_engine = _get_learning_engine()
+    _regime_detector = _get_regime_detector()
+    _learning_enabled = True
+    print("[KIBOT][LEARN] mathematical learning engine loaded", flush=True)
+except Exception as _learning_error:
+    _learning_enabled = False
+    _learning_engine = None
+    _regime_detector = None
+    print(f"[KIBOT][LEARN][WARN] learning engine unavailable: {_learning_error}", flush=True)
+
+def _load_json_file(path: Path, default: Any) -> Any:
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+    return default
+
+
+def _write_json_file(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _metric_inc(name: str, amount: int = 1) -> None:
+    current = _metrics.get(name, 0)
+    if isinstance(current, (int, float)):
+        _metrics[name] = current + amount
+
+
+def _metric_add(name: str, amount: float) -> None:
+    current = _metrics.get(name, 0.0)
+    if isinstance(current, (int, float)):
+        _metrics[name] = float(current) + float(amount)
+
+
+def _telegram_send(message: str) -> None:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_USER_ID", "").strip()
+    if not token or not chat_id:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": message,
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
+    except Exception as error:
+        print(f"[KIBOT][TELEGRAM][WARN] {error}", flush=True)
+
+
+import math, statistics
+from pathlib import Path
+from datetime import datetime, timedelta, date
+
+# =============================================
+# TRADE LOGGER — Memory Sistem
+# Simpan ke local file DAN Supabase
+# =============================================
+
+TRADE_LOG_FILE = Path("/home/ubuntu/KiBot/state/trade_log.jsonl")
+DAILY_SUMMARY_FILE = Path("/home/ubuntu/KiBot/state/daily_summary.json")
+
+class TradeLogger:
+    """Log setiap trade dan hitung statistik untuk learning."""
+
+    def __init__(self):
+        TRADE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self._today_trades: list[dict] = []
+        self._load_today_trades()
+
+    def _load_today_trades(self):
+        """Load trades hari ini dari file."""
+        if not TRADE_LOG_FILE.exists():
+            return
+        today_wib = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d")
+        try:
+            with open(TRADE_LOG_FILE) as f:
+                for line in f:
+                    try:
+                        t = json.loads(line.strip())
+                        if t.get("entry_at", "").startswith(today_wib):
+                            self._today_trades.append(t)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[TRADELOG] Load error: {e}", flush=True)
+
+    def record_entry(self, pair_id: str, entry_price: float, budget_idr: float,
+                     category: str, pump_phase: str, pump_score: float,
+                     order_type: str, bucket_type: str) -> str:
+        """Catat entry — return trade_id."""
+        import uuid
+        trade_id = str(uuid.uuid4())[:8]
+        trade = {
+            "trade_id": trade_id,
+            "pair_id": pair_id,
+            "category": category,
+            "entry_price": entry_price,
+            "budget_idr": budget_idr,
+            "pump_phase": pump_phase,
+            "pump_score": pump_score,
+            "order_type_entry": order_type,
+            "bucket_type": bucket_type,
+            "entry_at": (datetime.utcnow() + timedelta(hours=7)).isoformat(),
+            "status": "OPEN"
+        }
+        with open(TRADE_LOG_FILE, "a") as f:
+            f.write(json.dumps(trade) + "\n")
+        print(f"[TRADELOG] ENTRY {pair_id} @ {entry_price:.6f} Rp{budget_idr:,.0f} [{trade_id}]", flush=True)
+        return trade_id
+
+    def record_exit(self, trade_id: str, exit_price: float, exit_reason: str,
+                    order_type_exit: str = "LIMIT") -> dict | None:
+        """Catat exit — hitung PnL dan simpan."""
+        lines = []
+        found_trade = None
+        if TRADE_LOG_FILE.exists():
+            with open(TRADE_LOG_FILE) as f:
+                for line in f:
+                    try:
+                        t = json.loads(line.strip())
+                        if t.get("trade_id") == trade_id and t.get("status") == "OPEN":
+                            # Hitung PnL
+                            entry = t["entry_price"]
+                            budget = t["budget_idr"]
+                            pnl_pct = (exit_price - entry) / entry
+                            # Fee Indodax: maker 0.04% entry + 0.21% PPh sell + 0.04% exit
+                            fee_cost = 0.0004 + 0.0021 + 0.0004  # total ~0.69% round trip
+                            net_pct = pnl_pct - fee_cost
+                            pnl_idr = budget * net_pct
+                            entry_at = datetime.fromisoformat(t["entry_at"])
+                            hold_min = int((datetime.now() - entry_at).total_seconds() / 60)
+                            t.update({
+                                "exit_price": exit_price,
+                                "pnl_idr": round(pnl_idr, 2),
+                                "pnl_pct": round(net_pct, 5),
+                                "hold_minutes": hold_min,
+                                "win": pnl_idr > 0,
+                                "exit_reason": exit_reason,
+                                "order_type_exit": order_type_exit,
+                                "exit_at": (datetime.utcnow() + timedelta(hours=7)).isoformat(),
+                                "status": "CLOSED"
+                            })
+                            found_trade = t
+                            self._today_trades.append(t)
+                            print(
+                                f"[TRADELOG] EXIT {t['pair_id']} "
+                                f"pnl=Rp{pnl_idr:+,.0f} ({net_pct:+.2%}) "
+                                f"hold={hold_min}m reason={exit_reason} [{trade_id}]",
+                                flush=True
+                            )
+                        lines.append(json.dumps(t))
+                    except Exception:
+                        lines.append(line.strip())
+        with open(TRADE_LOG_FILE, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        if found_trade:
+            # FEEDBACK: Update Memory/Learning Engine
+            if _learning_engine:
+                try:
+                    stats = _learning_engine.record_trade(found_trade["pair_id"], found_trade["pnl_pct"])
+                    print(f"[LEARNING] Feedback recorded for {found_trade['pair_id']}. "
+                          f"New Kelly Size: {stats.kelly_fraction():.2%}", flush=True)
+                except Exception as e:
+                    print(f"[LEARNING] Error updating memory: {e}", flush=True)
+
+            self._sync_to_supabase(found_trade)
+        return found_trade
+
+    def get_today_stats(self) -> dict:
+        """Statistik trading hari ini — pure math."""
+        closed = [t for t in self._today_trades if t.get("status") == "CLOSED"]
+        wins   = [t for t in closed if t.get("win")]
+        losses = [t for t in closed if not t.get("win")]
+        total  = len(closed)
+        if total == 0:
+            return {"total": 0, "win_rate": 0.5, "ev_idr": 0, "pf": 1.0,
+                    "total_pnl_idr": 0, "avg_win": 0, "avg_loss": 0}
+        win_rate = len(wins) / total
+        avg_win  = sum(t["pnl_idr"] for t in wins) / max(len(wins), 1)
+        avg_loss = abs(sum(t["pnl_idr"] for t in losses)) / max(len(losses), 1)
+        ev       = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
+        pf       = (sum(t["pnl_idr"] for t in wins) /
+                    max(abs(sum(t["pnl_idr"] for t in losses)), 1))
+        total_pnl = sum(t["pnl_idr"] for t in closed)
+        return {
+            "total": total, "wins": len(wins), "losses": len(losses),
+            "win_rate": round(win_rate, 3), "ev_idr": round(ev, 0),
+            "pf": round(pf, 2), "total_pnl_idr": round(total_pnl, 0),
+            "avg_win": round(avg_win, 0), "avg_loss": round(avg_loss, 0)
+        }
+
+    def get_pair_stats(self, pair_id: str) -> dict:
+        """Statistik per pair dari trade log lokal."""
+        pair_trades = [t for t in self._today_trades
+                       if t.get("pair_id") == pair_id and t.get("status") == "CLOSED"]
+        if not pair_trades:
+            return {"win_rate": 0.5, "profit_factor": 1.0, "avg_slippage": 0.012, "total": 0}
+        wins = [t for t in pair_trades if t.get("win")]
+        losses = [t for t in pair_trades if not t.get("win")]
+        wr = len(wins) / len(pair_trades)
+        pf = (sum(t["pnl_idr"] for t in wins) /
+              max(abs(sum(t["pnl_idr"] for t in losses)), 1))
+        return {"win_rate": round(wr, 3), "profit_factor": round(pf, 2),
+                "avg_slippage": 0.012, "total": len(pair_trades)}
+
+    def _sync_to_supabase(self, trade: dict):
+        """Sync ke Supabase async (non-blocking)."""
+        import threading
+        def do_sync():
+            try:
+                import urllib.request
+                supabase_url = os.environ.get("SUPABASE_URL", "")
+                supabase_key = os.environ.get("SUPABASE_ANON_KEY", "")
+                if not supabase_url:
+                    return
+                payload = json.dumps({
+                    "pair_id": trade.get("pair_id"),
+                    "category": trade.get("category", "LEAD_LAG"),
+                    "entry_price": trade.get("entry_price"),
+                    "exit_price": trade.get("exit_price"),
+                    "budget_idr": trade.get("budget_idr"),
+                    "pnl_idr": trade.get("pnl_idr"),
+                    "pnl_pct": trade.get("pnl_pct"),
+                    "order_type_entry": trade.get("order_type_entry", "LIMIT"),
+                    "order_type_exit": trade.get("order_type_exit", "LIMIT"),
+                    "pump_phase": trade.get("pump_phase"),
+                    "pump_score": trade.get("pump_score"),
+                    "hold_minutes": trade.get("hold_minutes"),
+                    "win": trade.get("win"),
+                    "exit_reason": trade.get("exit_reason"),
+                    "bucket_type": trade.get("bucket_type", "STABLE"),
+                }).encode()
+                req = urllib.request.Request(
+                    f"{supabase_url}/rest/v1/trade_history",
+                    data=payload,
+                    headers={
+                        "apikey": supabase_key,
+                        "Authorization": f"Bearer {supabase_key}",
+                        "Content-Type": "application/json",
+                        "Prefer": "resolution=ignore-duplicates"
+                    },
+                    method="POST"
+                )
+                urllib.request.urlopen(req, timeout=5)
+            except Exception as e:
+                print(f"[TRADELOG] Supabase sync error: {e}", flush=True)
+        threading.Thread(target=do_sync, daemon=True).start()
+
+    def save_daily_summary(self):
+        """Simpan ringkasan hari ini ke file dan Supabase."""
+        stats = self.get_today_stats()
+        equity = _get_total_equity_estimate() or 0.0
+        today_wib = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d")
+        summary = {
+            "date": today_wib,
+            "stats": stats,
+            "equity_idr": equity,
+            "saved_at": datetime.utcnow().isoformat()
+        }
+        DAILY_SUMMARY_FILE.write_text(json.dumps(summary, indent=2))
+        print(
+            f"[DAILY] {today_wib}: {stats['total']} trades "
+            f"WR={stats['win_rate']:.0%} "
+            f"PnL=Rp{stats['total_pnl_idr']:+,.0f} "
+            f"EV=Rp{stats['ev_idr']:+,.0f}/trade",
+            flush=True
+        )
+
+# Singleton
+trade_logger = TradeLogger()
+
+# =============================================
+# TRINITY HELPERS — Networking & State
+# =============================================
+
+def _broadcast_udp(msg: dict):
+    """Kirim perintah ke executor (KIDAX)."""
+    global _main_socket
+    if _main_socket and KIDAX_UDP_HOST:
+        try:
+            _main_socket.sendto(json.dumps(msg).encode(), (KIDAX_UDP_HOST, KIDAX_UDP_PORT))
+        except Exception as e:
+            print(f"[UDP][ERR] send failed: {e}", flush=True)
+
+def _get_total_equity_estimate() -> float:
+    """Estimasi total aset (IDR + Koin) dari KiDax."""
+    # Prioritas 1: Daily Guard state
+    eq = _daily_guard_state.get("current_equity")
+    if eq: return float(eq)
+    
+    # Prioritas 2: Fetch langsung (Cache bypass)
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:8787/api/state", timeout=2) as r:
+            payload = json.loads(r.read())
+            val = payload.get("totalValueIdr", 0)
+            if isinstance(val, str):
+                val = re.sub(r"[^\d.,-]", "", val).replace(".", "").replace(",", ".")
+            return float(val)
+    except:
+        return 0.0
+
+def _load_indodax_ticker_snapshot() -> dict:
+    """Shorthand untuk ambil ticker snapshot."""
+    global _indodax_ticker_snapshot
+    return _indodax_ticker_snapshot
+
+def _is_hard_stop_active() -> bool:
+    """Check both manager and daily guard hard stops."""
+    return portfolio_manager.get_pnl_state() == "HARD_STOP" or bool(_daily_guard_state.get("hard_stopped"))
+
+def _maybe_run_30min_math_review():
+    """Trigger review setiap 30 menit (math-based)."""
+    global _last_30min_review
+    now = time.time()
+    if (now - _last_30min_review) >= 1800:
+        _last_30min_review = now
+        run_30min_math_review()
+
+
+
+
+
+# ═══════════════════════════════════════════════════════════
+# KIBOT TRINITY v6.0 — PAIR UNIVERSE & PORTFOLIO MANAGER
+# ═══════════════════════════════════════════════════════════
+
+# === PAIR CATEGORY SYSTEM ===
+
+# Kategori A: Lead-Lag (ada di Binance Spot)
+LEAD_LAG_PAIRS: dict[str, str] = {
+    # TIER 1 — Volume > $500K/hari di Indodax
+    "btc_idr":     "BTCUSDT",   "eth_idr":    "ETHUSDT",
+    "xrp_idr":     "XRPUSDT",   "sol_idr":    "SOLUSDT",
+    "doge_idr":    "DOGEUSDT",  "bnb_idr":    "BNBUSDT",
+    "pepe_idr":    "PEPEUSDT",  "ada_idr":    "ADAUSDT",
+    "shib_idr":    "SHIBUSDT",  "xlm_idr":    "XLMUSDT",
+    "trx_idr":     "TRXUSDT",   "hbar_idr":   "HBARUSDT",
+    "sui_idr":     "SUIUSDT",   "dot_idr":    "DOTUSDT",
+    "pol_idr":     "POLUSDT",   "bonk_idr":   "BONKUSDT",
+    "pengu_idr":   "PENGUUSDT",
+
+    # TIER 2 — Volume $100K-$500K
+    "fet_idr":     "FETUSDT",   "render_idr": "RENDERUSDT",
+    "anime_idr":   "ANIMEUSDT", "trump_idr":  "TRUMPUSDT",
+    "zen_idr":     "ZENUSDT",   "iotx_idr":   "IOTXUSDT",
+    "moodeng_idr": "MOODENGUSDT","mon_idr":   "MONUSDT",
+    "vanry_idr":   "VANRYUSDT", "mog_idr":    "MOGUSDT",
+    "spx_idr":     "SPXUSDT",   "link_idr":   "LINKUSDT",
+    "avax_idr":    "AVAXUSDT",  "near_idr":   "NEARUSDT",
+    "apt_idr":     "APTUSDT",   "arb_idr":    "ARBUSDT",
+    "op_idr":      "OPUSDT",    "atom_idr":   "ATOMUSDT",
+    "ltc_idr":     "LTCUSDT",   "uni_idr":    "UNIUSDT",
+    "floki_idr":   "FLOKIUSDT", "enj_idr":    "ENJUSDT",
+    "fun_idr":     "FUNUSDT",   "dusk_idr":   "DUSKUSDT",
+    "matic_idr":   "MATICUSDT", "paxg_idr":   "PAXGUSDT",
+
+    # TIER 3 — Volume < $100K (masuk kalau ada signal kuat)
+    "bch_idr":     "BCHUSDT",   "etc_idr":    "ETCUSDT",
+    "pixel_idr":   "PIXELUSDT", "zerebro_idr":"ZEREBRUSDT",
+    "islm_idr":    "ISLAMUSDT",  # Islamic Coin — cek apakah ada di Binance
+}
+
+# Kategori B: Binance Futures only (pakai futures price sebagai proxy)
+FUTURES_PROXY_PAIRS: dict[str, str] = {
+    "fartcoin_idr": "FARTCOINUSDT",  # Binance Futures only, tidak ada Spot
+    # "jellyjelly_idr": delisted dari Binance Futures
+}
+
+# Kategori C: Indodax-Only (pure technical, no lead-lag)
+INDODAX_ONLY_PAIRS: list[str] = [
+    "pippin_idr",      # Volume #2 Indodax ($7.56M) — PRIORITAS
+    "myx_idr",         # MYX Finance
+    "jellyjelly_idr",  # JellyJelly
+    "aster_idr",       # Aster
+    "hype_idr",        # Hyperliquid — tidak ada di Binance sama sekali
+    "gravity_idr",
+    "trollsol_idr",
+    "whitewhale_idr",
+    "wealth_idr",
+    "mubarak_idr",
+    "xpl_idr",         # Plasma
+    "fanc_idr",
+    "nova_idr",
+    "mrs_idr",         # Metars Genesis
+    "zerebro_idr",     # Zerebro — jika tidak ada di Binance spot
+]
+
+# Sektor per pair (untuk diversifikasi)
+PAIR_SECTORS: dict[str, str] = {
+    "btc_idr": "layer1", "eth_idr": "layer1",
+    "sol_idr": "layer1", "ada_idr": "layer1",
+    "bnb_idr": "exchange", "trx_idr": "layer1",
+    "doge_idr": "meme",  "shib_idr": "meme",
+    "pepe_idr": "meme",  "bonk_idr": "meme",
+    "floki_idr": "meme", "pippin_idr": "meme",
+    "fartcoin_idr": "meme", "moodeng_idr": "meme",
+    "jellyjelly_idr": "meme", "mubarak_idr": "meme",
+    "trollsol_idr": "meme",
+    "xlm_idr": "payment", "xrp_idr": "payment",
+    "sui_idr": "layer1",  "dot_idr": "layer1",
+    "arb_idr": "layer2",  "op_idr": "layer2",
+    "pol_idr": "layer2",
+    "link_idr": "oracle", "fet_idr": "ai_token",
+    "render_idr": "ai_token",
+    "enj_idr": "gaming",  "fun_idr": "gaming",
+    "hype_idr": "defi",   "myx_idr": "defi",
+    "uni_idr": "defi",
+    "pengu_idr": "nft",   "spx_idr": "meme",
+    "islm_idr": "local_idr",
+}
+
+def get_pair_category(pair_id: str) -> str:
+    """Classify pair ke kategori."""
+    if pair_id in LEAD_LAG_PAIRS:
+        return "LEAD_LAG"
+    if pair_id in FUTURES_PROXY_PAIRS:
+        return "FUTURES_PROXY"
+    return "INDODAX_ONLY"
+
+def get_binance_symbol(pair_id: str) -> str | None:
+    """Get Binance USDT symbol — dengan explicit mapping."""
+    # Check explicit lead-lag map first
+    explicit = LEAD_LAG_PAIRS.get(pair_id)
+    if explicit:
+        return explicit
+    # Check futures proxy
+    futures = FUTURES_PROXY_PAIRS.get(pair_id)
+    if futures:
+        return futures
+    # Auto-derive fallback (bukan XLMIDR lagi!)
+    base = pair_id.replace("_idr", "").replace("_usdt", "")
+    return f"{base.upper()}USDT"
+
+def get_pair_sector(pair_id: str) -> str:
+    return PAIR_SECTORS.get(pair_id, "unknown")
+
+# === PORTFOLIO CONFIGURATION ===
+PORTFOLIO_CONFIG = {
+    "max_concurrent_positions": 5,
+    "max_budget_pct_per_pos":   0.20,
+    "min_budget_idr":           10_000,
+    "max_lead_lag_positions":   3,
+    "max_indodax_only_positions": 2,
+    "max_same_sector":          2,
+}
+
+class Position:
+    """Single position tracking."""
+    def __init__(self, pair_id: str, entry_price: float,
+                 budget_idr: float, category: str, phase: str = "MID"):
+        self.pair_id       = pair_id
+        self.entry_price   = entry_price
+        self.budget_idr    = budget_idr
+        self.category      = category
+        self.phase         = phase
+        self.stop_price    = entry_price * (1 - 0.05)  # default 5%
+        self.peak_price    = entry_price
+        self.entry_time    = time.time()
+        self.partial_tp_done = False
+        self.partial_tp_triggered = False
+        self.unrealized_pnl_idr = 0.0
+        self.profit_pct    = 0.0
+
+    def update_price(self, current_price: float):
+        self.peak_price  = max(self.peak_price, current_price)
+        pnl = ((current_price - self.entry_price) / self.entry_price)
+        self.profit_pct           = pnl
+        self.unrealized_pnl_idr   = self.budget_idr * pnl
+
+class PortfolioManager:
+    """Manages up to 5 concurrent positions."""
+
+    def __init__(self):
+        self._lock       = threading.Lock()
+        self.positions: dict[str, Position] = {}
+        self.realized_pnl_today: float = 0.0
+        self.daily_pnl_pct: float = 0.0
+
+    def can_open(self, pair_id: str, category: str) -> tuple[bool, str]:
+        with self._lock:
+            if pair_id in self.positions:
+                return False, "Already in position"
+            n = len(self.positions)
+            if n >= PORTFOLIO_CONFIG["max_concurrent_positions"]:
+                return False, f"Max {PORTFOLIO_CONFIG['max_concurrent_positions']} positions"
+
+            ll = sum(1 for p in self.positions.values() if p.category == "LEAD_LAG")
+            lo = sum(1 for p in self.positions.values() if p.category == "INDODAX_ONLY")
+            if category == "LEAD_LAG" and ll >= PORTFOLIO_CONFIG["max_lead_lag_positions"]:
+                return False, "Max lead-lag positions"
+            if category == "INDODAX_ONLY" and lo >= PORTFOLIO_CONFIG["max_indodax_only_positions"]:
+                return False, "Max local positions"
+
+            sector = get_pair_sector(pair_id)
+            sector_count = sum(1 for p in self.positions.values()
+                               if get_pair_sector(p.pair_id) == sector)
+            if sector_count >= PORTFOLIO_CONFIG["max_same_sector"]:
+                return False, f"Sector {sector} full"
+
+            return True, "OK"
+
+    def open_position(self, pair_id: str, entry_price: float,
+                      budget_idr: float, category: str, phase: str = "MID"):
+        with self._lock:
+            self.positions[pair_id] = Position(
+                pair_id, entry_price, budget_idr, category, phase
+            )
+        print(
+            f"[PORTFOLIO] OPEN {pair_id} @ {entry_price:.6f} "
+            f"Rp{budget_idr:,.0f} [{len(self.positions)}/5]", flush=True
+        )
+
+    def close_position(self, pair_id: str, exit_price: float, reason: str):
+        with self._lock:
+            pos = self.positions.pop(pair_id, None)
+        if pos:
+            pnl = (exit_price - pos.entry_price) / pos.entry_price * pos.budget_idr
+            self.realized_pnl_today += pnl
+            hold_min = (time.time() - pos.entry_time) / 60
+            print(
+                f"[PORTFOLIO] CLOSE {pair_id} pnl=Rp{pnl:+.0f} "
+                f"({pnl/pos.budget_idr:+.2%}) hold={hold_min:.0f}m reason={reason} "
+                f"[{len(self.positions)}/5]", flush=True
+            )
+            return pnl
+        return 0.0
+
+    def get_pnl_state(self) -> str:
+        pnl = self.daily_pnl_pct
+        if pnl <= -0.02:  return "HARD_STOP"
+        if pnl <= -0.01:  return "CRITICAL"
+        if pnl <= -0.005: return "WARNING"
+        return "HEALTHY"
+
+    def get_available_budget(self, total_equity: float) -> float:
+        with self._lock:
+            allocated = sum(p.budget_idr for p in self.positions.values())
+        available = total_equity - allocated
+        max_per   = total_equity * PORTFOLIO_CONFIG["max_budget_pct_per_pos"]
+        return max(0, min(available, max_per))
+
+
+# Singleton
+portfolio_manager = PortfolioManager()
+
+# =============================================
+# PURE TECHNICAL DETECTOR — Indodax-only pairs
+# Untuk koin tanpa Binance pair (WHITEWHALE, BR, DRX, BIO, dll)
+# =============================================
+
+INDODAX_OHLCV_URL = "https://indodax.com/tradingview/history_v2"
+INDODAX_TICKERS_URL = "https://indodax.com/api/tickers"
+
+def fetch_candles(pair_id: str, tf: int = 15, count: int = 25) -> list[dict]:
+    """Ambil OHLCV dari Indodax tradingview API."""
+    import time, urllib.request
+    base = pair_id.replace("_idr", "").upper()
+    symbol = f"{base}/IDR"
+    now = int(time.time())
+    from_ts = now - (tf * 60 * count)
+    url = f"{INDODAX_OHLCV_URL}?symbol={symbol}&tf={tf}&from={from_ts}&to={now}"
+    try:
+        with urllib.request.urlopen(url, timeout=8) as r:
+            data = json.loads(r.read())
+        times  = data.get("t", [])
+        opens  = data.get("o", data.get("Open", []))
+        highs  = data.get("h", data.get("High", []))
+        lows   = data.get("l", data.get("Low", []))
+        closes = data.get("c", data.get("Close", []))
+        # Ensure it's OHLC format
+        candles = []
+        for i in range(len(times)):
+            candles.append({
+                "t": int(times[i]),
+                "o": float(opens[i]), "h": float(highs[i]),
+                "l": float(lows[i]),  "c": float(closes[i]),
+                "v": float(data.get("v", [])[i]) if "v" in data and i < len(data["v"]) else 0
+            })
+        return candles
+    except Exception as e:
+        print(f"[CANDLE] {pair_id}: {e}", flush=True)
+        return []
+
+def fetch_order_book_depth(pair_id: str) -> dict | None:
+    """Fetch order book depth for imbalance analysis."""
+    import urllib.request
+    url = f"https://indodax.com/api/depth/{pair_id}"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+def check_order_book_imbalance(depth: dict | None) -> float:
+    """Calculate Bid/Ask volume ratio for the first 10 levels. Returns ratio."""
+    if not depth or "buy" not in depth or "sell" not in depth:
+        return 1.0
+    try:
+        bid_vol = sum(float(b[1]) for b in depth["buy"][:10])
+        ask_vol = sum(float(s[1]) for s in depth["sell"][:10])
+        return bid_vol / max(ask_vol, 1e-9)
+    except Exception:
+        return 1.0
+
+def calc_bollinger(closes: list[float], period: int = 20, std_mult: float = 2.0) -> dict | None:
+    """Hitung Bollinger Band dari list close prices."""
+    if len(closes) < period:
+        return None
+    window = closes[-period:]
+    sma = sum(window) / period
+    variance = sum((c - sma) ** 2 for c in window) / period
+    std = math.sqrt(variance)
+    return {
+        "upper": sma + std_mult * std,
+        "middle": sma,
+        "lower": sma - std_mult * std,
+        "std": std,
+        "bandwidth": (std_mult * 2 * std) / sma if sma > 0 else 0
+    }
+
+def calc_rsi(closes: list[float], period: int = 14) -> float:
+    """Hitung RSI dari list close prices."""
+    if len(closes) < period + 1:
+        return 50.0
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i-1]
+        gains.append(max(delta, 0))
+        losses.append(max(-delta, 0))
+    gains = gains[-period:]
+    losses = losses[-period:]
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def analyze_pure_technical(pair_id: str, ticker: dict) -> dict:
+    """
+    Analisis teknikal murni untuk koin indodax-only.
+    Refined v6.2: Bollinger Divergence, RSI Guard, Order Book Imbalance.
+    """
+    import time
+    price     = float(ticker.get("last", 0))
+    vol_24h   = float(ticker.get("vol_idr", 0))
+    high_24h  = float(ticker.get("high", price))
+    low_24h   = float(ticker.get("low", price))
+    bid       = float(ticker.get("buy", price * 0.99))
+    ask       = float(ticker.get("sell", price * 1.01))
+
+    if price <= 0:
+        return {"recommendation": "SKIP", "score": 0, "reason": "invalid price"}
+
+    # Ambil candle data
+    candles = fetch_candles(pair_id, tf=15, count=25)
+    closes  = [c["c"] for c in candles] if candles else []
+    volumes = [c["v"] for c in candles] if candles else []
+
+    score   = 0.0
+    reasons = []
+
+    # === 1. VOLUME LEGITIMACY (0-30 poin) ===
+    if vol_24h < 500_000_000:  # < 500 juta (User Audit Penalty)
+        score -= 25
+        reasons.append(f"vol kecil Rp{vol_24h/1e9:.1f}B")
+    elif vol_24h > 5_000_000_000:
+        score += 30
+        reasons.append(f"vol besar Rp{vol_24h/1e9:.1f}B")
+    elif vol_24h > 1_000_000_000:
+        score += 20
+        reasons.append(f"vol OK Rp{vol_24h/1e9:.1f}B")
+
+    # Volume spike 1h vs avg
+    if len(volumes) >= 4:
+        avg_vol = sum(volumes[:-1]) / max(len(volumes)-1, 1)
+        last_vol = volumes[-1]
+        vol_ratio = last_vol / max(avg_vol, 1)
+        if vol_ratio >= 3.0:
+            score += 25
+            reasons.append(f"vol spike {vol_ratio:.1f}x")
+        elif vol_ratio >= 2.0:
+            score += 15
+            reasons.append(f"vol spike {vol_ratio:.1f}x")
+
+    # === 2. BOLLINGER BAND & DIVERGENCE (0-25 poin) ===
+    bb = calc_bollinger(closes) if len(closes) >= 20 else None
+    bb_pct = 0.5
+    if bb:
+        bb_range = bb["upper"] - bb["lower"]
+        bb_pct = (price - bb["lower"]) / max(bb_range, 1e-9)
+        
+        # Check Divergence: Price Up, Volume Down
+        if len(closes) >= 5 and len(volumes) >= 5:
+            price_trend = closes[-1] > closes[-4]
+            vol_trend   = volumes[-1] < volumes[-4]
+            if price_trend and vol_trend and bb_pct > 0.8:
+                score -= 20
+                reasons.append("divergensi bearish")
+        
+        if bb_pct < 0.35:
+            score += 25
+            reasons.append(f"BB bawah ({bb_pct:.0%})")
+        elif bb_pct < 0.60:
+            score += 16
+        elif bb_pct > 0.95:
+            score -= 20
+            reasons.append("BB overbought")
+
+    # === 3. RSI GUARD (Hard Veto) ===
+    rsi = calc_rsi(closes) if len(closes) >= 15 else 50.0
+    if rsi > 82:
+        return {"recommendation": "SKIP", "score": 0, "reason": f"RSI extreme {rsi:.0f}"}
+    if rsi < 35:
+        score += 15
+        reasons.append(f"RSI oversold {rsi:.0f}")
+    elif rsi > 70:
+        score -= 10
+
+    # === 4. ORDER BOOK IMBALANCE (0-20 poin) ===
+    depth = fetch_order_book_depth(pair_id)
+    ob_ratio = check_order_book_imbalance(depth)
+    if ob_ratio >= 2.5:
+        score += 20
+        reasons.append(f"OB imbalance {ob_ratio:.1f}x")
+    elif ob_ratio >= 1.5:
+        score += 10
+    elif ob_ratio < 0.6:
+        score -= 15
+        reasons.append(f"OB weak {ob_ratio:.1f}x")
+
+# =============================================
+# CONVICTION SCORE ENGINE — Bucket B
+# =============================================
+
+class ConvictionScoreCalculator:
+    """Algoritma scoring murni matematis untuk koin lokal."""
+
+    @staticmethod
+    def compute(pair_id: str, ticker: dict, closes: list[float], 
+                volumes: list[float], depth: dict | None) -> dict:
+        price = float(ticker.get("last", 0))
+        vol_24h = float(ticker.get("vol_idr", 0))
+        high_24h = float(ticker.get("high", price))
+        low_24h = float(ticker.get("low", price))
+        
+        # 1. Volume Spike Score (0.30)
+        # avg_vol_7d (approx from 15m candles * 4 * 24 * 7 -> way too many, use last 24h avg)
+        avg_vol = statistics.mean(volumes) if volumes else 1.0
+        cur_vol = volumes[-1] if volumes else 0
+        volume_spike = min(1.0, cur_vol / max(avg_vol, 1e-9))
+        
+        # 2. Breakout Score (0.25)
+        bb = calc_bollinger(closes)
+        breakout = 0.5
+        if bb:
+            breakout = (price - bb["lower"]) / max(bb["upper"] - bb["lower"], 1e-9)
+            breakout = max(0.0, min(1.0, breakout))
+        
+        # 3. Orderbook Score (0.25)
+        bid_vol = sum(float(b[1]) for b in depth["buy"][:10]) if depth else 1.0
+        ask_vol = sum(float(s[1]) for s in depth["sell"][:10]) if depth else 1.0
+        ob_score = bid_vol / max(bid_vol + ask_vol, 1e-9)
+        
+        # 4. Momentum Score (0.20)
+        rsi = calc_rsi(closes)
+        momentum = max(0.0, min(1.0, (75 - rsi) / 75))
+        
+        final_score = (
+            0.30 * volume_spike +
+            0.25 * breakout +
+            0.25 * ob_score +
+            0.20 * momentum
+        )
+        
+        # === HARD BLOCKS ===
+        blocks = []
+        if (price - low_24h) / max(low_24h, 1e-9) > 0.50:
+            blocks.append("Pump > 50%")
+        if bb and price > bb["upper"]:
+            blocks.append("Price > Upper BB")
+        if rsi > 80:
+            blocks.append("RSI > 80")
+        if vol_24h < 500_000_000:
+            blocks.append("Vol < 500M IDR")
+        # BTC Regime Guard check will be in main logic
+        
+        return {
+            "score": round(final_score, 3),
+            "blocks": blocks,
+            "rsi": rsi,
+            "ob_ratio": bid_vol / max(ask_vol, 1e-9),
+            "recommendation": "ENTER" if (final_score >= 0.85 and not blocks) else "SKIP"
+        }
+
+class RiskLadder:
+    """Cascade Loss Intelligence state machine."""
+    
+    @staticmethod
+    def get_mode(daily_pnl_pct: float, wins_today: int, losses_today: int, consecutive_losses: int) -> str:
+        if daily_pnl_pct < -0.02: return "HARD_STOP"
+        if consecutive_losses >= 3: return "RESTRICTED"
+        if consecutive_losses >= 2: return "DEFENSIVE"
+        if losses_today >= 1: return "CAUTION"
+        return "GROWTH"
+
+    @staticmethod
+    def get_kelly_multiplier(mode: str) -> float:
+        return {
+            "GROWTH": 1.0,
+            "CAUTION": 0.8,
+            "DEFENSIVE": 0.5,
+            "RESTRICTED": 0.3,
+            "HARD_STOP": 0.0
+        }.get(mode, 0.5)
+
+# =============================================
+# WHAT-IF ENGINE — Matematis, tidak butuh AI
+# =============================================
+
+MAKER_FEE = 0.0004   # 0.04% LIMIT order (prioritas)
+TAKER_FEE = 0.0055   # 0.55% MARKET order (mahal)
+PPH_SELL  = 0.0021   # 0.21% PPh sisi jual
+
+def simulate_what_if(
+    pair_id: str,
+    budget_idr: float,
+    spread_pct: float = 0.015,
+    slippage_pct: float = 0.012,
+    target_pct: float = 0.025,
+    trailing_stop_pct: float = 0.05,
+    use_market_entry: bool = False,
+    use_market_exit: bool = False,
+) -> dict:
+    """
+    Simulasi what-if lengkap sebelum setiap entry.
+    Return: keputusan ENTER/REDUCE/SKIP + semua angka.
+    """
+    fee_entry = TAKER_FEE if use_market_entry else MAKER_FEE
+    fee_exit  = TAKER_FEE if use_market_exit  else MAKER_FEE
+
+    round_trip_cost = (spread_pct / 2) + slippage_pct + fee_entry + fee_exit + PPH_SELL
+    breakeven_pct   = round_trip_cost
+    net_pct         = target_pct - round_trip_cost
+    max_loss_pct    = trailing_stop_pct + round_trip_cost
+    max_loss_idr    = budget_idr * max_loss_pct
+    reward_idr      = budget_idr * max(net_pct, 0)
+    rr              = reward_idr / max(max_loss_idr, 1)
+
+    # Win rate & Memory from Bayesian-Kelly Engine (Trinity v6.2)
+    le_stats = None
+    if _learning_engine:
+        le_stats = _learning_engine.get(pair_id)
+        win_rate = le_stats.win_probability
+    else:
+        # Fallback to local trade logger stats
+        pair_stats = trade_logger.get_pair_stats(pair_id)
+        win_rate = pair_stats.get("win_rate", 0.5)
+
+    ev_idr = (win_rate * reward_idr) - ((1 - win_rate) * max_loss_idr)
+
+    # Kelly fraction (using LE stats if available)
+    kelly_f = 0.02 # Default min
+    if le_stats:
+        kelly_f = le_stats.kelly_fraction()
+    else:
+        if rr > 0:
+            kelly_f = max(0.01, min(0.12, (win_rate - ((1 - win_rate) / rr)) * 0.5))
+
+    # Apply Risk Ladder Multiplier (Cascade Loss Protection)
+    risk_mode = _metrics.get("risk_mode", "GROWTH")
+    kelly_multiplier = RiskLadder.get_kelly_multiplier(risk_mode)
+    kelly_f *= kelly_multiplier
+
+    # Decision Gate Trinity v6.2
+    penalty = _learning_engine.score_penalty(pair_id) if _learning_engine else 0.0
+    min_net = 0.015 # Hard floor for Trinity
+    
+    decision = "ENTER"
+    reason   = f"EV Positive (Mode: {risk_mode})"
+    
+    if risk_mode == "HARD_STOP":
+        decision = "SKIP"
+        reason = "System HARD STOP active"
+    elif ev_idr <= 0:
+        decision = "SKIP"
+        reason   = f"EV Negative (Rp{ev_idr:,.0f})"
+    elif kelly_f <= 0.005:
+        decision = "SKIP"
+        reason   = f"Kelly Sizing too small ({kelly_f:.3f})"
+    elif net_pct < min_net:
+        decision = "SKIP"
+        reason   = f"Net target too thin ({net_pct:.2%})"
+
+    return {
+        "decision": decision,
+        "reason":   reason,
+        "ev_idr":   round(ev_idr, 0),
+        "win_rate": round(win_rate, 3),
+        "kelly_f":  round(kelly_f, 3),
+        "risk_mode": risk_mode,
+        "rr":       round(rr, 2),
+        "net_pct":  round(net_pct, 4),
+        "penalty":  round(penalty, 2),
+        "breakeven_pct": round(breakeven_pct, 4),
+        "reward_idr":    round(reward_idr, 0),
+        "max_loss_idr":  round(max_loss_idr, 0)
+    }
+
+def what_if_untung_banyak(pnl_pct: float, equity_idr: float) -> dict:
+    """Apa yang harus dilakukan saat untung banyak?"""
+    if pnl_pct >= 0.10:  # +10%
+        return {
+            "action": "TIGHTEN_TRAILING",
+            "trailing_stop": 0.015,
+            "partial_tp_now": True,
+            "partial_tp_size": 0.60,
+            "reason": f"Profit besar +{pnl_pct:.1%} — lock 60% profit segera"
+        }
+    elif pnl_pct >= 0.05:  # +5%
+        return {
+            "action": "TIGHTEN_TRAILING",
+            "trailing_stop": 0.02,
+            "partial_tp_now": True,
+            "partial_tp_size": 0.40,
+            "reason": f"Profit bagus +{pnl_pct:.1%} — lock 40%, trailing ketat"
+        }
+    elif pnl_pct >= 0.025:  # +2.5%
+        return {
+            "action": "NORMAL_TRAILING",
+            "trailing_stop": 0.035,
+            "partial_tp_now": False,
+            "reason": f"Profit normal +{pnl_pct:.1%} — trailing stop normal"
+        }
+    return {"action": "HOLD", "reason": f"Profit kecil +{pnl_pct:.1%} — tunggu"}
+
+def what_if_rugi(pnl_pct: float, equity_idr: float, daily_pnl_pct: float) -> dict:
+    """Apa yang harus dilakukan saat rugi?"""
+    if abs(pnl_pct) >= 0.05:  # -5% per posisi
+        return {
+            "action": "CUT_LOSS_NOW",
+            "use_market": True,
+            "reason": f"Posisi rugi -{abs(pnl_pct):.1%} — cut loss SEKARANG"
+        }
+    elif daily_pnl_pct <= -0.02:  # daily -2%
+        return {
+            "action": "HARD_STOP_ALL",
+            "reason": f"Daily PnL {daily_pnl_pct:.1%} — stop semua trading"
+        }
+    elif daily_pnl_pct <= -0.01:  # daily -1%
+        return {
+            "action": "DEFENSIVE_MODE",
+            "reason": f"Daily PnL {daily_pnl_pct:.1%} — mode defensif"
+        }
+    return {"action": "MONITOR", "reason": f"Rugi wajar {pnl_pct:.1%}"}
+
+def what_if_ketinggalan_entry(signal_age_ms: float, price_change_pct: float) -> str:
+    """Ketinggalan signal — harus gimana?"""
+    if signal_age_ms < 200 and abs(price_change_pct) < 2.0:
+        return "ENTER_MARKET"          # Masih bisa, pakai MARKET
+    elif signal_age_ms < 500 and abs(price_change_pct) < 1.5:
+        return "ENTER_LIMIT_AGGRESSIVE" # Limit agresif
+    elif abs(price_change_pct) >= 5.0:
+        return "WAIT_PULLBACK"         # Sudah terlambat, tunggu koreksi
+    return "SKIP"
+
+def what_if_dekat_peak(bb_pct: float, rsi: float, volume_trend: str,
+                        current_profit_pct: float) -> dict:
+    """Deteksi dekat peak dan tentukan exit strategy."""
+    peak_signals = 0
+    reasons = []
+
+    if bb_pct > 0.90:
+        peak_signals += 1
+        reasons.append(f"BB overbought {bb_pct:.0%}")
+    if rsi > 72:
+        peak_signals += 1
+        reasons.append(f"RSI overbought {rsi:.0f}")
+    if volume_trend == "decreasing":
+        peak_signals += 1
+        reasons.append("volume menurun")
+    if current_profit_pct > 0.05:
+        peak_signals += 1
+        reasons.append(f"profit besar {current_profit_pct:.1%}")
+
+    if peak_signals >= 3:
+        return {
+            "near_peak": True,
+            "action": "PARTIAL_EXIT",
+            "exit_pct": 0.70,
+            "tighten_trailing": 0.015,
+            "reason": " + ".join(reasons)
+        }
+    elif peak_signals >= 2:
+        return {
+            "near_peak": True,
+            "action": "TIGHTEN_TRAILING",
+            "exit_pct": 0,
+            "tighten_trailing": 0.025,
+            "reason": " + ".join(reasons)
+        }
+    return {"near_peak": False, "action": "CONTINUE", "reason": "tidak ada sinyal peak"}
+
+_last_30min_review = 0.0
+_score_multiplier  = 1.0
+_allowed_tiers_override: list | None = None
+_day_start_time = time.time()
+
+def run_30min_math_review():
+    global _score_multiplier, _allowed_tiers_override
+
+    stats = trade_logger.get_today_stats()
+    equity = _get_total_equity_estimate() or 0.0
+    pnl_pct = (portfolio_manager.realized_pnl_today / equity) if equity > 0 else 0.0
+    loss_idr = abs(min(pnl_pct, 0) * equity)
+
+    from datetime import datetime, timedelta
+    now_wib      = datetime.utcnow() + timedelta(hours=7)
+    midnight_wib = now_wib.replace(hour=0,minute=0,second=0) + timedelta(days=1)
+    hours_left   = (midnight_wib - now_wib).total_seconds() / 3600
+
+    elapsed_hrs  = max((time.time() - _day_start_time) / 3600, 0.5)
+    trades_per_h = stats["total"] / elapsed_hrs if stats["total"] > 0 else 1.5
+    trades_left  = trades_per_h * hours_left
+    ev_idr       = stats["ev_idr"]
+
+    to_recover = loss_idr / max(ev_idr, 1) if ev_idr > 0 else float("inf")
+
+    # Keputusan berbasis math
+    if ev_idr <= 0 and stats["total"] >= 3:
+        action = "TIGHTEN_FILTER"
+        _score_multiplier = min(_score_multiplier * 1.20, 1.5)
+        _allowed_tiers_override = ["A"]
+    elif to_recover > trades_left * 2.0:
+        action = "PREPARE_STOP"
+        _score_multiplier = min(_score_multiplier * 1.15, 1.5)
+        _allowed_tiers_override = ["A"]
+    elif to_recover > trades_left:
+        action = "DEFENSIVE"
+        _score_multiplier = min(_score_multiplier * 1.10, 1.4)
+        _allowed_tiers_override = ["A", "B"]
+    elif stats["win_rate"] >= 0.65 and ev_idr > 0:
+        action = "CONTINUE_OPTIMAL"
+        _score_multiplier = max(_score_multiplier * 0.97, 1.0)
+        _allowed_tiers_override = None
+    else:
+        action = "CONTINUE"
+        _score_multiplier = 1.0
+        _allowed_tiers_override = None
+
+    pnl_emoji = "🟢" if pnl_pct >= 0 else ("🟡" if pnl_pct >= -0.01 else "🔴")
+    report = (
+        f"📊 [{now_wib.strftime('%H:%M')} WIB] 30min Review\n"
+        f"{pnl_emoji} PnL: {pnl_pct:+.2%} | Equity: Rp{equity:,.0f}\n"
+        f"📈 {stats['total']} trade ({stats['wins']}W/{stats['losses']}L) "
+        f"WR={stats['win_rate']:.0%}\n"
+        f"💰 EV: Rp{ev_idr:+,.0f}/trade | PF={stats['pf']:.2f}\n"
+        f"⏰ Sisa {hours_left:.1f}h | Recover: {to_recover:.0f} trade\n"
+        f"🎯 Action: {action} | Threshold: x{_score_multiplier:.2f}"
+    )
+    _telegram_send(report)
+    print(f"[30MIN] {action} | WR={stats['win_rate']:.0%} EV={ev_idr:.0f}", flush=True)
+
+    # Simpan ke Supabase
+    _sync_snapshot_to_supabase(pnl_pct, equity, stats, action)
+
+def _sync_snapshot_to_supabase(pnl_pct, equity, stats, action):
+    """Sync performance snapshot ke Supabase non-blocking."""
+    import threading
+    def do_sync():
+        try:
+            import urllib.request
+            supabase_url = os.environ.get("SUPABASE_URL", "")
+            supabase_key = os.environ.get("SUPABASE_ANON_KEY", "")
+            if not supabase_url: return
+            payload = json.dumps({
+                "equity_idr": equity,
+                "daily_pnl_pct": pnl_pct,
+                "daily_pnl_idr": pnl_pct * equity,
+                "pnl_state": portfolio_manager.get_pnl_state(),
+                "win_rate_today": stats.get("win_rate", 0),
+                "ev_per_trade_idr": stats.get("ev_idr", 0),
+                "trades_today": stats.get("total", 0),
+                "action_taken": action,
+                "threshold_multiplier": _score_multiplier,
+            }).encode()
+            req = urllib.request.Request(
+                f"{supabase_url}/rest/v1/performance_snapshots",
+                data=payload,
+                headers={
+                    "apikey": supabase_key,
+                    "Authorization": f"Bearer {supabase_key}",
+                    "Content-Type": "application/json"
+                },
+                method="POST"
+            )
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            print(f"[SNAPSHOT] Supabase sync error: {e}", flush=True)
+    threading.Thread(target=do_sync, daemon=True).start()
+
+_screen_cache_local: list = []
+_last_screen_time = 0.0
+_bb_cache_local: dict = {}
+
+async def screen_indodax_only_pairs() -> list[dict]:
+    """
+    Universal Screener: Scan SEMUA koin Indodax.
+    Focus: Mencari koin dengan volume & momentum tinggi yang tidak ada di Binance.
+    """
+    import urllib.request
+    try:
+        with urllib.request.urlopen(INDODAX_TICKERS_URL, timeout=10) as r:
+            raw = json.loads(r.read())
+        tickers = raw.get("tickers", raw)
+    except Exception as e:
+        print(f"[SCREEN] Tickers fetch failed: {e}", flush=True)
+        return []
+
+    candidates = []
+    # Scan seluruh universe Indodax
+    for pair_id, ticker in tickers.items():
+        # Filter 1: Bukan Stablecoin / Base pair
+        if "_usdt" in pair_id or "idrt" in pair_id or pair_id == "btc_idr":
+            continue
+            
+        # Filter 2: Bukan koin Lead-Lag (sudah dihandle radar Binance)
+        if pair_id in LEAD_LAG_PAIRS:
+            continue
+
+        # Filter 3: Liquidity Guard (Min 500jt volume 24 jam)
+        vol_24h = float(ticker.get("vol_idr", 0))
+        if vol_24h < 500_000_000:
+            continue
+
+        # Filter 4: Momentum Check (Last price vs Low 24h)
+        last = float(ticker.get("last", 0))
+        low = float(ticker.get("low", last))
+        high = float(ticker.get("high", last))
+        if last <= low: continue # No momentum
+        
+        # Deep Analysis hanya untuk yang lolos filter awal
+        analysis = analyze_pure_technical(pair_id, ticker)
+        if analysis["recommendation"] == "SKIP":
+            continue
+
+        candidates.append({
+            "pair_id": pair_id,
+            "category": "INDODAX_ONLY",
+            "analysis": analysis,
+            "vol_24h_idr": vol_24h,
+            "composite_score": analysis["score"]
+        })
+
+    # Sort berdasarkan skor teknikal terbaik
+    candidates.sort(key=lambda x: x["composite_score"], reverse=True)
+
+    if candidates:
+        top = candidates[0]
+        a   = top["analysis"]
+        print(
+            f"[SCREEN-UNIVERSAL] Found {len(candidates)} candidates. "
+            f"Top: {top['pair_id']} score={a['score']} OB={a['ob_ratio']} RSI={a['rsi']}",
+            flush=True
+        )
+
+    return candidates[:8]
+
+
+
+def _process_signal_multipos(msg: dict):
+    """
+    Entry gate untuk multi-position system Trinity v6.2.
+    Implementasi 'Papan Tulis' (Global Consensus) & Veto Logic.
+    """
+    global _global_whiteboard
+
+    source = msg.get("source", "BINANCE")
+    msg_type = msg.get("msgType", msg.get("type", "SIGNAL"))
+
+    # === 1. UPDATE PAPAN TULIS (BACKGROUND) ===
+    if msg_type == "TICKER_UPDATE":
+        symbol = msg.get("symbol", "")
+        if not symbol: return
+        
+        wb_entry = _global_whiteboard.setdefault(symbol, {"binance": None, "cryptocom": None})
+        if source == "CRYPTOCOM":
+            wb_entry["cryptocom"] = msg.get("price")
+        else:
+            wb_entry["binance"] = msg.get("price")
+        wb_entry["ts"] = time.time()
+        return # Update papan tulis saja, jangan lanjut eksekusi
+
+    pair_id = msg.get("pairId", msg.get("pair_id", ""))
+    if not pair_id: return
+    
+    category = get_pair_category(pair_id)
+    raw_score = float(msg.get("pumpScore", msg.get("pump_score", 0)))
+    
+    # === 2. VALIDASI KILAT (GLOBAL CONSENSUS - BUCKET A) ===
+    if category == "LEAD_LAG":
+        binance_sym = get_binance_symbol(pair_id)
+        if binance_sym:
+            wb = _global_whiteboard.get(binance_sym)
+            if not wb or not wb.get("binance") or not wb.get("cryptocom"):
+                print(f"[KIBOT][VETO] Rejected {pair_id} - Missing consensus data (AND gate failed)", flush=True)
+                return
+            
+            diff = abs(wb["binance"] - wb["cryptocom"]) / wb["binance"]
+            if diff > 0.015: # Arbitrage/Spread > 1.5% = Suspicious
+                print(f"[KIBOT][VETO] Rejected {pair_id} - Consensus failed (Spread {diff:.2%})", flush=True)
+                return
+                
+        # BTC Regime Guard
+        if _market_regime == "BREAKDOWN_PANIC":
+            print(f"[KIBOT][VETO] Rejected {pair_id} - Market Regime Panic", flush=True)
+            return
+
+    # === 3. GATE 1: DYNAMIC THRESHOLD & RISK LADDER ===
+    risk_mode = _metrics["risk_mode"]
+    if risk_mode == "HARD_STOP": return
+    
+    score = raw_score * _score_multiplier
+    min_score = 55 if category == "INDODAX_ONLY" else 45
+    
+    # Defensive Mode: Bucket B Disabled
+    if risk_mode == "DEFENSIVE" and category == "INDODAX_ONLY":
+        return
+
+    if score < min_score:
+        return
+
+    # === GATE 2: PORTFOLIO & CAPACITY ===
+    can_open, reason = portfolio_manager.can_open(pair_id, category)
+    if not can_open: return
+
+    # === GATE 3: CONVICTION SCORE (BUCKET B) ===
+    if category == "INDODAX_ONLY":
+        snapshot = _load_indodax_ticker_snapshot()
+        ticker = snapshot.get(pair_id)
+        if not ticker: return
+        
+        # Fresh Technical Data
+        candles = fetch_candles(pair_id, tf=15, count=25)
+        closes = [c["c"] for c in candles]
+        volumes = [c["v"] for c in candles]
+        depth = fetch_order_book_depth(pair_id)
+        
+        analysis = ConvictionScoreCalculator.compute(pair_id, ticker, closes, volumes, depth)
+        if analysis["recommendation"] != "ENTER": 
+            print(f"[KIBOT][BUCKET_B] {pair_id} Rejected: {analysis['blocks']}", flush=True)
+            return
+            
+        msg.update(analysis) # merge results
+    
+    # === GATE 4: WHAT-IF & KELLY SIZING ===
+    current_equity = _get_total_equity_estimate() or 0.0
+    available_budget = portfolio_manager.get_available_budget(current_equity)
+    
+    # Enforce Bucket B 60% Deployment Cap (40% reserve)
+    if category == "INDODAX_ONLY":
+        available_budget = min(available_budget, current_equity * 0.50 * 0.60) # 60% of 50% allocation
+    
+    sim = simulate_what_if(
+        pair_id, available_budget,
+        target_pct=msg.get("target_pct", 0.025),
+        trailing_stop_pct=msg.get("trailing_stop_pct", 0.05),
+        use_market_entry=(raw_score >= 80)
+    )
+    
+    if sim["decision"] == "SKIP":
+        _metric_inc("whatif_skips_today")
+        return
+    
+    # Kelly Sizing
+    budget_idr = min(available_budget, current_equity * sim["kelly_f"])
+    
+    if budget_idr < PORTFOLIO_CONFIG["min_budget_idr"]:
+        return
+
+    # === EXECUTE ENTRY ===
+    _metric_inc("whatif_enters_today")
+    trade_id = trade_logger.record_entry(
+        pair_id, float(msg.get("price", 0)), budget_idr,
+        category, msg.get("pump_phase", "MID"), score,
+        "MARKET" if sim.get("use_market_entry") else "LIMIT",
+        "AGGRESSIVE" if category != "INDODAX_ONLY" else "STABLE"
+    )
+    
+    portfolio_manager.open_position(
+        pair_id, float(msg.get("price", 0)), budget_idr, category, 
+        phase=msg.get("pump_phase", "MID")
+    )
+    
+    _broadcast_udp({
+        "kind": "lead_lag_breakout",
+        "msgType": "SMART_ENTRY",
+        "pairId": pair_id,
+        "price": msg.get("price"),
+        "budget_idr": budget_idr,
+        "orderType": "MARKET" if sim["use_market"] else "LIMIT",
+        "category": "AGGRESSIVE" if category != "INDODAX_ONLY" else "STABLE",
+        "confidence": float(msg.get("pumpScore", msg.get("pump_score", 0.70))),
+        "expectedNetPct": float(msg.get("target_pct", 0.025)),
+        "shortTermReturnPct": float(msg.get("pump_24h_pct", 0.0)),
+        "sentAtEpochMs": int(time.time() * 1000),
+        "expiresAtEpochMs": int((time.time() + 60) * 1000),
+        "traceId": trade_id,
+        "senderBotId": "kibot_manager_trinity"
+    })
+
+def _process_local_signal(msg: dict):
+    """Handle signals from the local Indodax anomaly engine."""
+    pair_id = msg.get("symbol", "").lower().strip()
+    if not pair_id: return
+    
+    # Enrich signal for multi-position vetting
+    refined = {
+        "source": "KIBOT_LOCAL_ENGINE",
+        "type": "LOCAL_PUMP_SIGNAL",
+        "pairId": pair_id,
+        "price": msg.get("price", 0),
+        "pumpScore": float(msg.get("score", 0)) * 10, # Normalize to 0-100
+        "reason": msg.get("reason", "Local anomaly detected"),
+        "pump_phase": "EARLY", # Local signals are by definition early
+        "target_pct": 0.035,   # Conservative target for local anomalies
+        "trailing_stop_pct": 0.02,
+        "timestamp": msg.get("timestamp", time.time())
+    }
+    _process_signal_multipos(refined)
+
+def _check_portfolio_pnl():
+    """Monitor positions via Trinity What-If logic."""
+    equity = _get_total_equity_estimate() or 0.0
+    daily_pnl = (portfolio_manager.realized_pnl_today / equity) if equity > 0 else 0.0
+
+    for pair_id, pos in list(portfolio_manager.positions.items()):
+        try:
+            snapshot = _load_indodax_ticker_snapshot()
+            ticker = snapshot.get(pair_id, {})
+            price_now = float(ticker.get("last", 0.0))
+            if price_now <= 0: continue
+            
+            pos.update_price(price_now)
+            pnl_pct = pos.profit_pct
+            
+            # Decide via What-If logic
+            if pnl_pct > 0:
+                decision = what_if_untung_banyak(pnl_pct, equity)
+            else:
+                decision = what_if_rugi(pnl_pct, equity, daily_pnl)
+            
+            if decision["action"] in ("CUT_LOSS_NOW", "EXIT_NOW", "HARD_STOP_ALL"):
+                # Find matching trade log entry
+                # (Simple mapping for now; real systems use trade_id in Position object)
+                trade_id = next((t["trade_id"] for t in trade_logger._today_trades 
+                                 if t["pair_id"] == pair_id and t["status"] == "OPEN"), "unknown")
+                
+                trade_logger.record_exit(trade_id, price_now, decision["reason"])
+                portfolio_manager.close_position(pair_id, price_now, decision["reason"])
+                
+                _broadcast_udp({
+                    "msgType": "SMART_EXIT",
+                    "pairId": pair_id,
+                    "reason": f"TRINITY_{decision['action']}",
+                    "orderType": "MARKET" if decision.get("use_market") else "LIMIT",
+                    "traceId": trade_id
+                })
+            elif decision["action"] == "TIGHTEN_TRAILING":
+                # Update local position stop level logic
+                pass 
+                
+        except Exception as e:
+            print(f"[TRINITY][MONITOR] {pair_id} err: {e}", flush=True)
+
+
+def run_discovery_loop():
+    """AI-CMS discovery every 6 hours."""
+    while not _shutdown_event.is_set():
+        try:
+            asyncio.run(run_ai_coin_discovery())
+        except Exception as e:
+            print(f"[KIBOT][AI-CMS] Discovery loop error: {e}", flush=True)
+        if _shutdown_event.wait(timeout=21600): break
+
+def run_portfolio_monitor_loop():
+    """Real-time portfolio monitoring every 30s."""
+    while not _shutdown_event.is_set():
+        try:
+            _check_portfolio_pnl()
+        except Exception as e:
+            print(f"[KIBOT][PORTFOLIO] Monitor loop error: {e}", flush=True)
+        if _shutdown_event.wait(timeout=30): break
+
+def run_local_signal_engine_manager():
+    """Starts and monitors the kibot_local_signal.py script."""
+    import subprocess
+    cmd = [sys.executable, str(Path(__file__).parent / "kibot_local_signal.py")]
+    print(f"[KIBOT][SIGNAL-MGR] Starting local signal engine: {' '.join(cmd)}", flush=True)
+    
+    while not _shutdown_event.is_set():
+        try:
+            # We want to catch the output, so we use Popen
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1
+            )
+            
+            # Print output in real-time
+            for line in proc.stdout:
+                if line.strip():
+                    print(f"[SIGNAL-PROC] {line.strip()}", flush=True)
+                if _shutdown_event.is_set():
+                    proc.terminate()
+                    break
+            
+            proc.wait()
+            if not _shutdown_event.is_set():
+                print(f"[KIBOT][SIGNAL-MGR] Signal engine exited with code {proc.returncode}. Restarting in 5s...", flush=True)
+                time.sleep(5)
+        except Exception as e:
+            print(f"[KIBOT][SIGNAL-MGR] Manager error: {e}. Restarting in 10s...", flush=True)
+            time.sleep(10)
+
+
+@dataclass
+class PumpAnalysis:
+    pair_id: str
+    legitimacy_score: float    # 0-100
+    pump_phase: str            # "EARLY"/"MID"/"LATE"/"PEAK"/"POST_PEAK"
+    entry_recommendation: str  # "ENTER_NOW"/"WAIT_PULLBACK"/"SKIP"/"DANGER"
+    exit_target_pct: float     # berapa % target keluar
+    stop_loss_pct: float       # berapa % stop loss dari entry
+    risk_reward: float
+    reasoning: str
+
+def analyze_pump_legitimacy(
+    pair_id: str,
+    price_now: float,
+    price_24h_ago: float,
+    price_1h_ago: float,
+    price_15m_ago: float,
+    volume_24h_idr: float,
+    volume_1h_idr: float,
+    high_24h: float,
+    low_24h: float,
+    bollinger_upper: float,
+    bollinger_middle: float,
+    bollinger_lower: float,
+    has_binance_pair: bool,
+    binance_price_change_pct: float = 0.0,
+) -> PumpAnalysis:
+    """
+    Hitung apakah pump ini legitimate dan layak dimasuki.
+    Pure matematika, tidak butuh AI.
+    """
+    score = 0.0
+    reasons = []
+
+    # === METRIC 1: Volume Legitimacy (0-25 poin) ===
+    volume_ratio_1h = (volume_1h_idr / max(volume_24h_idr / 24, 1))
+    if volume_ratio_1h > 3.0:
+        score += 25
+        reasons.append(f"Volume 1h = {volume_ratio_1h:.1f}x rata-rata (sangat kuat)")
+    elif volume_ratio_1h > 2.0:
+        score += 18
+        reasons.append(f"Volume 1h = {volume_ratio_1h:.1f}x rata-rata (kuat)")
+    elif volume_ratio_1h > 1.5:
+        score += 10
+        reasons.append(f"Volume 1h = {volume_ratio_1h:.1f}x rata-rata (moderate)")
+    else:
+        reasons.append(f"Volume lemah: {volume_ratio_1h:.1f}x rata-rata")
+
+    if volume_24h_idr < 100_000_000:
+        score -= 20
+        reasons.append(f"PENALTY: Volume 24h terlalu kecil Rp{volume_24h_idr/1e9:.2f}B")
+    elif volume_24h_idr > 1_000_000_000:
+        score += 10
+        reasons.append(f"Volume 24h besar Rp{volume_24h_idr/1e9:.1f}B")
+
+    # === METRIC 2: Pump Phase (0-25 poin) ===
+    pct_from_24h_low = (price_now - low_24h) / max(low_24h, 0.001) * 100
+    pct_from_24h_high = (high_24h - price_now) / max(high_24h, 0.001) * 100
+    total_range_pct = (high_24h - low_24h) / max(low_24h, 0.001) * 100
+    position_in_range = (price_now - low_24h) / max(high_24h - low_24h, 0.001)
+
+    if position_in_range < 0.4:
+        pump_phase = "EARLY"
+        score += 25
+        reasons.append(f"EARLY phase: {position_in_range:.0%} dari range")
+    elif position_in_range < 0.65:
+        pump_phase = "MID"
+        score += 18
+        reasons.append(f"MID phase: {position_in_range:.0%} dari range")
+    elif position_in_range < 0.85:
+        pump_phase = "LATE"
+        score += 8
+        reasons.append(f"LATE phase: {position_in_range:.0%} dari range — hati-hati")
+    elif position_in_range < 0.95:
+        pump_phase = "PEAK"
+        score -= 5
+        reasons.append(f"PEAK phase: {position_in_range:.0%} dari range — RISIKO TINGGI")
+    else:
+        pump_phase = "POST_PEAK"
+        score -= 20
+        reasons.append(f"POST_PEAK: harga sangat tinggi dari low — JANGAN MASUK")
+
+    # === METRIC 3: Bollinger Band Position (0-20 poin) ===
+    bb_range = bollinger_upper - bollinger_lower
+    bb_position = (price_now - bollinger_lower) / max(bb_range, 0.001)
+    if bb_position < 0.5:
+        score += 20
+        reasons.append(f"Harga di bawah BB middle ({bb_position:.0%}) — ruang naik besar")
+    elif bb_position < 0.75:
+        score += 12
+        reasons.append(f"Harga mid BB ({bb_position:.0%}) — masih ada ruang")
+    elif bb_position < 0.9:
+        score += 5
+        reasons.append(f"Harga dekat BB upper ({bb_position:.0%}) — terbatas")
+    else:
+        score -= 15
+        reasons.append(f"Harga ABOVE BB upper ({bb_position:.0%}) — OVERBOUGHT!")
+
+    # === METRIC 4: Momentum (0-15 poin) ===
+    momentum_15m = (price_now - price_15m_ago) / max(price_15m_ago, 0.001) * 100
+    momentum_1h  = (price_now - price_1h_ago) / max(price_1h_ago, 0.001) * 100
+    if momentum_15m > 1.0 and momentum_1h > 3.0:
+        score += 15
+        reasons.append(f"Momentum kuat: +{momentum_15m:.1f}% (15m), +{momentum_1h:.1f}% (1h)")
+    elif momentum_15m > 0.5:
+        score += 8
+        reasons.append(f"Momentum positif: +{momentum_15m:.1f}% (15m)")
+    elif momentum_15m < 0:
+        score -= 10
+        reasons.append(f"Momentum NEGATIF: {momentum_15m:.1f}% (15m) — mulai turun")
+
+    # === METRIC 5: Binance Lead-Lag Bonus (0-15 poin) ===
+    if has_binance_pair:
+        if binance_price_change_pct > 3.0:
+            score += 15
+            reasons.append(f"Binance +{binance_price_change_pct:.1f}% → lead-lag potential")
+        elif binance_price_change_pct > 1.0:
+            score += 8
+            reasons.append(f"Binance +{binance_price_change_pct:.1f}% — weak lead-lag")
+        else:
+            reasons.append("Tidak ada Binance lead-lag")
+    else:
+        score -= 5
+        reasons.append("Tidak ada di Binance — no lead-lag, hanya organic")
+
+    score = max(0, min(100, score))
+    if pump_phase == "EARLY":
+        exit_target = 0.08
+        stop_loss   = 0.03
+    elif pump_phase == "MID":
+        exit_target = 0.05
+        stop_loss   = 0.025
+    elif pump_phase == "LATE":
+        exit_target = 0.03
+        stop_loss   = 0.02
+    else:
+        exit_target = 0.02
+        stop_loss   = 0.015
+
+    rr = exit_target / max(stop_loss, 0.001)
+    if score >= 70 and rr >= 2.0:
+        recommendation = "ENTER_NOW"
+    elif score >= 55 and rr >= 1.5:
+        recommendation = "ENTER_NOW"
+    elif score >= 40 and pump_phase in ("LATE", "PEAK"):
+        recommendation = "WAIT_PULLBACK"
+    elif score < 30 or pump_phase in ("POST_PEAK",):
+        recommendation = "DANGER"
+    else:
+        recommendation = "SKIP"
+
+    return PumpAnalysis(
+        pair_id=pair_id,
+        legitimacy_score=round(score, 1),
+        pump_phase=pump_phase,
+        entry_recommendation=recommendation,
+        exit_target_pct=exit_target,
+        stop_loss_pct=stop_loss,
+        risk_reward=round(rr, 2),
+        reasoning=" | ".join(reasons[:4])
+    )
+
+import math
+
+def _fetch_candles_indodax(pair_id: str, tf: int = 15, count: int = 20) -> list[dict]:
+    import urllib.request, json
+    base = pair_id.replace("_idr","").upper()
+    symbol = f"{base}/IDR"
+    now = int(time.time())
+    from_ts = now - (tf * 60 * count)
+    url = (f"https://indodax.com/tradingview/history_v2"
+           f"?symbol={symbol}&tf={tf}&from={from_ts}&to={now}")
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            data = json.loads(r.read())
+        candles = []
+        times = data.get("t", [])
+        opens = data.get("o", data.get("Open", []))
+        highs = data.get("h", data.get("High", []))
+        lows  = data.get("l", data.get("Low", []))
+        closes = data.get("c", data.get("Close", []))
+        if not times or len(times) == 0:
+            return []
+        for i in range(len(times)):
+            candles.append({
+                "t": times[i], "o": float(opens[i]),
+                "h": float(highs[i]), "l": float(lows[i]),
+                "c": float(closes[i])
+            })
+        return candles
+    except Exception as e:
+        print(f"[CANDLE] {pair_id}: {e}", flush=True)
+        return []
+
+def calculate_bollinger_bands(pair_id: str, period: int = 20, std_dev: float = 2.0) -> dict | None:
+    candles = _fetch_candles_indodax(pair_id, tf=15, count=period + 5)
+    if len(candles) < period:
+        return None
+    closes = [c["c"] for c in candles[-period:]]
+    sma = sum(closes) / period
+    variance = sum((c - sma) ** 2 for c in closes) / period
+    std = math.sqrt(variance)
+    return {
+        "upper": sma + (std_dev * std),
+        "middle": sma,
+        "lower": sma - (std_dev * std),
+        "std": std,
+        "pair": pair_id
+    }
+
+def analyze_indodax_only(pair_id: str, ticker: dict, bb: dict) -> dict:
+    """
+    Analisis koin Indodax-only tanpa lead-lag signal.
+    Return: entry recommendation berdasarkan pure technicals.
+    """
+    price     = float(ticker.get("last", 0))
+    vol_1h    = float(ticker.get("vol_idr_1h", 0))
+    vol_24h   = float(ticker.get("vol_idr", 0))
+    high_24h  = float(ticker.get("high", price))
+    low_24h   = float(ticker.get("low", price))
+
+    score = 0.0
+    reasons = []
+
+    # === VOLUME ANOMALY ===
+    # Koin indodax-only sering pump karena volume spike organik lokal
+    avg_vol_per_hour = vol_24h / 24
+    vol_ratio_1h = vol_1h / max(avg_vol_per_hour, 1)
+
+    if vol_ratio_1h >= 5.0:
+        score += 30
+        reasons.append(f"VOLUME SPIKE EKSTREM: {vol_ratio_1h:.1f}x avg")
+    elif vol_ratio_1h >= 3.0:
+        score += 22
+        reasons.append(f"Volume spike kuat: {vol_ratio_1h:.1f}x avg")
+    elif vol_ratio_1h >= 2.0:
+        score += 12
+        reasons.append(f"Volume spike moderate: {vol_ratio_1h:.1f}x avg")
+    else:
+        score += 0
+        reasons.append(f"Volume normal: {vol_ratio_1h:.1f}x avg")
+
+    # Volume minimum untuk masuk
+    if vol_24h < 100_000_000:  # < 100M IDR
+        score -= 25
+        reasons.append(f"Volume terlalu kecil: Rp{vol_24h/1e9:.2f}B")
+
+    # === BB POSITION ===
+    if bb:
+        bb_pct = (price - bb["lower"]) / max(bb["upper"] - bb["lower"], 0.001)
+        if bb_pct < 0.40:
+            score += 25
+            reasons.append(f"Di bawah BB middle ({bb_pct:.0%}) — banyak ruang")
+        elif bb_pct < 0.65:
+            score += 16
+            reasons.append(f"BB mid zone ({bb_pct:.0%})")
+        elif bb_pct > 0.92:
+            score -= 15
+            reasons.append(f"OVERBOUGHT BB ({bb_pct:.0%})")
+
+    # === PUMP PHASE ===
+    pos_in_range = (price - low_24h) / max(high_24h - low_24h, 0.001)
+    if pos_in_range < 0.35:
+        score += 20
+        reasons.append(f"EARLY phase ({pos_in_range:.0%} dari range)")
+    elif pos_in_range < 0.60:
+        score += 14
+        reasons.append(f"MID phase ({pos_in_range:.0%} dari range)")
+    elif pos_in_range > 0.88:
+        score -= 18
+        reasons.append(f"LATE/PEAK ({pos_in_range:.0%}) — risiko tinggi")
+
+    # === SPREAD CHECK (indodax-only biasanya spread lebar) ===
+    bid = float(ticker.get("buy", price * 0.99))
+    ask = float(ticker.get("sell", price * 1.01))
+    spread_pct = (ask - bid) / max(bid, 0.001)
+
+    if spread_pct > 0.05:  # > 5% spread
+        score -= 20
+        reasons.append(f"SPREAD LEBAR: {spread_pct:.1%} — exit sulit")
+    elif spread_pct > 0.02:
+        score -= 8
+        reasons.append(f"Spread medium: {spread_pct:.1%}")
+
+    # === MINIMUM SCORE UNTUK INDODAX-ONLY ===
+    # Lebih ketat dari lead-lag karena tidak ada konfirmasi Binance
+    min_score = 55  # Lebih tinggi dari lead-lag (45)
+
+    recommendation = "ENTER" if score >= min_score else "SKIP"
+    if pos_in_range > 0.88:
+        recommendation = "SKIP"  # Override — terlambat
+
+    return {
+        "pair_id": pair_id,
+        "category": "INDODAX_ONLY",
+        "score": round(score, 1),
+        "recommendation": recommendation,
+        "phase": ("EARLY" if pos_in_range < 0.35
+                  else "MID" if pos_in_range < 0.60
+                  else "LATE" if pos_in_range < 0.88 else "PEAK"),
+        "vol_ratio": round(vol_ratio_1h, 2),
+        "bb_position": bb_pct if bb else None,
+        "spread_pct": round(spread_pct, 4),
+        "reasoning": " | ".join(reasons[:4]),
+    }
+
+DISCOVERY_PROMPT = """
+Kamu adalah crypto market analyst untuk trading bot Indonesia.
+Tugas: Identifikasi koin yang SEDANG atau AKAN SEGERA pump di Indodax.
+
+Cari dan analisis:
+1. Koin baru listing di Indodax dalam 7 hari terakhir
+2. Koin yang sedang ramai di Twitter/X Indonesia dengan tag #Indodax
+3. Koin yang volume Indodax naik > 200% dari kemarin
+4. Koin yang ada di Binance dan harganya mulai naik (lead-lag candidate)
+5. Meme coin atau AI token yang viral di Solana ecosystem
+
+Untuk setiap koin yang ditemukan, berikan:
+- symbol (contoh: "PIPPIN")
+- indodax_pair (contoh: "pippin_idr" — HANYA jika ada di Indodax)
+- binance_pair (contoh: "PIPPINUSDT" — HANYA jika ada di Binance spot)
+- category: "LEAD_LAG" / "INDODAX_ONLY" / "FUTURES_ONLY"
+- reason: kenapa menarik (max 30 kata)
+- urgency: "NOW" / "WATCH" / "MONITOR"
+
+Format respons HANYA JSON array, tidak ada teks lain:
+[{"symbol":"XXX","indodax_pair":"xxx_idr","binance_pair":null,"category":"INDODAX_ONLY","reason":"...","urgency":"WATCH"}]
+
+Batasan:
+- Jangan rekomendasikan koin yang tidak ada di Indodax
+- Jangan rekomendasikan koin dengan volume < 50M IDR/hari
+- Jangan rekomendasikan koin yang sudah pump > 80% dalam 24 jam
+- Selalu berikan data faktual, bukan spekulasi
+"""
+
+async def run_ai_coin_discovery():
+    """
+    Jalankan AI untuk cari koin baru/sedang ramai.
+    Math sistem yang decide apakah worth masuk.
+    """
+    import json
+
+    # Coba semua AI provider (fallback chain)
+    discovery_result = None
+    for provider in ["groq", "openrouter", "cohere", "gemini"]:
+        try:
+            # Note: call_ai_provider must be defined in this script
+            raw = await call_ai_provider(provider, DISCOVERY_PROMPT)
+            # Parse JSON dari response
+            # Strip markdown kalau ada
+            clean = raw.strip()
+            if "```json" in clean:
+                clean = clean.split("```json")[1].split("```")[0].strip()
+            elif "```" in clean:
+                clean = clean.split("```")[1].split("```")[0].strip()
+
+            coins = json.loads(clean)
+            if isinstance(coins, list) and len(coins) > 0:
+                discovery_result = coins
+                print(f"[AI-CMS] {provider} found {len(coins)} new candidates", flush=True)
+                break
+        except Exception as e:
+            # print(f"[AI-CMS] {provider} failed: {e}")
+            continue
+
+    if not discovery_result:
+        print("[AI-CMS] No discovery result — using existing pair list", flush=True)
+        return
+
+    # Validasi setiap koin yang ditemukan AI
+    validated_new = []
+    for coin in discovery_result:
+        pair_id = coin.get("indodax_pair", "")
+        if not pair_id or not pair_id.endswith("_idr"):
+            continue
+
+        # Cek apakah ada di Indodax live
+        # Note: fetch_indodax_ticker must be defined
+        ticker = await fetch_indodax_ticker(pair_id)
+        if not ticker:
+            continue
+
+        vol_24h = float(ticker.get("vol_idr", 0))
+        if vol_24h < 50_000_000:
+            continue
+
+        category = coin.get("category", "INDODAX_ONLY")
+        binance_pair = coin.get("binance_pair")
+
+        # Update pair mapping jika kategori lead-lag
+        if category == "LEAD_LAG" and binance_pair:
+            if pair_id not in LEAD_LAG_PAIRS:
+                LEAD_LAG_PAIRS[pair_id] = binance_pair
+                print(f"[AI-CMS] NEW lead-lag pair: {pair_id} → {binance_pair}", flush=True)
+
+        # Update local pairs
+        if category == "INDODAX_ONLY":
+            if pair_id not in INDODAX_ONLY_PAIRS:
+                INDODAX_ONLY_PAIRS.append(pair_id)
+                print(f"[AI-CMS] NEW local pair: {pair_id}", flush=True)
+
+        validated_new.append({
+            "pair_id": pair_id,
+            "category": category,
+            "reason": coin.get("reason", "AI discovered"),
+            "urgency": coin.get("urgency", "WATCH"),
+            "vol_24h": vol_24h,
+        })
+
+    if validated_new:
+        # Telegram report
+        msg = f"🤖 [AI-CMS] {len(validated_new)} koin baru ditemukan:\n"
+        for c in validated_new[:5]:
+            urgency_emoji = "🔥" if c["urgency"] == "NOW" else "👀"
+            msg += (f"{urgency_emoji} {c['pair_id'].replace('_idr','').upper()}: "
+                    f"{c['reason']}\n")
+        _telegram_send(msg)
+
+        # Jika ada koin dengan urgency NOW → langsung masuk queue screening
+        # Note: _priority_scan_queue must exist or be handled
+        urgent = [c for c in validated_new if c["urgency"] == "NOW"]
+        if urgent:
+            print(f"[AI-CMS] {len(urgent)} URGENT coins → priority queue", flush=True)
+            for c in urgent:
+                # Fallback to simple set if queue doesn't exist
+                if 'priority_scan_queue' in globals():
+                    priority_scan_queue.add(c["pair_id"])
+
+
+_bb_cache = {}
+_screen_cache = []
+_last_screen_time = 0.0
+
+def screen_all_pairs() -> list[dict]:
+    import urllib.request, json
+    
+    INDODAX_TICKERS_URL = "https://indodax.com/api/tickers"
+    try:
+        with urllib.request.urlopen(INDODAX_TICKERS_URL, timeout=10) as r:
+            data = json.loads(r.read())
+        tickers = data.get("tickers", data)
+    except Exception as e:
+        print(f"[SCREEN] Cannot fetch tickers: {e}", flush=True)
+        return []
+    
+    candidates = []
+    for pair_id, ticker in tickers.items():
+        try:
+            if not pair_id.endswith("_idr"): continue
+            
+            vol_24h = float(ticker.get("vol_idr", 0))
+            if vol_24h < 50_000_000: continue
+            
+            price = float(ticker.get("last", 0))
+            high = float(ticker.get("high", price))
+            low = float(ticker.get("low", price))
+            if price <= 0: continue
+            
+            mid_24h = (high + low) / 2
+            pump_24h_pct = (price - low) / max(low, 0.001) * 100
+            if pump_24h_pct > 80: continue
+            
+            binance_sym = get_binance_symbol(pair_id)
+            
+            bb = _bb_cache.get(pair_id)
+            if not bb:
+                bb = calculate_bollinger_bands(pair_id)
+                if bb: _bb_cache[pair_id] = bb
+            
+            bb_pos = 0.5
+            if bb:
+                bb_range = bb["upper"] - bb["lower"]
+                if bb_range > 0: bb_pos = (price - bb["lower"]) / bb_range
+            
+            if bb_pos > 0.92: continue
+            
+            score = 0
+            if vol_24h > 500_000_000: score += 25
+            elif vol_24h > 200_000_000: score += 15
+            else: score += 5
+            
+            position_in_range = (price - low) / max(high - low, 0.001)
+            if position_in_range < 0.4: score += 25
+            elif position_in_range < 0.65: score += 18
+            elif position_in_range < 0.85: score += 8
+            else: score -= 10
+            
+            if bb_pos < 0.5: score += 20
+            elif bb_pos < 0.75: score += 12
+            
+            if binance_sym: score += 10
+            if score < 45: continue
+            
+            candidates.append({
+                "pair_id": pair_id, "score": score, "price": price,
+                "vol_24h": vol_24h, "pump_24h_pct": pump_24h_pct,
+                "position_in_range": position_in_range, "bb_position": bb_pos,
+                "has_binance": bool(binance_sym), "binance_symbol": binance_sym,
+            })
+        except Exception as e:
+            pass
+            
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    return candidates[:15]
+
+@dataclass
+class TrailingConfig:
+    phase: str
+    activation_pct: float
+    callback_pct: float
+    partial_tp_pct: float
+    partial_tp_size: float
+
+TRAILING_CONFIGS = {
+    "EARLY": TrailingConfig("EARLY", 0.02, 0.015, 0.04, 0.3),
+    "MID":   TrailingConfig("MID",   0.015, 0.012, 0.03, 0.4),
+    "LATE":  TrailingConfig("LATE",  0.01, 0.01, 0.02, 0.5),
+}
+
+def update_trailing_stop(pair_id: str, price_now: float, phase: str = "MID"):
+    """
+    Update trailing stop logic. 
+    Tightens stop as profit grows.
+    """
+    if pair_id not in _active_trails:
+        return None
+    
+    trail = _active_trails[pair_id]
+    entry_price = trail["entry_price"]
+    current_profit_pct = (price_now - entry_price) / entry_price
+    
+    # Update high water mark
+    if price_now > trail["max_price"]:
+        trail["max_price"] = price_now
+        
+    config = TRAILING_CONFIGS.get(phase, TRAILING_CONFIGS["MID"])
+    
+    # Check Partial Take Profit
+    if not trail.get("partial_tp_done") and current_profit_pct >= config.partial_tp_trigger:
+        print(f"[KIBOT][TRAIL] {pair_id} Partial TP Triggered at {current_profit_pct:.2%}", flush=True)
+        # In actual exec, this would call smart_exit(pair_id, size=config.partial_tp_size)
+        trail["partial_tp_done"] = True
+        return "PARTIAL_TP"
+
+    # Dynamic trailing adjustment
+    # Semakin tinggi profit, semakin ketat trailnya
+    dynamic_callback = config.callback_pct
+    if current_profit_pct > 0.05:
+        dynamic_callback *= 0.8 # Tighten by 20%
+    if current_profit_pct > 0.10:
+        dynamic_callback *= 0.6 # Tighten by 40%
+
+    stop_price = trail["max_price"] * (1 - dynamic_callback)
+    
+    if price_now <= stop_price:
+        print(f"[KIBOT][TRAIL] {pair_id} Stop Hit! Exit at {price_now} (Profit: {current_profit_pct:.2%})", flush=True)
+        return "EXIT_NOW"
+        
+    return None
+
+def _get_position_size_pct(kelly_recommended: float) -> float:
+    """Modul 4: Dynamic Sizing"""
+    size_pct = kelly_recommended * TRADING_CAPITAL_PCT
+    return max(0.01, min(size_pct, 1.0))
+
+def smart_entry(pair_id: str, analysis: PumpAnalysis, budget_idr: float, trace_id: str):
+    """
+    Decide between MARKET or LIMIT entry based on pump phase.
+    """
+    if _WHATIF_AVAILABLE:
+        try:
+            tf = analyze_timeframes(pair_id)
+            eq = tf.entry_quality()
+            if eq not in ["A", "A-", "B"]:
+                print(f"[KIBOT][SMART_ENTRY] Multi-Timeframe Score {eq} for {pair_id} is too weak. Aborting entry.", flush=True)
+                return
+            
+            # Fetch Kelly size from What-If logic
+            import json
+            try:
+                whatif_data = json.load(open("state/whatif_results.json"))
+                pair_sim = whatif_data.get("results", {}).get(pair_id, {})
+                kelly_size = pair_sim.get("kellySizeRecommended", 0.05)
+                adj_pct = _get_position_size_pct(kelly_size)
+                budget_idr = budget_idr * adj_pct
+            except Exception:
+                pass
+                
+        except Exception as e:
+            print(f"[KIBOT][SMART_ENTRY] Analysis error: {e}", flush=True)
+            
+    # Sizing constraints
+    if budget_idr < MIN_POSITION_IDR:
+        print(f"[KIBOT][SMART_ENTRY] Budget {budget_idr} below min position {MIN_POSITION_IDR}. Aborting.", flush=True)
+        return
+    budget_idr = min(budget_idr, MAX_POSITION_IDR)
+    use_market = False
+    if analysis.legitimacy_score >= 85 and analysis.pump_phase == "EARLY":
+        use_market = True
+        print(f"[KIBOT][SMART_ENTRY] Urgent High-Confidence EARLY pump. Using MARKET for {pair_id}", flush=True)
+    elif analysis.legitimacy_score >= 70:
+        use_market = True
+        print(f"[KIBOT][SMART_ENTRY] High-Confidence pump. Using MARKET for {pair_id}", flush=True)
+    else:
+        print(f"[KIBOT][SMART_ENTRY] Moderate-Confidence. Using LIMIT at mid-price for {pair_id}", flush=True)
+    
+    msg = {
+        "msgType": "DETECTOR_HIT",
+        "kind": "lead_lag_breakout",
+        "pairId": pair_id,
+        "traceId": trace_id,
+        "budgetIdr": budget_idr,
+        "use_market": use_market,
+        "phase": analysis.pump_phase,
+        "legitimacy_score": analysis.legitimacy_score,
+        "expectedNetPct": analysis.exit_target_pct,
+        "trailingStopPct": analysis.stop_loss_pct,
+        "confidence": analysis.legitimacy_score / 100.0,
+        "senderBotId": "kibot_trinity_v5"
+    }
+    _broadcast_udp(msg)
+
+def smart_exit(pair_id: str, reason: str, trace_id: str, size_multiplier: float = 1.0):
+    """
+    Decide between MARKET or LIMIT exit based on urgency.
+    """
+    use_market = False
+    if "emergency" in reason.lower() or "stop_hit" in reason.lower():
+        use_market = True
+        print(f"[KIBOT][SMART_EXIT] Urgent exit ({reason}). Using MARKET for {pair_id}", flush=True)
+    
+    msg = {
+        "msgType": "EMERGENCY_VETO_SELL",
+        "kind": "lead_lag_breakout",
+        "pairId": pair_id,
+        "traceId": trace_id,
+        "use_market": use_market,
+        "reason": reason,
+        "size_multiplier": size_multiplier,
+        "senderBotId": "kibot_trinity_v5"
+    }
+    _broadcast_udp(msg)
+
+def run_30min_math_review():
+    """
+    Mathematical review of session performance v6.0.
+    Adjusts trading aggressiveness based on yield.
+    """
+    global _last_math_review_at, _math_review_last_action, _math_review_last_reason
+    
+    now = time.time()
+    if (now - _last_math_review_at) < 1800:
+        return
+    
+    _last_math_review_at = now
+    if not _math_review_trade_journal:
+        return
+
+    print("[KIBOT][MATH] Running 30-minute performance review...", flush=True)
+    
+    wins = [t for t in _math_review_trade_journal if t["gross_pnl_pct"] > 0]
+    win_rate = len(wins) / len(_math_review_trade_journal)
+    avg_pnl = sum(t["gross_pnl_pct"] for t in _math_review_trade_journal) / len(_math_review_trade_journal)
+    
+    report = (
+        f"📊 TRINITY MATH REVIEW (30m)\n"
+        f"Trades: {len(_math_review_trade_journal)}\n"
+        f"Win Rate: {win_rate:.1%}\n"
+        f"Avg PnL: {avg_pnl:.2%}\n"
+    )
+    
+    action = "HOLD"
+    reason = "Normal performance"
+    
+    if win_rate < 0.40 and len(_math_review_trade_journal) >= 5:
+        action = "TIGHTEN"
+        reasonArr = "Win rate low, raising legitimacy threshold +5"
+        # In actual exec, we would modify a global threshold
+        report += "⚠️ Performance low. Tightening filters.\n"
+    elif win_rate > 0.70:
+        action = "RELAX"
+        reason = "Performance excellent, maintaining aggressive entry"
+        report += "🔥 Performance excellent. System optimized.\n"
+    
+    _math_review_last_action = action
+    _math_review_last_reason = reason
+    _telegram_send(report)
+    
+    # Reset journal for next 30m
+    _math_review_trade_journal.clear()
+
+def _is_one_shot_eligible(msg: Dict[str, Any], score: float) -> bool:
+
+    if _one_shot_used_today or _full_stop_active:
+        return False
+    signal_age_ms = float(msg.get("signalAgeMs") or msg.get("signal_age_ms") or 999.0)
+    has_volume_spike = bool(msg.get("volumeSpike") or msg.get("volume_spike") or False)
+    confidence = float(msg.get("confidence") or 0.0)
+    return signal_age_ms < 200 and score >= 8.0 and has_volume_spike and confidence >= 0.80
+
+
+def _activate_one_shot(pair_id: str, budget_idr: float) -> float:
+    global _one_shot_used_today
+    equity = _get_total_equity_estimate() or budget_idr
+    max_budget = equity * 0.20
+    actual_budget = min(budget_idr, max_budget)
+    _one_shot_used_today = True
+    _telegram_send(
+        f"⚡ ONE_SHOT ACTIVATED: {pair_id}\n"
+        f"Budget: Rp{actual_budget:,.0f} (max 20% equity)\n"
+        f"Jika gagal, FULL_STOP sampai midnight WIB"
+    )
+    return actual_budget
+
+
+def _record_one_shot_result(pnl_idr: float) -> None:
+    global _one_shot_result, _full_stop_active
+    if pnl_idr > 0:
+        _one_shot_result = "WIN"
+        _full_stop_active = False
+        _telegram_send(f"✅ ONE_SHOT WIN +Rp{pnl_idr:,.0f}. Kembali ke WARNING mode.")
+    else:
+        _one_shot_result = "LOSS"
+        _full_stop_active = True
+        _telegram_send(f"🛑 ONE_SHOT FAILED Rp{pnl_idr:,.0f}. FULL_STOP aktif sampai midnight WIB.")
+
+
+def _daily_reset_extra_state() -> None:
+    global _one_shot_used_today, _one_shot_result, _full_stop_active, _last_math_review_at
+    _one_shot_used_today = False
+    _one_shot_result = None
+    _full_stop_active = False
+    _last_math_review_at = 0.0
+
+
+def _record_trade_result(pair_id: str, *, gross_pnl_pct: float, entry_time: float) -> None:
+    pair_key = pair_id.lower().strip()
+    if not pair_key:
+        pair_key = "unknown"
+    _math_review_trade_journal.append(
+        {
+            "pair": pair_key,
+            "gross_pnl_pct": float(gross_pnl_pct),
+            "entry_time": float(entry_time),
+        }
+    )
+    if _one_shot_used_today and _one_shot_result is None:
+        _record_one_shot_result(gross_pnl_pct)
+    if len(_math_review_trade_journal) > 500:
+        del _math_review_trade_journal[:-500]
+
+
+def _safe_isoformat(epoch_seconds: Optional[float] = None) -> str:
+    dt = datetime.fromtimestamp(epoch_seconds if epoch_seconds is not None else time.time(), tz=timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+def _env_first(*keys: str, default: str = "") -> str:
+    for key in keys:
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+    return default
+
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
+TIMEOUT = float(os.getenv("KIBOT_MANAGER_HTTP_TIMEOUT_SEC", "12"))
+UDP_BIND_HOST = os.getenv("KIBOT_MANAGER_UDP_BIND_HOST", "0.0.0.0")
+UDP_BIND_PORT = int(os.getenv("KIBOT_MANAGER_UDP_BIND_PORT", "9998"))
+KINANCE_UDP_HOST = os.getenv("KINANCE_UDP_HOST", "")
+KINANCE_UDP_PORT = int(os.getenv("KINANCE_UDP_PORT", "9999"))
+KIDAX_UDP_HOST = os.getenv("KIDAX_UDP_HOST", "127.0.0.1")
+KIDAX_UDP_PORT = int(os.getenv("KIDAX_UDP_PORT", "9999"))
+MANAGER_HEARTBEAT_INTERVAL_SEC = float(os.getenv("KIBOT_MANAGER_HEARTBEAT_INTERVAL_SEC", "1.0"))
+TAKER_FEE_PCT = float(os.getenv("KIDAX_TAKER_FEE_PCT", "0.51"))
+STALE_SIGNAL_ABORT_MS = int(os.getenv("KIBOT_STALE_SIGNAL_ABORT_MS", "500"))
+FOMO_GUARD_PCT = float(os.getenv("KIBOT_FOMO_GUARD_PCT", "15.0"))
+FOMO_LIMIT_CORRECTION_PCT = float(os.getenv("KIBOT_FOMO_LIMIT_CORRECTION_PCT", "4.0"))
+COINGECKO_BASE = os.getenv("COINGECKO_BASE_URL", "https://api.coingecko.com/api/v3")
+NEWS_SCAN_INTERVAL_SEC = int(os.getenv("KIBOT_NEWS_SCAN_INTERVAL_SEC", "45"))
+BINANCE_ANNOUNCEMENT_RSS = os.getenv(
+    "BINANCE_ANNOUNCEMENT_RSS",
+    "https://www.binance.com/en/support/announcement/rss",
+)
+COINGECKO_NEWS_FEED = os.getenv(
+    "COINGECKO_NEWS_FEED",
+    "https://www.coingecko.com/en/rss",
+)
+POST_MORTEM_ENABLED = os.getenv("KIBOT_POST_MORTEM_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+POST_MORTEM_API_URL = os.getenv("KIBOT_POST_MORTEM_API_URL", "")
+POST_MORTEM_API_KEY = os.getenv("KIBOT_POST_MORTEM_API_KEY", "")
+POST_MORTEM_MODEL = os.getenv("KIBOT_POST_MORTEM_MODEL", "llama-3.1-8b-instant")
+POST_MORTEM_TIMEOUT_SEC = float(os.getenv("KIBOT_POST_MORTEM_TIMEOUT_SEC", "12"))
+AI_APPROVAL_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_MIN_SCORE", "0.62"))
+AI_APPROVAL_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_MIN_EXPECTED_NET_PCT", "0.0018"))
+AI_APPROVAL_INSTANT_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_SCORE", "0.62"))
+AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT", "0.0018"))
+INDODAX_TAKER_FEE = float(os.getenv("KIBOT_INDODAX_TAKER_FEE", "0.003"))
+INDODAX_MAKER_FEE = float(os.getenv("KIBOT_INDODAX_MAKER_FEE", "0.0015"))
+ROUND_TRIP_TAKER_COST = float(os.getenv("KIBOT_ROUND_TRIP_TAKER_COST", "0.006"))
+ROUND_TRIP_MAKER_COST = float(os.getenv("KIBOT_ROUND_TRIP_MAKER_COST", "0.003"))
+SLIPPAGE_BUFFER = float(os.getenv("KIBOT_SLIPPAGE_BUFFER", "0.002"))
+MIN_GROSS_PROFIT_TARGET = float(os.getenv("KIBOT_MIN_GROSS_PROFIT_TARGET", "0.011"))
+PARTIAL_TP_TRIGGER = float(os.getenv("KIBOT_PARTIAL_TP_TRIGGER", "0.012"))
+PARTIAL_TP_SIZE = float(os.getenv("KIBOT_PARTIAL_TP_SIZE", "0.40"))
+TRAILING_STOP_MIN_PCT = float(os.getenv("KIBOT_TRAILING_STOP_MIN_PCT", "0.015"))
+POST_MORTEM_BLACKLIST_ENABLED = os.getenv("KIBOT_POST_MORTEM_BLACKLIST_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+POST_MORTEM_BLACKLIST_MINUTES = int(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_MINUTES", "30"))
+POST_MORTEM_BLACKLIST_NET_LOSS_IDR = float(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_NET_LOSS_IDR", "500"))
+POST_MORTEM_BLACKLIST_PNL_PCT = float(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_PNL_PCT", "-1.0"))
+MINIMUM_VIABLE_CAPITAL_IDR = float(os.getenv("KIBOT_MINIMUM_VIABLE_CAPITAL_IDR", "300000"))
+MINIMUM_POSITION_SIZE_IDR = float(os.getenv("KIBOT_MINIMUM_POSITION_SIZE_IDR", "10000"))
+MAXIMUM_POSITION_SIZE_IDR = float(os.getenv("KIBOT_MAXIMUM_POSITION_SIZE_IDR", "15000"))
+MAXIMUM_ACTIVE_POSITIONS = int(os.getenv("KIBOT_MAXIMUM_ACTIVE_POSITIONS", "2"))
+INDODAX_ALL_IN_TAKER_FEE_PCT = float(os.getenv("KIBOT_INDODAX_ALL_IN_TAKER_FEE_PCT", "0.0055"))
+INDODAX_ALL_IN_MAKER_FEE_PCT = float(os.getenv("KIBOT_INDODAX_ALL_IN_MAKER_FEE_PCT", "0.0004"))
+INDODAX_LIMIT_FILL_RATE = float(os.getenv("KIBOT_INDODAX_LIMIT_FILL_RATE", "0.70"))
+SURVIVAL_MODE = os.getenv("KIBOT_SURVIVAL_MODE", "true").lower() in {"1", "true", "yes", "on"}
+SURVIVAL_MODE_EQUITY_THRESHOLD_IDR = float(os.getenv("KIBOT_SURVIVAL_MODE_EQUITY_THRESHOLD_IDR", "200000"))
+SURVIVAL_ALLOWED_PAIRS = tuple(
+    pair.strip().lower()
+    for pair in os.getenv(
+        "KIBOT_SURVIVAL_ALLOWED_PAIRS",
+        "xlm_idr,doge_idr,xrp_idr,trx_idr,ada_idr,bnb_idr,enj_idr,fun_idr,arb_idr,inj_idr,ondo_idr,wld_idr,tia_idr,ethfi_idr,sol_idr,near_idr,hbar_idr,link_idr,atom_idr,avax_idr,ton_idr,sui_idr,pol_idr,ldo_idr,op_idr,render_idr,grt_idr,lunc_idr,pepe_idr,shib_idr,bonk_idr,wif_idr,floki_idr,bome_idr,cat_idr,fartcoin_idr",
+    ).split(",")
+    if pair.strip()
+)
+SURVIVAL_MIN_DAILY_VOLUME_IDR = float(os.getenv("KIBOT_SURVIVAL_MIN_DAILY_VOLUME_IDR", "500000000"))
+SURVIVAL_MAX_SPREAD_PCT = float(os.getenv("KIBOT_SURVIVAL_MAX_SPREAD_PCT", "0.008"))
+SURVIVAL_MAX_SLIPPAGE_PCT = float(os.getenv("KIBOT_SURVIVAL_MAX_SLIPPAGE_PCT", "0.010"))
+SURVIVAL_TARGET_PROFIT_PCT = float(os.getenv("KIBOT_SURVIVAL_TARGET_PROFIT_PCT", "0.025"))
+SURVIVAL_HARD_STOP_PCT = float(os.getenv("KIBOT_SURVIVAL_HARD_STOP_PCT", "0.01"))
+CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR", "100000"))
+CAPITAL_BUCKET_CONSERVATIVE_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_CONSERVATIVE_THRESHOLD_IDR", str(MINIMUM_VIABLE_CAPITAL_IDR)))
+CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR", "300000"))
+CAPITAL_BUCKET_FULL_EXPANSION_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_FULL_EXPANSION_THRESHOLD_IDR", "750000"))
+
+PAIR_CONFIG: Dict[str, Dict[str, Any]] = {
+    "xlm_idr": {"tier": "A", "max_size_idr": 15000.0, "min_target_profit_pct": 0.020, "max_spread_pct": 0.010, "max_slippage_pct": 0.012},
+    "doge_idr": {"tier": "A", "max_size_idr": 15000.0, "min_target_profit_pct": 0.020, "max_spread_pct": 0.010, "max_slippage_pct": 0.012},
+    "xrp_idr": {"tier": "A", "max_size_idr": 15000.0, "min_target_profit_pct": 0.020, "max_spread_pct": 0.010, "max_slippage_pct": 0.012},
+    "trx_idr": {"tier": "A", "max_size_idr": 15000.0, "min_target_profit_pct": 0.020, "max_spread_pct": 0.012, "max_slippage_pct": 0.012},
+    "ada_idr": {"tier": "A", "max_size_idr": 15000.0, "min_target_profit_pct": 0.020, "max_spread_pct": 0.012, "max_slippage_pct": 0.012},
+    "bnb_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.025, "max_spread_pct": 0.015, "max_slippage_pct": 0.015},
+    "enj_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "fun_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "arb_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "inj_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "ondo_idr": {"tier": "B", "max_size_idr": 12000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "wld_idr": {"tier": "B", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "tia_idr": {"tier": "B", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "ethfi_idr": {"tier": "B", "max_size_idr": 10000.0, "min_target_profit_pct": 0.035, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "sol_idr": {"tier": "B", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "near_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "hbar_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "link_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.025, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "atom_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.025, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "avax_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.025, "max_spread_pct": 0.018, "max_slippage_pct": 0.018},
+    "ton_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "sui_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "pol_idr": {"tier": "C", "max_size_idr": 10000.0, "min_target_profit_pct": 0.030, "max_spread_pct": 0.020, "max_slippage_pct": 0.020},
+    "ldo_idr": {"tier": "C", "max_size_idr": 8000.0, "min_target_profit_pct": 0.035, "max_spread_pct": 0.022, "max_slippage_pct": 0.022},
+    "op_idr": {"tier": "C", "max_size_idr": 8000.0, "min_target_profit_pct": 0.035, "max_spread_pct": 0.022, "max_slippage_pct": 0.022},
+    "render_idr": {"tier": "C", "max_size_idr": 8000.0, "min_target_profit_pct": 0.035, "max_spread_pct": 0.022, "max_slippage_pct": 0.022},
+    "grt_idr": {"tier": "C", "max_size_idr": 8000.0, "min_target_profit_pct": 0.035, "max_spread_pct": 0.022, "max_slippage_pct": 0.022},
+    "lunc_idr": {"tier": "C", "max_size_idr": 6000.0, "min_target_profit_pct": 0.040, "max_spread_pct": 0.025, "max_slippage_pct": 0.025},
+    "pepe_idr": {"tier": "D", "max_size_idr": 6000.0, "min_target_profit_pct": 0.040, "max_spread_pct": 0.025, "max_slippage_pct": 0.025},
+    "shib_idr": {"tier": "D", "max_size_idr": 6000.0, "min_target_profit_pct": 0.040, "max_spread_pct": 0.025, "max_slippage_pct": 0.025},
+    "bonk_idr": {"tier": "D", "max_size_idr": 6000.0, "min_target_profit_pct": 0.045, "max_spread_pct": 0.028, "max_slippage_pct": 0.028},
+    "wif_idr": {"tier": "D", "max_size_idr": 6000.0, "min_target_profit_pct": 0.045, "max_spread_pct": 0.028, "max_slippage_pct": 0.028},
+    "floki_idr": {"tier": "D", "max_size_idr": 5000.0, "min_target_profit_pct": 0.045, "max_spread_pct": 0.030, "max_slippage_pct": 0.030},
+    "bome_idr": {"tier": "D", "max_size_idr": 5000.0, "min_target_profit_pct": 0.050, "max_spread_pct": 0.030, "max_slippage_pct": 0.030},
+    "cat_idr": {"tier": "D", "max_size_idr": 5000.0, "min_target_profit_pct": 0.050, "max_spread_pct": 0.030, "max_slippage_pct": 0.030},
+    "fartcoin_idr": {"tier": "D", "max_size_idr": 5000.0, "min_target_profit_pct": 0.055, "max_spread_pct": 0.035, "max_slippage_pct": 0.035},
+}
+
+
+def _get_pair_config(pair_id: str) -> Dict[str, Any]:
+    return dict(PAIR_CONFIG.get(str(pair_id or "").lower().strip(), {"tier": "C", "max_size_idr": 0.0, "min_target_profit_pct": SURVIVAL_TARGET_PROFIT_PCT, "max_spread_pct": SURVIVAL_MAX_SPREAD_PCT, "max_slippage_pct": SURVIVAL_MAX_SLIPPAGE_PCT}))
+
+
+def _target_profit_pct_for_pair(pair_id: str) -> float:
+    return float(_get_pair_config(pair_id).get("min_target_profit_pct", SURVIVAL_TARGET_PROFIT_PCT))
+
+
+def _capital_bucket_tiers(equity_idr: Optional[float] = None) -> List[str]:
+    equity = float(equity_idr if equity_idr is not None else (_get_total_equity_estimate() or 0.0))
+    if equity < CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR:
+        return ["A", "B", "C", "D"]
+    if equity < CAPITAL_BUCKET_CONSERVATIVE_THRESHOLD_IDR:
+        return ["A"]
+    if equity < CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR:
+        return ["A", "B", "C"]
+    if equity < CAPITAL_BUCKET_FULL_EXPANSION_THRESHOLD_IDR:
+        return ["A", "B", "C", "D"]
+    return ["A", "B", "C", "D"]
+
+
+def _capital_risk_multiplier(equity_idr: Optional[float] = None) -> float:
+    equity = float(equity_idr if equity_idr is not None else (_get_total_equity_estimate() or 0.0))
+    if equity < CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR:
+        return 0.35
+    if equity < CAPITAL_BUCKET_CONSERVATIVE_THRESHOLD_IDR:
+        return 0.50
+    if equity < CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR:
+        return 0.70
+    if equity < CAPITAL_BUCKET_FULL_EXPANSION_THRESHOLD_IDR:
+        return 0.85
+    return 1.0
+
+
+# === KINANCE HEALTH MONITORING ===
+KINANCE_HEARTBEAT_TIMEOUT_SEC = 10.0
+_last_kinance_heartbeat_at: float = 0.0
+_kinance_healthy: bool = True
+
+
+DAILY_SUMMARY_ENABLED = os.getenv("KIBOT_DAILY_SUMMARY_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+CORRELATION_ENABLED = os.getenv("KIBOT_CORRELATION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+CORRELATION_INTERVAL_SEC = int(os.getenv("KIBOT_CORRELATION_INTERVAL_SEC", "1800"))
+CORRELATION_API_URL = os.getenv("KIBOT_CORRELATION_API_URL", POST_MORTEM_API_URL)
+CORRELATION_API_KEY = os.getenv("KIBOT_CORRELATION_API_KEY", POST_MORTEM_API_KEY)
+CORRELATION_MODEL = os.getenv("KIBOT_CORRELATION_MODEL", POST_MORTEM_MODEL)
+CORRELATION_TIMEOUT_SEC = float(os.getenv("KIBOT_CORRELATION_TIMEOUT_SEC", "20"))
+AI_ROUTER_ENABLED = os.getenv("KIBOT_AI_ROUTER_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+AI_PROVIDER_ORDER = [
+    token.strip().lower()
+    for token in os.getenv(
+        "KIBOT_AI_PROVIDER_ORDER",
+        "groq,openrouter,cohere,gemini",
+    ).split(",")
+    if token.strip()
+]
+AI_REQUEST_TIMEOUT_SEC = float(os.getenv("KIBOT_AI_REQUEST_TIMEOUT_SEC", "18"))
+AI_PROVIDER_DEFAULT_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_DEFAULT_COOLDOWN_SEC", "600"))
+AI_PROVIDER_NETWORK_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_NETWORK_COOLDOWN_SEC", "180"))
+AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC", "3600"))
+AI_PROVIDER_EMPTY_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_EMPTY_COOLDOWN_SEC", "120"))
+STATE_ROOT = Path(os.getenv("KIBOT_MANAGER_STATE_DIR", str(Path.cwd() / ".state")))
+PROVIDER_STATE_PATH = Path(
+    os.getenv("KIBOT_MANAGER_PROVIDER_STATE_FILE", str(STATE_ROOT / "ai_provider_state.json"))
+)
+RUNTIME_NOTE_PATH = Path(
+    os.getenv("KIBOT_MANAGER_RUNTIME_NOTE_FILE", str(STATE_ROOT / "runtime_note.json"))
+)
+RUNTIME_NOTE_MIN_INTERVAL_SEC = int(os.getenv("KIBOT_MANAGER_RUNTIME_NOTE_MIN_INTERVAL_SEC", "15"))
+DAILY_SUMMARY_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_SUMMARY_FILE", str(STATE_ROOT / "daily_summary.json")))
+PAIR_MEMORY_PATH = Path(os.getenv("KIBOT_MANAGER_PAIR_MEMORY_FILE", str(STATE_ROOT / "pair_memory.json")))
+PAIR_MEMORY_ROLLING_WINDOW = int(os.getenv("KIBOT_PAIR_MEMORY_ROLLING_WINDOW", "50"))
+PAIR_MEMORY_MIN_TRADES_FOR_WINRATE = int(os.getenv("KIBOT_PAIR_MEMORY_MIN_TRADES_FOR_WINRATE", "3"))
+AI_BATCH_REVIEW_INTERVAL_SEC = int(os.getenv("KIBOT_AI_BATCH_REVIEW_INTERVAL_SEC", str(6 * 60 * 60)))
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_API_URL = os.getenv("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
+
+GEMINI_API_KEY = _env_first("GEMINI_API_KEY", "GEMINI_SUPPORT_API_KEY")
+GEMINI_MODEL = _env_first("GEMINI_MODEL", "GEMINI_SUPPORT_MODEL", default="gemini-2.0-flash-lite")
+GEMINI_API_URL = os.getenv("GEMINI_API_URL", "https://generativelanguage.googleapis.com/v1beta")
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct")
+OPENROUTER_API_URL = os.getenv("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
+
+COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
+COHERE_MODEL = os.getenv("COHERE_MODEL", "command-r")
+COHERE_API_URL = os.getenv("COHERE_API_URL", "https://api.cohere.com/v2/chat")
+
+BLACKBOX_API_KEY = os.getenv("BLACKBOX_API_KEY", "")
+BLACKBOX_MODEL = os.getenv("BLACKBOX_MODEL", "blackboxai/openai/gpt-4o-mini")
+BLACKBOX_API_URL = os.getenv("BLACKBOX_API_URL", "https://api.blackbox.ai/v1/chat/completions")
+
+_ai_provider_last_status: Dict[str, Any] = {
+    "provider": "",
+    "task": "",
+    "at_epoch_ms": 0,
+    "ok": False,
+}
+COINGECKO_TRENDING_INTERVAL_SEC = int(os.getenv("KIBOT_COINGECKO_TRENDING_INTERVAL_SEC", "300"))
+INDODAX_SUMMARIES_URL = os.getenv("INDODAX_SUMMARIES_URL", "https://indodax.com/api/summaries")
+INDODAX_TICKER_CACHE_TTL_SEC = int(os.getenv("KIBOT_INDODAX_TICKER_CACHE_TTL_SEC", "600"))
+EMERGENCY_SELL_NEGATIVE_PNL_PCT = float(os.getenv("KIBOT_EMERGENCY_SELL_NEGATIVE_PNL_PCT", "-2.2"))
+EMERGENCY_SELL_COOLDOWN_SEC = int(os.getenv("KIBOT_EMERGENCY_SELL_COOLDOWN_SEC", "20"))
+API_HEALTH_CHECK_INTERVAL_SEC = float(os.getenv("KIBOT_API_HEALTH_CHECK_INTERVAL_SEC", "15"))
+API_HEALTH_FAIL_THRESHOLD = int(os.getenv("KIBOT_API_HEALTH_FAIL_THRESHOLD", "2"))
+CONTROL_PLANE_TIMEOUT_SEC = float(os.getenv("KIBOT_CONTROL_PLANE_TIMEOUT_SEC", "3.0"))
+CONTROL_PLANE_STALE_SEC = float(os.getenv("KIBOT_CONTROL_PLANE_STALE_SEC", "30"))
+DAILY_LOSS_LIMIT_PCT = float(os.getenv("KIBOT_DAILY_LOSS_LIMIT_PCT", "0.02"))
+WIB_UTC_OFFSET_HOURS = int(os.getenv("KIBOT_WIB_UTC_OFFSET_HOURS", "7"))
+DAILY_GUARD_STATE_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_GUARD_FILE", str(STATE_ROOT / "daily_guard.json")))
+MANAGER_GATE_STATE_PATH = Path(os.getenv("KIBOT_MANAGER_GATE_STATE_FILE", str(STATE_ROOT / "manager_gate.json")))
+SAFE_ENTRY_MSG_TYPES = {"DETECTOR_HIT", "INSTANT_BUY_ANOMALY"}
+EXIT_MSG_TYPES = {"SELL_WALL_SURGE", "MOMENTUM_LOSS", "TRAILING_STOP_HIT", "THESIS_INVALID_EXIT"}
+# Maximum size for unbounded caches
+_SEEN_NEWS_IDS_MAX_SIZE = int(os.getenv("KIBOT_SEEN_NEWS_IDS_MAX_SIZE", "5000"))
+_seen_news_ids: set[str] = set()
+_seen_news_ids_timestamps: Dict[str, float] = {}  # Track when IDs were added for TTL cleanup
+_indodax_ticker_cache: set[str] = set()
+_indodax_ticker_snapshot: Dict[str, Dict[str, Any]] = {}
+_indodax_ticker_cache_at: float = 0.0
+_coingecko_trending_cache: Dict[str, Any] = {"coins": [], "fetched_at_epoch_ms": 0}
+_last_sector_map: Dict[str, list[str]] = {}
+_active_positions_cache: Dict[str, Dict[str, Any]] = {}
+_emergency_sell_cooldown_until: Dict[str, float] = {}
+_last_active_positions_log_at: float = 0.0
+_last_runtime_note_write_at: float = 0.0
+_recent_runtime_events: List[Dict[str, Any]] = []
+_veto_metrics: Dict[str, int] = {"approved": 0, "rejected": 0, "sell_confirmed": 0, "emergency_sell": 0}
+_api_fail_streak: int = 0
+_api_health_state: str = "HEALTHY"
+_control_plane_healthy: bool = True
+_control_plane_last_success_at: float = 0.0
+_capital_sufficient_since_at: float = 0.0
+_normal_mode_promotion_grace_sec: float = float(os.getenv("KIBOT_NORMAL_PROMOTION_GRACE_SEC", "1800"))
+_gate_state: Dict[str, Any] = _load_json_file(
+    MANAGER_GATE_STATE_PATH,
+    {
+        "mode": "CONSERVATIVE",
+        "entry_state": "HEALTHY",
+        "reason": "",
+        "updated_at": "",
+        "daily_hard_stop": False,
+        "daily_hard_stop_reset_at": "",
+        "daily_hard_stop_reason": "",
+    },
+)
+_daily_guard_state: Dict[str, Any] = _load_json_file(
+    DAILY_GUARD_STATE_PATH,
+    {
+        "date": "",
+        "start_of_day_equity": None,
+        "current_equity": None,
+        "daily_pnl_pct": None,
+        "hard_stopped": False,
+        "triggered_at": "",
+        "reset_at": "",
+        "reason": "",
+    },
+)
+_pair_memory: Dict[str, Dict[str, Any]] = _load_json_file(PAIR_MEMORY_PATH, {})
+
+
+def _clean_pair_memory() -> None:
+    invalid_keys = [key for key in _pair_memory.keys() if not key or key.strip().lower() in {"unknown", "null", "none"}]
+    if not invalid_keys:
+        return
+    for key in invalid_keys:
+        _pair_memory.pop(key, None)
+        print(f"[KIBOT][LEARNING] removed invalid pair_memory key='{key}'", flush=True)
+    _write_json_file(PAIR_MEMORY_PATH, _pair_memory)
+
+
+_clean_pair_memory()
+
+
+_provider_runtime_state: Dict[str, Dict[str, Any]] = _load_json_file(PROVIDER_STATE_PATH, {})
+_pair_cooldown_state: Dict[str, Dict[str, Any]] = _load_json_file(STATE_ROOT / "pair_cooldowns.json", {})
+
+
+def _save_pair_cooldown_state() -> None:
+    _write_json_file(STATE_ROOT / "pair_cooldowns.json", _pair_cooldown_state)
+
+
+def _save_gate_state() -> None:
+    _write_json_file(MANAGER_GATE_STATE_PATH, _gate_state)
+
+
+def _save_daily_guard_state() -> None:
+    _write_json_file(DAILY_GUARD_STATE_PATH, _daily_guard_state)
+
+
+def _save_pair_memory_state() -> None:
+    _write_json_file(PAIR_MEMORY_PATH, _pair_memory)
+
+
+def _default_pair_memory() -> Dict[str, Any]:
+    return {
+        "slippage_history": [],
+        "spread_observed": [],
+        "win_rate_by_hour": {},
+        "last_loss_at": None,
+        "cooldown_until": None,
+        "fake_pump_count": 0,
+        "avg_execution_latency_ms": 0.0,
+        "trade_count": 0,
+        "win_count": 0,
+        "last_updated_at": "",
+    }
+
+
+def _wib_hour_now() -> int:
+    return (datetime.now(timezone.utc) + timedelta(hours=WIB_UTC_OFFSET_HOURS)).hour
+
+
+def _pair_memory_for(pair_id: str) -> Dict[str, Any]:
+    pair_key = pair_id.lower().strip()
+    if not pair_key:
+        return _default_pair_memory()
+    memory = _pair_memory.setdefault(pair_key, _default_pair_memory())
+    if "trade_count" not in memory:
+        memory.update(_default_pair_memory())
+    return memory
+
+
+def _update_pair_memory(
+    pair_id: str,
+    *,
+    pnl_pct: float,
+    slippage_pct: float | None = None,
+    spread_pct: float | None = None,
+    actual_latency_ms: float | None = None,
+    fake_pump: bool = False,
+    loss_threshold_pct: float = 0.75,
+    cooldown_sec: int = 60 * 60,
+) -> None:
+    pair_key = pair_id.lower().strip()
+    if not pair_key or pair_key in {"unknown", "null", "none"}:
+        print(f"[KIBOT][LEARNING][WARN] skip invalid pair_id='{pair_id}'", flush=True)
+        return
+    memory = _pair_memory_for(pair_key)
+    if slippage_pct is not None:
+        history = list(memory.get("slippage_history") or [])
+        history.append(float(slippage_pct))
+        memory["slippage_history"] = history[-PAIR_MEMORY_ROLLING_WINDOW:]
+    if spread_pct is not None:
+        history = list(memory.get("spread_observed") or [])
+        history.append(float(spread_pct))
+        memory["spread_observed"] = history[-PAIR_MEMORY_ROLLING_WINDOW:]
+    if actual_latency_ms is not None and actual_latency_ms > 0:
+        current = float(memory.get("avg_execution_latency_ms") or 0.0)
+        count = int(memory.get("trade_count") or 0)
+        memory["avg_execution_latency_ms"] = round(((current * count) + actual_latency_ms) / (count + 1), 3)
+    hour_bucket = str(_wib_hour_now())
+    win_rate_by_hour = memory.setdefault("win_rate_by_hour", {})
+    hour_stats = win_rate_by_hour.setdefault(hour_bucket, {"wins": 0, "total": 0})
+    hour_stats["total"] += 1
+    memory["trade_count"] = int(memory.get("trade_count") or 0) + 1
+    if pnl_pct > 0:
+        hour_stats["wins"] += 1
+        memory["win_count"] = int(memory.get("win_count") or 0) + 1
+    else:
+        memory["last_loss_at"] = datetime.now(timezone.utc).isoformat()
+        if pnl_pct <= -abs(loss_threshold_pct):
+            memory["cooldown_until"] = time.time() + cooldown_sec
+    if fake_pump:
+        memory["fake_pump_count"] = int(memory.get("fake_pump_count") or 0) + 1
+    memory["last_updated_at"] = datetime.now(timezone.utc).isoformat()
+    memory["avg_pnl"] = round(
+        ((float(memory.get("avg_pnl") or 0.0) * max(0, int(memory.get("trade_count") or 0) - 1)) + float(pnl_pct))
+        / max(1, int(memory.get("trade_count") or 0)),
+        5,
+    )
+    memory["win_rate_7d"] = round(
+        float(memory.get("win_count") or 0) / max(1, int(memory.get("trade_count") or 0)),
+        5,
+    )
+    _pair_memory[pair_key] = memory
+    _save_pair_memory_state()
+
+
+def _get_pair_avg_slippage(pair_id: str, fallback: float = 0.0) -> float:
+    memory = _pair_memory.get(pair_id.lower().strip(), {})
+    history = memory.get("slippage_history") or []
+    if not history:
+        return fallback
+    return sum(float(value) for value in history) / len(history)
+
+
+def _get_pair_win_rate_now(pair_id: str) -> float:
+    memory = _pair_memory.get(pair_id.lower().strip(), {})
+    hour_bucket = str(_wib_hour_now())
+    hour_stats = (memory.get("win_rate_by_hour") or {}).get(hour_bucket)
+    if not hour_stats or int(hour_stats.get("total") or 0) < PAIR_MEMORY_MIN_TRADES_FOR_WINRATE:
+        return 0.5
+    total = float(hour_stats.get("total") or 0)
+    return float(hour_stats.get("wins") or 0) / total if total > 0 else 0.5
+
+
+def _is_pair_on_cooldown(pair_id: str) -> bool:
+    memory = _pair_memory.get(pair_id.lower().strip(), {})
+    cooldown_until = memory.get("cooldown_until")
+    if cooldown_until is None:
+        return False
+    try:
+        return time.time() < float(cooldown_until)
+    except Exception:
+        return False
+
+
+def _daily_summary_market_regime() -> str:
+    regime = _gate_state.get("market_regime")
+    if regime:
+        return str(regime)
+    return str(_load_daily_summary().get("market_regime") or "UNKNOWN")
+
+
+def _next_wib_midnight_iso() -> str:
+    now_utc = datetime.now(timezone.utc)
+    now_wib = now_utc + timedelta(hours=WIB_UTC_OFFSET_HOURS)
+    midnight_wib = datetime.combine(now_wib.date() + timedelta(days=1), datetime.min.time())
+    reset_utc = midnight_wib - timedelta(hours=WIB_UTC_OFFSET_HOURS)
+    return reset_utc.replace(tzinfo=timezone.utc).isoformat()
+
+
+def _entry_state_is_suspended() -> bool:
+    return str(_gate_state.get("entry_state") or "HEALTHY").upper() != "HEALTHY"
+
+
+def _set_entry_state(entry_state: str, *, reason: str = "", daily_hard_stop: bool | None = None) -> None:
+    normalized = entry_state.upper().strip() or "HEALTHY"
+    _gate_state["entry_state"] = normalized
+    _gate_state["reason"] = reason
+    _gate_state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if daily_hard_stop is not None:
+        _gate_state["daily_hard_stop"] = bool(daily_hard_stop)
+    _save_gate_state()
+
+
+def _suspend_new_entries(reason: str, *, daily_hard_stop: bool = False) -> None:
+    current = str(_gate_state.get("entry_state") or "HEALTHY").upper()
+    if current == "SUSPENDED" and _gate_state.get("reason") == reason and bool(_gate_state.get("daily_hard_stop")) == bool(daily_hard_stop):
+        return
+    _set_entry_state("SUSPENDED", reason=reason, daily_hard_stop=daily_hard_stop)
+    _append_runtime_event("entry_suspended", {"reason": reason, "daily_hard_stop": daily_hard_stop})
+    print(f"[KIBOT][GATE] entry suspended reason={reason} daily_hard_stop={daily_hard_stop}", flush=True)
+
+
+def _resume_new_entries(reason: str) -> None:
+    if not _entry_state_is_suspended():
+        return
+    if bool(_gate_state.get("daily_hard_stop")):
+        return
+    _set_entry_state("HEALTHY", reason=reason, daily_hard_stop=False)
+    _append_runtime_event("entry_resumed", {"reason": reason})
+    print(f"[KIBOT][GATE] entry resumed reason={reason}", flush=True)
+
+
+def _set_conservative_mode(reason: str) -> None:
+    if str(_gate_state.get("mode") or "CONSERVATIVE").upper() == "CONSERVATIVE":
+        return
+    _gate_state["mode"] = "CONSERVATIVE"
+    _gate_state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _gate_state["reason"] = reason
+    _save_gate_state()
+    _append_runtime_event("trading_mode_changed", {"mode": "CONSERVATIVE", "reason": reason})
+    print(f"[KIBOT][MODE] switched to CONSERVATIVE reason={reason}", flush=True)
+
+
+def _set_normal_mode(reason: str) -> None:
+    if str(_gate_state.get("mode") or "CONSERVATIVE").upper() == "NORMAL":
+        return
+    _gate_state["mode"] = "NORMAL"
+    _gate_state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _gate_state["reason"] = reason
+    _save_gate_state()
+    _append_runtime_event("trading_mode_changed", {"mode": "NORMAL", "reason": reason})
+    print(f"[KIBOT][MODE] switched to NORMAL reason={reason}", flush=True)
+
+
+def _record_control_plane_success() -> None:
+    global _control_plane_healthy, _control_plane_last_success_at, _api_fail_streak, _api_health_state
+    _control_plane_healthy = True
+    _control_plane_last_success_at = time.time()
+    if _api_fail_streak != 0 or _api_health_state != "HEALTHY":
+        _api_fail_streak = 0
+        _api_health_state = "HEALTHY"
+        print("[KIBOT][HEALTH] API/control-plane recovered", flush=True)
+        _append_runtime_event("api_health", {"state": "HEALTHY"})
+
+
+def _record_control_plane_failure(reason: str) -> None:
+    global _control_plane_healthy, _api_fail_streak, _api_health_state
+    _control_plane_healthy = False
+    _api_fail_streak += 1
+    if _api_fail_streak >= API_HEALTH_FAIL_THRESHOLD:
+        if _api_health_state != "SUSPENDED":
+            _api_health_state = "SUSPENDED"
+            _append_runtime_event("api_health", {"state": "SUSPENDED", "reason": reason, "streak": _api_fail_streak})
+            print(f"[KIBOT][HEALTH] API suspended reason={reason} streak={_api_fail_streak}", flush=True)
+        _suspend_new_entries(reason="API health fail streak")
+    else:
+        if _api_health_state != "DEGRADED":
+            _api_health_state = "DEGRADED"
+            _append_runtime_event("api_health", {"state": "DEGRADED", "reason": reason, "streak": _api_fail_streak})
+        print(f"[KIBOT][HEALTH] API degraded reason={reason} streak={_api_fail_streak}", flush=True)
+
+
+def _daily_guard_reset_due() -> bool:
+    reset_at = str(_daily_guard_state.get("reset_at") or "")
+    if not reset_at:
+        return False
+    try:
+        return datetime.now(timezone.utc) >= datetime.fromisoformat(reset_at)
+    except Exception:
+        return False
+
+
+def _refresh_daily_guard_from_equity(current_equity: float | None) -> None:
+    today = (datetime.now(timezone.utc) + timedelta(hours=WIB_UTC_OFFSET_HOURS)).date().isoformat()
+    if _daily_guard_state.get("date") != today:
+        had_daily_hard_stop = bool(_gate_state.get("daily_hard_stop"))
+        _daily_guard_state.update(
+            {
+                "date": today,
+                "start_of_day_equity": current_equity,
+                "current_equity": current_equity,
+                "daily_pnl_pct": None,
+                "hard_stopped": False,
+                "triggered_at": "",
+                "reset_at": "",
+                "reason": "",
+            }
+        )
+        _save_daily_guard_state()
+        if had_daily_hard_stop:
+            _gate_state["daily_hard_stop"] = False
+            _gate_state["daily_hard_stop_reason"] = ""
+            _gate_state["daily_hard_stop_reset_at"] = ""
+            _save_gate_state()
+            _resume_new_entries("new day reset")
+
+
+def _reconcile_daily_guard_day_rollover() -> None:
+    today = (datetime.now(timezone.utc) + timedelta(hours=WIB_UTC_OFFSET_HOURS)).date().isoformat()
+    if _daily_guard_state.get("date") == today:
+        return
+    _daily_guard_state.update(
+        {
+            "date": today,
+            "start_of_day_equity": _daily_guard_state.get("current_equity"),
+            "daily_pnl_pct": 0.0,
+            "hard_stopped": False,
+            "triggered_at": "",
+            "reset_at": "",
+            "reason": "",
+        }
+    )
+    _save_daily_guard_state()
+    if bool(_gate_state.get("daily_hard_stop")):
+        _gate_state["daily_hard_stop"] = False
+        _gate_state["daily_hard_stop_reason"] = ""
+        _gate_state["daily_hard_stop_reset_at"] = ""
+        _save_gate_state()
+    _daily_reset_extra_state()
+    _resume_new_entries("new day rollover")
+
+def _ensure_hard_stop_consistency() -> None:
+    """Clear stale hard-stop flags when the stored PnL no longer breaches today's limit."""
+    try:
+        daily_pnl_pct = _daily_guard_state.get("daily_pnl_pct")
+        if daily_pnl_pct is None:
+            return
+        daily_pnl_pct = float(daily_pnl_pct)
+    except Exception:
+        return
+    limit = -abs(DAILY_LOSS_LIMIT_PCT)
+    if not bool(_daily_guard_state.get("hard_stopped")) and not bool(_gate_state.get("daily_hard_stop")):
+        return
+    # If we are not breaching the limit anymore for the current day, treat previous hard-stop as stale.
+    if daily_pnl_pct > limit:
+        _daily_guard_state["hard_stopped"] = False
+        _daily_guard_state["triggered_at"] = ""
+        _daily_guard_state["reset_at"] = ""
+        _daily_guard_state["reason"] = ""
+        _save_daily_guard_state()
+        _gate_state["daily_hard_stop"] = False
+        _gate_state["daily_hard_stop_reason"] = ""
+        _gate_state["daily_hard_stop_reset_at"] = ""
+        _save_gate_state()
+        _resume_new_entries("hard stop cleared (pnl recovered/new day)")
+
+
+def _trigger_daily_hard_stop(current_equity: float | None, daily_pnl_pct: float) -> None:
+    reset_at = _next_wib_midnight_iso()
+    _daily_guard_state.update(
+        {
+            "hard_stopped": True,
+            "current_equity": current_equity,
+            "daily_pnl_pct": daily_pnl_pct,
+            "triggered_at": datetime.now(timezone.utc).isoformat(),
+            "reset_at": reset_at,
+            "reason": "daily_loss_limit_hit",
+        }
+    )
+    _save_daily_guard_state()
+    _gate_state["daily_hard_stop"] = True
+    _gate_state["daily_hard_stop_reset_at"] = reset_at
+    _gate_state["daily_hard_stop_reason"] = "daily_loss_limit_hit"
+    _save_gate_state()
+    _suspend_new_entries("daily_loss_limit_hit", daily_hard_stop=True)
+    _append_runtime_event("daily_hard_stop", {"daily_pnl_pct": daily_pnl_pct, "reset_at": reset_at})
+    _metric_inc("entries_blocked_hard_stop")
+    print(f"[KIBOT][GATE] daily hard stop triggered pnl_pct={daily_pnl_pct:.4f} reset_at={reset_at}", flush=True)
+
+
+def _check_daily_loss_limit(current_equity: float | None = None) -> None:
+    if current_equity is None:
+        current_equity = float(_daily_guard_state.get("current_equity") or 0.0) or None
+    _refresh_daily_guard_from_equity(current_equity)
+    if _daily_guard_state.get("hard_stopped") and _daily_guard_reset_due():
+        _daily_guard_state.update({"hard_stopped": False, "reason": "", "triggered_at": ""})
+        _save_daily_guard_state()
+        _gate_state["daily_hard_stop"] = False
+        _gate_state["daily_hard_stop_reason"] = ""
+        _gate_state["daily_hard_stop_reset_at"] = ""
+        _save_gate_state()
+        _resume_new_entries("daily hard stop reset")
+        print("[KIBOT][GATE] daily hard stop reset", flush=True)
+    start_equity = float(_daily_guard_state.get("start_of_day_equity") or 0.0)
+    if not start_equity or not current_equity:
+        return
+    daily_pnl_pct = (float(current_equity) - start_equity) / start_equity
+    _daily_guard_state["current_equity"] = float(current_equity)
+    _daily_guard_state["daily_pnl_pct"] = daily_pnl_pct
+    _save_daily_guard_state()
+    if daily_pnl_pct <= -abs(_current_daily_loss_limit_pct()) and not bool(_daily_guard_state.get("hard_stopped")):
+        _trigger_daily_hard_stop(current_equity, daily_pnl_pct)
+
+
+def _bootstrap_daily_guard_from_kidax() -> None:
+    # Only bootstrap missing context; do not re-trigger hard stops from external labels.
+    if _daily_guard_state.get("start_of_day_equity") is not None and _daily_guard_state.get("current_equity") is not None:
+        return
+    try:
+        response = requests.get("http://127.0.0.1:8787/api/state", timeout=2)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return
+
+    daily_pnl_pct = None
+    for key in ("pnlTodayPct", "pnl_today_pct", "dailyPnlPct", "daily_pnl_pct"):
+        value = payload.get(key)
+        if isinstance(value, (int, float)):
+            daily_pnl_pct = float(value)
+            break
+    if daily_pnl_pct is None:
+        label = str(payload.get("pnlTodayPctLabel") or payload.get("dailyPnlPctLabel") or "")
+        match = re.search(r"(-?\d+(?:\.\d+)?)\s*%$", label)
+        if match:
+            try:
+                daily_pnl_pct = float(match.group(1))
+            except Exception:
+                daily_pnl_pct = None
+    # daily_pnl_pct is best-effort; never used to force a hard stop in bootstrap.
+
+    current_equity = None
+    for key in ("totalValueIdr", "portfolioValueIdr", "total_value_idr"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        cleaned_value = re.sub(r"[^\d.,-]", "", str(value)).replace(".", "").replace(",", ".")
+        try:
+            current_equity = float(cleaned_value)
+            current_equity = float(cleaned_value)
+            break
+        except Exception:
+            continue
+    
+    if current_equity is not None:
+        _refresh_daily_guard_from_equity(current_equity)
+        if daily_pnl_pct is not None and _daily_guard_state.get("daily_pnl_pct") is None:
+            _daily_guard_state["daily_pnl_pct"] = daily_pnl_pct
+            _daily_guard_state["current_equity"] = current_equity
+            _save_daily_guard_state()
+    if daily_pnl_pct is not None and _daily_guard_state.get("daily_pnl_pct") is None:
+        _daily_guard_state["daily_pnl_pct"] = daily_pnl_pct
+        _daily_guard_state["current_equity"] = current_equity
+def _health_gate_loop() -> None:
+    while not _shutdown_event.is_set():
+        try:
+            if _check_kinance_health():
+                _record_control_plane_success()
+            else:
+                _record_control_plane_failure("kinance_unhealthy")
+            _check_daily_loss_limit()
+            _ensure_hard_stop_consistency()
+            _maybe_auto_promote_trading_mode()
+        except Exception as error:
+            print(f"[KIBOT][HEALTH][ERROR] gate loop failed reason={error}", flush=True)
+        _shutdown_event.wait(API_HEALTH_CHECK_INTERVAL_SEC)
+
+
+def _build_performance_summary() -> Dict[str, Any]:
+    pair_stats: Dict[str, Any] = {}
+    for pair_id, memory in _pair_memory.items():
+        pair_stats[pair_id] = {
+            "win_rate_now": _get_pair_win_rate_now(pair_id),
+            "avg_slippage_pct": round(_get_pair_avg_slippage(pair_id, fallback=0.0), 4),
+            "on_cooldown": _is_pair_on_cooldown(pair_id),
+            "trade_count": int(memory.get("trade_count") or 0),
+            "fake_pump_count": int(memory.get("fake_pump_count") or 0),
+        }
+    return {
+        "period_hours": 6,
+        "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+        "hard_stop_active": bool(_daily_guard_state.get("hard_stopped")),
+        "api_fail_streak": _api_fail_streak,
+        "cp_healthy": _control_plane_healthy,
+        "mode": str(_gate_state.get("mode") or "CONSERVATIVE"),
+        "entry_state": str(_gate_state.get("entry_state") or "HEALTHY"),
+        "pair_stats": pair_stats,
+    }
+
+
+def _hours_until_midnight_wib() -> float:
+    now_utc = datetime.now(timezone.utc)
+    now_wib = now_utc + timedelta(hours=7)
+    midnight_wib = now_wib.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    return max((midnight_wib - now_wib).total_seconds() / 3600.0, 0.0)
+
+
+def _get_trade_metrics_today() -> Dict[str, Any]:
+    trades = list(_math_review_trade_journal)
+    total_trades = len(trades)
+    wins = sum(1 for row in trades if float(row.get("gross_pnl_pct") or 0.0) > 0)
+    losses = total_trades - wins
+    total_gross_pnl = sum(float(row.get("gross_pnl_pct") or 0.0) for row in trades)
+    total_wins = sum(float(row.get("gross_pnl_pct") or 0.0) for row in trades if float(row.get("gross_pnl_pct") or 0.0) > 0)
+    total_losses = sum(abs(float(row.get("gross_pnl_pct") or 0.0)) for row in trades if float(row.get("gross_pnl_pct") or 0.0) <= 0)
+    win_rate = wins / max(total_trades, 1)
+    avg_win = total_wins / max(wins, 1)
+    avg_loss = total_losses / max(losses, 1)
+    ev_per_trade = (win_rate * avg_win) - ((1.0 - win_rate) * avg_loss)
+    profit_factor = total_wins / max(total_losses, 1e-9)
+    return {
+        "total_trades": total_trades,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": win_rate,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "ev_per_trade": ev_per_trade,
+        "profit_factor": profit_factor,
+        "total_gross_pnl": total_gross_pnl,
+    }
+
+
+def _run_math_review() -> Dict[str, Any]:
+    metrics = _get_trade_metrics_today()
+    equity = _get_total_equity_estimate() or 0.0
+    pnl_pct = float(_daily_guard_state.get("daily_pnl_pct") or 0.0)
+    current_loss_idr = abs(min(pnl_pct, 0.0) * equity)
+    hours_left = _hours_until_midnight_wib()
+    avg_trades_per_hour = metrics["total_trades"] / max((time.time() - _bot_start_time) / 3600.0, 0.5)
+    trades_possible = avg_trades_per_hour * hours_left
+    ev_per_trade = float(metrics["ev_per_trade"])
+    if ev_per_trade > 0 and current_loss_idr > 0:
+        trades_to_recover = current_loss_idr / ev_per_trade
+    elif ev_per_trade <= 0:
+        trades_to_recover = float("inf")
+    else:
+        trades_to_recover = 0.0
+
+    if ev_per_trade <= 0 and metrics["total_trades"] >= 3:
+        action = "TIGHTEN_FILTER"
+        reason = f"EV/trade <= 0 after {metrics['total_trades']} trades"
+        _set_conservative_mode("math_review_ev_negative")
+    elif trades_to_recover > trades_possible * 1.5:
+        action = "HARD_STOP"
+        reason = f"Recovery too far: need {trades_to_recover:.1f}, possible {trades_possible:.1f}"
+        _set_conservative_mode("math_review_recovery_impossible")
+    elif trades_to_recover > trades_possible:
+        action = "DEFENSIVE"
+        reason = f"Recovery tight: need {trades_to_recover:.1f}, possible {trades_possible:.1f}"
+    elif metrics["win_rate"] >= 0.60 and ev_per_trade > 0:
+        action = "CONTINUE_OPTIMAL"
+        reason = f"WR={metrics['win_rate']:.0%}, EV/trade=Rp{ev_per_trade:,.0f}"
+        if not bool(_daily_guard_state.get("hard_stopped")) and _api_fail_streak == 0 and _control_plane_healthy:
+            _set_normal_mode("math_review_optimal")
+    else:
+        action = "CONTINUE"
+        reason = f"WR={metrics['win_rate']:.0%}, EV/trade=Rp{ev_per_trade:,.0f}"
+
+    report = (
+        f"📊 30min Math Review\n"
+        f"PnL: {pnl_pct:+.2%} | Trades: {metrics['total_trades']} ({metrics['wins']}W/{metrics['losses']}L)\n"
+        f"WR: {metrics['win_rate']:.0%} | PF: {metrics['profit_factor']:.2f} | EV/trade: Rp{ev_per_trade:+,.0f}\n"
+        f"Hours left: {hours_left:.1f} | Trades possible: {trades_possible:.1f}\n"
+        f"Action: {action}\n"
+        f"Reason: {reason}"
+    )
+    _telegram_send(report)
+    _append_runtime_event(
+        "math_review",
+        {
+            "action": action,
+            "reason": reason,
+            "metrics": metrics,
+            "hours_left": round(hours_left, 2),
+            "trades_possible": round(trades_possible, 2),
+        },
+    )
+    print(f"[KIBOT][MATH_REVIEW] action={action} reason={reason}", flush=True)
+    return {"action": action, "reason": reason, "metrics": metrics}
+
+
+def _math_review_loop() -> None:
+    global _last_math_review_at, _math_review_last_action, _math_review_last_reason
+    while not _shutdown_event.is_set():
+        try:
+            now = time.time()
+            if (now - _last_math_review_at) >= 1800.0:
+                _last_math_review_at = now
+                result = _run_math_review()
+                _math_review_last_action = str(result.get("action") or "UNKNOWN")
+                _math_review_last_reason = str(result.get("reason") or "")
+        except Exception as error:
+            print(f"[KIBOT][MATH_REVIEW][ERROR] {error}", flush=True)
+        _shutdown_event.wait(60.0)
+
+
+def _apply_ai_recommendation(recommendation: Dict[str, Any]) -> None:
+    if not isinstance(recommendation, dict):
+        return
+    for pair in recommendation.get("pairs_to_cooldown", []):
+        if isinstance(pair, str) and pair.strip():
+            _cooldown_pair(pair, reason="ai_batch_review", minutes=60)
+    mode = str(recommendation.get("mode_recommendation") or "no_change")
+    if mode == "CONSERVATIVE":
+        _set_conservative_mode("ai_batch_review")
+    elif mode == "NORMAL" and not bool(_daily_guard_state.get("hard_stopped")) and _api_fail_streak == 0 and _control_plane_healthy:
+        _set_normal_mode("ai_batch_review")
+    _append_runtime_event("ai_batch_review", recommendation)
+
+
+def _run_ai_batch_review() -> None:
+    summary = _build_performance_summary()
+    prompt = (
+        "Kamu adalah risk analyst untuk autonomous crypto trading bot.\n"
+        "Filosofi: survival first, compounding gradual.\n\n"
+        f"Data performa 6 jam terakhir:\n{json.dumps(summary, ensure_ascii=False, indent=2)}\n\n"
+        "Berikan rekomendasi JSON dengan keys: "
+        "\"pairs_to_cooldown\", \"mode_recommendation\", \"reasoning\"."
+    )
+    try:
+        text, provider = _call_ai_router(
+            task="batch_review",
+            system_prompt="Jawab JSON singkat saja.",
+            user_prompt=prompt,
+            model_hint=POST_MORTEM_MODEL,
+            timeout_sec=min(POST_MORTEM_TIMEOUT_SEC, 20.0),
+        )
+        if not text:
+            return
+        parsed = _parse_json_candidate(text)
+        if isinstance(parsed, dict) and parsed:
+            _apply_ai_recommendation(parsed)
+            print(f"[KIBOT][AI_REVIEW] provider={provider} applied={json.dumps(parsed, ensure_ascii=False)[:240]}", flush=True)
+    except Exception as error:
+        print(f"[KIBOT][AI_REVIEW][WARN] failed reason={error}", flush=True)
+
+
+def _ai_batch_review_loop() -> None:
+    while not _shutdown_event.is_set():
+        try:
+            _run_ai_batch_review()
+        except Exception as error:
+            print(f"[KIBOT][AI_REVIEW][ERROR] {error}", flush=True)
+        _shutdown_event.wait(AI_BATCH_REVIEW_INTERVAL_SEC)
+
+
+def _cooldown_pair(pair: str, *, reason: str, minutes: int, metadata: Dict[str, Any] | None = None) -> None:
+    pair_key = pair.lower().strip()
+    if not pair_key:
+        return
+    now_ts = time.time()
+    until_ts = now_ts + max(60, minutes * 60)
+    _pair_cooldown_state[pair_key] = {
+        "until_epoch": until_ts,
+        "reason": reason,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "metadata": metadata or {},
+    }
+    _save_pair_cooldown_state()
+    _append_runtime_event(
+        "pair_cooldown_set",
+        {"pair": pair_key, "reason": reason, "minutes": minutes},
+    )
+
+
+def _pair_cooldown_active(pair: str) -> Tuple[bool, str]:
+    pair_key = pair.lower().strip()
+    if not pair_key:
+        return False, ""
+    state = _pair_cooldown_state.get(pair_key, {})
+    until_ts = float(state.get("until_epoch") or 0.0)
+    now_ts = time.time()
+    if until_ts <= now_ts:
+        if pair_key in _pair_cooldown_state:
+            del _pair_cooldown_state[pair_key]
+            _save_pair_cooldown_state()
+        return False, ""
+    return True, str(state.get("reason") or "cooldown_active")
+
+
+def _load_daily_summary() -> Dict[str, Any]:
+    today = datetime.now(timezone.utc).date().isoformat()
+    data = _load_json_file(
+        DAILY_SUMMARY_PATH,
+        {
+            "date": today,
+            "ai_success": {},
+            "ai_failure": {},
+            "veto_metrics": {},
+            "loss_blacklist_pairs": [],
+            "recent_notes": [],
+        },
+    )
+    if data.get("date") != today:
+        data = {
+            "date": today,
+            "ai_success": {},
+            "ai_failure": {},
+            "veto_metrics": {},
+            "loss_blacklist_pairs": [],
+            "recent_notes": [],
+        }
+    return data
+
+
+def _update_daily_summary(kind: str, detail: Dict[str, Any]) -> None:
+    if not DAILY_SUMMARY_ENABLED:
+        return
+    summary = _load_daily_summary()
+    if kind == "ai_success":
+        provider = str(detail.get("provider") or "")
+        if provider:
+            summary["ai_success"][provider] = int(summary["ai_success"].get(provider) or 0) + 1
+    elif kind == "ai_failure":
+        provider = str(detail.get("provider") or "")
+        if provider:
+            summary["ai_failure"][provider] = int(summary["ai_failure"].get(provider) or 0) + 1
+    elif kind == "veto_metric":
+        name = str(detail.get("name") or "")
+        if name:
+            summary["veto_metrics"][name] = int(summary["veto_metrics"].get(name) or 0) + 1
+    elif kind == "loss_blacklist":
+        pair = str(detail.get("pair") or "")
+        if pair and pair not in summary["loss_blacklist_pairs"]:
+            summary["loss_blacklist_pairs"].append(pair)
+    note_line = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "kind": kind,
+        "detail": detail,
+    }
+    recent_notes = list(summary.get("recent_notes") or [])
+    recent_notes.append(note_line)
+    summary["recent_notes"] = recent_notes[-25:]
+    _write_json_file(DAILY_SUMMARY_PATH, summary)
+
+
+def _append_runtime_event(kind: str, detail: Dict[str, Any]) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    _recent_runtime_events.append(
+        {
+            "at": now_iso,
+            "kind": kind,
+            "detail": detail,
+        }
+    )
+    if len(_recent_runtime_events) > 40:
+        del _recent_runtime_events[:-40]
+
+
+def _heartbeat_loop() -> None:
+    interval = max(0.05, MANAGER_HEARTBEAT_INTERVAL_SEC)
+    while not _shutdown_event.is_set():
+        try:
+            _emit_trinity_heartbeat()
+            _append_runtime_event("trinity_heartbeat_emit", {"sender": "kibot"})
+        except Exception as error:
+            print(f"[KIBOT][HEARTBEAT][WARN] emit failed reason={error}", flush=True)
+        if _shutdown_event.wait(timeout=interval):
+            break
+
+
+def _write_runtime_note(*, force: bool = False) -> None:
+    global _last_runtime_note_write_at
+    now_ts = time.time()
+    if not force and (now_ts - _last_runtime_note_write_at) < max(5, RUNTIME_NOTE_MIN_INTERVAL_SEC):
+        return
+    _last_runtime_note_write_at = now_ts
+    note = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "service": "kibot_manager",
+        "host_bind": f"{UDP_BIND_HOST}:{UDP_BIND_PORT}",
+        "kidax_target": f"{KIDAX_UDP_HOST}:{KIDAX_UDP_PORT}" if KIDAX_UDP_HOST else "",
+        "kinance_target": f"{KINANCE_UDP_HOST}:{KINANCE_UDP_PORT}" if KINANCE_UDP_HOST else "",
+        "system_state": str(_gate_state.get("entry_state") or "HEALTHY"),
+        "trading_mode": str(_gate_state.get("mode") or "CONSERVATIVE"),
+        "api_fail_streak": _api_fail_streak,
+        "control_plane_healthy": _control_plane_healthy,
+        "daily_hard_stop": bool(_daily_guard_state.get("hard_stopped") or _gate_state.get("daily_hard_stop")),
+        "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+        "daily_hard_stop_reset_at": _gate_state.get("daily_hard_stop_reset_at") or _daily_guard_state.get("reset_at"),
+        "ai_router_enabled": AI_ROUTER_ENABLED,
+        "ai_provider_order": _iter_ai_provider_order(),
+        "ai_provider_last_status": dict(_ai_provider_last_status),
+        "provider_runtime_state": _provider_runtime_state,
+        "tracked_active_positions": sorted(_active_positions_cache.keys()),
+        "pair_memory_preview": {
+            pair_id: {
+                "trade_count": int(memory.get("trade_count") or 0),
+                "win_rate_now": round(_get_pair_win_rate_now(pair_id), 3),
+                "avg_slippage_pct": round(_get_pair_avg_slippage(pair_id, fallback=0.0), 4),
+                "cooldown": _is_pair_on_cooldown(pair_id),
+                "fake_pump_count": int(memory.get("fake_pump_count") or 0),
+            }
+            for pair_id, memory in list(_pair_memory.items())[:10]
+        },
+        "pair_cooldowns": _pair_cooldown_state,
+        "veto_metrics": _veto_metrics,
+        "sector_count": len(_last_sector_map),
+        "sector_preview": {key: value[:5] for key, value in list(_last_sector_map.items())[:5]},
+        "recent_events": list(_recent_runtime_events[-15:]),
+    }
+    try:
+        _write_json_file(RUNTIME_NOTE_PATH, note)
+    except Exception as error:
+        print(f"[KIBOT][NOTE][WARN] write failed reason={error}", flush=True)
+
+
+def _classify_provider_failure(message: str) -> Tuple[int, str]:
+    raw = (message or "").lower()
+    if any(token in raw for token in ["429", "rate", "quota", "too many requests"]):
+        return AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC, "rate_limited"
+    if any(token in raw for token in ["timeout", "temporarily", "connection", "network", "bad gateway"]):
+        return AI_PROVIDER_NETWORK_COOLDOWN_SEC, "transient_network"
+    if "empty_response" in raw:
+        return AI_PROVIDER_EMPTY_COOLDOWN_SEC, "empty_response"
+    return AI_PROVIDER_DEFAULT_COOLDOWN_SEC, "generic_failure"
+
+
+def _provider_rank(provider: str) -> Tuple[int, float]:
+    state = _provider_runtime_state.get(provider, {})
+    success = int(state.get("success_count") or 0)
+    failure = int(state.get("failure_count") or 0)
+    last_success = float(state.get("last_success_epoch") or 0.0)
+    return (success - (failure * 2), last_success)
+
+
+def _iter_ai_provider_order() -> List[str]:
+    configured = [provider for provider in AI_PROVIDER_ORDER if provider]
+    return sorted(
+        configured,
+        key=lambda provider: (
+            -_provider_rank(provider)[0],
+            -_provider_rank(provider)[1],
+            configured.index(provider),
+        ),
+    )
+
+
+def _provider_is_available(provider: str, now_ts: float) -> Tuple[bool, str]:
+    state = _provider_runtime_state.get(provider, {})
+    cooldown_until = float(state.get("cooldown_until_epoch") or 0.0)
+    if cooldown_until > now_ts:
+        return False, str(state.get("reason") or "cooldown_active")
+    return True, ""
+
+
+def _remember_provider_success(provider: str, task: str) -> None:
+    now_ts = time.time()
+    state = dict(_provider_runtime_state.get(provider, {}))
+    state.update(
+        {
+            "task": task,
+            "last_success_epoch": now_ts,
+            "cooldown_until_epoch": 0,
+            "reason": "",
+            "success_count": int(state.get("success_count") or 0) + 1,
+        }
+    )
+    _provider_runtime_state[provider] = state
+    _write_json_file(PROVIDER_STATE_PATH, _provider_runtime_state)
+    _update_daily_summary("ai_success", {"provider": provider, "task": task})
+
+
+def _remember_provider_failure(provider: str, task: str, error_message: str) -> str:
+    now_ts = time.time()
+    cooldown_sec, reason = _classify_provider_failure(error_message)
+    state = dict(_provider_runtime_state.get(provider, {}))
+    state.update(
+        {
+            "task": task,
+            "last_failure_epoch": now_ts,
+            "cooldown_until_epoch": now_ts + max(30, cooldown_sec),
+            "reason": reason,
+            "last_error": error_message[:320],
+            "failure_count": int(state.get("failure_count") or 0) + 1,
+        }
+    )
+    _provider_runtime_state[provider] = state
+    _write_json_file(PROVIDER_STATE_PATH, _provider_runtime_state)
+    _update_daily_summary("ai_failure", {"provider": provider, "task": task, "reason": reason})
+    return reason
+
+
+def _parse_json_candidate(text: str) -> Any:
+    raw = (text or "").strip()
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    fenced = re.search(r"\{[\s\S]*\}", raw)
+    if fenced:
+        try:
+            return json.loads(fenced.group(0))
+        except Exception:
+            return {}
+    return {}
+
+
+def _extract_assistant_text(payload: Any) -> str:
+    if isinstance(payload, str):
+        return payload.strip()
+    if not isinstance(payload, dict):
+        return ""
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        msg = first.get("message") if isinstance(first.get("message"), dict) else {}
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            texts: List[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        texts.append(text.strip())
+            if texts:
+                return "\n".join(texts).strip()
+    message = payload.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, list) and content:
+            first = content[0] if isinstance(content[0], dict) else {}
+            text = first.get("text")
+            if isinstance(text, str):
+                return text.strip()
+        if isinstance(content, str):
+            return content.strip()
+    candidates = payload.get("candidates")
+    if isinstance(candidates, list) and candidates:
+        first = candidates[0] if isinstance(candidates[0], dict) else {}
+        content = first.get("content") if isinstance(first.get("content"), dict) else {}
+        parts = content.get("parts")
+        if isinstance(parts, list) and parts:
+            first_part = parts[0] if isinstance(parts[0], dict) else {}
+            text = first_part.get("text")
+            if isinstance(text, str):
+                return text.strip()
+    return ""
+
+
+def _provider_has_credentials(provider: str) -> bool:
+    p = provider.lower().strip()
+    if p == "groq":
+        return bool(GROQ_API_KEY)
+    if p == "gemini":
+        return bool(GEMINI_API_KEY)
+    if p == "openrouter":
+        return bool(OPENROUTER_API_KEY)
+    if p == "cohere":
+        return bool(COHERE_API_KEY)
+    if p == "blackbox":
+        return bool(BLACKBOX_API_KEY)
+    return False
+
+
+def _call_openai_compatible(
+    *,
+    provider: str,
+    api_url: str,
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    timeout_sec: float,
+) -> str:
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.1,
+    }
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_sec)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        raise RuntimeError(f"{provider} network error: {type(e).__name__}")
+    if response.status_code >= 300:
+        raise RuntimeError(f"{provider} status={response.status_code} body={response.text[:240]}")
+    return _extract_assistant_text(response.json() or {})
+
+
+def _call_gemini(
+    *,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    timeout_sec: float,
+) -> str:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("gemini missing key")
+    base = GEMINI_API_URL.rstrip("/")
+    # Use API key in header instead of URL to avoid leaking in logs
+    url = f"{base}/models/{model}:generateContent"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
+    }
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": f"System:\n{system_prompt}\n\nUser:\n{user_prompt}"},
+                ],
+            },
+        ],
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 700,
+            "responseMimeType": "text/plain",
+        },
+    }
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        raise RuntimeError(f"gemini network error: {type(e).__name__}")
+    if response.status_code >= 300:
+        raise RuntimeError(f"gemini status={response.status_code} body={response.text[:240]}")
+    return _extract_assistant_text(response.json() or {})
+
+
+def _call_cohere(
+    *,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    timeout_sec: float,
+) -> str:
+    if not COHERE_API_KEY:
+        raise RuntimeError("cohere missing key")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {COHERE_API_KEY}",
+    }
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.1,
+    }
+    try:
+        response = requests.post(COHERE_API_URL, headers=headers, json=payload, timeout=timeout_sec)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        raise RuntimeError(f"cohere network error: {type(e).__name__}")
+    if response.status_code >= 300:
+        raise RuntimeError(f"cohere status={response.status_code} body={response.text[:240]}")
+    return _extract_assistant_text(response.json() or {})
+
+
+def _call_provider(
+    provider: str,
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model_hint: str = "",
+    timeout_sec: float = AI_REQUEST_TIMEOUT_SEC,
+) -> str:
+    p = provider.lower().strip()
+    if p == "groq":
+        return _call_openai_compatible(
+            provider="groq",
+            api_url=GROQ_API_URL,
+            api_key=GROQ_API_KEY,
+            model=model_hint or GROQ_MODEL,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            timeout_sec=timeout_sec,
+        )
+    if p == "openrouter":
+        return _call_openai_compatible(
+            provider="openrouter",
+            api_url=OPENROUTER_API_URL,
+            api_key=OPENROUTER_API_KEY,
+            model=model_hint or OPENROUTER_MODEL,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            timeout_sec=timeout_sec,
+        )
+    if p == "blackbox":
+        return _call_openai_compatible(
+            provider="blackbox",
+            api_url=BLACKBOX_API_URL,
+            api_key=BLACKBOX_API_KEY,
+            model=model_hint or BLACKBOX_MODEL,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            timeout_sec=timeout_sec,
+        )
+    if p == "cohere":
+        return _call_cohere(
+            model=model_hint or COHERE_MODEL,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            timeout_sec=timeout_sec,
+        )
+    if p == "gemini":
+        return _call_gemini(
+            model=model_hint or GEMINI_MODEL,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            timeout_sec=timeout_sec,
+        )
+    raise RuntimeError(f"unsupported provider={provider}")
+
+
+def _call_ai_router(
+    *,
+    task: str,
+    system_prompt: str,
+    user_prompt: str,
+    model_hint: str = "",
+    timeout_sec: float = AI_REQUEST_TIMEOUT_SEC,
+) -> Tuple[str, str]:
+    if not AI_ROUTER_ENABLED:
+        return "", ""
+    provider_errors: Dict[str, str] = {}
+    now_ts = time.time()
+    for provider in _iter_ai_provider_order():
+        if not _provider_has_credentials(provider):
+            provider_errors[provider] = "missing_credentials"
+            continue
+        available, reason = _provider_is_available(provider, now_ts)
+        if not available:
+            provider_errors[provider] = f"cooldown:{reason}"
+            continue
+        try:
+            text = _call_provider(
+                provider,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model_hint=model_hint,
+                timeout_sec=timeout_sec,
+            ).strip()
+            if not text:
+                provider_errors[provider] = "empty_response"
+                continue
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            _ai_provider_last_status.update(
+                {
+                    "provider": provider,
+                    "task": task,
+                    "at_epoch_ms": now_ms,
+                    "ok": True,
+                },
+            )
+            _remember_provider_success(provider, task)
+            _append_runtime_event(
+                "ai_provider_success",
+                {"provider": provider, "task": task},
+            )
+            _broadcast_udp(
+                {
+                    "msgType": "AI_PROVIDER_STATUS",
+                    "senderBotId": "kibot",
+                    "task": task,
+                    "provider": provider,
+                    "ok": True,
+                    "sentAtEpochMs": now_ms,
+                },
+            )
+            _write_runtime_note(force=True)
+            return text, provider
+        except Exception as error:
+            error_text = str(error)
+            reason = _remember_provider_failure(provider, task, error_text)
+            provider_errors[provider] = f"{reason}:{error_text}"
+            _append_runtime_event(
+                "ai_provider_failure",
+                {"provider": provider, "task": task, "reason": reason},
+            )
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    _ai_provider_last_status.update(
+        {
+            "provider": "",
+            "task": task,
+            "at_epoch_ms": now_ms,
+            "ok": False,
+        },
+    )
+    _broadcast_udp(
+        {
+            "msgType": "AI_PROVIDER_STATUS",
+            "senderBotId": "kibot",
+            "task": task,
+            "provider": "",
+            "ok": False,
+            "errors": provider_errors,
+            "sentAtEpochMs": now_ms,
+        },
+    )
+    _append_runtime_event(
+        "ai_router_unavailable",
+        {"task": task, "errors": provider_errors},
+    )
+    _write_runtime_note(force=True)
+    return "", ""
+
+
+def _headers() -> Dict[str, str]:
+    return {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def _ensure_env() -> None:
+    missing = []
+    if not SUPABASE_URL:
+        missing.append("SUPABASE_URL")
+    if not SUPABASE_KEY:
+        missing.append("SUPABASE_SERVICE_ROLE_KEY/SUPABASE_ANON_KEY")
+    # KIDAX_UDP_HOST has a default. No need to crash if missing.
+    if missing:
+        raise RuntimeError(f"Missing env: {', '.join(missing)}")
+
+
+def _broadcast_udp(payload: Dict[str, Any]) -> None:
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    peers = []
+    if KINANCE_UDP_HOST:
+        peers.append((KINANCE_UDP_HOST, KINANCE_UDP_PORT))
+    if KIDAX_UDP_HOST:
+        peers.append((KIDAX_UDP_HOST, KIDAX_UDP_PORT))
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        for host, port in peers:
+            sock.sendto(data, (host, port))
+    finally:
+        sock.close()
+    print(
+        f"[KIBOT][UDP_BROADCAST] msgType={payload.get('msgType')} pair={payload.get('pairId')} trace={payload.get('traceId')}",
+        flush=True,
+    )
+
+
+def _emit_trinity_heartbeat() -> None:
+    sent_at = int(time.time() * 1000)
+    for sender_bot_id in ("kibot", "kidax", "kinance"):
+        payload = {
+            "kind": "trinity_state",
+            "msgType": "HEARTBEAT",
+            "senderBotId": sender_bot_id,
+            "sentAtEpochMs": sent_at,
+            "activePair": "",
+            "safeModeArmed": False,
+        }
+        _broadcast_udp(payload)
+
+
+def _coingecko_track_record_score(pair: str) -> float:
+    symbol = pair.split("_", 1)[0].lower()
+    try:
+        response = requests.get(
+            f"{COINGECKO_BASE}/search",
+            params={"query": symbol},
+            timeout=TIMEOUT,
+        )
+        if response.status_code != 200:
+            return 0.62
+        data = response.json() or {}
+        coins = data.get("coins") or []
+        base_score = 0.8 if coins else 0.58
+        adaptive_penalty = _get_adaptive_score_penalty(pair)
+        return max(0.0, base_score - adaptive_penalty)
+    except Exception as error:
+        print(f"[KIBOT][WARN] CoinGecko API error pair={pair} reason={error}", flush=True)
+        return 0.60
+
+
+def _get_adaptive_score_penalty(pair: str) -> float:
+    memory = _pair_memory.get(pair.lower().strip(), {})
+    trade_count = int(memory.get("trade_count") or 0)
+    if trade_count < 3:
+        return 0.0
+    win_rate = float(memory.get("win_rate_7d") or 0.5)
+    avg_pnl = float(memory.get("avg_pnl") or 0.0)
+    penalty = 0.0
+    if win_rate < 0.30:
+        penalty += 0.20
+    elif win_rate < 0.40:
+        penalty += 0.10
+    elif win_rate < 0.50:
+        penalty += 0.05
+    if avg_pnl < -0.008:
+        penalty += 0.10
+    if _learning_enabled and _learning_engine is not None:
+        penalty += float(_learning_engine.score_penalty(pair))
+    return min(penalty, 0.30)
+
+
+def _fetch_coingecko_trending() -> list[dict[str, Any]]:
+    try:
+        response = requests.get(
+            f"{COINGECKO_BASE}/search/trending",
+            timeout=TIMEOUT,
+        )
+        if response.status_code >= 300:
+            return []
+        body = response.json() or {}
+        items = body.get("coins") or []
+        out: list[dict[str, Any]] = []
+        for item in items[:12]:
+            coin = (item or {}).get("item") or {}
+            symbol = str(coin.get("symbol") or "").lower().strip()
+            if not symbol:
+                continue
+            out.append(
+                {
+                    "symbol": symbol,
+                    "name": str(coin.get("name") or symbol),
+                    "rank": int(coin.get("market_cap_rank") or 0),
+                    "score": int(item.get("score") or 0),
+                }
+            )
+        return out
+    except Exception as error:
+        print(f"[KIBOT][COINGECKO][ERROR] trending fetch failed reason={error}", flush=True)
+        return []
+
+
+def _refresh_coingecko_trending_cache() -> None:
+    global _coingecko_trending_cache
+    coins = _fetch_coingecko_trending()
+    if not coins:
+        return
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    _coingecko_trending_cache = {"coins": coins, "fetched_at_epoch_ms": now_ms}
+    preview = ",".join(c["symbol"] for c in coins[:5])
+    print(f"[KIBOT][COINGECKO][TRENDING] count={len(coins)} top={preview}", flush=True)
+
+
+def _get_coingecko_trending_cache() -> list[dict[str, Any]]:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    last_ms = int(_coingecko_trending_cache.get("fetched_at_epoch_ms") or 0)
+    if (now_ms - last_ms) > max(60_000, COINGECKO_TRENDING_INTERVAL_SEC * 1000):
+        _refresh_coingecko_trending_cache()
+    return list(_coingecko_trending_cache.get("coins") or [])
+
+
+def _estimate_exit_viability(expected_move_pct: float, slippage_pct: float) -> Dict[str, float]:
+    total_cost_pct = max(0.0, slippage_pct) + max(0.0, TAKER_FEE_PCT)
+    net_profit_pct = expected_move_pct - total_cost_pct
+    return {
+        "expected_move_pct": round(expected_move_pct, 4),
+        "slippage_pct": round(slippage_pct, 4),
+        "taker_fee_pct": round(TAKER_FEE_PCT, 4),
+        "total_cost_pct": round(total_cost_pct, 4),
+        "net_profit_pct": round(net_profit_pct, 4),
+    }
+
+
+def _effective_fee_pct() -> float:
+    return (
+        INDODAX_LIMIT_FILL_RATE * INDODAX_ALL_IN_MAKER_FEE_PCT
+        + (1.0 - INDODAX_LIMIT_FILL_RATE) * INDODAX_ALL_IN_TAKER_FEE_PCT
+    )
+
+
+def _get_total_equity_estimate() -> float | None:
+    current_equity = _daily_guard_state.get("current_equity")
+    if isinstance(current_equity, (int, float)) and float(current_equity) > 0:
+        return float(current_equity)
+    for payload_key in ("totalValueIdr", "portfolioValueIdr", "total_value_idr", "balanceIdr", "balance_idr"):
+        value = _daily_guard_state.get(payload_key)
+        if isinstance(value, (int, float)) and float(value) > 0:
+            return float(value)
+    try:
+        response = requests.get("http://127.0.0.1:8787/api/state", timeout=3)
+        response.raise_for_status()
+        data = response.json() or {}
+    except Exception:
+        return None
+    for field in ("totalEquityIdr", "total_equity_idr", "portfolioValueIdr", "portfolio_value_idr", "balanceIdr", "balance_idr", "totalValueIdr", "total_value_idr"):
+        value = data.get(field)
+        if isinstance(value, (int, float)) and float(value) > 0:
+            return float(value)
+        try:
+            cleaned = float(str(value).replace(",", "").strip())
+            if cleaned > 0:
+                return cleaned
+        except Exception:
+            continue
+    return None
+
+
+def _check_minimum_capital() -> bool:
+    equity = _get_total_equity_estimate()
+    if equity is None:
+        print("[KIBOT][CAPITAL][WARN] unable to read equity; allowing entry fail-open", flush=True)
+        return True
+    if equity < MINIMUM_VIABLE_CAPITAL_IDR:
+        print(
+            f"[KIBOT][CAPITAL] equity Rp{equity:,.0f} < minimum Rp{MINIMUM_VIABLE_CAPITAL_IDR:,.0f}; entry suspended",
+            flush=True,
+        )
+        return False
+    return True
+
+
+def _capital_is_sufficient() -> bool:
+    equity = _get_total_equity_estimate()
+    return equity is not None and equity >= MINIMUM_VIABLE_CAPITAL_IDR
+
+
+def _maybe_auto_promote_trading_mode() -> None:
+    global _capital_sufficient_since_at
+    if bool(_daily_guard_state.get("hard_stopped")):
+        _capital_sufficient_since_at = 0.0
+        _set_conservative_mode("hard stop active")
+        return
+    if not _control_plane_healthy or _api_fail_streak > 0:
+        _capital_sufficient_since_at = 0.0
+        _set_conservative_mode("control plane unhealthy")
+        return
+    if not _capital_is_sufficient():
+        _capital_sufficient_since_at = 0.0
+        _set_conservative_mode("capital insufficient")
+        return
+    if _capital_sufficient_since_at <= 0.0:
+        _capital_sufficient_since_at = time.time()
+    if (time.time() - _capital_sufficient_since_at) < _normal_mode_promotion_grace_sec:
+        _set_conservative_mode("capital sufficient grace period")
+        return
+    if _is_survival_mode():
+        _set_conservative_mode("survival mode active")
+        return
+    _set_normal_mode("capital sufficient and healthy")
+
+
+def _is_survival_mode() -> bool:
+    if not SURVIVAL_MODE:
+        return False
+    equity = _get_total_equity_estimate()
+    if equity is None:
+        return True
+    return equity < SURVIVAL_MODE_EQUITY_THRESHOLD_IDR
+
+
+def _apply_survival_filters(pair_id: str, budget_idr: float, spread_pct: float = 0.0, slippage_pct: float = 0.0) -> tuple[bool, str]:
+    if not _is_survival_mode():
+        return True, "normal_mode"
+    pair_key = str(pair_id or "").lower().strip()
+    pair_cfg = _get_pair_config(pair_key)
+    allowed_tiers = set(_capital_bucket_tiers())
+    if pair_key not in SURVIVAL_ALLOWED_PAIRS and pair_cfg.get("tier") not in allowed_tiers:
+        return False, f"survival_mode: {pair_key} not allowed"
+    max_size_idr = float(pair_cfg.get("max_size_idr") or MAXIMUM_POSITION_SIZE_IDR)
+    max_size_idr *= _capital_risk_multiplier()
+    min_target_profit_pct = float(pair_cfg.get("min_target_profit_pct") or SURVIVAL_TARGET_PROFIT_PCT)
+    max_spread_pct = float(pair_cfg.get("max_spread_pct") or SURVIVAL_MAX_SPREAD_PCT)
+    max_slippage_pct = float(pair_cfg.get("max_slippage_pct") or SURVIVAL_MAX_SLIPPAGE_PCT)
+    if budget_idr < MINIMUM_POSITION_SIZE_IDR:
+        return False, f"survival_mode: budget {budget_idr:.0f} below min position {MINIMUM_POSITION_SIZE_IDR:.0f}"
+    if budget_idr > min(MAXIMUM_POSITION_SIZE_IDR, max_size_idr):
+        return False, f"survival_mode: budget {budget_idr:.0f} above max position {min(MAXIMUM_POSITION_SIZE_IDR, max_size_idr):.0f}"
+    if spread_pct > max_spread_pct:
+        return False, f"survival_mode: spread {spread_pct:.3%} too wide"
+    if slippage_pct > max_slippage_pct:
+        return False, f"survival_mode: slippage {slippage_pct:.3%} too high"
+    if min_target_profit_pct <= 0:
+        return False, f"survival_mode: invalid target profit config for {pair_key}"
+    return True, "ok"
+
+
+def _simulate_what_if(
+    *,
+    pair_id: str,
+    entry_price: float,
+    budget_idr: float,
+    spread_pct: float,
+    slippage_pct: float,
+    trailing_stop_pct: float = 0.05,
+    target_profit_pct: float = 0.018,
+) -> Dict[str, Any]:
+    historical_slippage = _get_pair_avg_slippage(pair_id, fallback=slippage_pct)
+    historical_win_rate = _get_pair_win_rate_now(pair_id)
+    effective_slippage = max(float(slippage_pct), float(historical_slippage))
+    eff_fee_pct = _effective_fee_pct()
+    round_trip_cost_pct = (max(0.0, spread_pct) / 2.0) + effective_slippage + (eff_fee_pct * 2.0)
+    breakeven_move_pct = round_trip_cost_pct
+    expected_net_pct = target_profit_pct - round_trip_cost_pct
+    max_loss_pct = trailing_stop_pct + round_trip_cost_pct
+    max_loss_idr = budget_idr * max_loss_pct
+    reward_idr = budget_idr * expected_net_pct
+    risk_reward_ratio = (reward_idr / max_loss_idr) if max_loss_idr > 0 else 0.0
+    expected_value = (historical_win_rate * reward_idr) - ((1.0 - historical_win_rate) * max_loss_idr)
+    if expected_net_pct <= 0:
+        recommendation = "SKIP"
+    elif risk_reward_ratio < 1.0:
+        recommendation = "SKIP"
+    elif expected_value <= 0:
+        recommendation = "SKIP"
+    elif risk_reward_ratio < 1.5 or historical_win_rate < 0.45:
+        recommendation = "REDUCE_SIZE"
+    else:
+        recommendation = "ENTER"
+    return {
+        "pair_id": pair_id,
+        "entry_price": entry_price,
+        "budget_idr": budget_idr,
+        "expected_net_pct": round(expected_net_pct, 4),
+        "breakeven_move_pct": round(breakeven_move_pct, 4),
+        "fee_round_trip_pct": round(eff_fee_pct * 2.0, 4),
+        "max_loss_idr": round(max_loss_idr, 0),
+        "win_probability": round(historical_win_rate, 3),
+        "risk_reward_ratio": round(risk_reward_ratio, 2),
+        "recommendation": recommendation,
+        "historical_slippage_pct": round(historical_slippage, 4),
+        "effective_slippage_pct": round(effective_slippage, 4),
+    }
+
+
+def _should_use_market_order(msg: Dict[str, Any], pair_id: str) -> bool:
+    signal_age_ms = float(msg.get("signalAgeMs") or msg.get("signal_age_ms") or 999.0)
+    price_change_1m_pct = float(msg.get("priceChange1mPct") or msg.get("price_change_1m_pct") or 0.0)
+    volume_spike = bool(msg.get("volumeSpike") or msg.get("volume_spike") or False)
+    confidence = float(msg.get("confidence") or 0.0)
+    breakout_urgent = bool(msg.get("breakout_urgent") or msg.get("breakoutUrgent") or False)
+    if breakout_urgent:
+        return True
+    is_breakout = signal_age_ms < 150 and abs(price_change_1m_pct) > 0.5 and volume_spike and confidence >= 0.75
+    if not is_breakout:
+        return False
+    what_if = _simulate_what_if(
+        pair_id=pair_id,
+        entry_price=float(msg.get("entryPrice") or msg.get("entry_price") or msg.get("price") or 0.0),
+        budget_idr=float(msg.get("budgetIdr") or msg.get("budget_idr") or msg.get("quoteBudgetIdr") or MINIMUM_POSITION_SIZE_IDR),
+        spread_pct=float(msg.get("spreadPct") or msg.get("spread_pct") or 0.0),
+        slippage_pct=float(msg.get("slippagePct") or msg.get("slippage_pct") or 0.0),
+        trailing_stop_pct=float(msg.get("trailingStopPct") or 0.05),
+        target_profit_pct=float(msg.get("targetProfitPct") or msg.get("target_profit_pct") or _target_profit_pct_for_pair(pair_id)),
+    )
+    return what_if["recommendation"] != "SKIP"
+
+
+@dataclass
+class PumpAnalysis:
+    pair_id: str
+    legitimacy_score: float
+    pump_phase: str
+    entry_recommendation: str
+    exit_target_pct: float
+    stop_loss_pct: float
+    risk_reward: float
+    reasoning: str
+
+
+def analyze_pump_legitimacy(
+    *,
+    pair_id: str,
+    price_now: float,
+    price_24h_ago: float,
+    price_1h_ago: float,
+    price_15m_ago: float,
+    volume_24h_idr: float,
+    volume_1h_idr: float,
+    high_24h: float,
+    low_24h: float,
+    bollinger_upper: float,
+    bollinger_middle: float,
+    bollinger_lower: float,
+    has_binance_pair: bool,
+    binance_price_change_pct: float = 0.0,
+) -> PumpAnalysis:
+    score = 0.0
+    reasons: list[str] = []
+    avg_hourly_volume = max(volume_24h_idr / 24.0, 1.0)
+    volume_ratio_1h = volume_1h_idr / avg_hourly_volume
+    if volume_ratio_1h > 3.0:
+        score += 25
+        reasons.append(f"volume 1h {volume_ratio_1h:.1f}x avg")
+    elif volume_ratio_1h > 2.0:
+        score += 18
+        reasons.append(f"volume 1h {volume_ratio_1h:.1f}x avg")
+    elif volume_ratio_1h > 1.5:
+        score += 10
+        reasons.append(f"volume 1h {volume_ratio_1h:.1f}x avg")
+    else:
+        reasons.append(f"volume weak {volume_ratio_1h:.1f}x")
+
+    if volume_24h_idr < 100_000_000:
+        score -= 20
+        reasons.append("illiquid")
+    elif volume_24h_idr > 1_000_000_000:
+        score += 10
+        reasons.append("liquid")
+
+    range_span = max(high_24h - low_24h, 0.000001)
+    position_in_range = (price_now - low_24h) / range_span
+    if position_in_range < 0.4:
+        phase = "EARLY"
+        score += 25
+    elif position_in_range < 0.65:
+        phase = "MID"
+        score += 18
+    elif position_in_range < 0.85:
+        phase = "LATE"
+        score += 8
+    elif position_in_range < 0.95:
+        phase = "PEAK"
+        score -= 5
+    else:
+        phase = "POST_PEAK"
+        score -= 20
+
+    bb_range = max(bollinger_upper - bollinger_lower, 0.000001)
+    bb_position = (price_now - bollinger_lower) / bb_range
+    if bb_position < 0.5:
+        score += 20
+    elif bb_position < 0.75:
+        score += 12
+    elif bb_position < 0.9:
+        score += 5
+    else:
+        score -= 15
+
+    momentum_15m = ((price_now - price_15m_ago) / max(price_15m_ago, 0.000001)) * 100.0
+    momentum_1h = ((price_now - price_1h_ago) / max(price_1h_ago, 0.000001)) * 100.0
+    if momentum_15m > 1.0 and momentum_1h > 3.0:
+        score += 15
+    elif momentum_15m > 0.5:
+        score += 8
+    elif momentum_15m < 0:
+        score -= 10
+
+    if has_binance_pair:
+        if binance_price_change_pct > 3.0:
+            score += 15
+        elif binance_price_change_pct > 1.0:
+            score += 8
+    else:
+        score -= 5
+
+    score = max(0.0, min(100.0, score))
+    if phase == "EARLY":
+        exit_target, stop_loss = 0.08, 0.03
+    elif phase == "MID":
+        exit_target, stop_loss = 0.05, 0.025
+    elif phase == "LATE":
+        exit_target, stop_loss = 0.03, 0.02
+    else:
+        exit_target, stop_loss = 0.02, 0.015
+    rr = exit_target / max(stop_loss, 0.001)
+    if score >= 70 and rr >= 2.0:
+        rec = "ENTER_NOW"
+    elif score >= 55 and rr >= 1.5:
+        rec = "ENTER_NOW"
+    elif score >= 40 and phase in ("LATE", "PEAK"):
+        rec = "WAIT_PULLBACK"
+    elif score < 30 or phase == "POST_PEAK":
+        rec = "DANGER"
+    else:
+        rec = "SKIP"
+    return PumpAnalysis(
+        pair_id=pair_id,
+        legitimacy_score=round(score, 1),
+        pump_phase=phase,
+        entry_recommendation=rec,
+        exit_target_pct=exit_target,
+        stop_loss_pct=stop_loss,
+        risk_reward=round(rr, 2),
+        reasoning=" | ".join(reasons[:4]),
+    )
+
+
+def _estimate_bollinger(price_now: float, low_24h: float, high_24h: float) -> tuple[float, float, float]:
+    span = max(high_24h - low_24h, 0.000001)
+    middle = low_24h + span * 0.5
+    upper = low_24h + span * 0.85
+    lower = low_24h + span * 0.15
+    return upper, middle, lower
+
+
+def screen_all_pairs() -> list[dict[str, Any]]:
+    tickers = _load_indodax_ticker_snapshot()
+    candidates: list[dict[str, Any]] = []
+    for pair_id, row in tickers.items():
+        try:
+            vol_24h = float(row.get("vol_idr") or row.get("volume_idr") or 0.0)
+            if vol_24h < 200_000_000:
+                continue
+            price_now = float(row.get("last") or row.get("close") or 0.0)
+            if price_now <= 0.0:
+                continue
+            high_24h = float(row.get("high") or price_now)
+            low_24h = float(row.get("low") or price_now)
+            open_24h = float(row.get("open") or price_now)
+            price_15m_ago = float(row.get("last_15m") or row.get("price_15m") or open_24h)
+            price_1h_ago = float(row.get("last_1h") or row.get("price_1h") or open_24h)
+            price_24h_ago = float(row.get("open") or row.get("price_24h") or open_24h)
+            pump_pct_24h = ((price_now - price_24h_ago) / max(price_24h_ago, 0.000001)) * 100.0
+            if pump_pct_24h > 80.0:
+                continue
+            pump_pct_15m = ((price_now - price_15m_ago) / max(price_15m_ago, 0.000001)) * 100.0
+            if pump_pct_15m < 0.3:
+                continue
+            volume_1h = float(row.get("vol_1h_idr") or vol_24h / 24.0 * 1.5)
+            bb_upper, bb_middle, bb_lower = _estimate_bollinger(price_now, low_24h, high_24h)
+            has_binance = bool(row.get("binance_pair") or row.get("binance") or False)
+            binance_change = float(row.get("binance_price_change_pct") or 0.0)
+            analysis = analyze_pump_legitimacy(
+                pair_id=pair_id,
+                price_now=price_now,
+                price_24h_ago=price_24h_ago,
+                price_1h_ago=price_1h_ago,
+                price_15m_ago=price_15m_ago,
+                volume_24h_idr=vol_24h,
+                volume_1h_idr=volume_1h,
+                high_24h=high_24h,
+                low_24h=low_24h,
+                bollinger_upper=bb_upper,
+                bollinger_middle=bb_middle,
+                bollinger_lower=bb_lower,
+                has_binance_pair=has_binance,
+                binance_price_change_pct=binance_change,
+            )
+            if analysis.legitimacy_score < 55 or analysis.entry_recommendation in {"SKIP", "DANGER"} or analysis.risk_reward < 1.5:
+                continue
+            candidates.append(
+                {
+                    "pair_id": pair_id,
+                    "analysis": analysis,
+                    "price_now": price_now,
+                    "pump_pct_24h": pump_pct_24h,
+                    "volume_24h_idr": vol_24h,
+                    "composite_score": analysis.legitimacy_score * 0.6 + analysis.risk_reward * 10.0,
+                }
+            )
+        except Exception:
+            continue
+    candidates.sort(key=lambda item: item["composite_score"], reverse=True)
+    return candidates[:10]
+
+
+_screen_cache: list[dict[str, Any]] = []
+_last_screen_time = 0.0
+_last_pnl_check = 0.0
+
+
+def _pair_screen_loop() -> None:
+    global _screen_cache, _last_screen_time
+    while not _shutdown_event.is_set():
+        try:
+            now = time.time()
+            if (now - _last_screen_time) >= 900.0:
+                _last_screen_time = now
+                _screen_cache = screen_all_pairs()
+                if _screen_cache:
+                    top = _screen_cache[0]
+                    print(
+                        f"[KIBOT][SCREEN] top={top['pair_id']} score={top['analysis'].legitimacy_score:.1f} phase={top['analysis'].pump_phase}",
+                        flush=True,
+                    )
+                    _append_runtime_event(
+                        "pair_screen_update",
+                        {
+                            "top_pair": top["pair_id"],
+                            "score": top["analysis"].legitimacy_score,
+                            "phase": top["analysis"].pump_phase,
+                            "count": len(_screen_cache),
+                        },
+                    )
+                    _write_runtime_note()
+        except Exception as error:
+            print(f"[KIBOT][WARN] pair_screen_loop error: {error}", flush=True)
+        if _shutdown_event.wait(timeout=30.0):
+            break
+
+
+def _apply_dynamic_trailing(pump_phase: str, current_profit_pct: float) -> float:
+    if pump_phase == "EARLY":
+        return 0.02 if current_profit_pct >= 0.05 else 0.04
+    if pump_phase == "MID":
+        return 0.015 if current_profit_pct >= 0.03 else 0.03
+    if pump_phase == "LATE":
+        return 0.01 if current_profit_pct >= 0.015 else 0.02
+    return 0.01
+
+
+def _run_30min_math_review() -> Dict[str, Any]:
+    metrics = _get_trade_metrics_today()
+    equity = _get_total_equity_estimate() or 0.0
+    pnl_pct = float(_daily_guard_state.get("daily_pnl_pct") or 0.0)
+    hours_left = _hours_until_midnight_wib()
+    avg_trades_per_hour = metrics["total_trades"] / max((time.time() - _bot_start_time) / 3600.0, 0.5)
+    trades_possible = avg_trades_per_hour * hours_left
+    loss_idr = abs(min(pnl_pct, 0.0) * equity)
+    ev = float(metrics["ev_per_trade"])
+    if ev > 0 and loss_idr > 0:
+        trades_to_recover = loss_idr / ev
+    else:
+        trades_to_recover = float("inf") if ev <= 0 else 0.0
+    if ev <= 0 and metrics["total_trades"] >= 3:
+        action = "TIGHTEN_FILTER"
+    elif trades_to_recover > trades_possible * 1.5:
+        action = "PREPARE_STOP"
+    elif trades_to_recover > trades_possible:
+        action = "DEFENSIVE"
+    elif metrics["win_rate"] >= 0.60 and ev > 0:
+        action = "CONTINUE_OPTIMAL"
+    else:
+        action = "CONTINUE"
+    report = (
+        f"📊 30min Math Review\n"
+        f"PnL: {pnl_pct:+.2%} | Trades: {metrics['total_trades']} ({metrics['wins']}W/{metrics['losses']}L)\n"
+        f"WR: {metrics['win_rate']:.0%} | PF: {metrics['profit_factor']:.2f} | EV/trade: Rp{ev:+,.0f}\n"
+        f"Hours left: {hours_left:.1f} | Trades possible: {trades_possible:.1f}\n"
+        f"Action: {action}"
+    )
+    _telegram_send(report)
+    _append_runtime_event(
+        "math_review",
+        {
+            "action": action,
+            "metrics": metrics,
+            "hours_left": round(hours_left, 2),
+            "trades_possible": round(trades_possible, 2),
+        },
+    )
+    return {"action": action, "metrics": metrics}
+
+
+def _maybe_run_30min_math_review() -> None:
+    global _last_math_review_at
+    now = time.time()
+    if (now - _last_math_review_at) >= 1800.0:
+        _last_math_review_at = now
+        run_30min_math_review()
+
+
+def _current_daily_loss_limit_pct() -> float:
+    return 0.01 if _is_survival_mode() else abs(float(DAILY_LOSS_LIMIT_PCT))
+
+
+def _upsert_trade_history(entry: Dict[str, Any]) -> None:
+    headers = _headers()
+    headers["Prefer"] = "return=minimal"
+    primary_url = f"{SUPABASE_URL}/rest/v1/trade_history"
+    try:
+        response = requests.post(primary_url, headers=headers, json=entry, timeout=CONTROL_PLANE_TIMEOUT_SEC)
+        if response.status_code < 300:
+            _record_control_plane_success()
+            return
+        if response.status_code != 404:
+            response.raise_for_status()
+        _record_control_plane_success()
+    except Exception as error:
+        _record_control_plane_failure(f"trade_history_upsert:{error}")
+    # Fallback when table trade_history is absent on this project.
+    fallback_url = f"{SUPABASE_URL}/rest/v1/logs"
+    fallback_payload = {
+        "bot_id": "kibot",
+        "device_id": "kibot-manager",
+        "term": 0,
+        "level": "INFO",
+        "category": "BOOK_ENTRY",
+        "message": json.dumps(entry, ensure_ascii=False),
+        "metadata": {"source": "kibot_manager", "fallback_from": "trade_history"},
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        fallback_resp = requests.post(fallback_url, headers=headers, json=fallback_payload, timeout=CONTROL_PLANE_TIMEOUT_SEC)
+        fallback_resp.raise_for_status()
+        _record_control_plane_success()
+    except Exception as error:
+        _record_control_plane_failure(f"trade_history_fallback:{error}")
+        raise
+
+
+def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    gross = float(msg.get("gross_pnl_idr") or 0.0)
+    est_cost = float(msg.get("estimated_cost_idr") or 0.0)
+    net = gross - est_cost
+    pair_id = str(msg.get("pair") or msg.get("pairId") or "unknown").lower().strip()
+    pnl_pct = float(msg.get("pnl_pct") or msg.get("pnlPct") or 0.0)
+    slippage_pct = float(msg.get("slippage_pct") or 0.0)
+    spread_pct = float(msg.get("spread_pct") or 0.0)
+    actual_latency_ms = float(msg.get("latency_ms") or 0.0)
+    fake_pump = bool(msg.get("fake_pump") or False)
+    _update_pair_memory(
+        pair_id,
+        pnl_pct=pnl_pct,
+        slippage_pct=slippage_pct,
+        spread_pct=spread_pct,
+        actual_latency_ms=actual_latency_ms,
+        fake_pump=fake_pump,
+    )
+    if _learning_enabled and _learning_engine is not None:
+        used_limit_order = str(msg.get("order_type") or msg.get("orderType") or "limit").lower() == "limit"
+        if used_limit_order:
+            _metric_inc("limit_orders_today")
+        else:
+            _metric_inc("market_orders_today")
+            _metric_add("fee_bleed_est_idr", abs(net) * 0.0 + max(300.0, abs(gross) * 0.006))
+        _learning_engine.record_trade(pair_id, pnl_pct, used_limit_order=used_limit_order)
+    try:
+        _record_trade_result(pair_id, gross_pnl_pct=pnl_pct, entry_time=float(msg.get("entry_timestamp") or msg.get("timestamp") or time.time()))
+    except Exception as error:
+        print(f"[KIBOT][MATH_REVIEW][WARN] trade record failed pair={pair_id} reason={error}", flush=True)
+    print(
+        f"[KIBOT][LEARNING] pair_memory updated pair={pair_id} pnl_pct={pnl_pct:.4f} slippage_pct={slippage_pct:.4f}",
+        flush=True,
+    )
+    try:
+        _upsert_trade_history(
+            {
+                "pair_id": msg.get("pair") or msg.get("pairId") or "unknown",
+                "status": "BOOK_ENTRY",
+                "source_bot": "kibot",
+                "message": json.dumps(
+                    {
+                        "trace_id": msg.get("traceId"),
+                        "gross_pnl_idr": gross,
+                        "estimated_cost_idr": est_cost,
+                        "net_pnl_idr": net,
+                        "mode": "TRINITY_V3",
+                    },
+                    ensure_ascii=False,
+                ),
+                "created_at": now_iso,
+                "updated_at": now_iso,
+            }
+        )
+        print(
+            f"[KIBOT][LEDGER] BOOK_ENTRY pair={msg.get('pair')} net={net:.4f} trace={msg.get('traceId')}",
+            flush=True,
+        )
+        _append_runtime_event(
+            "book_entry",
+            {"pair": pair_id, "net_pnl_idr": round(net, 4), "trace_id": msg.get("traceId")},
+        )
+        _write_runtime_note()
+    except Exception as error:
+        print(
+            f"[KIBOT][LEDGER][WARN] upsert failed pair={msg.get('pair')} trace={msg.get('traceId')} reason={error}",
+            flush=True,
+        )
+    if POST_MORTEM_ENABLED and net < 0:
+        _update_pair_memory(
+            pair_id,
+            pnl_pct=pnl_pct,
+            slippage_pct=slippage_pct,
+            spread_pct=spread_pct,
+            fake_pump=True,
+        )
+        thread = threading.Thread(
+            target=evaluate_foolish_trade,
+            args=(
+                {
+                    "trace_id": msg.get("traceId"),
+                    "pair": pair_id,
+                    "gross_pnl_idr": gross,
+                    "estimated_cost_idr": est_cost,
+                    "net_pnl_idr": net,
+                    "pnl_pct": float(msg.get("pnl_pct") or msg.get("pnlPct") or 0.0),
+                    "slippage_pct": float(msg.get("slippage_pct") or 0.0),
+                    "hold_seconds": float(msg.get("hold_seconds") or 0.0),
+                    "closed_at": now_iso,
+                },
+            ),
+            daemon=True,
+            name="kibot-postmortem",
+        )
+        thread.start()
+
+
+def evaluate_foolish_trade(trade_data: Dict[str, Any]) -> None:
+    system_prompt = "Anda evaluator pasca-trade. Jawab JSON singkat: {\"mistake\":\"...\",\"action\":\"...\",\"tighten\":{...}}"
+    user_prompt = json.dumps(trade_data, ensure_ascii=False)
+    routed_text, provider = _call_ai_router(
+        task="post_mortem",
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model_hint=POST_MORTEM_MODEL,
+        timeout_sec=POST_MORTEM_TIMEOUT_SEC,
+    )
+    if routed_text:
+        print(
+            f"[KIBOT][POST_MORTEM] provider={provider} trace={trade_data.get('trace_id')} result={routed_text[:320]}",
+            flush=True,
+        )
+        parsed = _parse_json_candidate(routed_text)
+        pair = str(trade_data.get("pair") or "").lower().strip()
+        net_pnl = float(trade_data.get("net_pnl_idr") or 0.0)
+        pnl_pct = float(trade_data.get("pnl_pct") or 0.0)
+        action_text = json.dumps(parsed, ensure_ascii=False).lower() if parsed else routed_text.lower()
+        if POST_MORTEM_BLACKLIST_ENABLED and pair and (
+            "blacklist" in action_text
+            or "freeze" in action_text
+            or net_pnl <= -abs(POST_MORTEM_BLACKLIST_NET_LOSS_IDR)
+            or pnl_pct <= POST_MORTEM_BLACKLIST_PNL_PCT
+        ):
+            _cooldown_pair(
+                pair,
+                reason="post_mortem_loss_blacklist",
+                minutes=POST_MORTEM_BLACKLIST_MINUTES,
+                metadata={"trace_id": trade_data.get("trace_id"), "provider": provider, "net_pnl_idr": net_pnl},
+            )
+            _update_daily_summary("loss_blacklist", {"pair": pair, "provider": provider})
+            _write_runtime_note(force=True)
+        return
+    if not POST_MORTEM_API_URL:
+        print("[KIBOT][POST_MORTEM] skipped (router+legacy unavailable).", flush=True)
+        return
+    payload = {
+        "model": POST_MORTEM_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.1,
+    }
+    headers = {"Content-Type": "application/json"}
+    if POST_MORTEM_API_KEY:
+        headers["Authorization"] = f"Bearer {POST_MORTEM_API_KEY}"
+    try:
+        response = requests.post(
+            POST_MORTEM_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=POST_MORTEM_TIMEOUT_SEC,
+        )
+        if response.status_code >= 300:
+            print(
+                f"[KIBOT][POST_MORTEM][WARN] status={response.status_code} body={response.text[:240]}",
+                flush=True,
+            )
+            return
+        result = response.json()
+        print(
+            f"[KIBOT][POST_MORTEM] evaluated trace={trade_data.get('trace_id')} result={json.dumps(result, ensure_ascii=False)[:320]}",
+            flush=True,
+        )
+    except Exception as error:
+        print(f"[KIBOT][POST_MORTEM][ERROR] trace={trade_data.get('trace_id')} reason={error}", flush=True)
+
+
+def force_evaluate_recent_loss() -> None:
+    if not POST_MORTEM_ENABLED:
+        return
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/trade_history"
+        headers = _headers()
+        params = {
+            "select": "message,created_at,pair_id",
+            "status": "eq.BOOK_ENTRY",
+            "order": "created_at.desc",
+            "limit": "20",
+        }
+        response = requests.get(url, headers=headers, params=params, timeout=TIMEOUT)
+        if response.status_code >= 300:
+            return
+        rows = response.json() or []
+        for row in rows:
+            message = row.get("message")
+            if not isinstance(message, str) or not message.strip():
+                continue
+            try:
+                payload = json.loads(message)
+            except Exception:
+                continue
+            net = float(payload.get("net_pnl_idr") or 0.0)
+            if net >= 0:
+                continue
+            evaluate_foolish_trade(
+                {
+                    "trace_id": payload.get("trace_id") or f"forced-{int(time.time())}",
+                    "pair": row.get("pair_id") or "unknown",
+                    "gross_pnl_idr": float(payload.get("gross_pnl_idr") or 0.0),
+                    "estimated_cost_idr": float(payload.get("estimated_cost_idr") or 0.0),
+                    "net_pnl_idr": net,
+                    "slippage_pct": float(payload.get("slippage_pct") or 0.0),
+                    "hold_seconds": float(payload.get("hold_seconds") or 0.0),
+                    "closed_at": row.get("created_at"),
+                    "trigger": "force_recent_loss_eval",
+                }
+            )
+            print(f"[KIBOT][POST_MORTEM][FORCE] recent loss evaluated pair={row.get('pair_id')} net={net:.4f}", flush=True)
+            return
+    except Exception as error:
+        print(f"[KIBOT][POST_MORTEM][FORCE][ERROR] {error}", flush=True)
+
+
+def _get_dynamic_fomo_guard(price_idr: float) -> float:
+    """
+    Micro-cap (< Rp50): Boleh pump sampai 35% karena masih early
+    Mid-cap (Rp50-500): Standard 22%
+    Big-cap (> Rp500): Ketat 15%
+    """
+    if price_idr < 50.0:
+        return 35.0
+    elif price_idr < 500.0:
+        return 22.0
+    else:
+        return 15.0
+
+
+def _on_kinance_heartbeat_received():
+    """Called when heartbeat UDP packet received from KiNance"""
+    global _last_kinance_heartbeat_at, _kinance_healthy
+    _last_kinance_heartbeat_at = time.time()
+    if not _kinance_healthy:
+        print("[KIBOT][RECOVERY] KINANCE heartbeat restored!", flush=True)
+    _kinance_healthy = True
+
+
+def _check_kinance_health() -> bool:
+    """Returns True if KiNance is healthy (heartbeat within timeout)"""
+    global _kinance_healthy
+    now = time.time()
+    if _last_kinance_heartbeat_at == 0.0:
+        return True  # First run, assume healthy
+    
+    if (now - _last_kinance_heartbeat_at) > KINANCE_HEARTBEAT_TIMEOUT_SEC:
+        if _kinance_healthy:
+            print(f"[KIBOT][CRITICAL] KINANCE HEARTBEAT LOST! Last seen {now - _last_kinance_heartbeat_at:.1f}s ago", flush=True)
+            _kinance_healthy = False
+        return False
+    return True
+
+
+def _process_signal(msg: Dict[str, Any]) -> None:
+    msg_type = str(msg.get("msgType") or "").upper()
+
+    try:
+        _check_daily_loss_limit()
+        if _is_hard_stop_active():
+            _metric_inc("entries_blocked_hard_stop")
+            print(
+                f"[KIBOT][BLOCK] Blocking {msg_type} - daily hard stop active",
+                flush=True,
+            )
+            return
+    except Exception as error:
+        _metric_inc("entries_blocked_hard_stop")
+        print(f"[KIBOT][BLOCK] Blocking {msg_type} - hard stop guard failed reason={error}", flush=True)
+        return
+
+    if not _check_minimum_capital():
+        print(f"[KIBOT][BLOCK] Blocking {msg_type} - minimum viable capital not met", flush=True)
+        return
+    
+    # === HANDLE KINANCE HEARTBEAT ===
+    if msg_type == "HEARTBEAT" and msg.get("source") == "kinance":
+        _on_kinance_heartbeat_received()
+        return
+
+    if msg_type in EXIT_MSG_TYPES:
+        pass
+    elif msg_type in SAFE_ENTRY_MSG_TYPES and _entry_state_is_suspended():
+        print(
+            f"[KIBOT][BLOCK] Blocking {msg_type} - entry suspended state={_gate_state.get('entry_state')} reason={_gate_state.get('reason')}",
+            flush=True,
+        )
+        return
+    elif _entry_state_is_suspended():
+        print(
+            f"[KIBOT][BLOCK] Blocking {msg_type} - entry suspended state={_gate_state.get('entry_state')} reason={_gate_state.get('reason')}",
+            flush=True,
+        )
+        return
+    
+    # === EARLY RETURN IF KINANCE DEAD ===
+    if not _check_kinance_health():
+        # Only allow EXIT signals when KiNance unhealthy
+        if msg_type not in EXIT_MSG_TYPES:
+            print(f"[KIBOT][BLOCK] Blocking {msg_type} - KINANCE unhealthy", flush=True)
+            return
+    
+    if msg_type == "ACTIVE_POSITIONS":
+        _process_active_positions(msg)
+        return
+    if msg_type == "ORDERBOOK_COLLAPSE":
+        _process_orderbook_collapse(msg)
+        return
+    if msg_type == "EXECUTION_FILLED":
+        _book_entry_from_execution(msg)
+        return
+    if msg_type not in (SAFE_ENTRY_MSG_TYPES | EXIT_MSG_TYPES):
+        return
+    # Relay original detector signal so KiDax can hold KiNance-side evidence for double-confirmation.
+    _broadcast_udp(msg)
+    print(
+        f"[KIBOT][RELAY] msgType={msg_type} pair={msg.get('pair') or msg.get('pairId')} trace={msg.get('traceId')}",
+        flush=True,
+    )
+
+    pair = str(msg.get("pair") or msg.get("pairId") or "")
+    if not pair:
+        print(f"[KIBOT][WARN] missing pair in msgType={msg_type}", flush=True)
+        return
+    pair_cfg = _get_pair_config(pair)
+
+    if msg_type in SAFE_ENTRY_MSG_TYPES:
+        score = float(msg.get("score") or 0.0)
+        if _is_hard_stop_active():
+            if _is_one_shot_eligible(msg, score):
+                msg["one_shot_mode"] = True
+            else:
+                return
+
+    if msg_type in SAFE_ENTRY_MSG_TYPES and _learning_enabled and _learning_engine is not None:
+        allowed, reason = _learning_engine.should_entry(pair)
+        if not allowed:
+            _metric_inc("entries_blocked_learn_gate")
+            print(f"[KIBOT][LEARN GATE] pair={pair} blocked reason={reason}", flush=True)
+            _append_runtime_event(
+                "learning_block",
+                {"pair": pair, "reason": reason, "msg_type": msg_type},
+            )
+            return
+    if msg_type in SAFE_ENTRY_MSG_TYPES:
+        entry_price = float(msg.get("entryPrice") or msg.get("entry_price") or msg.get("price") or 0.0)
+        budget_idr = float(msg.get("budgetIdr") or msg.get("budget_idr") or msg.get("quoteBudgetIdr") or 0.0)
+        spread_pct = float(msg.get("spreadPct") or msg.get("spread_pct") or 0.0)
+        slippage_pct = float(msg.get("slippagePct") or msg.get("slippage_pct") or 0.0)
+        pair_cfg = _get_pair_config(pair)
+        target_profit_pct = float(msg.get("targetProfitPct") or msg.get("target_profit_pct") or pair_cfg.get("min_target_profit_pct") or SURVIVAL_TARGET_PROFIT_PCT)
+        capital_bucket = _capital_bucket_tiers()
+        if pair_cfg.get("tier") == "D":
+            target_profit_pct = max(target_profit_pct, 0.04)
+        elif pair_cfg.get("tier") == "C":
+            target_profit_pct = max(target_profit_pct, 0.025)
+        if entry_price > 0.0 and budget_idr > 0.0:
+            use_market = _should_use_market_order(msg, pair) or bool(msg.get("use_market") or False)
+            if use_market and not msg.get("breakout_urgent"):
+                msg["breakout_urgent"] = True
+            what_if = _simulate_what_if(
+                pair_id=pair,
+                entry_price=entry_price,
+                budget_idr=budget_idr,
+                spread_pct=spread_pct,
+                slippage_pct=slippage_pct,
+                trailing_stop_pct=float(msg.get("trailingStopPct") or 0.05),
+                target_profit_pct=target_profit_pct,
+            )
+            _append_runtime_event("what_if", what_if)
+            print(
+                f"[KIBOT][WHATIF] pair={pair} tiers={','.join(capital_bucket)} ev={what_if['expected_net_pct']:.4f} rr={what_if['risk_reward_ratio']:.2f} rec={what_if['recommendation']}",
+                flush=True,
+            )
+            if what_if["recommendation"] == "SKIP":
+                _metric_inc("entries_blocked_whatif")
+                _metric_inc("whatif_skips_today")
+                print(f"[KIBOT][BLOCK] Blocking {msg_type} - what-if rejected", flush=True)
+                return
+            _metric_inc("whatif_enters_today")
+            if msg.get("one_shot_mode"):
+                budget_idr = _activate_one_shot(pair, budget_idr)
+                use_market = True
+            elif use_market and what_if["recommendation"] == "REDUCE_SIZE":
+                budget_idr *= 0.5
+        allowed, reason = _apply_survival_filters(
+            pair_id=pair,
+            budget_idr=float(msg.get("budgetIdr") or msg.get("budget_idr") or msg.get("quoteBudgetIdr") or 0.0),
+            spread_pct=spread_pct,
+            slippage_pct=slippage_pct,
+        )
+        if not allowed:
+            print(f"[KIBOT][SURVIVAL] pair={pair} blocked reason={reason}", flush=True)
+            return
+    pair_on_cooldown, cooldown_reason = _pair_cooldown_active(pair)
+    if pair_on_cooldown and msg_type not in EXIT_MSG_TYPES:
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        print(
+            f"[KIBOT][VETO_REJECTED] pair={pair} reason=PAIR_COOLDOWN cooldown_reason={cooldown_reason}",
+            flush=True,
+        )
+        veto = {
+            "kind": "lead_lag_breakout",
+            "msgType": "VETO_REJECTED",
+            "traceId": str(msg.get("traceId") or f"trace-{now_ms}"),
+            "senderBotId": "kibot",
+            "pairId": pair,
+            "trend": "UP",
+            "detectedAtEpochMs": now_ms,
+            "sentAtEpochMs": now_ms,
+            "expiresAtEpochMs": now_ms + 3_000,
+            "confidence": 0.35,
+            "expectedNetPct": -0.01,
+            "shortTermReturnPct": float(msg.get("shortTermReturnPct") or 0.0),
+            "mediumTermReturnPct": float(msg.get("mediumTermReturnPct") or 0.0),
+            "tradeActivityScore": 0.35,
+            "forceRotation": False,
+            "payload": {"reason": "PAIR_COOLDOWN", "cooldown_reason": cooldown_reason},
+        }
+        _veto_metrics["rejected"] += 1
+        _update_daily_summary("veto_metric", {"name": "rejected"})
+        _broadcast_udp(veto)
+        _write_runtime_note()
+        return
+    trace_id = str(msg.get("traceId") or f"trace-{int(datetime.now(timezone.utc).timestamp() * 1000)}")
+    payload = msg.get("payload", {}) if isinstance(msg.get("payload"), dict) else {}
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    sent_at_ms = int(msg.get("sentAtEpochMs") or now_ms)
+    signal_age_ms = max(0, now_ms - sent_at_ms)
+    ttl_ms = 200 if str(pair_cfg.get("tier") or "").upper() == "C" or msg.get("one_shot_mode") else STALE_SIGNAL_ABORT_MS
+    if signal_age_ms > ttl_ms:
+        print(
+            f"[KIBOT][VETO_REJECTED] pair={pair} reason=STALE_SIGNAL age_ms={signal_age_ms}",
+            flush=True,
+        )
+        veto = {
+            "kind": "lead_lag_breakout",
+            "msgType": "VETO_REJECTED",
+            "traceId": trace_id,
+            "senderBotId": "kibot",
+            "pairId": pair,
+            "trend": "UP",
+            "detectedAtEpochMs": now_ms,
+            "sentAtEpochMs": now_ms,
+            "expiresAtEpochMs": now_ms + 3_000,
+            "confidence": 0.50,
+            "expectedNetPct": -0.01,
+            "shortTermReturnPct": float(msg.get("shortTermReturnPct") or 0.0),
+            "mediumTermReturnPct": float(msg.get("mediumTermReturnPct") or 0.0),
+            "tradeActivityScore": 0.50,
+            "forceRotation": False,
+            "payload": {"reason": "STALE_SIGNAL", "signal_age_ms": signal_age_ms},
+        }
+        _broadcast_udp(veto)
+        return
+
+    if msg_type in SAFE_ENTRY_MSG_TYPES and (not _control_plane_healthy or (time.time() - _control_plane_last_success_at) > CONTROL_PLANE_STALE_SEC):
+        _suspend_new_entries("control_plane_stale")
+        print(f"[KIBOT][BLOCK] Blocking {msg_type} - control-plane stale", flush=True)
+        return
+    expected_move_pct = float(
+        payload.get("expectedMovePct")
+        or msg.get("expectedMovePct")
+        or msg.get("expectedNetPct")
+        or 5.0
+    )
+    short_term_return_pct = float(
+        payload.get("shortTermReturnPct")
+        or msg.get("shortTermReturnPct")
+        or 0.0
+    )
+    
+    # Dynamic FOMO guard based on price tier
+    current_price_idr = float(msg.get("lastPrice") or msg.get("currentPrice") or 0.0)
+    fomo_limit = _get_dynamic_fomo_guard(current_price_idr)
+    
+    if msg_type == "DETECTOR_HIT":
+        tickers = _load_indodax_ticker_snapshot()
+        t = tickers.get(pair.lower())
+        if t:
+            upper, mid, lower = calculate_bollinger_bands(_price_history.get(pair.lower(), []), window=20)
+            analysis = analyze_pump_legitimacy(
+                pair_id=pair,
+                price_now=current_price_idr,
+                price_24h_ago=current_price_idr * (1 - (short_term_return_pct / 100.0)),
+                price_1h_ago=current_price_idr, # Approximation
+                price_15m_ago=current_price_idr, # Approximation
+                volume_24h_idr=float(t.get("vol_idr") or 0.0),
+                volume_1h_idr=float(t.get("vol_idr") or 0.0) / 24.0, # Approximation
+                high_24h=float(t.get("high") or current_price_idr),
+                low_24h=float(t.get("low") or current_price_idr),
+                bollinger_upper=upper,
+                bollinger_middle=mid,
+                bollinger_lower=lower,
+                has_binance_pair=False, # Default if not checked
+            )
+            print(f"[KIBOT][TRINITY] {pair} Legitimacy Score: {analysis.legitimacy_score} ({analysis.pump_phase})", flush=True)
+            if analysis.legitimacy_score < 40:
+                print(f"[KIBOT][BLOCK] {pair} REJECTED by Trinity Legitimacy Detector (Score: {analysis.legitimacy_score})", flush=True)
+                return
+
+    if msg_type == "DETECTOR_HIT" and short_term_return_pct >= fomo_limit:
+        print(
+            f"[KIBOT][VETO_REJECTED] pair={pair} reason=FOMO_GUARD rise_pct={short_term_return_pct:.2f} limit={fomo_limit:.1f}% price={current_price_idr:.0f}",
+            flush=True,
+        )
+        veto = {
+            "kind": "lead_lag_breakout",
+            "msgType": "VETO_REJECTED",
+            "traceId": trace_id,
+            "senderBotId": "kibot",
+            "pairId": pair,
+            "trend": "UP",
+            "detectedAtEpochMs": now_ms,
+            "sentAtEpochMs": now_ms,
+            "expiresAtEpochMs": now_ms + 3_000,
+            "confidence": 0.55,
+            "expectedNetPct": 0.0,
+            "shortTermReturnPct": short_term_return_pct,
+            "mediumTermReturnPct": float(msg.get("mediumTermReturnPct") or 0.0),
+            "tradeActivityScore": 0.55,
+            "forceRotation": False,
+            "payload": {
+                "reason": "FOMO_GUARD",
+                "entry_mode": "LIMIT_PULLBACK",
+                "limit_correction_pct": FOMO_LIMIT_CORRECTION_PCT,
+            },
+        }
+        _broadcast_udp(veto)
+        return
+    if msg_type in {"SELL_WALL_SURGE", "MOMENTUM_LOSS"} and pair.lower() in _active_positions_cache:
+        _emit_emergency_veto_sell(
+            pair=pair,
+            reason=f"kinance_{msg_type.lower()}",
+            trace_id=trace_id,
+            confidence=0.96,
+            expected_net_pct=max(0.1, expected_move_pct),
+            extra_payload={"source_msg_type": msg_type},
+        )
+        return
+
+    est_slippage_pct = float(payload.get("estSlippagePct") or msg.get("estSlippagePct") or 1.5)
+    viability = _estimate_exit_viability(expected_move_pct, est_slippage_pct)
+    score = _coingecko_track_record_score(pair)
+    trending_symbols = {c.get("symbol", "").lower() for c in _get_coingecko_trending_cache()}
+    pair_symbol = pair.split("_", 1)[0].lower()
+    if pair_symbol in trending_symbols:
+        score = min(0.98, score + 0.12)
+    ai_confidence = float(payload.get("confidence") or msg.get("confidence") or score)
+    min_score = AI_APPROVAL_INSTANT_MIN_SCORE if msg_type == "INSTANT_BUY_ANOMALY" else AI_APPROVAL_MIN_SCORE
+    min_net = AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT if msg_type == "INSTANT_BUY_ANOMALY" else AI_APPROVAL_MIN_EXPECTED_NET_PCT
+    if msg_type == "INSTANT_BUY_ANOMALY":
+        approved = viability["net_profit_pct"] >= min_net and score >= min_score and ai_confidence >= min_score
+    else:
+        approved = viability["net_profit_pct"] >= min_net and score >= min_score and ai_confidence >= min_score
+
+    veto_msg_type = "VETO_SELL_CONFIRMED" if msg_type in {"SELL_WALL_SURGE", "MOMENTUM_LOSS"} else "VETO_APPROVED"
+    if not approved:
+        veto_msg_type = "VETO_REJECTED"
+        print(
+            f"[KIBOT][VETO_REJECTED] pair={pair} net={viability['net_profit_pct']:.4f}% reason=AI_CONFIDENCE_GATE score={score:.3f} ai={ai_confidence:.3f}",
+            flush=True,
+        )
+        _veto_metrics["rejected"] += 1
+        _update_daily_summary("veto_metric", {"name": "rejected"})
+    else:
+        print(
+            f"[KIBOT][{veto_msg_type}] pair={pair} net={viability['net_profit_pct']:.4f}% trackScore={score:.3f} ai={ai_confidence:.3f}",
+            flush=True,
+        )
+        if veto_msg_type == "VETO_APPROVED":
+            _veto_metrics["approved"] += 1
+            _update_daily_summary("veto_metric", {"name": "approved"})
+        elif veto_msg_type == "VETO_SELL_CONFIRMED":
+            _veto_metrics["sell_confirmed"] += 1
+            _update_daily_summary("veto_metric", {"name": "sell_confirmed"})
+
+    veto = {
+        "kind": "lead_lag_breakout",
+        "msgType": veto_msg_type,
+        "traceId": trace_id,
+        "senderBotId": "kibot",
+        "pairId": pair,
+        "trend": "REVERSAL" if msg_type in {"SELL_WALL_SURGE", "MOMENTUM_LOSS"} else "UP",
+        "detectedAtEpochMs": now_ms,
+        "sentAtEpochMs": now_ms,
+        "expiresAtEpochMs": now_ms + 3_000,
+        "confidence": min(0.99, (score * 0.55) + (ai_confidence * 0.45)),
+        "expectedNetPct": viability["net_profit_pct"],
+        "shortTermReturnPct": expected_move_pct,
+        "mediumTermReturnPct": expected_move_pct * 0.5,
+        "tradeActivityScore": score,
+        "forceRotation": True,
+        "payload": {
+            "exit_viability": viability,
+            "track_record_score": score,
+            "ai_confidence": ai_confidence,
+            "ai_gate_min_score": min_score,
+            "ai_gate_min_expected_net_pct": min_net,
+            "coingecko_trending_match": pair_symbol in trending_symbols,
+        },
+    }
+    _broadcast_udp(veto)
+    _write_runtime_note()
+
+
+def _extract_symbol_from_text(text: str) -> str:
+    if not text:
+        return ""
+    upper = text.upper()
+    bracketed = re.findall(r"\(([A-Z0-9]{2,12})\)", upper)
+    if bracketed:
+        return bracketed[0].lower()
+    plain = re.findall(r"\b([A-Z]{2,8})\b", upper)
+    if plain:
+        common = {"NEW", "LISTING", "WILL", "SPOT", "BINANCE", "TOKEN", "MARKET"}
+        filtered = [token for token in plain if token not in common]
+        if filtered:
+            return filtered[0].lower()
+    return ""
+
+
+def _cleanup_seen_news_ids() -> None:
+    """Remove old entries from _seen_news_ids to prevent unbounded memory growth."""
+    global _seen_news_ids, _seen_news_ids_timestamps
+    now = time.time()
+    ttl_sec = 3600 * 24  # 24 hours TTL
+    with _state_lock:
+        expired = [k for k, ts in _seen_news_ids_timestamps.items() if (now - ts) > ttl_sec]
+        for k in expired:
+            _seen_news_ids.discard(k)
+            _seen_news_ids_timestamps.pop(k, None)
+        # Also enforce max size limit
+        if len(_seen_news_ids) > _SEEN_NEWS_IDS_MAX_SIZE:
+            # Remove oldest entries
+            sorted_by_time = sorted(_seen_news_ids_timestamps.items(), key=lambda x: x[1])
+            to_remove = len(_seen_news_ids) - _SEEN_NEWS_IDS_MAX_SIZE + 100  # Remove extra buffer
+            for k, _ in sorted_by_time[:to_remove]:
+                _seen_news_ids.discard(k)
+                _seen_news_ids_timestamps.pop(k, None)
+
+
+def _scan_rss_and_initiate_detector(feed_url: str, source: str) -> None:
+    global _seen_news_ids, _seen_news_ids_timestamps
+    try:
+        response = requests.get(feed_url, timeout=TIMEOUT)
+        if response.status_code != 200:
+            return
+        root = ET.fromstring(response.text)
+    except (requests.exceptions.RequestException, ET.ParseError) as e:
+        print(f"[KIBOT][WARN] RSS parse/fetch error source={source} reason={type(e).__name__}", flush=True)
+        return
+    except Exception as e:
+        print(f"[KIBOT][WARN] RSS unexpected error source={source} reason={e}", flush=True)
+        return
+    items = root.findall(".//item")[:12]
+    for item in items:
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        desc = (item.findtext("description") or "").strip()
+        identity = f"{source}|{title}|{link}"
+        with _state_lock:
+            if identity in _seen_news_ids:
+                continue
+            _seen_news_ids.add(identity)
+            _seen_news_ids_timestamps[identity] = time.time()
+        lower_text = f"{title} {desc}".lower()
+        if "list" not in lower_text and "listing" not in lower_text and "new coin" not in lower_text:
+            continue
+        symbol = _extract_symbol_from_text(title) or _extract_symbol_from_text(desc)
+        if not symbol:
+            continue
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        pair_id = f"{symbol}_idr"
+        detector_hit = {
+            "kind": "lead_lag_breakout",
+            "msgType": "DETECTOR_HIT",
+            "traceId": f"news-{source}-{symbol}-{now_ms}",
+            "senderBotId": "kibot",
+            "pairId": pair_id,
+            "trend": "UP",
+            "detectedAtEpochMs": now_ms,
+            "sentAtEpochMs": now_ms,
+            "expiresAtEpochMs": now_ms + 3_000,
+            "confidence": 0.74,
+            "expectedNetPct": 1.8,
+            "shortTermReturnPct": 1.8,
+            "mediumTermReturnPct": 0.9,
+            "tradeActivityScore": 0.70,
+            "forceRotation": True,
+            "payload": {
+                "source": source,
+                "headline": title[:140],
+                "type": "NEW_LISTING_NEWS",
+            },
+        }
+        _broadcast_udp(detector_hit)
+
+
+def _news_scanner_loop() -> None:
+    cleanup_counter = 0
+    while not _shutdown_event.is_set():
+        try:
+            _scan_rss_and_initiate_detector(BINANCE_ANNOUNCEMENT_RSS, "binance_rss")
+            _scan_rss_and_initiate_detector(COINGECKO_NEWS_FEED, "coingecko_rss")
+            # Cleanup seen_news_ids periodically (every ~10 iterations)
+            cleanup_counter += 1
+            if cleanup_counter >= 10:
+                _cleanup_seen_news_ids()
+                cleanup_counter = 0
+        except Exception as e:
+            print(f"[KIBOT][WARN] news_scanner_loop error: {e}", flush=True)
+        # Use event.wait for graceful shutdown
+        if _shutdown_event.wait(timeout=max(30, NEWS_SCAN_INTERVAL_SEC)):
+            break
+
+
+def _normalize_sector_map(raw_obj: Any) -> Dict[str, list[str]]:
+    if not isinstance(raw_obj, dict):
+        return {}
+    out: Dict[str, list[str]] = {}
+    for k, v in raw_obj.items():
+        if not isinstance(k, str) or not isinstance(v, list):
+            continue
+        cleaned = []
+        for item in v:
+            if not isinstance(item, str):
+                continue
+            sym = item.strip().lower()
+            if not sym:
+                continue
+            cleaned.append(sym)
+        if cleaned:
+            out[k.strip().lower()] = cleaned[:12]
+    return out
+
+
+def _load_indodax_ticker_snapshot() -> Dict[str, Dict[str, Any]]:
+    global _indodax_ticker_cache, _indodax_ticker_snapshot, _indodax_ticker_cache_at
+    now = time.time()
+    if _indodax_ticker_cache and (now - _indodax_ticker_cache_at) < max(60, INDODAX_TICKER_CACHE_TTL_SEC):
+        return _indodax_ticker_snapshot
+    try:
+        response = requests.get(INDODAX_SUMMARIES_URL, timeout=TIMEOUT)
+        if response.status_code >= 300:
+            return _indodax_ticker_snapshot
+        body = response.json()
+        tickers = ((body or {}).get("tickers") or {})
+        pairs = set()
+        snapshot: Dict[str, Dict[str, Any]] = {}
+        if isinstance(tickers, dict):
+            for pair_key, row in tickers.items():
+                if not isinstance(pair_key, str):
+                    continue
+                norm = pair_key.strip().lower()
+                if norm:
+                    pairs.add(norm)
+                    snapshot[norm] = row if isinstance(row, dict) else {}
+        if pairs:
+            _indodax_ticker_cache = pairs
+            _indodax_ticker_snapshot = snapshot
+            _indodax_ticker_cache_at = now
+        return _indodax_ticker_snapshot
+    except Exception:
+        return _indodax_ticker_snapshot
+
+
+def _load_indodax_tickers() -> set[str]:
+    return set(_load_indodax_ticker_snapshot().keys())
+
+
+def _sanitize_sector_map_for_indodax(raw_map: Dict[str, list[str]]) -> Dict[str, list[str]]:
+    if not raw_map:
+        return {}
+    tickers = _load_indodax_tickers()
+    if not tickers:
+        return raw_map
+    out: Dict[str, list[str]] = {}
+    for sector, coins in raw_map.items():
+        keep: list[str] = []
+        for coin in coins:
+            base = coin.strip().lower()
+            if not base:
+                continue
+            if f"{base}_idr" in tickers:
+                keep.append(base)
+        if keep:
+            out[sector] = keep
+    return out
+
+
+def _fetch_dynamic_correlation_map() -> Dict[str, list[str]]:
+    trending = _get_coingecko_trending_cache()
+    system_prompt = "Return ONLY JSON object map: {'sector_name':['coin1','coin2','coin3']} without prose."
+    user_prompt = (
+        "Provide a JSON map of the top 10 most active cryptocurrency sector correlations today. "
+        f"CoinGecko trending snapshot: {json.dumps(trending, ensure_ascii=False)}. "
+        "Prioritize sectors/coins with strongest momentum now."
+    )
+    routed_text, provider = _call_ai_router(
+        task="correlation_matrix",
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model_hint=CORRELATION_MODEL,
+        timeout_sec=CORRELATION_TIMEOUT_SEC,
+    )
+    if routed_text:
+        print(f"[KIBOT][AI_CORRELATION_FETCH] provider={provider}", flush=True)
+        return _normalize_sector_map(_parse_json_candidate(routed_text))
+    if not CORRELATION_API_URL:
+        print("[KIBOT][AI_CORRELATION_FETCH][SKIP] router+legacy unavailable.", flush=True)
+        return {}
+    payload = {
+        "model": CORRELATION_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.1,
+    }
+    headers = {"Content-Type": "application/json"}
+    if CORRELATION_API_KEY:
+        headers["Authorization"] = f"Bearer {CORRELATION_API_KEY}"
+    response = requests.post(CORRELATION_API_URL, headers=headers, json=payload, timeout=CORRELATION_TIMEOUT_SEC)
+    if response.status_code >= 300:
+        return {}
+    return _normalize_sector_map(_parse_json_candidate(_extract_assistant_text(response.json() or {})))
+
+
+def _broadcast_dynamic_correlation_map() -> None:
+    global _last_sector_map
+    if not CORRELATION_ENABLED:
+        return
+    try:
+        sectors = _fetch_dynamic_correlation_map()
+        sectors = _sanitize_sector_map_for_indodax(sectors)
+        if not sectors:
+            return
+        _last_sector_map = sectors
+        msg = {
+            "msgType": "CORRELATION_MATRIX",
+            "senderBotId": "kibot",
+            "updatedAtEpochMs": int(datetime.now(timezone.utc).timestamp() * 1000),
+            "sectors": sectors,
+        }
+        _broadcast_udp(msg)
+        print(f"[KIBOT][AI_CORRELATION_FETCH] sectors={len(sectors)}", flush=True)
+        _append_runtime_event("correlation_matrix_refresh", {"sector_count": len(sectors)})
+        _write_runtime_note()
+    except Exception as error:
+        print(f"[KIBOT][AI_CORRELATION_FETCH][ERROR] {error}", flush=True)
+
+
+def _correlation_loop() -> None:
+    while not _shutdown_event.is_set():
+        try:
+            _broadcast_dynamic_correlation_map()
+        except Exception as e:
+            print(f"[KIBOT][WARN] correlation_loop error: {e}", flush=True)
+        if _shutdown_event.wait(timeout=max(300, CORRELATION_INTERVAL_SEC)):
+            break
+
+
+def _coingecko_trending_loop() -> None:
+    while not _shutdown_event.is_set():
+        try:
+            _refresh_coingecko_trending_cache()
+        except Exception as e:
+            print(f"[KIBOT][WARN] coingecko_trending_loop error: {e}", flush=True)
+        if _shutdown_event.wait(timeout=max(180, COINGECKO_TRENDING_INTERVAL_SEC)):
+            break
+
+
+def _pair_symbol(pair: str) -> str:
+    return pair.split("_", 1)[0].lower().strip()
+
+
+def _symbol_in_ai_sector(symbol: str) -> bool:
+    if not symbol:
+        return False
+    for coins in _last_sector_map.values():
+        if symbol in coins:
+            return True
+    return False
+
+
+def _emit_emergency_veto_sell(
+    pair: str,
+    reason: str,
+    trace_id: str | None = None,
+    confidence: float = 0.94,
+    expected_net_pct: float = 0.2,
+    extra_payload: Dict[str, Any] | None = None,
+) -> None:
+    now = time.time()
+    pair_key = pair.lower().strip()
+    if not pair_key:
+        return
+    cooldown_until = _emergency_sell_cooldown_until.get(pair_key, 0.0)
+    if now < cooldown_until:
+        return
+    _emergency_sell_cooldown_until[pair_key] = now + max(3, EMERGENCY_SELL_COOLDOWN_SEC)
+    now_ms = int(now * 1000)
+    payload_obj = {
+        "reason": reason,
+        "trigger": "kibot_active_overwatch",
+    }
+    if isinstance(extra_payload, dict):
+        payload_obj.update(extra_payload)
+    veto = {
+        "kind": "lead_lag_breakout",
+        "msgType": "EMERGENCY_VETO_SELL",
+        "traceId": trace_id or f"eveto-{pair_key}-{now_ms}",
+        "senderBotId": "kibot",
+        "pairId": pair_key,
+        "trend": "REVERSAL",
+        "detectedAtEpochMs": now_ms,
+        "sentAtEpochMs": now_ms,
+        "expiresAtEpochMs": now_ms + 3_000,
+        "confidence": confidence,
+        "expectedNetPct": expected_net_pct,
+        "shortTermReturnPct": -0.8,
+        "mediumTermReturnPct": -0.5,
+        "tradeActivityScore": 0.8,
+        "forceRotation": True,
+        "payload": payload_obj,
+    }
+    _broadcast_udp(veto)
+    print(
+        f"[KIBOT][EMERGENCY_VETO_SELL] pair={pair_key} reason={reason} trace={veto['traceId']}",
+        flush=True,
+    )
+    _veto_metrics["emergency_sell"] += 1
+    _update_daily_summary("veto_metric", {"name": "emergency_sell"})
+    _append_runtime_event(
+        "emergency_veto_sell",
+        {"pair": pair_key, "reason": reason, "trace_id": veto["traceId"]},
+    )
+    _write_runtime_note()
+
+
+def _process_orderbook_collapse(msg: Dict[str, Any]) -> None:
+    pair = str(msg.get("pair") or msg.get("pairId") or "").lower().strip()
+    if not pair:
+        return
+    if pair not in _active_positions_cache:
+        return
+    _emit_emergency_veto_sell(
+        pair=pair,
+        reason="kinance_orderbook_collapse",
+        trace_id=str(msg.get("traceId") or ""),
+        confidence=0.97,
+        expected_net_pct=float(msg.get("expectedNetPct") or 0.2),
+        extra_payload={
+            "source_msg_type": str(msg.get("msgType") or "").upper(),
+            "short_term_return_pct": float(msg.get("shortTermReturnPct") or 0.0),
+            "medium_term_return_pct": float(msg.get("mediumTermReturnPct") or 0.0),
+        },
+    )
+
+
+def _process_active_positions(msg: Dict[str, Any]) -> None:
+    global _last_active_positions_log_at
+    positions = msg.get("positions")
+    if not isinstance(positions, list):
+        return
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    tracked_pairs: Dict[str, Dict[str, Any]] = {}
+    for row in positions:
+        if not isinstance(row, dict):
+            continue
+        pair = str(row.get("pairId") or "").lower().strip()
+        if not pair:
+            continue
+        tracked_pairs[pair] = row
+    # === TRINITY V5.0: TRAILING & MATH REVIEW ===
+    current_cache_pairs = set(tracked_pairs.keys())
+    previous_cache_pairs = set(_active_positions_cache.keys())
+    
+    # Check for new positions to start trailing
+    for pair in current_cache_pairs - previous_cache_pairs:
+        row = tracked_pairs[pair]
+        entry_price = float(row.get("entryPrice") or row.get("price") or 0.0)
+        if entry_price > 0:
+            _active_trails[pair] = {
+                "entry_price": entry_price,
+                "max_price": entry_price,
+                "partial_tp_done": False,
+                "entry_time": time.time()
+            }
+            print(f"[KIBOT][TRAIL] Started trailing for {pair} at {entry_price}", flush=True)
+
+    # Check for closed positions to record math
+    for pair in previous_cache_pairs - current_cache_pairs:
+        if pair in _active_trails:
+            trail = _active_trails.pop(pair)
+            # Find the last message to get pnl
+            # This is a bit tricky, but we'll use the cached pnl from before it disappeared
+            last_row = _active_positions_cache.get(pair, {})
+            pnl_pct = float(last_row.get("pnlPct") or 0.0)
+            _record_trade_result(pair, gross_pnl_pct=pnl_pct, entry_time=trail["entry_time"])
+            print(f"[KIBOT][MATH] Recorded trade for {pair}: {pnl_pct:+.2%}", flush=True)
+
+    # Update active trails
+    for pair, row in tracked_pairs.items():
+        if pair in _active_trails:
+            price_now = float(row.get("lastPrice") or row.get("price") or 0.0)
+            if price_now <= 0: continue
+            
+            trail_action = update_trailing_stop(pair, price_now)
+            if trail_action == "PARTIAL_TP":
+                smart_exit(pair, reason="TRINITY_PARTIAL_TP", trace_id=f"tp-{pair}-{int(time.time())}", size_multiplier=0.4)
+            elif trail_action == "EXIT_NOW":
+                smart_exit(pair, reason="TRINITY_TRAILING_STOP_HIT", trace_id=f"exit-{pair}-{int(time.time())}")
+
+    _active_positions_cache.clear()
+    _active_positions_cache.update(tracked_pairs)
+    now_ts = time.time()
+    if (now_ts - _last_active_positions_log_at) >= 30:
+        _last_active_positions_log_at = now_ts
+        print(
+            f"[KIBOT][ACTIVE_POSITIONS] count={len(tracked_pairs)} pairs={','.join(sorted(tracked_pairs.keys())[:6])}",
+            flush=True,
+        )
+        _append_runtime_event(
+            "active_positions_snapshot",
+            {"count": len(tracked_pairs), "pairs": sorted(tracked_pairs.keys())[:6]},
+        )
+        _write_runtime_note()
+    relay_payload = {
+        "kind": "trinity_state",
+        "msgType": "ACTIVE_POSITIONS",
+        "senderBotId": "kibot",
+        "sentAtEpochMs": now_ms,
+        "positions": list(tracked_pairs.values()),
+    }
+    _broadcast_udp(relay_payload)
+    trending_symbols = {c.get("symbol", "").lower() for c in _get_coingecko_trending_cache()}
+    for pair, row in tracked_pairs.items():
+        pnl_pct = float(row.get("pnlPct") or 0.0)
+        symbol = _pair_symbol(pair)
+        track_score = _coingecko_track_record_score(pair)
+        is_trending = symbol in trending_symbols
+        in_sector = _symbol_in_ai_sector(symbol)
+        if pnl_pct <= EMERGENCY_SELL_NEGATIVE_PNL_PCT and (not is_trending) and (track_score < 0.58 or not in_sector):
+            _emit_emergency_veto_sell(
+                pair=pair,
+                reason="macro_overwatch_drop",
+                confidence=0.93,
+                expected_net_pct=max(0.1, abs(pnl_pct)),
+                extra_payload={
+                    "pnl_pct": pnl_pct,
+                    "track_score": track_score,
+                    "trending": is_trending,
+                    "in_ai_sector": in_sector,
+                },
+            )
+
+
+def _signal_handler(signum: int, frame: Any) -> None:
+    """Handle shutdown signals gracefully."""
+    global _main_socket
+    sig_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+    print(f"\n[KIBOT][SHUTDOWN] Received {sig_name}, initiating graceful shutdown...", flush=True)
+    _shutdown_event.set()
+    # Close main socket to unblock recvfrom
+    if _main_socket:
+        try:
+            _main_socket.close()
+        except Exception:
+            pass
+    global _http_server
+    if _http_server:
+        try:
+            _http_server.shutdown()
+        except Exception:
+            pass
+    _append_runtime_event("manager_shutdown", {"signal": sig_name})
+    _write_runtime_note(force=True)
+
+
+def _http_state_payload() -> Dict[str, Any]:
+    with _state_lock:
+        return {
+            "ok": True,
+            "service": "kibot-manager",
+            "system_state": str(_gate_state.get("entry_state") or "HEALTHY"),
+            "trading_mode": str(_gate_state.get("mode") or "CONSERVATIVE"),
+            "effectiveState": "RUNNING" if not _entry_state_is_suspended() else "DEGRADED",
+            "tradingAllowed": (not _entry_state_is_suspended()) and not bool(_daily_guard_state.get("hard_stopped")),
+            "marketRegime": _daily_summary_market_regime() if DAILY_SUMMARY_ENABLED else "UNKNOWN",
+            "degradedReason": str(_gate_state.get("reason") or _daily_guard_state.get("reason") or ""),
+            "healthDecision": str(_gate_state.get("reason") or ""),
+            "statusMessage": "Server monitor connected to live feed",
+            "nodeStatus": "active",
+            "hard_stop_active": bool(_daily_guard_state.get("hard_stopped")),
+            "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+            "api_fail_streak": _api_fail_streak,
+            "control_plane_healthy": _control_plane_healthy,
+            "pair_memory_count": len(_pair_memory),
+            "pairs_on_cooldown": [pair for pair in _pair_memory.keys() if _is_pair_on_cooldown(pair)],
+            "capital_health": {
+                "total_equity_est_idr": _get_total_equity_estimate(),
+                "minimum_viable_idr": MINIMUM_VIABLE_CAPITAL_IDR,
+                "is_capital_sufficient": _check_minimum_capital(),
+                "fee_round_trip_pct": round(_effective_fee_pct() * 2.0, 4),
+                "breakeven_per_trade_pct": round((_effective_fee_pct() * 2.0) + 0.015, 4),
+                "status": (
+                    "VIABLE"
+                    if (_get_total_equity_estimate() or 0.0) >= MINIMUM_VIABLE_CAPITAL_IDR
+                    else f"INSUFFICIENT — add Rp{max(0.0, MINIMUM_VIABLE_CAPITAL_IDR - (_get_total_equity_estimate() or 0.0)):,.0f} more"
+                ),
+            },
+            "metrics": {
+                "market_orders_today": _metrics.get("market_orders_today", 0),
+                "limit_orders_today": _metrics.get("limit_orders_today", 0),
+                "limit_ratio": (
+                    float(_metrics.get("limit_orders_today", 0))
+                    / max(float(_metrics.get("limit_orders_today", 0)) + float(_metrics.get("market_orders_today", 0)), 1.0)
+                ),
+                "fee_bleed_est_idr": _metrics.get("fee_bleed_est_idr", 0.0),
+                "entries_blocked": {
+                    "hard_stop": _metrics.get("entries_blocked_hard_stop", 0),
+                    "learn_gate": _metrics.get("entries_blocked_learn_gate", 0),
+                    "whatif": _metrics.get("entries_blocked_whatif", 0),
+                },
+                "whatif_enter_rate": (
+                    float(_metrics.get("whatif_enters_today", 0))
+                    / max(float(_metrics.get("whatif_enters_today", 0)) + float(_metrics.get("whatif_skips_today", 0)), 1.0)
+                ),
+            },
+            "math_review": {
+                "last_action": _math_review_last_action,
+                "last_reason": _math_review_last_reason,
+                "trade_journal_count": len(_math_review_trade_journal),
+                "current_pnl_state": portfolio_manager.get_pnl_state(),
+            },
+            "portfolio": {
+                "active_count": len(portfolio_manager.positions),
+                "total_budget_allocated": sum(p.budget_idr for p in portfolio_manager.positions.values()),
+                "positions": [
+                    {
+                        "pair": p.pair_id,
+                        "category": p.category,
+                        "entry_price": p.entry_price,
+                        "last_price": p.last_price,
+                        "pnl_pct": p.pnl_pct,
+                        "hold_min": (time.time() - p.entry_time) / 60,
+                        "phase": p.phase
+                    } for p in portfolio_manager.positions.values()
+                ]
+            },
+            "v6_stats": {
+                "lead_lag_count": len(LEAD_LAG_PAIRS),
+                "futures_proxy_count": len(FUTURES_PROXY_PAIRS),
+                "indodax_only_count": len(INDODAX_ONLY_PAIRS)
+            },
+            "uptime_seconds": int(time.time() - _bot_start_time),
+            "checked_at": _safe_isoformat(),
+        }
+
+
+class _ManagerStateHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/" or self.path == "/dashboard":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
+            return
+            
+        if self.path.startswith("/api/state"):
+            payload = _http_state_payload()
+            raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_POST(self) -> None:  # noqa: N802
+        if not self.path.startswith("/api/notify"):
+            self.send_response(404)
+            self.end_headers()
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+            payload = json.loads(body or "{}")
+            message = str(payload.get("msg") or "").strip()
+            if message:
+                print(f"[KIBOT][NOTIFY] {message}", flush=True)
+                _append_runtime_event("notify", {"message": message})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}, ensure_ascii=False).encode("utf-8"))
+        except Exception as error:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False).encode("utf-8"))
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+        return
+
+
+def _state_server_loop() -> None:
+    global _http_server
+    bind_host = os.getenv("KIBOT_MANAGER_HTTP_BIND_HOST", "127.0.0.1")
+    bind_port = int(os.getenv("KIBOT_MANAGER_HTTP_BIND_PORT", str(UDP_BIND_PORT)))
+    try:
+        server = ThreadingHTTPServer((bind_host, bind_port), _ManagerStateHandler)
+        _http_server = server
+        print(f"[KIBOT][HTTP] state server listening on {bind_host}:{bind_port}", flush=True)
+        server.serve_forever(poll_interval=0.5)
+    except Exception as error:
+        print(f"[KIBOT][HTTP][ERROR] failed to start state server reason={error}", flush=True)
+    finally:
+        _http_server = None
+
+def _pair_screen_loop() -> None:
+    """
+    Background thread for Phase 2: Dynamic Screener.
+    """
+    print("[KIBOT] Screener loop started.", flush=True)
+    while not _shutdown_event.is_set():
+        try:
+            recommended = screen_all_pairs()
+            if recommended:
+                msg = f"🔍 TRINITY SCREENER FOUND {len(recommended)} PAIRS:\n"
+                for r in recommended[:3]:
+                    msg += f"• {r.pair_id}: Score {r.legitimacy_score} ({r.pump_phase}) - {r.entry_recommendation}\n"
+                _telegram_send(msg)
+                
+                # Auto-entry for top tier signals
+                best = recommended[0]
+                if best.legitimacy_score >= 75 and best.entry_recommendation == "ENTER_NOW" and not _full_stop_active:
+                    # Verify we don't already have it
+                    if best.pair_id not in _active_positions_cache:
+                        trace_id = f"screener-{best.pair_id}-{int(time.time())}"
+                        smart_entry(best.pair_id, best, budget_idr=MAXIMUM_POSITION_SIZE_IDR, trace_id=trace_id)
+            
+        except Exception as e:
+            print(f"[KIBOT][WARN] pair_screen_loop error: {e}", flush=True)
+            
+        if _shutdown_event.wait(timeout=900): # 15 minutes
+            break
+
+def _simulation_loop() -> None:
+    """
+    Background thread for Bayesian What-If simulation.
+    Runs every 15 minutes.
+    """
+    if not _WHATIF_AVAILABLE:
+        print("[KIBOT] Simulation engine not available (missing kibot_whatif_engine).", flush=True)
+        return
+        
+    print("[KIBOT] Simulation loop started.", flush=True)
+    while not _shutdown_event.is_set():
+        try:
+            # 1. Fetch current price snapshot
+            snapshot = _load_indodax_ticker_snapshot()
+            market_prices = {}
+            for pair, data in snapshot.items():
+                last = data.get("last")
+                if last:
+                    try:
+                        market_prices[pair] = float(last)
+                    except:
+                        pass
+            
+            # 2. Run simulation
+            if market_prices:
+                print(f"[KIBOT][SIM] Analyzing {len(market_prices)} pairs...", flush=True)
+                run_simulation(market_prices)
+            
+        except Exception as e:
+            print(f"[KIBOT][WARN] simulation_loop error: {e}", flush=True)
+        
+        if _shutdown_event.wait(timeout=900): # Run every 15 minutes
+            break
+
+def _math_review_loop() -> None:
+    """
+    Background thread for Phase 5: Math Review.
+    """
+    print("[KIBOT] Math review loop started.", flush=True)
+    while not _shutdown_event.is_set():
+        try:
+            run_30min_math_review()
+        except Exception as e:
+            print(f"[KIBOT][WARN] math_review_loop error: {e}", flush=True)
+        
+        if _shutdown_event.wait(timeout=60): # Check every minute
+            break
+
+def _maybe_run_30min_math_review() -> None:
+    # Helper for the main wait loop
+    run_30min_math_review()
+import urllib.request
+from datetime import datetime, timedelta
+
+DATA_DIR = Path("/home/ubuntu/KiBot/data")
+DATA_DIR.mkdir(exist_ok=True)
+
+def append_trade_to_daily_log(trade: dict):
+    date_wib = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d")
+    log_file = DATA_DIR / f"trades_{date_wib}.json"
+    trades = []
+    if log_file.exists():
+        try:
+            trades = json.loads(log_file.read_text())
+        except:
+            pass
+    trade["logged_at"] = time.time()
+    trades.append(trade)
+    log_file.write_text(json.dumps(trades, indent=2))
+
+def run_daily_data_sync():
+    today_wib = (datetime.utcnow() + timedelta(hours=7)).date()
+    synced, deleted_local = 0, 0
+    for data_file in sorted(DATA_DIR.glob("trades_*.json")):
+        try:
+            date_str = data_file.stem.replace("trades_", "")
+            file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            age_days = (today_wib - file_date).days
+            if 1 <= age_days <= 3:
+                if _sync_trades_to_supabase(data_file):
+                    synced += 1
+            if age_days > 3:
+                data_file.unlink()
+                deleted_local += 1
+        except Exception as e:
+            print(f"[LIFECYCLE] Error {data_file}: {e}", flush=True)
+    _cleanup_supabase_old_data()
+    print(f"[LIFECYCLE] Sync: {synced} files, deleted: {deleted_local} files", flush=True)
+
+def _sync_trades_to_supabase(data_file: Path) -> bool:
+    try:
+        trades = json.loads(data_file.read_text())
+        if not trades: return True
+        url = os.environ.get("SUPABASE_URL", "")
+        key = os.environ.get("SUPABASE_ANON_KEY", "")
+        if not url or not key: return False
+        req = urllib.request.Request(f"{url}/rest/v1/trade_history", data=json.dumps(trades).encode(), headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json", "Prefer": "resolution=ignore-duplicates"}, method="POST")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status in (200, 201)
+    except Exception: return False
+
+def _cleanup_supabase_old_data():
+    try:
+        url = os.environ.get("SUPABASE_URL", "")
+        key = os.environ.get("SUPABASE_ANON_KEY", "")
+        if not url: return
+        cutoff = datetime.utcnow() - timedelta(days=30)
+        req = urllib.request.Request(f"{url}/rest/v1/trade_history?created_at=lt.{cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')}", headers={"apikey": key, "Authorization": f"Bearer {key}"}, method="DELETE")
+        urllib.request.urlopen(req, timeout=10)
+    except Exception: pass
+
+def keep_supabase_alive():
+    try:
+        url = os.environ.get("SUPABASE_URL", "")
+        key = os.environ.get("SUPABASE_ANON_KEY", "")
+        if not url: return
+        req = urllib.request.Request(f"{url}/rest/v1/pair_memory_history?select=pair_id&limit=1", headers={"apikey": key, "Authorization": f"Bearer {key}"})
+        urllib.request.urlopen(req, timeout=5)
+    except Exception: pass
+
+def main() -> None:
+    global _main_socket
+    
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+    
+    _ensure_env()
+    STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    _reconcile_daily_guard_day_rollover()
+    _ensure_hard_stop_consistency()
+    _write_json_file(PROVIDER_STATE_PATH, _provider_runtime_state)
+    _save_pair_cooldown_state()
+    _save_gate_state()
+    _save_daily_guard_state()
+    _bootstrap_daily_guard_from_kidax()
+    _set_conservative_mode("fresh_start")
+    if DAILY_SUMMARY_ENABLED:
+        _write_json_file(DAILY_SUMMARY_PATH, _load_daily_summary())
+    _append_runtime_event(
+        "manager_start",
+        {
+            "kidax_target": f"{KIDAX_UDP_HOST}:{KIDAX_UDP_PORT}" if KIDAX_UDP_HOST else "",
+            "kinance_target": f"{KINANCE_UDP_HOST}:{KINANCE_UDP_PORT}" if KINANCE_UDP_HOST else "",
+        },
+    )
+    _write_runtime_note(force=True)
+    force_evaluate_recent_loss()
+    scanner_thread = threading.Thread(target=_news_scanner_loop, name="kibot-news-scanner", daemon=True)
+    scanner_thread.start()
+    corr_thread = threading.Thread(target=_correlation_loop, name="kibot-correlation-loop", daemon=True)
+    corr_thread.start()
+    gecko_thread = threading.Thread(target=_coingecko_trending_loop, name="kibot-coingecko-loop", daemon=True)
+    gecko_thread.start()
+    screen_thread = threading.Thread(target=_pair_screen_loop, name="kibot-pair-screen-loop", daemon=True)
+    screen_thread.start()
+    heartbeat_thread = threading.Thread(target=_heartbeat_loop, name="kibot-heartbeat-loop", daemon=True)
+    heartbeat_thread.start()
+    health_gate_thread = threading.Thread(target=_health_gate_loop, name="kibot-health-gate-loop", daemon=True)
+    health_gate_thread.start()
+    ai_review_thread = threading.Thread(target=_ai_batch_review_loop, name="kibot-ai-review-loop", daemon=True)
+    ai_review_thread.start()
+    math_review_thread = threading.Thread(target=_math_review_loop, name="kibot-math-review-loop", daemon=True)
+    sim_thread = threading.Thread(target=_simulation_loop, name="kibot-simulation-loop", daemon=True)
+    math_review_thread.start()
+    sim_thread.start()
+    state_server_thread = threading.Thread(target=_state_server_loop, name="kibot-state-server", daemon=True)
+    state_server_thread.start()
+
+    # v6.0 Background Threads
+    discovery_thread = threading.Thread(target=run_discovery_loop, name="kibot-discovery", daemon=True)
+    discovery_thread.start()
+    portfolio_thread = threading.Thread(target=run_portfolio_monitor_loop, name="kibot-portfolio", daemon=True)
+    portfolio_thread.start()
+    
+    signal_mgr_thread = threading.Thread(target=run_local_signal_engine_manager, name="kibot-signal-mgr", daemon=True)
+    signal_mgr_thread.start()
+    
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Allow socket reuse for quick restarts
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    _main_socket = sock
+    try:
+        sock.bind((UDP_BIND_HOST, UDP_BIND_PORT))
+        # Set socket timeout to allow periodic shutdown checks
+        sock.settimeout(5.0)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "service": "kibot_manager_udp_veto",
+                    "bind": f"{UDP_BIND_HOST}:{UDP_BIND_PORT}",
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        _last_screen  = 0.0
+        _last_btc_upd = 0.0
+        _last_review  = 0.0
+
+        while not _shutdown_event.is_set():
+            try:
+                raw, _ = sock.recvfrom(65535)
+                msg = json.loads(raw.decode("utf-8"))
+                
+                if msg.get("source") == "KIBOT_LOCAL_ENGINE":
+                    _process_local_signal(msg)
+                else:
+                    _process_signal_multipos(msg)
+            except socket.timeout:
+                now = time.time()
+
+                # Update BTC
+                if now - _last_btc_upd > BTC_UPDATE_S:
+                    _last_btc_upd = now
+                    try:
+                        import urllib.request, json
+                        req = urllib.request.Request("https://indodax.com/api/ticker/btcidr", headers={"User-Agent": "Mozilla"})
+                        with urllib.request.urlopen(req, timeout=5) as r:
+                            btc_data = json.loads(r.read())
+                        update_btc(float(btc_data.get("ticker",{}).get("last",0)))
+                    except Exception:
+                        pass
+
+                # Screen Bucket B
+                if now - _last_screen > SCREEN_INTERVAL_S:
+                    _last_screen = now
+                    if not _shutting_down:
+                        try:
+                            import urllib.request, json
+                            req = urllib.request.Request("https://indodax.com/api/tickers", headers={"User-Agent": "Mozilla"})
+                            with urllib.request.urlopen(req, timeout=10) as r:
+                                tickers_raw = json.loads(r.read())
+                            all_tickers = tickers_raw.get("tickers", tickers_raw)
+                            equity = float(_metrics.get("total_equity_idr", 60000.0))
+                            candidates = screen_bucket_b(
+                                all_tickers, btc_change_1h(), cascade_state.cfg(), equity
+                            )
+                            if candidates:
+                                top = candidates[0]
+                                print(f"[SCREEN-B] {top['pair_id']} score={top['conv']['score']:.3f} phase={top['conv']['phase']} ev=Rp{top['sim']['ev_idr']:.0f}", flush=True)
+                        except Exception as e:
+                            print(f"[SCREEN] {e}", flush=True)
+
+                # 30-min review
+                if now - _last_review > REVIEW_INTERVAL_S:
+                    _last_review = now
+                    try:
+                        equity = float(_metrics.get("total_equity_idr", 60000.0))
+                        pnl = float(_metrics.get("daily_pnl_pct", 0.0))
+                        msg = run_math_review(equity, pnl)
+                        _telegram_send(msg)
+                    except Exception as e:
+                        print(f"[REVIEW] {e}", flush=True)
+
+                continue
+            except OSError as e:
+                if _shutdown_event.is_set():
+                    break
+                print(f"[KIBOT][UDP][ERROR] socket error: {e}", flush=True)
+            except json.JSONDecodeError as e:
+                print(f"[KIBOT][UDP][ERROR] JSON parse failed: {e}", flush=True)
+            except Exception as error:
+                print(f"[KIBOT][UDP][ERROR] process failed reason={error}", flush=True)
+    finally:
+        print("[KIBOT][SHUTDOWN] Closing UDP socket...", flush=True)
+        try:
+            sock.close()
+        except Exception:
+            pass
+        _main_socket = None
+    
+    print("[KIBOT][SHUTDOWN] KiBot Manager stopped gracefully.", flush=True)
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
