@@ -1,5 +1,5 @@
 -- =============================================
--- KIBOT TRINITY v7.0 — Complete Supabase Schema
+-- KICRYP TRINITY v7.0 — Complete Supabase Schema
 -- Project: vptlelbgyxwieyfdpuja
 -- Filosofi: MATH-FIRST, DUAL-BUCKET, CASCADE-LOSS
 -- =============================================
@@ -7,7 +7,7 @@
 -- Trade history (Unified Bucket A/B logging)
 CREATE TABLE IF NOT EXISTS trade_history (
     id                BIGSERIAL PRIMARY KEY,
-    trade_id          TEXT UNIQUE NOT NULL,             -- Required by kibot_engine_v2
+    trade_id          TEXT UNIQUE NOT NULL,             -- Required by kicryp_engine_v2
     pair_id           TEXT NOT NULL,
     bucket            TEXT NOT NULL CHECK (bucket IN ('A','B')),
     entry_price       DECIMAL(20,8) NOT NULL,

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# KiBot Trinity - Logrotate Setup Script
-# Prevents disk full by rotating logs daily in /var/log/kibot/
+# KiCryp Trinity - Logrotate Setup Script
+# Prevents disk full by rotating logs daily in /var/log/kicryp/
 # 
 # Usage:
 #   sudo bash scripts/setup_logrotate.sh
 #
 # This script:
-# - Creates /var/log/kibot/ directory if not exists
+# - Creates /var/log/kicryp/ directory if not exists
 # - Configures logrotate for daily rotation
 # - Keeps last 3 days of logs
 # - Compresses old logs with gzip
@@ -14,11 +14,11 @@
 
 set -euo pipefail
 
-LOGROTATE_CONF="/etc/logrotate.d/kibot"
-LOG_DIR="/var/log/kibot"
+LOGROTATE_CONF="/etc/logrotate.d/kicryp"
+LOG_DIR="/var/log/kicryp"
 
 echo "==================================="
-echo "KiBot Logrotate Setup"
+echo "KiCryp Logrotate Setup"
 echo "==================================="
 
 # Check if running as root
@@ -40,10 +40,10 @@ fi
 # Create logrotate configuration
 echo "📝 Creating logrotate configuration: $LOGROTATE_CONF"
 cat > "$LOGROTATE_CONF" << 'EOF'
-# KiBot Trinity - Logrotate Configuration
+# KiCryp Trinity - Logrotate Configuration
 # Prevents disk full in degraded mode (local logging)
 
-/var/log/kibot/*.log {
+/var/log/kicryp/*.log {
     # Rotate daily (or when file reaches 50MB, whichever comes first)
     daily
     size 50M
@@ -64,7 +64,7 @@ cat > "$LOGROTATE_CONF" << 'EOF'
     # Create new log file with correct permissions after rotation
     create 0644 ubuntu ubuntu
     
-    # Use date as suffix for rotated files (e.g., kibot.log-20260406)
+    # Use date as suffix for rotated files (e.g., kicryp.log-20260406)
     dateext
     dateformat -%Y%m%d
     
@@ -73,7 +73,7 @@ cat > "$LOGROTATE_CONF" << 'EOF'
 }
 
 # Also rotate JSON fallback logs (degraded mode)
-/var/log/kibot/*.json {
+/var/log/kicryp/*.json {
     daily
     size 50M
     rotate 3
@@ -127,10 +127,10 @@ echo "Manual rotation:"
 echo "  sudo logrotate -f $LOGROTATE_CONF"
 echo ""
 echo "Check status:"
-echo "  cat /var/lib/logrotate/status | grep kibot"
+echo "  cat /var/lib/logrotate/status | grep kicryp"
 echo ""
 echo "View compressed logs:"
-echo "  zcat /var/log/kibot/kibot-manager.log-20260406.gz"
+echo "  zcat /var/log/kicryp/kicryp-manager.log-20260406.gz"
 echo ""
 echo "Monitor disk usage:"
 echo "  du -sh $LOG_DIR"

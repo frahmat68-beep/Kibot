@@ -32,8 +32,8 @@ IMAGE_CACHE_FILE="${STATE_DIR}/arm_image_id.cache"
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 # Opsional: kalau diisi, script kirim notif Telegram saat sukses saja.
-TELEGRAM_BOT_TOKEN="${KIBOT_TELEGRAM_BOT_TOKEN:-}"
-TELEGRAM_CHAT_ID="${KIBOT_TELEGRAM_CHAT_ID:-}"
+TELEGRAM_BOT_TOKEN="${KICRYP_TELEGRAM_BOT_TOKEN:-}"
+TELEGRAM_CHAT_ID="${KICRYP_TELEGRAM_CHAT_ID:-}"
 
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"

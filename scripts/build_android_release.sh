@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/.dist/android/stable"
 KEYSTORE_ENV="${ROOT_DIR}/.secrets/android-keystore.env"
-ANDROID_BUILD_DIR="${KIBOT_ANDROID_BUILD_DIR:-$HOME/.kibot-build/apps-android}"
+ANDROID_BUILD_DIR="${KICRYP_ANDROID_BUILD_DIR:-$HOME/.kicryp-build/apps-android}"
 
 if [[ ! -f "${ROOT_DIR}/local.properties" ]]; then
   echo "local.properties is missing. Run scripts/setup_android_sdk.sh first."
@@ -37,8 +37,8 @@ if [[ -f "${DIST_DIR}/latest.json" ]]; then
   PREV_CODE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("versionCode",0))' "${DIST_DIR}/latest.json" 2>/dev/null || echo 0)"
 fi
 NEXT_CODE=$((PREV_CODE + 1))
-export KIBOT_ANDROID_VERSION_CODE="${NEXT_CODE}"
-export KIBOT_ANDROID_VERSION_NAME="1.0.${NEXT_CODE}"
+export KICRYP_ANDROID_VERSION_CODE="${NEXT_CODE}"
+export KICRYP_ANDROID_VERSION_NAME="1.0.${NEXT_CODE}"
 
 "${ROOT_DIR}/gradlew" :apps:android:assembleRelease
 
@@ -58,7 +58,7 @@ VERSION_NAME="$(python3 -c 'import json, sys; data = json.load(open(sys.argv[1])
 VERSION_CODE="$(python3 -c 'import json, sys; data = json.load(open(sys.argv[1])); print(data["elements"][0]["versionCode"])' "${METADATA_PATH}")"
 SHA256="$(shasum -a 256 "${APK_PATH}" | awk '{print $1}')"
 MANIFEST_PATH="${DIST_DIR}/latest.json"
-TARGET_APK="${DIST_DIR}/kibot-android-latest.apk"
+TARGET_APK="${DIST_DIR}/kicryp-android-latest.apk"
 
 find "${DIST_DIR}" -maxdepth 1 -type f -name "*.apk" -delete
 cp "${APK_PATH}" "${TARGET_APK}"
@@ -68,7 +68,7 @@ cat > "${MANIFEST_PATH}" <<EOF
   "channel": "stable-private",
   "versionName": "${VERSION_NAME}",
   "versionCode": ${VERSION_CODE},
-  "artifact": "kibot-android-latest.apk",
+  "artifact": "kicryp-android-latest.apk",
   "sha256": "${SHA256}",
   "generatedAt": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 }

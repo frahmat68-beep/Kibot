@@ -6,7 +6,7 @@
     </appender>
 
     <appender name="FILE" class="ch.qos.logback.core.FileAppender">
-        <file>${java.io.tmpdir}/kibot-mac-engine.log</file>
+        <file>${java.io.tmpdir}/kicryp-mac-engine.log</file>
         <encoder>
             <pattern>%d{HH:mm:ss.SSS} %-5level %logger - %msg%n</pattern>
         </encoder>

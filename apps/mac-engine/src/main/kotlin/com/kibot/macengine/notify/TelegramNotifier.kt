@@ -130,13 +130,13 @@ class TelegramNotifier(
     companion object {
         fun fromEnv(): TelegramNotifier = TelegramNotifier(
             botToken = System.getenv("TELEGRAM_BOT_TOKEN")
-                ?: System.getenv("KIBOT_TELEGRAM_BOT_TOKEN"),
+                ?: System.getenv("KICRYP_TELEGRAM_BOT_TOKEN"),
             chatId = System.getenv("TELEGRAM_CHAT_ID")
-                ?: System.getenv("KIBOT_TELEGRAM_CHAT_ID"),
-            minExitAlertProfitPct = System.getenv("KIBOT_TELEGRAM_MIN_EXIT_ALERT_PROFIT_PCT")
+                ?: System.getenv("KICRYP_TELEGRAM_CHAT_ID"),
+            minExitAlertProfitPct = System.getenv("KICRYP_TELEGRAM_MIN_EXIT_ALERT_PROFIT_PCT")
                 ?.toDoubleOrNull()
                 ?: 1.5,
-            minExitAlertProfitIdr = System.getenv("KIBOT_TELEGRAM_MIN_EXIT_ALERT_PROFIT_IDR")
+            minExitAlertProfitIdr = System.getenv("KICRYP_TELEGRAM_MIN_EXIT_ALERT_PROFIT_IDR")
                 ?.toDoubleOrNull()
                 ?: 20_000.0,
         )

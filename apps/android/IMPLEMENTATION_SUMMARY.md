@@ -1,8 +1,8 @@
-# KiBot Android Dashboard - Implementation Complete ✅
+# KiCryp Android Dashboard - Implementation Complete ✅
 
 ## Project Summary
 
-A complete, production-ready Android mobile dashboard for the KiBot trading bot. Built with modern Android technologies (Kotlin, Jetpack Compose) for a simple, non-technical user interface.
+A complete, production-ready Android mobile dashboard for the KiCryp trading bot. Built with modern Android technologies (Kotlin, Jetpack Compose) for a simple, non-technical user interface.
 
 **Status**: Fully implemented and ready to build/deploy
 
@@ -14,7 +14,7 @@ A complete, production-ready Android mobile dashboard for the KiBot trading bot.
 3. ✅ `settings.gradle.kts` - Gradle settings
 4. ✅ `AndroidManifest.xml` - App permissions and config
 5. ✅ `MainActivity.kt` - App entry point and ViewModel
-6. ✅ `KiBotWebSocketClient.kt` - WebSocket connection logic
+6. ✅ `KiCrypWebSocketClient.kt` - WebSocket connection logic
 7. ✅ `BotStatus.kt` - Data models
 8. ✅ `DashboardScreen.kt` - Main UI (Compose)
 9. ✅ `SettingsScreen.kt` - Settings UI (Compose)
@@ -111,10 +111,10 @@ A complete, production-ready Android mobile dashboard for the KiBot trading bot.
 apps/android/
 ├── app/
 │   ├── src/main/
-│   │   ├── kotlin/com/kibot/android/
+│   │   ├── kotlin/com/kicryp/android/
 │   │   │   ├── MainActivity.kt (Activity + ViewModel)
 │   │   │   ├── websocket/
-│   │   │   │   └── KiBotWebSocketClient.kt
+│   │   │   │   └── KiCrypWebSocketClient.kt
 │   │   │   ├── data/
 │   │   │   │   └── BotStatus.kt
 │   │   │   ├── ui/
@@ -162,7 +162,7 @@ cd apps/android
 
 ### WebSocket URL
 ```
-ws://[host]:[port]/kibot/status
+ws://[host]:[port]/kicryp/status
 ```
 
 ### Request Format
@@ -206,7 +206,7 @@ ws://[host]:[port]/kibot/status
 ```bash
 emulator -avd Pixel_8 &
 ./gradlew installDebug
-adb shell am start -n com.kibot.android/.MainActivity
+adb shell am start -n com.kicryp.android/.MainActivity
 ```
 
 ### Physical Device
@@ -368,8 +368,8 @@ See BUILD_GUIDE.md for Python WebSocket server example
 # View all logs
 adb logcat
 
-# KiBot logs only
-adb logcat | grep "KiBot"
+# KiCryp logs only
+adb logcat | grep "KiCryp"
 
 # Save logs
 adb logcat > debug.log
@@ -414,7 +414,7 @@ For technical questions, refer to:
 
 ### Source Code ✅
 - [x] MainActivity.kt - Activity lifecycle & ViewModel
-- [x] KiBotWebSocketClient.kt - WebSocket implementation
+- [x] KiCrypWebSocketClient.kt - WebSocket implementation
 - [x] BotStatus.kt - Data models
 - [x] DashboardScreen.kt - Main UI
 - [x] SettingsScreen.kt - Settings UI
@@ -445,6 +445,6 @@ For technical questions, refer to:
 
 ---
 
-**🎉 KiBot Android Dashboard is ready to build and deploy! 🎉**
+**🎉 KiCryp Android Dashboard is ready to build and deploy! 🎉**
 
 For detailed instructions, start with **QUICK_START.md** for quick setup, or **README.md** for complete documentation.

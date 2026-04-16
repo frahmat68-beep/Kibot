@@ -10,7 +10,7 @@ kotlin {
 }
 
 application {
-    mainClass = "com.kibot.macengine.MainKt"
+    mainClass = "com.kicryp.macengine.MainKt"
 }
 
 dependencies {
@@ -50,9 +50,9 @@ tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJ
     mergeServiceFiles()
     manifest {
         attributes(
-            "Implementation-Title" to "KiBot Mac Engine",
+            "Implementation-Title" to "KiCryp Mac Engine",
             "Implementation-Version" to project.version,
-            "Main-Class" to "com.kibot.macengine.MainKt",
+            "Main-Class" to "com.kicryp.macengine.MainKt",
         )
     }
 }

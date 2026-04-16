@@ -1,5 +1,5 @@
 """
-KiBot What-If Simulation Engine
+KiCryp What-If Simulation Engine
 ================================
 Untuk setiap pair di CoinUniverse.tradeable, hitung 3 skenario:
 1. BULL: harga naik 5% dalam 1 jam
@@ -18,7 +18,7 @@ dan di-serve via /api/state.whatIfSimulation
 
 import json, time, math, os
 from datetime import datetime
-from kibot_learning_engine import get_engine, ROUND_TRIP_MAKER, ROUND_TRIP_TAKER
+from kicryp_learning_engine import get_engine, ROUND_TRIP_MAKER, ROUND_TRIP_TAKER
 
 WHATIF_PATH = "state/whatif_results.json"
 

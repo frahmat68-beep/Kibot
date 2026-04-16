@@ -9,7 +9,7 @@
 
 ### 1. **LatePumpEntryStrategy.kt** - Core Logic Upgrade
 
-**File:** `packages/core/src/commonMain/kotlin/com/kibot/core/LatePumpEntryStrategy.kt`
+**File:** `packages/core/src/commonMain/kotlin/com/kicryp/core/LatePumpEntryStrategy.kt`
 
 **Key Changes:**
 - Added `bucketType` parameter to `evaluateLatePumpEntry()` function
@@ -60,7 +60,7 @@
 
 ### 2. **PumpDetector.kt** - Entry Recommendation Update
 
-**File:** `packages/core/src/commonMain/kotlin/com/kibot/core/PumpDetector.kt`
+**File:** `packages/core/src/commonMain/kotlin/com/kicryp/core/PumpDetector.kt`
 
 **Change:** Added comment to clarify handoff to LatePumpEntryStrategy
 - When 15%, PumpDetector returns `WAIT` recommendationpump 

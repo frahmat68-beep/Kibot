@@ -123,7 +123,7 @@ data class MacRuntimeConfig(
 object MacRuntimeConfigLoader {
     fun load(cwd: Path = Paths.get("").toAbsolutePath()): MacRuntimeConfig {
         val fileValues = linkedMapOf<String, String>()
-        val explicitEnvFile = System.getenv("KIBOT_ENV_FILE")?.takeIf { it.isNotBlank() }?.let(Paths::get)
+        val explicitEnvFile = System.getenv("KICRYP_ENV_FILE")?.takeIf { it.isNotBlank() }?.let(Paths::get)
         val hintedBotId = System.getenv("BOT_ID")?.takeIf { it.isNotBlank() }
         candidateEnvFiles(
             start = cwd,
@@ -144,7 +144,7 @@ object MacRuntimeConfigLoader {
 
         val botId = BotId(optional("BOT_ID") ?: "main")
         val runtimeProfileKey = optional("BOT_PROFILE_KEY") ?: defaultRuntimeProfileKey(botId.value)
-        val exchangeKind = optional("KIBOT_EXCHANGE_KIND")
+        val exchangeKind = optional("KICRYP_EXCHANGE_KIND")
             ?.uppercase()
             ?.let { raw ->
                 when (raw) {
@@ -166,8 +166,8 @@ object MacRuntimeConfigLoader {
             ?.uppercase()
             ?.let { raw -> runCatching { DeviceRole.valueOf(raw) }.getOrNull() }
             ?: DeviceRole.PRIMARY
-        val configuredStable = optional("KIBOT_STABLE_CAPITAL_ALLOCATION_PCT")?.toDoubleOrNull()
-        val configuredAggressive = optional("KIBOT_AGGRESSIVE_CAPITAL_ALLOCATION_PCT")?.toDoubleOrNull()
+        val configuredStable = optional("KICRYP_STABLE_CAPITAL_ALLOCATION_PCT")?.toDoubleOrNull()
+        val configuredAggressive = optional("KICRYP_AGGRESSIVE_CAPITAL_ALLOCATION_PCT")?.toDoubleOrNull()
         val stableCapitalAllocationPercent = when {
             configuredStable != null && configuredAggressive != null &&
                 configuredStable in 0.50..0.95 &&
@@ -214,8 +214,8 @@ object MacRuntimeConfigLoader {
             enableLanAdvertising = optional("MAC_ENGINE_ENABLE_LAN_ADVERTISE")?.equals("true", ignoreCase = true) ?: true,
             dashboardStatePollIntervalMillis = optional("MAC_DASHBOARD_STATE_POLL_INTERVAL_MS")?.toLongOrNull() ?: 2_000L,
             dashboardLogPollIntervalMillis = optional("MAC_DASHBOARD_LOG_POLL_INTERVAL_MS")?.toLongOrNull() ?: 5_000L,
-            releaseLabel = optional("KIBOT_RELEASE_LABEL")
-                ?: optional("KIBOT_RELEASE_TAG")
+            releaseLabel = optional("KICRYP_RELEASE_LABEL")
+                ?: optional("KICRYP_RELEASE_TAG")
                 ?: optional("GITHUB_RUN_NUMBER")?.let { "#$it" }
                 ?: "#0",
             aiSupportConfig = optional("GEMINI_SUPPORT_API_KEY")
@@ -235,41 +235,41 @@ object MacRuntimeConfigLoader {
                     )
                 },
             adaptiveAiPolicyPath = resolveScopedRuntimePath(
-                explicit = optional("KIBOT_AI_ADAPTIVE_POLICY_PATH"),
+                explicit = optional("KICRYP_AI_ADAPTIVE_POLICY_PATH"),
                 scopedDefault = cwd.resolve(".tmp/ai-audits/$runtimeProfileKey/latest/adaptive_policy.json"),
                 legacyDefault = cwd.resolve(".tmp/ai-audits/latest/adaptive_policy.json"),
             ),
             localLearningMemoryPath = resolveScopedRuntimePath(
-                explicit = optional("KIBOT_LOCAL_LEARNING_MEMORY_PATH"),
+                explicit = optional("KICRYP_LOCAL_LEARNING_MEMORY_PATH"),
                 scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/local_learning_memory.json"),
                 legacyDefault = cwd.resolve(".tmp/runtime/local_learning_memory.json"),
             ),
             targetEnforcementMemoryPath = resolveScopedRuntimePath(
-                explicit = optional("KIBOT_TARGET_ENFORCEMENT_MEMORY_PATH"),
+                explicit = optional("KICRYP_TARGET_ENFORCEMENT_MEMORY_PATH"),
                 scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/target_enforcement_memory.json"),
                 legacyDefault = cwd.resolve(".tmp/runtime/target_enforcement_memory.json"),
             ),
             pnlResetAnchorPath = resolveScopedRuntimePath(
-                explicit = optional("KIBOT_PNL_RESET_ANCHOR_PATH"),
+                explicit = optional("KICRYP_PNL_RESET_ANCHOR_PATH"),
                 scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/pnl_reset_anchor.json"),
                 legacyDefault = cwd.resolve(".tmp/runtime/pnl_reset_anchor.json"),
             ),
             monthlyPnlAnchorPath = resolveScopedRuntimePath(
-                explicit = optional("KIBOT_MONTHLY_PNL_ANCHOR_PATH"),
+                explicit = optional("KICRYP_MONTHLY_PNL_ANCHOR_PATH"),
                 scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/monthly_pnl_anchor.json"),
                 legacyDefault = cwd.resolve(".tmp/runtime/monthly_pnl_anchor.json"),
             ),
             localPositionStatePath = resolveScopedRuntimePath(
-                explicit = optional("KIBOT_LOCAL_POSITION_STATE_PATH"),
+                explicit = optional("KICRYP_LOCAL_POSITION_STATE_PATH"),
                 scopedDefault = cwd.resolve(".tmp/runtime/$runtimeProfileKey/local_position_state.json"),
                 legacyDefault = cwd.resolve(".tmp/runtime/local_position_state.json"),
             ),
-            localPositionStateEnabled = optional("KIBOT_LOCAL_POSITION_STATE_ENABLED")
+            localPositionStateEnabled = optional("KICRYP_LOCAL_POSITION_STATE_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
             analysisPublishIntervalMillis = optional("BOT_ANALYSIS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 30_000L,
             strategyMetricsPublishIntervalMillis = optional("BOT_STRATEGY_METRICS_PUBLISH_INTERVAL_MS")?.toLongOrNull() ?: 300_000L,
-            autonomousAiReviewIntervalMillis = optional("KIBOT_AUTONOMOUS_AI_REVIEW_INTERVAL_MS")
+            autonomousAiReviewIntervalMillis = optional("KICRYP_AUTONOMOUS_AI_REVIEW_INTERVAL_MS")
                 ?.toLongOrNull()
                 ?: 1_800_000L,
             stableCapitalAllocationPercent = stableCapitalAllocationPercent,
@@ -340,74 +340,74 @@ object MacRuntimeConfigLoader {
                 primaryQuoteAsset = optional("BINANCE_PRIMARY_QUOTE_ASSET")?.lowercase() ?: "usdt",
                 shadowMode = optional("SHADOW_MODE")?.equals("true", ignoreCase = true) ?: false,
             ),
-            telegramAlertsEnabled = optional("KIBOT_TELEGRAM_ALERTS_ENABLED")?.equals("true", ignoreCase = true) == true,
-            telegramBotToken = optional("KIBOT_TELEGRAM_BOT_TOKEN"),
-            telegramChatId = optional("KIBOT_TELEGRAM_CHAT_ID"),
-            telegramFatalAlertDebounceMillis = optional("KIBOT_TELEGRAM_FATAL_ALERT_DEBOUNCE_MS")
+            telegramAlertsEnabled = optional("KICRYP_TELEGRAM_ALERTS_ENABLED")?.equals("true", ignoreCase = true) == true,
+            telegramBotToken = optional("KICRYP_TELEGRAM_BOT_TOKEN"),
+            telegramChatId = optional("KICRYP_TELEGRAM_CHAT_ID"),
+            telegramFatalAlertDebounceMillis = optional("KICRYP_TELEGRAM_FATAL_ALERT_DEBOUNCE_MS")
                 ?.toLongOrNull()
                 ?.coerceAtLeast(30_000L)
                 ?: 180_000L,
-            leadLagSignalEnabled = optional("KIBOT_LEAD_LAG_SIGNAL_ENABLED")
+            leadLagSignalEnabled = optional("KICRYP_LEAD_LAG_SIGNAL_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
-            leadLagTargetBotId = optional("KIBOT_LEAD_LAG_TARGET_BOT_ID")
+            leadLagTargetBotId = optional("KICRYP_LEAD_LAG_TARGET_BOT_ID")
                 ?.takeIf { it.isNotBlank() }
                 ?.let(::BotId),
-            leadLagSignalTtlMillis = optional("KIBOT_LEAD_LAG_SIGNAL_TTL_MS")?.toLongOrNull() ?: 120_000L,
-            leadLagSignalCooldownMillis = optional("KIBOT_LEAD_LAG_SIGNAL_COOLDOWN_MS")?.toLongOrNull() ?: 20_000L,
-            leadLagMinConfidence = optional("KIBOT_LEAD_LAG_MIN_CONFIDENCE")?.toDoubleOrNull() ?: 0.72,
-            leadLagMinExpectedNetPct = optional("KIBOT_LEAD_LAG_MIN_EXPECTED_NET_PCT")?.toDoubleOrNull() ?: 1.05,
-            leadLagMinShortTermReturnPct = optional("KIBOT_LEAD_LAG_MIN_SHORT_TERM_RETURN_PCT")?.toDoubleOrNull() ?: 2.2,
-            leadLagNagaMinExpectedNetPct = optional("KIBOT_LEAD_LAG_NAGA_MIN_EXPECTED_NET_PCT")?.toDoubleOrNull() ?: 1.10,
-            leadLagNagaMinShortTermReturnPct = optional("KIBOT_LEAD_LAG_NAGA_MIN_SHORT_TERM_RETURN_PCT")?.toDoubleOrNull() ?: 2.5,
-            leadLagMidMinExpectedNetPct = optional("KIBOT_LEAD_LAG_MID_MIN_EXPECTED_NET_PCT")?.toDoubleOrNull() ?: 0.90,
-            leadLagMidMinShortTermReturnPct = optional("KIBOT_LEAD_LAG_MID_MIN_SHORT_TERM_RETURN_PCT")?.toDoubleOrNull() ?: 1.4,
-            leadLagMicinMinExpectedNetPct = optional("KIBOT_LEAD_LAG_MICIN_MIN_EXPECTED_NET_PCT")?.toDoubleOrNull() ?: 0.60,
-            leadLagMicinMinShortTermReturnPct = optional("KIBOT_LEAD_LAG_MICIN_MIN_SHORT_TERM_RETURN_PCT")?.toDoubleOrNull() ?: 0.9,
-            leadLagNagaSignalTtlMillis = optional("KIBOT_LEAD_LAG_NAGA_SIGNAL_TTL_MS")?.toLongOrNull() ?: 2_000L,
-            leadLagMidSignalTtlMillis = optional("KIBOT_LEAD_LAG_MID_SIGNAL_TTL_MS")?.toLongOrNull() ?: 5_000L,
-            leadLagMicinSignalTtlMillis = optional("KIBOT_LEAD_LAG_MICIN_SIGNAL_TTL_MS")?.toLongOrNull() ?: 12_000L,
-            leadLagEnableNaga = optional("KIBOT_LEAD_LAG_ENABLE_NAGA")?.equals("true", ignoreCase = true) ?: false,
-            leadLagEnableMid = optional("KIBOT_LEAD_LAG_ENABLE_MID")?.equals("true", ignoreCase = true) ?: true,
-            leadLagEnableMicin = optional("KIBOT_LEAD_LAG_ENABLE_MICIN")?.equals("true", ignoreCase = true) ?: true,
-            leadLagMinTradeActivityScore = optional("KIBOT_LEAD_LAG_MIN_TRADE_ACTIVITY_SCORE")?.toDoubleOrNull() ?: 0.58,
-            leadLagForceRotationOnReceive = optional("KIBOT_LEAD_LAG_FORCE_ROTATION_ON_RECEIVE")
+            leadLagSignalTtlMillis = optional("KICRYP_LEAD_LAG_SIGNAL_TTL_MS")?.toLongOrNull() ?: 120_000L,
+            leadLagSignalCooldownMillis = optional("KICRYP_LEAD_LAG_SIGNAL_COOLDOWN_MS")?.toLongOrNull() ?: 20_000L,
+            leadLagMinConfidence = optional("KICRYP_LEAD_LAG_MIN_CONFIDENCE")?.toDoubleOrNull() ?: 0.72,
+            leadLagMinExpectedNetPct = optional("KICRYP_LEAD_LAG_MIN_EXPECTED_NET_PCT")?.toDoubleOrNull() ?: 1.05,
+            leadLagMinShortTermReturnPct = optional("KICRYP_LEAD_LAG_MIN_SHORT_TERM_RETURN_PCT")?.toDoubleOrNull() ?: 2.2,
+            leadLagNagaMinExpectedNetPct = optional("KICRYP_LEAD_LAG_NAGA_MIN_EXPECTED_NET_PCT")?.toDoubleOrNull() ?: 1.10,
+            leadLagNagaMinShortTermReturnPct = optional("KICRYP_LEAD_LAG_NAGA_MIN_SHORT_TERM_RETURN_PCT")?.toDoubleOrNull() ?: 2.5,
+            leadLagMidMinExpectedNetPct = optional("KICRYP_LEAD_LAG_MID_MIN_EXPECTED_NET_PCT")?.toDoubleOrNull() ?: 0.90,
+            leadLagMidMinShortTermReturnPct = optional("KICRYP_LEAD_LAG_MID_MIN_SHORT_TERM_RETURN_PCT")?.toDoubleOrNull() ?: 1.4,
+            leadLagMicinMinExpectedNetPct = optional("KICRYP_LEAD_LAG_MICIN_MIN_EXPECTED_NET_PCT")?.toDoubleOrNull() ?: 0.60,
+            leadLagMicinMinShortTermReturnPct = optional("KICRYP_LEAD_LAG_MICIN_MIN_SHORT_TERM_RETURN_PCT")?.toDoubleOrNull() ?: 0.9,
+            leadLagNagaSignalTtlMillis = optional("KICRYP_LEAD_LAG_NAGA_SIGNAL_TTL_MS")?.toLongOrNull() ?: 2_000L,
+            leadLagMidSignalTtlMillis = optional("KICRYP_LEAD_LAG_MID_SIGNAL_TTL_MS")?.toLongOrNull() ?: 5_000L,
+            leadLagMicinSignalTtlMillis = optional("KICRYP_LEAD_LAG_MICIN_SIGNAL_TTL_MS")?.toLongOrNull() ?: 12_000L,
+            leadLagEnableNaga = optional("KICRYP_LEAD_LAG_ENABLE_NAGA")?.equals("true", ignoreCase = true) ?: false,
+            leadLagEnableMid = optional("KICRYP_LEAD_LAG_ENABLE_MID")?.equals("true", ignoreCase = true) ?: true,
+            leadLagEnableMicin = optional("KICRYP_LEAD_LAG_ENABLE_MICIN")?.equals("true", ignoreCase = true) ?: true,
+            leadLagMinTradeActivityScore = optional("KICRYP_LEAD_LAG_MIN_TRADE_ACTIVITY_SCORE")?.toDoubleOrNull() ?: 0.58,
+            leadLagForceRotationOnReceive = optional("KICRYP_LEAD_LAG_FORCE_ROTATION_ON_RECEIVE")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
-            leadLagUdpEnabled = optional("KIBOT_LEAD_LAG_UDP_ENABLED")
+            leadLagUdpEnabled = optional("KICRYP_LEAD_LAG_UDP_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
-            leadLagUdpListenPort = optional("KIBOT_LEAD_LAG_UDP_LISTEN_PORT")?.toIntOrNull() ?: 9999,
-            leadLagUdpTargetHost = optional("KIBOT_LEAD_LAG_UDP_TARGET_HOST"),
-            leadLagUdpTargetPort = optional("KIBOT_LEAD_LAG_UDP_TARGET_PORT")?.toIntOrNull() ?: 9999,
-            leadLagUdpBinaryProtocolEnabled = optional("KIBOT_LEAD_LAG_UDP_BINARY_ENABLED")
+            leadLagUdpListenPort = optional("KICRYP_LEAD_LAG_UDP_LISTEN_PORT")?.toIntOrNull() ?: 9999,
+            leadLagUdpTargetHost = optional("KICRYP_LEAD_LAG_UDP_TARGET_HOST"),
+            leadLagUdpTargetPort = optional("KICRYP_LEAD_LAG_UDP_TARGET_PORT")?.toIntOrNull() ?: 9999,
+            leadLagUdpBinaryProtocolEnabled = optional("KICRYP_LEAD_LAG_UDP_BINARY_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: false,
-            leadLagUdpBinaryDualStackEnabled = optional("KIBOT_LEAD_LAG_UDP_BINARY_DUAL_STACK")
+            leadLagUdpBinaryDualStackEnabled = optional("KICRYP_LEAD_LAG_UDP_BINARY_DUAL_STACK")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
-            leadLagUdpSequenceWindowSize = optional("KIBOT_LEAD_LAG_UDP_SEQUENCE_WINDOW")
+            leadLagUdpSequenceWindowSize = optional("KICRYP_LEAD_LAG_UDP_SEQUENCE_WINDOW")
                 ?.toIntOrNull()
                 ?.coerceAtLeast(1)
                 ?: 64,
-            leadLagUdpDedupTtlMillis = optional("KIBOT_LEAD_LAG_UDP_DEDUP_TTL_MS")
+            leadLagUdpDedupTtlMillis = optional("KICRYP_LEAD_LAG_UDP_DEDUP_TTL_MS")
                 ?.toLongOrNull()
                 ?.coerceAtLeast(500L)
                 ?: 4_000L,
-            leadLagUdpPrewarmTtlMillis = optional("KIBOT_LEAD_LAG_UDP_PREWARM_TTL_MS")
+            leadLagUdpPrewarmTtlMillis = optional("KICRYP_LEAD_LAG_UDP_PREWARM_TTL_MS")
                 ?.toLongOrNull()
                 ?.coerceAtLeast(250L)
                 ?: 1_500L,
-            leadLagUdpHeartbeatEnabled = optional("KIBOT_LEAD_LAG_UDP_HEARTBEAT_ENABLED")
+            leadLagUdpHeartbeatEnabled = optional("KICRYP_LEAD_LAG_UDP_HEARTBEAT_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
-            leadLagUdpHeartbeatIntervalMillis = optional("KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS")
+            leadLagUdpHeartbeatIntervalMillis = optional("KICRYP_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS")
                 ?.toLongOrNull()
                 ?: 1_000L,
-            leadLagUdpHeartbeatTimeoutMillis = optional("KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS")
+            leadLagUdpHeartbeatTimeoutMillis = optional("KICRYP_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS")
                 ?.toLongOrNull()
                 ?: 5_000L,
-            leadLagUdpHeartbeatRequiredBotIds = optional("KIBOT_HIVE_EXPECTED_BOT_IDS")
+            leadLagUdpHeartbeatRequiredBotIds = optional("KICRYP_HIVE_EXPECTED_BOT_IDS")
                 ?.split(",")
                 ?.mapNotNull { token ->
                     token.trim()
@@ -416,45 +416,45 @@ object MacRuntimeConfigLoader {
                 }
                 ?.toSet()
                 ?: defaultHeartbeatPeers(botId.value),
-            indodaxHyperGuardrailEnabled = optional("KIBOT_INDODAX_HYPER_GUARDRAIL_ENABLED")
+            indodaxHyperGuardrailEnabled = optional("KICRYP_INDODAX_HYPER_GUARDRAIL_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: true,
             // Keep conservative but realistic default; override via env for your actual account tier.
-            indodaxHyperGuardrailTakerFeePct = optional("KIBOT_INDODAX_HYPER_GUARDRAIL_TAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.4211,
+            indodaxHyperGuardrailTakerFeePct = optional("KICRYP_INDODAX_HYPER_GUARDRAIL_TAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.4211,
             hyperAggressiveConfig = HyperAggressiveConfig(
-                targetDailyPct = optional("KIBOT_HYPER_TARGET_DAILY_PCT")?.toDoubleOrNull() ?: 25.0,
-                sexyWindowMs = optional("KIBOT_HYPER_SEXY_WINDOW_MS")?.toLongOrNull() ?: 60_000L,
-                sexyMinPriceDeltaPct = optional("KIBOT_HYPER_SEXY_MIN_PRICE_DELTA_PCT")?.toDoubleOrNull() ?: 1.5,
-                sexyMinVolumeAnomalyMultiplier = optional("KIBOT_HYPER_SEXY_MIN_VOLUME_MULTIPLIER")?.toDoubleOrNull() ?: 2.5,
-                sexyMinTradeActivityScore = optional("KIBOT_HYPER_SEXY_MIN_TRADE_ACTIVITY_SCORE")?.toDoubleOrNull() ?: 0.72,
-                superSexyWindowMs = optional("KIBOT_HYPER_SUPER_SEXY_WINDOW_MS")?.toLongOrNull() ?: 2_000L,
-                superSexyMinPriceDeltaPct = optional("KIBOT_HYPER_SUPER_SEXY_MIN_PRICE_DELTA_PCT")?.toDoubleOrNull() ?: 4.0,
-                superSexyMinVolumeAnomalyMultiplier = optional("KIBOT_HYPER_SUPER_SEXY_MIN_VOLUME_MULTIPLIER")?.toDoubleOrNull() ?: 10.0,
-                vShapeDumpWindowMs = optional("KIBOT_HYPER_VSHAPE_DUMP_WINDOW_MS")?.toLongOrNull() ?: 5_000L,
-                vShapeMinDumpPct = optional("KIBOT_HYPER_VSHAPE_MIN_DUMP_PCT")?.toDoubleOrNull() ?: 5.0,
-                vShapeBounceConfirmMs = optional("KIBOT_HYPER_VSHAPE_BOUNCE_CONFIRM_MS")?.toLongOrNull() ?: 6_000L,
-                vShapeBounceVolumeAnomalyMultiplier = optional("KIBOT_HYPER_VSHAPE_VOLUME_MULTIPLIER")?.toDoubleOrNull() ?: 4.0,
-                wallSmasherWindowMs = optional("KIBOT_HYPER_WALL_WINDOW_MS")?.toLongOrNull() ?: 6_000L,
-                wallSmasherVolumeAnomalyMultiplier = optional("KIBOT_HYPER_WALL_VOLUME_MULTIPLIER")?.toDoubleOrNull() ?: 4.5,
-                wallSmasherMinSpreadCompressionPct = optional("KIBOT_HYPER_WALL_SPREAD_COMPRESSION_PCT")?.toDoubleOrNull() ?: 25.0,
-                volumeBaselineWindowMs = optional("KIBOT_HYPER_VOLUME_BASELINE_WINDOW_MS")?.toLongOrNull() ?: 60_000L,
-                stagnantWindowMs = optional("KIBOT_HYPER_STAGNANT_WINDOW_MS")?.toLongOrNull() ?: 180_000L,
-                stagnantMaxMovePct = optional("KIBOT_HYPER_STAGNANT_MAX_MOVE_PCT")?.toDoubleOrNull() ?: 0.5,
-                trailingStopPct = optional("KIBOT_HYPER_TRAILING_STOP_PCT")?.toDoubleOrNull() ?: 1.5,
-                trailingArmMinGainPct = optional("KIBOT_HYPER_TRAILING_ARM_MIN_GAIN_PCT")?.toDoubleOrNull() ?: 0.8,
-                microPulseKeepMs = optional("KIBOT_HYPER_MICRO_PULSE_KEEP_MS")?.toLongOrNull() ?: 190_000L,
-                microPulseMaxSamplesPerPair = optional("KIBOT_HYPER_MICRO_PULSE_MAX_SAMPLES_PER_PAIR")?.toIntOrNull() ?: 260,
-                microPulseMaxPairs = optional("KIBOT_HYPER_MICRO_PULSE_MAX_PAIRS")?.toIntOrNull() ?: 1400,
-                allInLiquidationMaxPnlPct = optional("KIBOT_HYPER_ALL_IN_LIQUIDATION_MAX_PNL_PCT")?.toDoubleOrNull() ?: 1.0,
+                targetDailyPct = optional("KICRYP_HYPER_TARGET_DAILY_PCT")?.toDoubleOrNull() ?: 25.0,
+                sexyWindowMs = optional("KICRYP_HYPER_SEXY_WINDOW_MS")?.toLongOrNull() ?: 60_000L,
+                sexyMinPriceDeltaPct = optional("KICRYP_HYPER_SEXY_MIN_PRICE_DELTA_PCT")?.toDoubleOrNull() ?: 1.5,
+                sexyMinVolumeAnomalyMultiplier = optional("KICRYP_HYPER_SEXY_MIN_VOLUME_MULTIPLIER")?.toDoubleOrNull() ?: 2.5,
+                sexyMinTradeActivityScore = optional("KICRYP_HYPER_SEXY_MIN_TRADE_ACTIVITY_SCORE")?.toDoubleOrNull() ?: 0.72,
+                superSexyWindowMs = optional("KICRYP_HYPER_SUPER_SEXY_WINDOW_MS")?.toLongOrNull() ?: 2_000L,
+                superSexyMinPriceDeltaPct = optional("KICRYP_HYPER_SUPER_SEXY_MIN_PRICE_DELTA_PCT")?.toDoubleOrNull() ?: 4.0,
+                superSexyMinVolumeAnomalyMultiplier = optional("KICRYP_HYPER_SUPER_SEXY_MIN_VOLUME_MULTIPLIER")?.toDoubleOrNull() ?: 10.0,
+                vShapeDumpWindowMs = optional("KICRYP_HYPER_VSHAPE_DUMP_WINDOW_MS")?.toLongOrNull() ?: 5_000L,
+                vShapeMinDumpPct = optional("KICRYP_HYPER_VSHAPE_MIN_DUMP_PCT")?.toDoubleOrNull() ?: 5.0,
+                vShapeBounceConfirmMs = optional("KICRYP_HYPER_VSHAPE_BOUNCE_CONFIRM_MS")?.toLongOrNull() ?: 6_000L,
+                vShapeBounceVolumeAnomalyMultiplier = optional("KICRYP_HYPER_VSHAPE_VOLUME_MULTIPLIER")?.toDoubleOrNull() ?: 4.0,
+                wallSmasherWindowMs = optional("KICRYP_HYPER_WALL_WINDOW_MS")?.toLongOrNull() ?: 6_000L,
+                wallSmasherVolumeAnomalyMultiplier = optional("KICRYP_HYPER_WALL_VOLUME_MULTIPLIER")?.toDoubleOrNull() ?: 4.5,
+                wallSmasherMinSpreadCompressionPct = optional("KICRYP_HYPER_WALL_SPREAD_COMPRESSION_PCT")?.toDoubleOrNull() ?: 25.0,
+                volumeBaselineWindowMs = optional("KICRYP_HYPER_VOLUME_BASELINE_WINDOW_MS")?.toLongOrNull() ?: 60_000L,
+                stagnantWindowMs = optional("KICRYP_HYPER_STAGNANT_WINDOW_MS")?.toLongOrNull() ?: 180_000L,
+                stagnantMaxMovePct = optional("KICRYP_HYPER_STAGNANT_MAX_MOVE_PCT")?.toDoubleOrNull() ?: 0.5,
+                trailingStopPct = optional("KICRYP_HYPER_TRAILING_STOP_PCT")?.toDoubleOrNull() ?: 1.5,
+                trailingArmMinGainPct = optional("KICRYP_HYPER_TRAILING_ARM_MIN_GAIN_PCT")?.toDoubleOrNull() ?: 0.8,
+                microPulseKeepMs = optional("KICRYP_HYPER_MICRO_PULSE_KEEP_MS")?.toLongOrNull() ?: 190_000L,
+                microPulseMaxSamplesPerPair = optional("KICRYP_HYPER_MICRO_PULSE_MAX_SAMPLES_PER_PAIR")?.toIntOrNull() ?: 260,
+                microPulseMaxPairs = optional("KICRYP_HYPER_MICRO_PULSE_MAX_PAIRS")?.toIntOrNull() ?: 1400,
+                allInLiquidationMaxPnlPct = optional("KICRYP_HYPER_ALL_IN_LIQUIDATION_MAX_PNL_PCT")?.toDoubleOrNull() ?: 1.0,
             ),
-            blueChipMinDailyVolumeIdr = optional("KIBOT_BLUECHIP_MIN_VOLUME_IDR")?.toDoubleOrNull() ?: 500_000.0,
-            aListMinVolumeIdr = optional("KIBOT_ALIST_MIN_VOLUME_IDR")?.toDoubleOrNull() ?: 80_000_000.0,
-            chartGuardMinCandles = optional("KIBOT_CHART_GUARD_MIN_CANDLES")?.toIntOrNull() ?: 18,
-            chartGuardMinActiveCandles = optional("KIBOT_CHART_GUARD_MIN_ACTIVE_CANDLES")?.toIntOrNull() ?: 6,
-            chartGuardMinDistinctCloseBuckets = optional("KIBOT_CHART_GUARD_MIN_DISTINCT_CLOSE_BUCKETS")?.toIntOrNull() ?: 4,
-            indodaxRemoteHistoryEnabled = optional("KIBOT_INDODAX_REMOTE_HISTORY_ENABLED")?.equals("true", ignoreCase = true) ?: false,
-            antiKoinMahalUseBudgetCheck = optional("KIBOT_ANTI_KOIN_MAHAL_USE_BUDGET_CHECK")?.equals("true", ignoreCase = true) ?: true,
-            emergencyOverrideEnabled = optional("KIBOT_ENABLE_EMERGENCY_OVERRIDE")?.equals("true", ignoreCase = true) ?: false,
+            blueChipMinDailyVolumeIdr = optional("KICRYP_BLUECHIP_MIN_VOLUME_IDR")?.toDoubleOrNull() ?: 500_000.0,
+            aListMinVolumeIdr = optional("KICRYP_ALIST_MIN_VOLUME_IDR")?.toDoubleOrNull() ?: 80_000_000.0,
+            chartGuardMinCandles = optional("KICRYP_CHART_GUARD_MIN_CANDLES")?.toIntOrNull() ?: 18,
+            chartGuardMinActiveCandles = optional("KICRYP_CHART_GUARD_MIN_ACTIVE_CANDLES")?.toIntOrNull() ?: 6,
+            chartGuardMinDistinctCloseBuckets = optional("KICRYP_CHART_GUARD_MIN_DISTINCT_CLOSE_BUCKETS")?.toIntOrNull() ?: 4,
+            indodaxRemoteHistoryEnabled = optional("KICRYP_INDODAX_REMOTE_HISTORY_ENABLED")?.equals("true", ignoreCase = true) ?: false,
+            antiKoinMahalUseBudgetCheck = optional("KICRYP_ANTI_KOIN_MAHAL_USE_BUDGET_CHECK")?.equals("true", ignoreCase = true) ?: true,
+            emergencyOverrideEnabled = optional("KICRYP_ENABLE_EMERGENCY_OVERRIDE")?.equals("true", ignoreCase = true) ?: false,
         )
     }
 

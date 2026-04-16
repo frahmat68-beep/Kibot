@@ -8,13 +8,13 @@ BINANCE_PORT="${BINANCE_PORT:-22}"
 BINANCE_KEY="${BINANCE_KEY:-${ROOT_DIR}/SSH_BINANCE/ssh-key-2026-03-27.key}"
 GRADLEW="${ROOT_DIR}/gradlew"
 TEMP_DIR="$(mktemp -d)"
-REMOTE_TMP_DIR="/tmp/kibot-deploy-$$"
+REMOTE_TMP_DIR="/tmp/kicryp-deploy-$$"
 trap 'rm -rf "${TEMP_DIR}"' EXIT
 
 KIDAX_ROOT="/home/ubuntu/KiDax"
-KIBOT_ROOT="/home/ubuntu/KiBot"
+KICRYP_ROOT="/home/ubuntu/KiCryp"
 KIDAX_PORT="8787"
-KIBOT_PORT="8789"
+KICRYP_PORT="8789"
 ENABLE_BINANCE_KIDAX_SERVICE="${ENABLE_BINANCE_KIDAX_SERVICE:-false}"
 DISABLE_BINANCE_STANDBY_SERVICE="${DISABLE_BINANCE_STANDBY_SERVICE:-true}"
 BINANCE_KEY_LINK="${TEMP_DIR}/binance-ssh-key"
@@ -53,8 +53,8 @@ exchange_prefixes = ("INDODAX_", "BINANCE_")
 keys = []
 if mode == "kidax":
     keys = [k for k in values if k.startswith(common_prefixes) or k.startswith(exchange_prefixes)]
-    keys += ["BOT_ENABLE_LIVE_EXECUTION", "SHADOW_MODE", "KIBOT_EXCHANGE_KIND"]
-elif mode == "kibot":
+    keys += ["BOT_ENABLE_LIVE_EXECUTION", "SHADOW_MODE", "KICRYP_EXCHANGE_KIND"]
+elif mode == "kicryp":
     keys = [k for k in values if k.startswith(common_prefixes) or k.startswith("BINANCE_")]
     keys += ["BOT_ENABLE_LIVE_EXECUTION", "SHADOW_MODE"]
 else:
@@ -74,19 +74,19 @@ for key in keys:
 print('BOT_ENABLE_LIVE_EXECUTION="true"')
 if mode == "kidax":
     print('SHADOW_MODE="false"')
-    print('KIBOT_EXCHANGE_KIND="INDODAX"')
-    print('KIBOT_LEAD_LAG_UDP_LISTEN_PORT="9997"')
-    print('KIBOT_LEAD_LAG_UDP_TARGET_PORT="9998"')
-    print('KIBOT_HIVE_UDP_PEERS="127.0.0.1:9999"')
-    print('KIBOT_HIVE_EXPECTED_BOT_IDS="kinance,kibot"')
-elif mode == "kibot":
+    print('KICRYP_EXCHANGE_KIND="INDODAX"')
+    print('KICRYP_LEAD_LAG_UDP_LISTEN_PORT="9997"')
+    print('KICRYP_LEAD_LAG_UDP_TARGET_PORT="9998"')
+    print('KICRYP_HIVE_UDP_PEERS="127.0.0.1:9999"')
+    print('KICRYP_HIVE_EXPECTED_BOT_IDS="kinance,kicryp"')
+elif mode == "kicryp":
     print('SHADOW_MODE="false"')
-    print('KIBOT_EXPECT_LIVE_EXECUTION="true"')
-    print('KIBOT_LEAD_LAG_UDP_ENABLED="true"')
-    print('KIBOT_LEAD_LAG_UDP_LISTEN_PORT="9999"')
-    print('KIBOT_LEAD_LAG_UDP_TARGET_PORT="9998"')
-    print('KIBOT_HIVE_UDP_PEERS="127.0.0.1:9997"')
-    print('KIBOT_HIVE_EXPECTED_BOT_IDS="kinance,kidax"')
+    print('KICRYP_EXPECT_LIVE_EXECUTION="true"')
+    print('KICRYP_LEAD_LAG_UDP_ENABLED="true"')
+    print('KICRYP_LEAD_LAG_UDP_LISTEN_PORT="9999"')
+    print('KICRYP_LEAD_LAG_UDP_TARGET_PORT="9998"')
+    print('KICRYP_HIVE_UDP_PEERS="127.0.0.1:9997"')
+    print('KICRYP_HIVE_EXPECTED_BOT_IDS="kinance,kidax"')
 PY
 }
 
@@ -132,7 +132,7 @@ with urllib.request.urlopen(login_req, timeout=20) as response:
 token = auth["access_token"]
 user_id = auth["user"]["id"]
 query_req = urllib.request.Request(
-    f"{url}/rest/v1/bots?bot_id=eq.kibot&select=bot_id",
+    f"{url}/rest/v1/bots?bot_id=eq.kicryp&select=bot_id",
     headers={
         "apikey": values["SUPABASE_ANON_KEY"],
         "Authorization": f"Bearer {token}",
@@ -143,13 +143,13 @@ with urllib.request.urlopen(query_req, timeout=20) as response:
     existing = json.load(response)
 
 if existing:
-    print("[SUPABASE] kibot bot row already exists")
+    print("[SUPABASE] kicryp bot row already exists")
     raise SystemExit(0)
 
 payload = json.dumps({
-    "bot_id": "kibot",
+    "bot_id": "kicryp",
     "user_id": user_id,
-    "display_name": "KiBot Commander",
+    "display_name": "KiCryp Commander",
 }).encode()
 insert_req = urllib.request.Request(
     f"{url}/rest/v1/bots",
@@ -171,7 +171,7 @@ PY
 echo "[1/5] Build mac-engine installDist"
 ./gradlew --no-daemon :apps:mac-engine:installDist
 
-echo "[1b/5] Ensure kibot bot row exists in Supabase"
+echo "[1b/5] Ensure kicryp bot row exists in Supabase"
 ensure_supabase_bot_row
 
 DIST_ROOT="${ROOT_DIR}/apps/mac-engine/build/install/mac-engine"
@@ -181,12 +181,12 @@ if [[ ! -x "${DIST_ROOT}/bin/mac-engine" ]]; then
 fi
 
 KIDAX_ENV="${TEMP_DIR}/.env.kidax"
-KIBOT_ENV="${TEMP_DIR}/.env.kibot"
+KICRYP_ENV="${TEMP_DIR}/.env.kicryp"
 build_env_file kidax "${KIDAX_ENV}"
-build_env_file kibot "${KIBOT_ENV}"
+build_env_file kicryp "${KICRYP_ENV}"
 
 echo "[2/5] Prepare remote directories"
-ssh -i "${BINANCE_KEY_LINK}" -p "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new "${BINANCE_USER}@${BINANCE_HOST}" "mkdir -p '${REMOTE_TMP_DIR}' '${KIBOT_ROOT}/server' '${KIBOT_ROOT}/infra/systemd'"
+ssh -i "${BINANCE_KEY_LINK}" -p "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new "${BINANCE_USER}@${BINANCE_HOST}" "mkdir -p '${REMOTE_TMP_DIR}' '${KICRYP_ROOT}/server' '${KICRYP_ROOT}/infra/systemd'"
 if [[ "${ENABLE_BINANCE_KIDAX_SERVICE}" == "true" ]]; then
   ssh -i "${BINANCE_KEY_LINK}" -p "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new "${BINANCE_USER}@${BINANCE_HOST}" "mkdir -p '${KIDAX_ROOT}/server' '${KIDAX_ROOT}/infra/systemd'"
 fi
@@ -195,7 +195,7 @@ echo "[3/5] Transfer dist tree, service files, and recovery scripts"
 rsync -a -e "${RSYNC_SSH_CMD}" \
   "${DIST_ROOT}/" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/mac-engine-dist/"
 scp -i "${BINANCE_KEY_LINK}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
-  "${ROOT_DIR}/infra/systemd/kibot-engine.service" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/kibot-engine.service"
+  "${ROOT_DIR}/infra/systemd/kicryp-engine.service" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/kicryp-engine.service"
 if [[ "${ENABLE_BINANCE_KIDAX_SERVICE}" == "true" ]]; then
   scp -i "${BINANCE_KEY_LINK}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
     "${ROOT_DIR}/infra/systemd/kidax-engine.service" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/kidax-engine.service"
@@ -205,7 +205,7 @@ scp -i "${BINANCE_KEY_LINK}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accep
 scp -i "${BINANCE_KEY_LINK}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
   "${ROOT_DIR}/infra/scripts/setup-engine-autorecover.sh" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/setup-engine-autorecover.sh"
 scp -i "${BINANCE_KEY_LINK}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
-  "${KIBOT_ENV}" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/env.kibot"
+  "${KICRYP_ENV}" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/env.kicryp"
 if [[ "${ENABLE_BINANCE_KIDAX_SERVICE}" == "true" ]]; then
   scp -i "${BINANCE_KEY_LINK}" -P "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new \
     "${KIDAX_ENV}" "${BINANCE_USER}@${BINANCE_HOST}:${REMOTE_TMP_DIR}/env.kidax"
@@ -214,21 +214,21 @@ fi
 echo "[4/5] Install and start Binance services"
 ssh -i "${BINANCE_KEY_LINK}" -p "${BINANCE_PORT}" -o StrictHostKeyChecking=accept-new "${BINANCE_USER}@${BINANCE_HOST}" bash -s <<REMOTE
 set -euo pipefail
-mkdir -p "${KIBOT_ROOT}"
-rsync -a "${REMOTE_TMP_DIR}/mac-engine-dist/" "${KIBOT_ROOT}/"
-install -m 0644 "${REMOTE_TMP_DIR}/kibot-engine.service" "${KIBOT_ROOT}/infra/systemd/kibot-engine.service"
-install -m 0644 "${REMOTE_TMP_DIR}/engine-recovery.sh" "${KIBOT_ROOT}/engine-recovery.sh"
-install -m 0600 "${REMOTE_TMP_DIR}/env.kibot" "${KIBOT_ROOT}/.env.kibot"
-install -m 0755 "${REMOTE_TMP_DIR}/setup-engine-autorecover.sh" "${KIBOT_ROOT}/setup-autorecover.sh"
+mkdir -p "${KICRYP_ROOT}"
+rsync -a "${REMOTE_TMP_DIR}/mac-engine-dist/" "${KICRYP_ROOT}/"
+install -m 0644 "${REMOTE_TMP_DIR}/kicryp-engine.service" "${KICRYP_ROOT}/infra/systemd/kicryp-engine.service"
+install -m 0644 "${REMOTE_TMP_DIR}/engine-recovery.sh" "${KICRYP_ROOT}/engine-recovery.sh"
+install -m 0600 "${REMOTE_TMP_DIR}/env.kicryp" "${KICRYP_ROOT}/.env.kicryp"
+install -m 0755 "${REMOTE_TMP_DIR}/setup-engine-autorecover.sh" "${KICRYP_ROOT}/setup-autorecover.sh"
 
-KIBOT_RUNTIME_ROOT="${KIBOT_ROOT}" \
-KIBOT_SERVICE_NAME="kibot-engine" \
-KIBOT_DASHBOARD_PORT="${KIBOT_PORT}" \
-KIBOT_ENV_FILE="${KIBOT_ROOT}/.env.kibot" \
-KIBOT_RECOVERY_SCRIPT_PATH="${KIBOT_ROOT}/engine-recovery.sh" \
-KIBOT_SERVICE_FILE_PATH="${KIBOT_ROOT}/infra/systemd/kibot-engine.service" \
-KIBOT_AI_SCRIPT_PATH="${KIBOT_ROOT}/scripts/ai_learning_cycle.sh" \
-bash "${KIBOT_ROOT}/setup-autorecover.sh"
+KICRYP_RUNTIME_ROOT="${KICRYP_ROOT}" \
+KICRYP_SERVICE_NAME="kicryp-engine" \
+KICRYP_DASHBOARD_PORT="${KICRYP_PORT}" \
+KICRYP_ENV_FILE="${KICRYP_ROOT}/.env.kicryp" \
+KICRYP_RECOVERY_SCRIPT_PATH="${KICRYP_ROOT}/engine-recovery.sh" \
+KICRYP_SERVICE_FILE_PATH="${KICRYP_ROOT}/infra/systemd/kicryp-engine.service" \
+KICRYP_AI_SCRIPT_PATH="${KICRYP_ROOT}/scripts/ai_learning_cycle.sh" \
+bash "${KICRYP_ROOT}/setup-autorecover.sh"
 
 if [[ "${ENABLE_BINANCE_KIDAX_SERVICE}" == "true" ]]; then
   mkdir -p "${KIDAX_ROOT}"
@@ -237,13 +237,13 @@ if [[ "${ENABLE_BINANCE_KIDAX_SERVICE}" == "true" ]]; then
   install -m 0644 "${REMOTE_TMP_DIR}/engine-recovery.sh" "${KIDAX_ROOT}/engine-recovery.sh"
   install -m 0600 "${REMOTE_TMP_DIR}/env.kidax" "${KIDAX_ROOT}/.env.kidax"
   install -m 0755 "${REMOTE_TMP_DIR}/setup-engine-autorecover.sh" "${KIDAX_ROOT}/setup-autorecover.sh"
-  KIBOT_RUNTIME_ROOT="${KIDAX_ROOT}" \
-  KIBOT_SERVICE_NAME="kidax-engine" \
-  KIBOT_DASHBOARD_PORT="${KIDAX_PORT}" \
-  KIBOT_ENV_FILE="${KIDAX_ROOT}/.env.kidax" \
-  KIBOT_RECOVERY_SCRIPT_PATH="${KIDAX_ROOT}/engine-recovery.sh" \
-  KIBOT_SERVICE_FILE_PATH="${KIDAX_ROOT}/infra/systemd/kidax-engine.service" \
-  KIBOT_AI_SCRIPT_PATH="${KIDAX_ROOT}/scripts/ai_learning_cycle.sh" \
+  KICRYP_RUNTIME_ROOT="${KIDAX_ROOT}" \
+  KICRYP_SERVICE_NAME="kidax-engine" \
+  KICRYP_DASHBOARD_PORT="${KIDAX_PORT}" \
+  KICRYP_ENV_FILE="${KIDAX_ROOT}/.env.kidax" \
+  KICRYP_RECOVERY_SCRIPT_PATH="${KIDAX_ROOT}/engine-recovery.sh" \
+  KICRYP_SERVICE_FILE_PATH="${KIDAX_ROOT}/infra/systemd/kidax-engine.service" \
+  KICRYP_AI_SCRIPT_PATH="${KIDAX_ROOT}/scripts/ai_learning_cycle.sh" \
   bash "${KIDAX_ROOT}/setup-autorecover.sh"
   sudo systemctl restart kidax-engine
 else
@@ -255,13 +255,13 @@ if [[ "${DISABLE_BINANCE_STANDBY_SERVICE}" == "true" ]]; then
 fi
 
 sudo systemctl daemon-reload
-sudo systemctl restart kibot-engine
+sudo systemctl restart kicryp-engine
 sleep 15
-sudo systemctl is-active --quiet kibot-engine
-if curl -fsS --retry 20 --retry-delay 3 --retry-all-errors "http://127.0.0.1:${KIBOT_PORT}/api/state" >/tmp/kibot-state.json; then
-  echo "KiBot state: $(head -c 220 /tmp/kibot-state.json)"
+sudo systemctl is-active --quiet kicryp-engine
+if curl -fsS --retry 20 --retry-delay 3 --retry-all-errors "http://127.0.0.1:${KICRYP_PORT}/api/state" >/tmp/kicryp-state.json; then
+  echo "KiCryp state: $(head -c 220 /tmp/kicryp-state.json)"
 else
-  echo "[WARN] KiBot state API belum siap saat deploy selesai."
+  echo "[WARN] KiCryp state API belum siap saat deploy selesai."
 fi
 if [[ "${ENABLE_BINANCE_KIDAX_SERVICE}" == "true" ]]; then
   if curl -fsS --retry 20 --retry-delay 3 --retry-all-errors "http://127.0.0.1:${KIDAX_PORT}/api/state" >/tmp/kidax-state.json; then

@@ -7,9 +7,9 @@ import kotlin.math.abs
  * PriceGapScanner - Detect arbitrage antara Binance (Kinance) dan Indodax (KiDax)
  * 
  * Purpose:
- * - Kinance scan Binance, kirim harga ke KiBot
- * - KiDax scan Indodax, kirim harga ke KiBot
- * - KiBot detect gap = arbitrage opportunity!
+ * - Kinance scan Binance, kirim harga ke KiCryp
+ * - KiDax scan Indodax, kirim harga ke KiCryp
+ * - KiCryp detect gap = arbitrage opportunity!
  * 
  * Example:
  * Binance BTC: $40,000

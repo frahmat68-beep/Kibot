@@ -23,7 +23,7 @@ kotlin {
 }
 
 android {
-    namespace = "com.kibot.shared.models"
+    namespace = "com.kicryp.shared.models"
     compileSdk = 35
 
     defaultConfig {

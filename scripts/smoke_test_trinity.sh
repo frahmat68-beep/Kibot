@@ -3,7 +3,7 @@ set -euo pipefail
 
 KIDAX_URL="${KIDAX_URL:-http://127.0.0.1:8787}"
 KINANCE_URL="${KINANCE_URL:-http://127.0.0.1:8788}"
-KIBOT_URL="${KIBOT_URL:-http://127.0.0.1:8789}"
+KICRYP_URL="${KICRYP_URL:-http://127.0.0.1:8789}"
 CURL_BIN="${CURL_BIN:-curl}"
 SSH_HOST="${SSH_HOST:-}"
 SSH_KEY="${SSH_KEY:-}"
@@ -46,11 +46,11 @@ check_service() {
 echo "== Trinity Smoke Test =="
 fetch_state "KiDax" "$KIDAX_URL"
 fetch_state "Kinance" "$KINANCE_URL"
-fetch_state "KiBot" "$KIBOT_URL"
+fetch_state "KiCryp" "$KICRYP_URL"
 if [[ -n "$SSH_HOST" && -n "$SSH_KEY" ]]; then
   echo "== Service Status =="
   echo "kidax-engine: $(check_service kidax-engine)"
   echo "kinance-engine: $(check_service kinance-engine)"
-  echo "kibot-engine: $(check_service kibot-engine)"
+  echo "kicryp-engine: $(check_service kicryp-engine)"
 fi
 echo "== Smoke test selesai =="

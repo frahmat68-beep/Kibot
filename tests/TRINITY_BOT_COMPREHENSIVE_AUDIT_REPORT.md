@@ -1,6 +1,6 @@
 # TRINITY BOT SYSTEM VALIDATION REPORT
 **Date:** 2026-04-06  
-**System:** KiBot Trinity (KINANCE + KIDAX + KIBOT MANAGER)  
+**System:** KiCryp Trinity (KINANCE + KIDAX + KICRYP MANAGER)  
 **Capital:** Rp 110,345 (live)  
 **Environment:** Oracle Cloud Singapore (213.35.118.26)
 
@@ -11,7 +11,7 @@
 ### 🚨 CRITICAL ISSUES FOUND
 
 1. **AI OFFLINE** - Failover chain broken (Groq → OpenRouter → Cohere → Gemini)
-2. **KIBOT MANAGER OFFLINE** - The "brain" is not running (no VETO, no capital rotation logic)
+2. **KICRYP MANAGER OFFLINE** - The "brain" is not running (no VETO, no capital rotation logic)
 3. **KINANCE OFFLINE** - Binance radar not sending lead-lag signals (no predictive edge)
 4. **ONLY KIDAX RUNNING** - Bot is trading "blind" without predictive signals
 
@@ -21,7 +21,7 @@
 |-----------|--------|---------|
 | **KiDax (Executor)** | 🟢 ONLINE | Can execute trades on Indodax |
 | **Kinance (Radar)** | 🔴 OFFLINE | No Binance lead-lag signals |
-| **KiBot Manager (Brain)** | 🔴 OFFLINE | No VETO, no rotation, no AI |
+| **KiCryp Manager (Brain)** | 🔴 OFFLINE | No VETO, no rotation, no AI |
 | **AI Integration** | 🔴 OFFLINE | No AI-assisted decisions |
 | **UDP Heartbeat** | ⚠️ DEGRADED | Trinity communication broken |
 
@@ -46,7 +46,7 @@
   "return7dPctLabel": "+67.5%",
   "aiProviderSummary": "AI OFFLINE",
   "kidaxNodeStatus": "online",
-  "kibotNodeStatus": "offline",
+  "kicrypNodeStatus": "offline",
   "kinanceNodeStatus": "offline"
 }
 ```
@@ -210,7 +210,7 @@ Status: ✅ PASS
 ┌─────────────────────────────────────────────────┐
 │           ORACLE CLOUD (Singapore)              │
 │  ┌──────────────┐   UDP    ┌──────────────┐    │
-│  │ KIBOT MANAGER│◄────────►│    KIDAX     │    │
+│  │ KICRYP MANAGER│◄────────►│    KIDAX     │    │
 │  │  (Python 🐍) │          │ (Kotlin ☕)   │    │
 │  │  Port: 9998  │          │ Port: 8787   │    │
 │  │  🔴 OFFLINE  │          │  🟢 ONLINE   │    │
@@ -236,7 +236,7 @@ Status: ✅ PASS
 
 **UDP Heartbeat Configuration:**
 ```python
-# kibot_manager.py
+# kicryp_manager.py
 UDP_BIND_PORT = 9998
 KINANCE_UDP_HOST = ""  # ⚠️ EMPTY - not configured
 KINANCE_UDP_PORT = 9999
@@ -276,7 +276,7 @@ fun shouldVetoEntry(
 
 **Critical Gaps:**
 1. KINANCE not running (no Binance radar)
-2. KIBOT MANAGER not running (no VETO, no rotation)
+2. KICRYP MANAGER not running (no VETO, no rotation)
 3. UDP communication not configured (hosts empty)
 4. Trinity heartbeat broken (no health monitoring)
 
@@ -286,7 +286,7 @@ fun shouldVetoEntry(
 
 ### AI Provider Failover Chain
 
-**Design (kibot_manager.py):**
+**Design (kicryp_manager.py):**
 ```python
 POST_MORTEM_ENABLED = True
 POST_MORTEM_API_URL = ""  # ⚠️ EMPTY
@@ -459,7 +459,7 @@ RestartSec=10
 
 ### Recovery Mechanisms
 
-**File:** `kibot-recovery.sh`
+**File:** `kicryp-recovery.sh`
 ```bash
 #!/bin/bash
 # Auto-recovery script
@@ -531,13 +531,13 @@ if (marketOpportunityScore > 0.85 && openPositions == 0) {
    sudo systemctl enable kinance-engine.service
    ```
 
-2. **KIBOT MANAGER OFFLINE**
+2. **KICRYP MANAGER OFFLINE**
    - **Impact:** No VETO, no capital rotation, no AI
    - **Risk:** Can enter bad trades, capital not rotated efficiently
-   - **Fix:** Start `kibot-manager.service`
+   - **Fix:** Start `kicryp-manager.service`
    ```bash
-   sudo systemctl start kibot-manager.service
-   sudo systemctl enable kibot-manager.service
+   sudo systemctl start kicryp-manager.service
+   sudo systemctl enable kicryp-manager.service
    ```
 
 3. **UDP COMMUNICATION NOT CONFIGURED**
@@ -602,10 +602,10 @@ if (marketOpportunityScore > 0.85 && openPositions == 0) {
    sudo systemctl status kinance-engine.service
    ```
 
-2. **Start KIBOT MANAGER service** ⏱️ 5 minutes
+2. **Start KICRYP MANAGER service** ⏱️ 5 minutes
    ```bash
-   sudo systemctl start kibot-manager.service
-   sudo systemctl status kibot-manager.service
+   sudo systemctl start kicryp-manager.service
+   sudo systemctl status kicryp-manager.service
    ```
 
 3. **Configure UDP communication** ⏱️ 10 minutes
@@ -616,7 +616,7 @@ if (marketOpportunityScore > 0.85 && openPositions == 0) {
 4. **Verify Trinity heartbeat working** ⏱️ 5 minutes
    ```bash
    # Check logs for UDP traffic
-   sudo journalctl -u kibot-manager.service -f | grep UDP
+   sudo journalctl -u kicryp-manager.service -f | grep UDP
    ```
 
 ### SHORT TERM (This Week)
@@ -737,7 +737,7 @@ if (marketOpportunityScore > 0.85 && openPositions == 0) {
 
 **What's Broken:**
 - ❌ KINANCE offline (no predictive signals)
-- ❌ KIBOT MANAGER offline (no VETO, no AI)
+- ❌ KICRYP MANAGER offline (no VETO, no AI)
 - ❌ Trinity communication broken
 - ❌ AI integration offline
 - ❌ Adaptive safety mechanisms degraded

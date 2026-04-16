@@ -1,10 +1,10 @@
-# KiBot Android Mobile Dashboard
+# KiCryp Android Mobile Dashboard
 
-A simple, non-technical Android dashboard app for monitoring and controlling the KiBot trading bot. Built with Kotlin and Jetpack Compose, it connects to the Mac Engine server via WebSocket to display real-time trading data.
+A simple, non-technical Android dashboard app for monitoring and controlling the KiCryp trading bot. Built with Kotlin and Jetpack Compose, it connects to the Mac Engine server via WebSocket to display real-time trading data.
 
 ## Features
 
-- **WebSocket Connection**: Direct connection to KiBot Mac Engine server (default: localhost:8787)
+- **WebSocket Connection**: Direct connection to KiCryp Mac Engine server (default: localhost:8787)
 - **Simple Dashboard**: 
   - Current balance (IDR + USDT)
   - Daily P&L with visual trend
@@ -80,7 +80,7 @@ emulator -avd <emulator-name>
 
 ## Configuration
 
-The app connects to a KiBot server via WebSocket. Configure the server address:
+The app connects to a KiCryp server via WebSocket. Configure the server address:
 
 1. Open the app
 2. Tap the **⚙️ Settings** button (top-right)
@@ -95,10 +95,10 @@ Default: `localhost:8787`
 apps/android/
 ├── app/
 │   ├── src/main/
-│   │   ├── kotlin/com/kibot/android/
+│   │   ├── kotlin/com/kicryp/android/
 │   │   │   ├── MainActivity.kt          # Main activity & view model
 │   │   │   ├── websocket/
-│   │   │   │   └── KiBotWebSocketClient.kt  # WebSocket connection logic
+│   │   │   │   └── KiCrypWebSocketClient.kt  # WebSocket connection logic
 │   │   │   ├── data/
 │   │   │   │   └── BotStatus.kt         # Data models
 │   │   │   ├── ui/
@@ -122,9 +122,9 @@ apps/android/
 
 ### WebSocket Connection
 
-**URL Format**: `ws://[host]:[port]/kibot/status`
+**URL Format**: `ws://[host]:[port]/kicryp/status`
 
-**Example**: `ws://192.168.1.100:8787/kibot/status`
+**Example**: `ws://192.168.1.100:8787/kicryp/status`
 
 ### Request Format
 
@@ -263,7 +263,7 @@ The app gracefully handles:
 1. Check network connectivity
 2. Verify server is sending data
 3. Try manual refresh
-4. Check app logs: `adb logcat | grep KiBot`
+4. Check app logs: `adb logcat | grep KiCryp`
 
 ### App crashes
 1. Check logs: `adb logcat`
@@ -276,19 +276,19 @@ The app gracefully handles:
 
 1. **New data fields**: Update `BotStatus.kt` data classes
 2. **New UI components**: Add to `DashboardScreen.kt` or create new file in `ui/`
-3. **New API endpoints**: Update `KiBotWebSocketClient.kt`
+3. **New API endpoints**: Update `KiCrypWebSocketClient.kt`
 
 ### Debugging
 
 Enable verbose logging:
 ```kotlin
-// In KiBotWebSocketClient.kt
+// In KiCrypWebSocketClient.kt
 Log.d(TAG, "Message: $message")
 ```
 
 View logs:
 ```bash
-adb logcat -s "KiBot"
+adb logcat -s "KiCryp"
 ```
 
 ## Build Variants
@@ -323,16 +323,16 @@ adb logcat -s "KiBot"
 
 ## License
 
-This project is part of the KiBot Trading System.
+This project is part of the KiCryp Trading System.
 
 ## Support
 
 For issues or questions:
-1. Check logs: `adb logcat | grep KiBot`
+1. Check logs: `adb logcat | grep KiCryp`
 2. Verify server connection
 3. Review the configuration in Settings
 4. Check that the Mac Engine server is running
 
 ---
 
-**Built with ❤️ for KiBot traders**
+**Built with ❤️ for KiCryp traders**

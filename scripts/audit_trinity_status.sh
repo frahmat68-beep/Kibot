@@ -100,8 +100,8 @@ safe_ssh_section "Kinance" "$BINANCE_HOST" "$BINANCE_KEY" "
 set -e
 printf 'host=%s\n' '$BINANCE_HOST'
 printf 'kinance_service=%s\n' \"\$(systemctl is-active kinance-engine)\"
-printf 'kibot_service=%s\n' \"\$(systemctl is-active kibot-engine)\"
-printf 'manager_service=%s\n' \"\$(systemctl is-active kibot-manager)\"
+printf 'kicryp_service=%s\n' \"\$(systemctl is-active kicryp-engine)\"
+printf 'manager_service=%s\n' \"\$(systemctl is-active kicryp-manager)\"
 printf 'failed_units=%s\n' \"\$(systemctl --failed --no-legend | wc -l | tr -d ' ')\"
 printf 'api_state=%s\n' \"\$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 http://127.0.0.1:8788/api/state || true)\"
 printf 'api_health=%s\n' \"\$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 http://127.0.0.1:8788/api/health || true)\"

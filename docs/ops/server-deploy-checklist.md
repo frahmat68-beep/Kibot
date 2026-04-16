@@ -1,6 +1,6 @@
 # Server Deploy Checklist
 
-Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiBot` setelah logic chart-adaptive, heartbeat UDP, dan local recovery aktif.
+Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiCryp` setelah logic chart-adaptive, heartbeat UDP, dan local recovery aktif.
 
 ## Status Deploy
 - Build runtime utama sudah tervalidasi lewat `MacEngineDaemonTest`.
@@ -27,85 +27,85 @@ Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiBot` s
 - `MAC_ENGINE_BIND_HOST=0.0.0.0`
 - `MAC_ENGINE_ENABLE_LAN_ADVERTISE=false`
 - `BOT_ENABLE_LIVE_EXECUTION=true`
-- `KIBOT_LOCAL_POSITION_STATE_ENABLED=true`
-- `KIBOT_MONTHLY_PNL_ANCHOR_PATH=/home/ubuntu/KiBot/state/monthly_pnl_anchor.json`
-- `KIBOT_LEAD_LAG_UDP_ENABLED=true`
-- `KIBOT_LEAD_LAG_UDP_HEARTBEAT_ENABLED=true`
-- `KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=100`
-- `KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=500`
+- `KICRYP_LOCAL_POSITION_STATE_ENABLED=true`
+- `KICRYP_MONTHLY_PNL_ANCHOR_PATH=/home/ubuntu/KiCryp/state/monthly_pnl_anchor.json`
+- `KICRYP_LEAD_LAG_UDP_ENABLED=true`
+- `KICRYP_LEAD_LAG_UDP_HEARTBEAT_ENABLED=true`
+- `KICRYP_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=100`
+- `KICRYP_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=500`
 
-### KiBot Manager Ringan
-- gunakan `kibot-manager.service` Python untuk commander ringan jika RAM server tipis
-- `KIBOT_MANAGER_STATE_DIR=/home/ubuntu/KiBot/state`
-- `KIBOT_MANAGER_PROVIDER_STATE_FILE=/home/ubuntu/KiBot/state/ai_provider_state.json`
-- `KIBOT_MANAGER_RUNTIME_NOTE_FILE=/home/ubuntu/KiBot/state/runtime_note.json`
-- `KIBOT_MANAGER_HEARTBEAT_INTERVAL_SEC=0.10`
+### KiCryp Manager Ringan
+- gunakan `kicryp-manager.service` Python untuk commander ringan jika RAM server tipis
+- `KICRYP_MANAGER_STATE_DIR=/home/ubuntu/KiCryp/state`
+- `KICRYP_MANAGER_PROVIDER_STATE_FILE=/home/ubuntu/KiCryp/state/ai_provider_state.json`
+- `KICRYP_MANAGER_RUNTIME_NOTE_FILE=/home/ubuntu/KiCryp/state/runtime_note.json`
+- `KICRYP_MANAGER_HEARTBEAT_INTERVAL_SEC=0.10`
 - `KIDAX_UDP_HOST=213.35.118.26`
 - `KINANCE_UDP_HOST=152.69.218.198`
-- `KIBOT_AI_PROVIDER_ORDER=groq,openrouter,cohere,gemini`
-- `KIBOT_AI_REQUEST_TIMEOUT_SEC=12`
-- `KIBOT_AI_PROVIDER_DEFAULT_COOLDOWN_SEC=600`
-- `KIBOT_AI_PROVIDER_NETWORK_COOLDOWN_SEC=180`
-- `KIBOT_AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC=3600`
-- `KIBOT_AI_PROVIDER_EMPTY_COOLDOWN_SEC=120`
-- `KIBOT_AI_APPROVAL_MIN_SCORE=0.65`
-- `KIBOT_AI_APPROVAL_MIN_EXPECTED_NET_PCT=0.008`
-- `KIBOT_AI_APPROVAL_INSTANT_MIN_SCORE=0.55`
-- `KIBOT_AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT=0.005`
-- `KIBOT_INDODAX_TAKER_FEE=0.003`
-- `KIBOT_MAKER_FEE=0.0015`
-- `KIBOT_ROUND_TRIP_TAKER_COST=0.006`
-- `KIBOT_ROUND_TRIP_MAKER_COST=0.003`
-- `KIBOT_SLIPPAGE_BUFFER=0.002`
-- `KIBOT_MIN_GROSS_PROFIT_TARGET=0.011`
-- `KIBOT_PARTIAL_TP_TRIGGER=0.012`
-- `KIBOT_PARTIAL_TP_SIZE=0.40`
-- `KIBOT_TRAILING_STOP_MIN_PCT=0.015`
-- `KIBOT_POST_MORTEM_BLACKLIST_ENABLED=true`
-- `KIBOT_POST_MORTEM_BLACKLIST_MINUTES=30`
-- `KIBOT_POST_MORTEM_BLACKLIST_NET_LOSS_IDR=500`
-- `KIBOT_POST_MORTEM_BLACKLIST_PNL_PCT=-1.0`
-- `KIBOT_DAILY_SUMMARY_ENABLED=true`
-- `KIBOT_MANAGER_DAILY_SUMMARY_FILE=/home/ubuntu/KiBot/state/daily_summary.json`
+- `KICRYP_AI_PROVIDER_ORDER=groq,openrouter,cohere,gemini`
+- `KICRYP_AI_REQUEST_TIMEOUT_SEC=12`
+- `KICRYP_AI_PROVIDER_DEFAULT_COOLDOWN_SEC=600`
+- `KICRYP_AI_PROVIDER_NETWORK_COOLDOWN_SEC=180`
+- `KICRYP_AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC=3600`
+- `KICRYP_AI_PROVIDER_EMPTY_COOLDOWN_SEC=120`
+- `KICRYP_AI_APPROVAL_MIN_SCORE=0.65`
+- `KICRYP_AI_APPROVAL_MIN_EXPECTED_NET_PCT=0.008`
+- `KICRYP_AI_APPROVAL_INSTANT_MIN_SCORE=0.55`
+- `KICRYP_AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT=0.005`
+- `KICRYP_INDODAX_TAKER_FEE=0.003`
+- `KICRYP_MAKER_FEE=0.0015`
+- `KICRYP_ROUND_TRIP_TAKER_COST=0.006`
+- `KICRYP_ROUND_TRIP_MAKER_COST=0.003`
+- `KICRYP_SLIPPAGE_BUFFER=0.002`
+- `KICRYP_MIN_GROSS_PROFIT_TARGET=0.011`
+- `KICRYP_PARTIAL_TP_TRIGGER=0.012`
+- `KICRYP_PARTIAL_TP_SIZE=0.40`
+- `KICRYP_TRAILING_STOP_MIN_PCT=0.015`
+- `KICRYP_POST_MORTEM_BLACKLIST_ENABLED=true`
+- `KICRYP_POST_MORTEM_BLACKLIST_MINUTES=30`
+- `KICRYP_POST_MORTEM_BLACKLIST_NET_LOSS_IDR=500`
+- `KICRYP_POST_MORTEM_BLACKLIST_PNL_PCT=-1.0`
+- `KICRYP_DAILY_SUMMARY_ENABLED=true`
+- `KICRYP_MANAGER_DAILY_SUMMARY_FILE=/home/ubuntu/KiCryp/state/daily_summary.json`
 
 ### KiDax
 - `BOT_ID=main`
 - `BOT_PROFILE_KEY=indodax`
-- `KIBOT_EXCHANGE_KIND=INDODAX`
+- `KICRYP_EXCHANGE_KIND=INDODAX`
 - `DEVICE_ROLE=PRIMARY`
 - `MAC_ENGINE_PORT=8787`
 - `DEVICE_ID=kidax-oracle-sg`
-- `KIBOT_HIVE_EXPECTED_BOT_IDS=kinance,kibot`
-- `KIBOT_LEAD_LAG_UDP_LISTEN_PORT=9999`
-- `KIBOT_LEAD_LAG_UDP_TARGET_HOST=<ip-kinance-atau-kibot-lan>`
-- `KIBOT_LEAD_LAG_UDP_TARGET_PORT=9999`
+- `KICRYP_HIVE_EXPECTED_BOT_IDS=kinance,kicryp`
+- `KICRYP_LEAD_LAG_UDP_LISTEN_PORT=9999`
+- `KICRYP_LEAD_LAG_UDP_TARGET_HOST=<ip-kinance-atau-kicryp-lan>`
+- `KICRYP_LEAD_LAG_UDP_TARGET_PORT=9999`
 - `INDODAX_API_KEY`
 - `INDODAX_API_SECRET`
 
 ### Kinance
 - `BOT_ID=kinance`
 - `BOT_PROFILE_KEY=kinance`
-- `KIBOT_EXCHANGE_KIND=BINANCE_SPOT`
+- `KICRYP_EXCHANGE_KIND=BINANCE_SPOT`
 - `DEVICE_ROLE=PRIMARY`
 - `MAC_ENGINE_PORT=8788`
 - `DEVICE_ID=kinance-oracle-sg`
-- `KIBOT_HIVE_EXPECTED_BOT_IDS=main,kibot`
-- `KIBOT_LEAD_LAG_UDP_LISTEN_PORT=9999`
-- `KIBOT_LEAD_LAG_UDP_TARGET_HOST=<ip-kidax-atau-kibot-lan>`
-- `KIBOT_LEAD_LAG_UDP_TARGET_PORT=9999`
+- `KICRYP_HIVE_EXPECTED_BOT_IDS=main,kicryp`
+- `KICRYP_LEAD_LAG_UDP_LISTEN_PORT=9999`
+- `KICRYP_LEAD_LAG_UDP_TARGET_HOST=<ip-kidax-atau-kicryp-lan>`
+- `KICRYP_LEAD_LAG_UDP_TARGET_PORT=9999`
 - `BINANCE_API_KEY`
 - `BINANCE_API_SECRET`
 
-### KiBot
-- `BOT_ID=kibot`
-- `BOT_PROFILE_KEY=kibot`
+### KiCryp
+- `BOT_ID=kicryp`
+- `BOT_PROFILE_KEY=kicryp`
 - `DEVICE_ROLE=PRIMARY`
 - `MAC_ENGINE_PORT=8789`
-- `DEVICE_ID=kibot-oracle-sg`
-- `KIBOT_HIVE_EXPECTED_BOT_IDS=main,kinance`
-- `KIBOT_LEAD_LAG_UDP_LISTEN_PORT=9999`
-- `KIBOT_LEAD_LAG_UDP_TARGET_HOST=<ip-kidax-atau-kinance-lan>`
-- `KIBOT_LEAD_LAG_UDP_TARGET_PORT=9999`
+- `DEVICE_ID=kicryp-oracle-sg`
+- `KICRYP_HIVE_EXPECTED_BOT_IDS=main,kinance`
+- `KICRYP_LEAD_LAG_UDP_LISTEN_PORT=9999`
+- `KICRYP_LEAD_LAG_UDP_TARGET_HOST=<ip-kidax-atau-kinance-lan>`
+- `KICRYP_LEAD_LAG_UDP_TARGET_PORT=9999`
 - exchange credential boleh kosong jika node ini hanya commander/reporting
 
 ## Local Recovery Paths
@@ -125,7 +125,7 @@ Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiBot` s
   - `-Xms128m -Xmx300m`
 - Jika dashboard, AI assist, atau telemetry makin ramai:
   - naikkan jadi `-Xmx512m`
-- Untuk `kibot-manager.service` ringan:
+- Untuk `kicryp-manager.service` ringan:
   - `MemoryMax=192M`
   - `Nice=5`
 
@@ -136,21 +136,21 @@ Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiBot` s
 4. Jika top-up baru masuk dan ingin PnL bulan berjalan mulai dari nol, hapus file anchor lama atau biarkan runtime membuat anchor baru saat sync pertama bulan ini.
 5. `sudo systemctl daemon-reload`
 6. Restart `Kinance`.
-7. Restart `KiBot`.
+7. Restart `KiCryp`.
 8. Restart `KiDax` terakhir.
 9. Pastikan cron recovery aktif:
    - `crontab -l | grep engine-recovery.sh`
 
 Alasan:
 - `Kinance` dulu supaya feed global dan heartbeat siap.
-- `KiBot` kedua supaya veto/safe-mode layer aktif.
+- `KiCryp` kedua supaya veto/safe-mode layer aktif.
 - `KiDax` terakhir supaya executor tidak start sendirian tanpa partner.
 - Recovery check tetap jalan tiap 2 menit agar 1 server lebih tahan crash kecil.
 
 ## Smoke Test Pasca Deploy
 1. Cek service hidup:
    - `sudo systemctl status kinance-engine --no-pager`
-   - `sudo systemctl status kibot-engine --no-pager`
+   - `sudo systemctl status kicryp-engine --no-pager`
    - `sudo systemctl status kidax-engine --no-pager`
 2. Cek dashboard state:
    - `curl http://127.0.0.1:8787/api/state`
@@ -161,13 +161,13 @@ Alasan:
 4. Pantau log:
    - `sudo journalctl -u kidax-engine -f -n 200`
    - `sudo journalctl -u kinance-engine -f -n 200`
-   - `sudo journalctl -u kibot-engine -f -n 200`
-   - `sudo journalctl -u kibot-manager -f -n 200`
+   - `sudo journalctl -u kicryp-engine -f -n 200`
+   - `sudo journalctl -u kicryp-manager -f -n 200`
 5. Cek note AI manager:
-   - `cat /home/ubuntu/KiBot/state/runtime_note.json`
-   - `cat /home/ubuntu/KiBot/state/ai_provider_state.json`
-   - `cat /home/ubuntu/KiBot/state/pair_cooldowns.json`
-   - `cat /home/ubuntu/KiBot/state/daily_summary.json`
+   - `cat /home/ubuntu/KiCryp/state/runtime_note.json`
+   - `cat /home/ubuntu/KiCryp/state/ai_provider_state.json`
+   - `cat /home/ubuntu/KiCryp/state/pair_cooldowns.json`
+   - `cat /home/ubuntu/KiCryp/state/daily_summary.json`
 
 ## Log Yang Harus Kelihatan
 - `TRINITY_HEARTBEAT`
@@ -188,7 +188,7 @@ Alasan:
 - `SAFE_MODE` muncul terus setelah restart.
 - `LOCAL_RECOVERY` terus fallback walau control plane sehat.
 - `Exchange unreachable` atau timeout berulang.
-- KiDax open posisi saat Kinance/KiBot belum online.
+- KiDax open posisi saat Kinance/KiCryp belum online.
 
 ## Go-Live Bertahap
 1. Shadow/saldo kecil.

@@ -43,7 +43,7 @@ fun SettingsScreen(
                     Icon(
                         Icons.Default.ArrowBack,
                         contentDescription = "Back",
-                        tint = KiBotBlue
+                        tint = KiCrypBlue
                     )
                 }
             },
@@ -76,11 +76,11 @@ fun SettingsScreen(
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = TextPrimary,
                     unfocusedTextColor = TextPrimary,
-                    focusedBorderColor = KiBotBlue,
+                    focusedBorderColor = KiCrypBlue,
                     unfocusedBorderColor = TextSecondary,
-                    focusedLabelColor = KiBotBlue,
+                    focusedLabelColor = KiCrypBlue,
                     unfocusedLabelColor = TextSecondary,
-                    cursorColor = KiBotBlue
+                    cursorColor = KiCrypBlue
                 ),
                 singleLine = true
             )
@@ -97,11 +97,11 @@ fun SettingsScreen(
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = TextPrimary,
                     unfocusedTextColor = TextPrimary,
-                    focusedBorderColor = KiBotBlue,
+                    focusedBorderColor = KiCrypBlue,
                     unfocusedBorderColor = TextSecondary,
-                    focusedLabelColor = KiBotBlue,
+                    focusedLabelColor = KiCrypBlue,
                     unfocusedLabelColor = TextSecondary,
-                    cursorColor = KiBotBlue
+                    cursorColor = KiCrypBlue
                 ),
                 singleLine = true
             )
@@ -117,11 +117,11 @@ fun SettingsScreen(
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = TextPrimary,
                     unfocusedTextColor = TextPrimary,
-                    focusedBorderColor = KiBotBlue,
+                    focusedBorderColor = KiCrypBlue,
                     unfocusedBorderColor = TextSecondary,
-                    focusedLabelColor = KiBotBlue,
+                    focusedLabelColor = KiCrypBlue,
                     unfocusedLabelColor = TextSecondary,
-                    cursorColor = KiBotBlue
+                    cursorColor = KiCrypBlue
                 ),
                 visualTransformation = PasswordVisualTransformation(),
                 singleLine = true
@@ -158,7 +158,7 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = KiBotBlue),
+                colors = ButtonDefaults.buttonColors(containerColor = KiCrypBlue),
                 enabled = !isSaving
             ) {
                 if (isSaving) {

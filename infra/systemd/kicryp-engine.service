@@ -1,0 +1,49 @@
+[Unit]
+Description=KiCryp Commander Engine
+After=network.target
+Wants=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+StartLimitAction=none
+
+[Service]
+Type=simple
+User=ubuntu
+PermissionsStartOnly=true
+WorkingDirectory=/home/ubuntu/KiCryp
+EnvironmentFile=-/home/ubuntu/KiCryp/.env.kicryp
+Environment=BOT_ID=kicryp
+Environment=BOT_PROFILE_KEY=kicryp
+Environment=KICRYP_EXCHANGE_KIND=BINANCE_SPOT
+Environment=DEVICE_ID=kicryp-oracle-sg
+Environment=DEVICE_DISPLAY_NAME="KiCryp Oracle Singapore"
+Environment=DEVICE_ROLE=PRIMARY
+Environment=KICRYP_RUNTIME_ROOT=/home/ubuntu/KiCryp
+Environment=KICRYP_SERVICE_NAME=kicryp-engine
+Environment=KICRYP_DASHBOARD_PORT=8789
+Environment=KICRYP_ENV_FILE=/home/ubuntu/KiCryp/.env.kicryp
+Environment=MAC_ENGINE_BIND_HOST=0.0.0.0
+Environment=MAC_ENGINE_PORT=8789
+Environment=MAC_ENGINE_ENABLE_LAN_ADVERTISE=false
+Environment=KICRYP_LOCAL_POSITION_STATE_ENABLED=true
+Environment=KICRYP_LEAD_LAG_UDP_ENABLED=true
+Environment=KICRYP_LEAD_LAG_UDP_HEARTBEAT_ENABLED=true
+Environment=KICRYP_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=1000
+Environment=KICRYP_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000
+Environment=KICRYP_HIVE_EXPECTED_BOT_IDS=kinance,kidax
+Environment="JAVA_OPTS=-XX:+UseSerialGC -Xms96m -Xmx256m -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
+ExecStart=/bin/bash -lc '/usr/bin/java $JAVA_OPTS -jar /home/ubuntu/KiCryp/server/mac-engine-all.jar'
+Restart=on-failure
+RestartSec=5
+OOMPolicy=kill
+LimitNOFILE=65535
+TimeoutStartSec=120
+TimeoutStopSec=60
+KillSignal=SIGTERM
+SuccessExitStatus=143
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kicryp-engine
+
+[Install]
+WantedBy=multi-user.target

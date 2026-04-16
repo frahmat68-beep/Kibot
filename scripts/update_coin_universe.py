@@ -1,6 +1,6 @@
 #!/usr/न्वयन/env python3
 """
-KiBot Trinity - Coin Universe Auto-Discovery
+KiCryp Trinity - Coin Universe Auto-Discovery
 Fetch Indodax API, cari koin baru, bandingkan dengan CoinUniverse.kt.
 """
 
@@ -11,7 +11,7 @@ from datetime import datetime
 
 # URL APIs
 INDODAX_PAIRS_URL = "https://indodax.com/api/tickers"
-COIN_UNIVERSE_KT = "packages/core/src/commonMain/kotlin/com/kibot/core/data/CoinUniverse.kt"
+COIN_UNIVERSE_KT = "packages/core/src/commonMain/kotlin/com/kicryp/core/data/CoinUniverse.kt"
 
 def send_telegram_alert(message: str):
     import os

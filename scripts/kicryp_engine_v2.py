@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 """
-KiBot Trinity v7.0 — Dual Bucket Engine
+KiCryp Trinity v7.0 — Dual Bucket Engine
 Bucket A: Global Lead-Lag (Kinance + KiCom)
 Bucket B: Local Indodax-Only (ConvictionScore)
 """
@@ -14,7 +14,7 @@ from typing import Optional
 import urllib.request
 import logging
 
-logger = logging.getLogger("kibot_engine_v2")
+logger = logging.getLogger("kicryp_engine_v2")
 
 # ============================================================
 # KONSTANTA SISTEM — JANGAN UBAH TANPA REVIEW
@@ -29,7 +29,7 @@ SUPABASE_URL        = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY        = os.environ.get("SUPABASE_ANON_KEY", "")
 
 try:
-    STATE_DIR = Path("/home/ubuntu/KiBot/state")
+    STATE_DIR = Path("/home/ubuntu/KiCryp/state")
     if not STATE_DIR.exists():
         STATE_DIR.mkdir(parents=True, exist_ok=True)
 except Exception:
@@ -47,8 +47,8 @@ ROUND_TRIP_LIMIT  = MAKER_FEE + PPH_SELL + MAKER_FEE   # ~0.0069
 ROUND_TRIP_MARKET = TAKER_FEE + PPH_SELL + TAKER_FEE   # ~0.0131
 
 # Gunakan base path lokal untuk state jika di lingkungan test
-if os.environ.get("KIBOT_TEST_STATE"):
-    STATE_DIR = Path(os.environ.get("KIBOT_TEST_STATE"))
+if os.environ.get("KICRYP_TEST_STATE"):
+    STATE_DIR = Path(os.environ.get("KICRYP_TEST_STATE"))
     TRADE_LOG_FILE = STATE_DIR / "trade_log.jsonl"
     CASCADE_FILE = STATE_DIR / "cascade_mode.json"
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1146,7 +1146,7 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     
     if not args:
-        print("✅ kibot_engine_v2.py loaded successfully")
+        print("✅ kicryp_engine_v2.py loaded successfully")
         sys.exit(0)
 
     print(f"🚀 Running Trinity v7.0 Verification: {args}")

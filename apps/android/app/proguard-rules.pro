@@ -1,4 +1,4 @@
-# KiBot Android App ProGuard Rules
+# KiCryp Android App ProGuard Rules
 
 # Keep Kotlin serialization
 -keepattributes *Annotation*, InnerClasses
@@ -12,7 +12,7 @@
 }
 
 # Keep data classes for JSON parsing
--keep class com.kibot.android.data.** { *; }
+-keep class com.kicryp.android.data.** { *; }
 
 # OkHttp
 -dontwarn okhttp3.**

@@ -35,11 +35,11 @@
 **Problem:** `heartbeatMonitor` instantiated but never called → bots can't detect dead peers
 
 **Files Modified:**
-- `apps/mac-engine/src/main/kotlin/com/kibot/macengine/runtime/MacEngineDaemon.kt`
+- `apps/mac-engine/src/main/kotlin/com/kicryp/macengine/runtime/MacEngineDaemon.kt`
 - Lines: 11, 264, 3373-3379, 4648-4674, 718
 
 **Changes:**
-1. ✅ Added import: `import com.kibot.core.CapitalAllocationManager`
+1. ✅ Added import: `import com.kicryp.core.CapitalAllocationManager`
 2. ✅ Added field: `@Volatile private var lastDeadBotCheckAt: Instant? = null` (line 718)
 3. ✅ Added in `syncOnce()` (line 3373-3379):
    ```kotlin
@@ -59,7 +59,7 @@
 
 **What This Fixes:**
 - KiDax now knows if Kinance (radar) is dead
-- KiBot Manager can detect if executors are offline
+- KiCryp Manager can detect if executors are offline
 - Prevents trading blind when signal source is down
 - Automatic alerts when bots miss heartbeats >30s
 
@@ -70,7 +70,7 @@
 **Problem:** `CapitalAllocationManager` exists but NOT USED in actual trading
 
 **Files Modified:**
-- `apps/mac-engine/src/main/kotlin/com/kibot/macengine/runtime/MacEngineDaemon.kt`
+- `apps/mac-engine/src/main/kotlin/com/kicryp/macengine/runtime/MacEngineDaemon.kt`
 - Lines: 264, 3640-3649
 
 **Changes:**
@@ -117,7 +117,7 @@ capitalAllocationManager?.depositProfit(profit, wasAggressive)
 **Problem:** Too strict filters missing 40% opportunities
 
 **Files Modified:**
-- `packages/core/src/commonMain/kotlin/com/kibot/core/PairSelector.kt`
+- `packages/core/src/commonMain/kotlin/com/kicryp/core/PairSelector.kt`
 - Lines: 50, 58-60
 
 **Changes:**
@@ -146,7 +146,7 @@ capitalAllocationManager?.depositProfit(profit, wasAggressive)
 **Problem:** Holding losers too long (120 minutes), missing breakeven protection
 
 **Files Modified:**
-- `packages/core/src/commonMain/kotlin/com/kibot/core/OrderExecutionStrategy.kt`
+- `packages/core/src/commonMain/kotlin/com/kicryp/core/OrderExecutionStrategy.kt`
 - Lines: 108-115, 146-165, 177-187
 
 **Changes:**
@@ -192,7 +192,7 @@ capitalAllocationManager?.depositProfit(profit, wasAggressive)
 **Status:** ✅ **ALREADY FIXED** (No changes needed)
 
 **Files Checked:**
-- `packages/core/src/commonMain/kotlin/com/kibot/core/RobustCommunicationLayer.kt`
+- `packages/core/src/commonMain/kotlin/com/kicryp/core/RobustCommunicationLayer.kt`
 
 **Verification:**
 - Line 21: `ConcurrentLinkedQueue<QueuedMessage>()` ✅
@@ -256,8 +256,8 @@ All 13 failures appear to be **PRE-EXISTING** issues unrelated to our changes:
 
 ### Deployment Steps
 1. Stop current bot: `sudo systemctl stop kidax-engine`
-2. Backup old JAR: `cp /opt/kibot/kidax-engine.jar /opt/kibot/kidax-engine.jar.backup`
-3. Deploy new JAR: `cp apps/mac-engine/build/libs/mac-engine-all.jar /opt/kibot/kidax-engine.jar`
+2. Backup old JAR: `cp /opt/kicryp/kidax-engine.jar /opt/kicryp/kidax-engine.jar.backup`
+3. Deploy new JAR: `cp apps/mac-engine/build/libs/mac-engine-all.jar /opt/kicryp/kidax-engine.jar`
 4. Start bot: `sudo systemctl start kidax-engine`
 5. Monitor logs: `journalctl -u kidax-engine -f`
 

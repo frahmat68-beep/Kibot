@@ -13,7 +13,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
-class KiBotWidgetSyncWorker(
+class KiCrypWidgetSyncWorker(
     appContext: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
@@ -63,7 +63,7 @@ class KiBotWidgetSyncWorker(
                     isConnected = true,
                     lastUpdate = System.currentTimeMillis(),
                 )
-                KiBotWidgetHelper.updateWidgetData(applicationContext, botState)
+                KiCrypWidgetHelper.updateWidgetData(applicationContext, botState)
                 Result.success()
             }
         }.getOrElse { Result.retry() }

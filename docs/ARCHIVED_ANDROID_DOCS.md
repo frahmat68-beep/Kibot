@@ -4,11 +4,11 @@
 
 ## Current Architecture: Trinity (3-Bot System)
 
-KiBot has evolved into the **Trinity** trading system consisting of:
+KiCryp has evolved into the **Trinity** trading system consisting of:
 
 1. **Kinance** (Binance Scanner) - Detects market anomalies
 2. **KiDax** (Indodax Executor) - Executes trades
-3. **KiBot Manager** (AI Veto) - Risk management and approval
+3. **KiCryp Manager** (AI Veto) - Risk management and approval
 
 See `architecture.md` for current system design.
 
@@ -23,7 +23,7 @@ The following documents reference the old Android+Mac architecture and are **arc
 - `safe-rollout.md` - Old rollout procedures
 - `access-and-secrets.md` - Old credential management
 - `test-plan.md` - Old test scenarios
-- `KIBOT_CONTRACT.md` - Old system contract
+- `KICRYP_CONTRACT.md` - Old system contract
 
 ## Migration Notes
 
@@ -35,7 +35,7 @@ The following documents reference the old Android+Mac architecture and are **arc
 **New System (Trinity):**
 - Kinance on Binance Oracle server (scanner only)
 - KiDax on Indodax Oracle server (executor)
-- KiBot Manager (Python AI daemon)
+- KiCryp Manager (Python AI daemon)
 - UDP for sub-ms signal communication
 - Supabase for control plane
 

@@ -1,4 +1,4 @@
-# Changelog - KiBot Trinity
+# Changelog - KiCryp Trinity
 
 All notable changes to this project will be documented in this file.
 
@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Refactored `CapitalAllocationManager.kt`**: Full implementation of the 50/50 Dual-Bucket split and reserve system.
-- **Integrated `kibot_engine_v2.py`**: Consolidated all mathematical logic into a single deterministic engine.
+- **Integrated `kicryp_engine_v2.py`**: Consolidated all mathematical logic into a single deterministic engine.
 - **Universal Instructions**: Overhauled `.github/copilot-instructions.md` with v7.0 logic.
 
 ### Removed
@@ -43,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **50/50 Capital Partitioning**: Reformulated core capital allocation into Local Sniper (50%) and Global Alpha (50%) buckets.
 
 ### Changed
-- **Refactored `kibot_manager.py`**: Integrated the Trinity Brain components into the main execution loop.
+- **Refactored `kicryp_manager.py`**: Integrated the Trinity Brain components into the main execution loop.
 - **Refactored `MacEngineDaemon.kt`**: Unified capital allocation logic and removed legacy hardcoded budget caps.
 - **Improved Anomaly Detection**: Replaced hardcoded coin lists with dynamic volume spike detection (>= 2.5x).
 

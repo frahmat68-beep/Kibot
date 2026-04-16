@@ -1,4 +1,4 @@
-// KiBot Trinity - Enhanced Self-Learning System with Daily Profit Guarantee
+// KiCryp Trinity - Enhanced Self-Learning System with Daily Profit Guarantee
 // This extends SelfLearningSystem.kt with critical hardening features
 
 package com.kibot.core

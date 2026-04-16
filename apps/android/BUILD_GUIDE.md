@@ -1,4 +1,4 @@
-# KiBot Android App - Build & Deployment Guide
+# KiCryp Android App - Build & Deployment Guide
 
 ## Prerequisites
 
@@ -35,7 +35,7 @@ adb --version
 
 #### 3. Clone/Navigate to Project
 ```bash
-cd ~/Documents/Web\ Develop/KiBot/apps/android
+cd ~/Documents/Web\ Develop/KiCryp/apps/android
 ```
 
 ## Build Variants
@@ -91,7 +91,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ### 4. Run App
 ```bash
 # Launch via adb
-adb shell am start -n com.kibot.android/.MainActivity
+adb shell am start -n com.kicryp.android/.MainActivity
 
 # Or install and run in one command
 ./gradlew installDebugAndRun
@@ -102,14 +102,14 @@ adb shell am start -n com.kibot.android/.MainActivity
 # All logs
 adb logcat
 
-# KiBot logs only
-adb logcat | grep "KiBot"
+# KiCryp logs only
+adb logcat | grep "KiCryp"
 
 # With timestamps
-adb logcat -v time | grep "KiBot"
+adb logcat -v time | grep "KiCryp"
 
 # Save to file
-adb logcat > ~/kibot_debug.log
+adb logcat > ~/kicryp_debug.log
 ```
 
 ## Running on Emulator
@@ -142,7 +142,7 @@ adb devices
 ./gradlew installDebug
 
 # Run
-adb shell am start -n com.kibot.android/.MainActivity
+adb shell am start -n com.kicryp.android/.MainActivity
 ```
 
 ### 4. Testing with Mock Server
@@ -202,7 +202,7 @@ async def handler(websocket, path):
 
 async def main():
     async with serve(handler, "0.0.0.0", 8787):
-        print("WebSocket server running on ws://0.0.0.0:8787/kibot/status")
+        print("WebSocket server running on ws://0.0.0.0:8787/kicryp/status")
         await asyncio.Future()
 
 if __name__ == "__main__":
@@ -225,14 +225,14 @@ python test_server.py
 ### 1. Create Keystore
 ```bash
 # Generate keystore (one time only)
-keytool -genkey -v -keystore kibot-release.jks \
+keytool -genkey -v -keystore kicryp-release.jks \
   -keyalg RSA \
   -keysize 2048 \
   -validity 10000 \
-  -alias kibot_key
+  -alias kicryp_key
 
 # You'll be prompted for:
-# First and last name: KiBot App
+# First and last name: KiCryp App
 # Organization: Trinity Trading
 # City/State/Country: Your location
 # Keystore password: (choose strong password)
@@ -242,9 +242,9 @@ keytool -genkey -v -keystore kibot-release.jks \
 ### 2. Build Signed Release APK
 ```bash
 ./gradlew assembleRelease \
-  -Pandroid.injected.signing.store.file=../../../kibot-release.jks \
+  -Pandroid.injected.signing.store.file=../../../kicryp-release.jks \
   -Pandroid.injected.signing.store.password=<PASSWORD> \
-  -Pandroid.injected.signing.key.alias=kibot_key \
+  -Pandroid.injected.signing.key.alias=kicryp_key \
   -Pandroid.injected.signing.key.password=<PASSWORD>
 ```
 
@@ -275,7 +275,7 @@ jarsigner -verify -verbose app/build/outputs/apk/release/app-release.apk
 ```
 https://play.google.com/console
 → New App
-→ Name: "KiBot Trading Dashboard"
+→ Name: "KiCryp Trading Dashboard"
 → Category: Finance
 → Create
 ```
@@ -388,14 +388,14 @@ adb install app-aligned.apk
 ```bash
 # Solution: Device doesn't allow test APKs
 # - Uninstall existing app first
-adb uninstall com.kibot.android
+adb uninstall com.kicryp.android
 ./gradlew installDebug
 ```
 
 #### "INSTALL_FAILED_INSUFFICIENT_STORAGE"
 ```bash
 # Solution: Clear app data on device
-adb shell pm clear com.kibot.android
+adb shell pm clear com.kicryp.android
 ./gradlew installDebug
 ```
 
@@ -408,13 +408,13 @@ curl http://localhost:8787
 nc -zv localhost 8787
 
 # Check app has INTERNET permission
-adb shell dumpsys package com.kibot.android | grep permission
+adb shell dumpsys package com.kicryp.android | grep permission
 ```
 
 #### "App crashes on startup"
 ```bash
 # Solution: Check logcat
-adb logcat -s "KiBot" *:E
+adb logcat -s "KiCryp" *:E
 
 # Check minimum SDK
 # Update if needed in app/build.gradle.kts minSdk = 28
@@ -434,7 +434,7 @@ adb logcat -s "KiBot" *:E
 ### Memory Profiling
 ```bash
 # Start app with profiler
-adb shell am start -n com.kibot.android/.MainActivity
+adb shell am start -n com.kicryp.android/.MainActivity
 
 # Open Android Profiler in Android Studio
 # Run > Profiler
@@ -492,7 +492,7 @@ git push origin v1.0.1
 # Share APK via email/cloud
 adb pull app/build/outputs/apk/debug/app-debug.apk
 # Send file to user
-# User: adb install kibot.apk
+# User: adb install kicryp.apk
 ```
 
 ### Google Play

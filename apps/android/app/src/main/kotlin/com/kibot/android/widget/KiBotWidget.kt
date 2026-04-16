@@ -32,20 +32,20 @@ private val WidgetStatusOnline = Color(0xFF4CAF50)
 private val WidgetStatusOffline = Color(0xFFF44336)
 
 // Preference keys for widget data
-object KiBotWidgetKeys {
+object KiCrypWidgetKeys {
     val BALANCE = doublePreferencesKey("widget_balance")
     val PNL_TODAY = doublePreferencesKey("widget_pnl_today")
     val TOTAL_RETURN = doublePreferencesKey("widget_total_return")
     val KIDAX_STATUS = stringPreferencesKey("widget_kidax_status")
     val KINANCE_STATUS = stringPreferencesKey("widget_kinance_status")
-    val KIBOT_STATUS = stringPreferencesKey("widget_kibot_status")
+    val KICRYP_STATUS = stringPreferencesKey("widget_kibot_status")
     val KIDAX_PING = longPreferencesKey("widget_kidax_ping")
     val KINANCE_PING = longPreferencesKey("widget_kinance_ping")
-    val KIBOT_PING = longPreferencesKey("widget_kibot_ping")
+    val KICRYP_PING = longPreferencesKey("widget_kibot_ping")
     val LAST_UPDATE = longPreferencesKey("widget_last_update")
 }
 
-class KiBotWidget : GlanceAppWidget() {
+class KiCrypWidget : GlanceAppWidget() {
     
     override val sizeMode = SizeMode.Responsive(
         setOf(
@@ -56,15 +56,15 @@ class KiBotWidget : GlanceAppWidget() {
     )
     
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        android.util.Log.i("KiBotWidget", "🎨 provideGlance called for id=$id")
+        android.util.Log.i("KiCrypWidget", "🎨 provideGlance called for id=$id")
         
         // Read data from SharedPreferences (reliable)
-        val data = KiBotWidgetHelper.getWidgetData(context)
-        android.util.Log.i("KiBotWidget", "🎨 Widget data from SharedPrefs: balance=${data.balance}, pnl=${data.pnlToday}, status=${data.kidaxStatus}")
+        val data = KiCrypWidgetHelper.getWidgetData(context)
+        android.util.Log.i("KiCrypWidget", "🎨 Widget data from SharedPrefs: balance=${data.balance}, pnl=${data.pnlToday}, status=${data.kidaxStatus}")
         
         provideContent {
             val size = LocalSize.current
-            android.util.Log.i("KiBotWidget", "🎨 Widget size: ${size.width} x ${size.height}")
+            android.util.Log.i("KiCrypWidget", "🎨 Widget size: ${size.width} x ${size.height}")
             
             when {
                 size.width < 150.dp -> SmallWidget(data.balance, data.pnlToday, data.kidaxStatus)
@@ -109,7 +109,7 @@ private fun SmallWidget(balance: Double, pnlToday: Double, status: String) {
             StatusDot(status)
             Spacer(modifier = GlanceModifier.width(6.dp))
             Text(
-                text = "KiBot",
+                text = "KiCryp",
                 style = TextStyle(
                     color = ColorProvider(WidgetTextPrimary),
                     fontSize = 12.sp,
@@ -155,7 +155,7 @@ private fun MediumWidget(balance: Double, pnlToday: Double, totalReturn: Double,
             StatusDot(status)
             Spacer(modifier = GlanceModifier.width(6.dp))
             Text(
-                text = "KiBot",
+                text = "KiCryp",
                 style = TextStyle(
                     color = ColorProvider(WidgetTextPrimary),
                     fontSize = 14.sp,
@@ -246,7 +246,7 @@ private fun LargeWidget(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "KiBot Live",
+                text = "KiCryp Live",
                 style = TextStyle(
                     color = ColorProvider(WidgetTextPrimary),
                     fontSize = 16.sp,
@@ -343,7 +343,7 @@ private fun LargeWidget(
             modifier = GlanceModifier.fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            BotStatusItem(name = "KiBot", status = kibotStatus, pingMs = kibotPing)
+            BotStatusItem(name = "KiCryp", status = kibotStatus, pingMs = kibotPing)
             Spacer(modifier = GlanceModifier.width(8.dp))
             BotStatusItem(name = "Kinance", status = kinanceStatus, pingMs = kinancePing)
             Spacer(modifier = GlanceModifier.width(8.dp))
@@ -433,8 +433,8 @@ private fun formatWidgetFreshness(lastUpdate: Long): String {
     }
 }
 
-class KiBotWidgetReceiver : GlanceAppWidgetReceiver() {
-    override val glanceAppWidget: GlanceAppWidget = KiBotWidget()
+class KiCrypWidgetReceiver : GlanceAppWidgetReceiver() {
+    override val glanceAppWidget: GlanceAppWidget = KiCrypWidget()
 
     override fun onEnabled(context: Context) {
         super.onEnabled(context)

@@ -48,7 +48,7 @@ def main() -> int:
     args = parser.parse_args()
 
     env = load_env(ENV_PATH)
-    bot_id = args.bot_id or env.get("KIBOT_BOT_ID", "main")
+    bot_id = args.bot_id or env.get("KICRYP_BOT_ID", "main")
     db_url = env.get("SUPABASE_POOLER_URL") or env.get("SUPABASE_DB_URL")
     if not db_url:
         print("SUPABASE_POOLER_URL / SUPABASE_DB_URL belum ada di .env", file=sys.stderr)
@@ -259,7 +259,7 @@ def main() -> int:
 
     release_manifest = result.get("release_manifest") or {}
     recommendations = result["recommendations"]
-    print("KiBot update check")
+    print("KiCryp update check")
     print(f"- Bot: {bot_id}")
     if release_manifest:
         print(

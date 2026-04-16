@@ -1,5 +1,5 @@
 """
-KiBot Trinity - Multi-Timeframe Analyzer
+KiCryp Trinity - Multi-Timeframe Analyzer
 ========================================
 Menarik data historis candle 1m, 15m, 60m dari Indodax untuk konfirmasi trend.
 """

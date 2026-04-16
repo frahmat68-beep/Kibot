@@ -46,7 +46,7 @@ class MigrationContext:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Copy KiBot public data from one Supabase project to another."
+        description="Copy KiCryp public data from one Supabase project to another."
     )
     parser.add_argument("--source-db-url", required=True)
     parser.add_argument("--target-db-url", required=True)
@@ -130,7 +130,7 @@ def fetch_owner_ids(
         cur.execute(
             """
             insert into public.bots (bot_id, user_id, display_name)
-            values ('main', %s::uuid, 'KiBot Main')
+            values ('main', %s::uuid, 'KiCryp Main')
             on conflict (bot_id) do update set user_id = excluded.user_id
             """,
             (target_owner_id,),

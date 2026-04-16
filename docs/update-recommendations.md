@@ -1,6 +1,6 @@
 # Update Recommendations
 
-KiBot sekarang punya jalur advisory terpisah dari safety core:
+KiCryp sekarang punya jalur advisory terpisah dari safety core:
 
 - `weekly_learning_reviews`
   dipakai untuk ringkasan belajar mingguan dan adaptasi bounded

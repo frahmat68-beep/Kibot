@@ -16,7 +16,7 @@ HEARTBEAT_INTERVAL = 100ms
 TIMEOUT_DETECTION = 50ms  ❌ MUSTAHIL! (timeout < interval)
 ```
 
-Logika mustahil menyebabkan **false disconnect** — bot menganggap Kinance/KiBot Manager mati padahal masih aktif.
+Logika mustahil menyebabkan **false disconnect** — bot menganggap Kinance/KiCryp Manager mati padahal masih aktif.
 
 **Solution:**
 ```kotlin
@@ -35,7 +35,7 @@ leadLagUdpHeartbeatTimeoutMillis = 300L  // 3x interval (perfect balance)
 - ✅ Real timeout detection masih efektif (300ms cukup cepat untuk alert)
 
 **File Changed:**
-- `apps/mac-engine/src/main/kotlin/com/kibot/macengine/config/MacRuntimeConfig.kt` (line 345)
+- `apps/mac-engine/src/main/kotlin/com/kicryp/macengine/config/MacRuntimeConfig.kt` (line 345)
 
 ---
 
@@ -84,8 +84,8 @@ noSellOrder && holdMs >= 180_000 && isDecaying
 - NEW: `BARBARIAN_DECAY_EXIT shib_idr after 180s, tick velocity=0.8 (DEAD).`
 
 **Files Changed:**
-- `packages/core/src/commonMain/kotlin/com/kibot/core/CoreConfig.kt` (line 242)
-- `apps/mac-engine/src/main/kotlin/com/kibot/macengine/runtime/MacEngineDaemon.kt` (lines 9101-9160)
+- `packages/core/src/commonMain/kotlin/com/kicryp/core/CoreConfig.kt` (line 242)
+- `apps/mac-engine/src/main/kotlin/com/kicryp/macengine/runtime/MacEngineDaemon.kt` (lines 9101-9160)
 
 ---
 
@@ -99,7 +99,7 @@ noSellOrder && holdMs >= 180_000 && isDecaying
 
 ```bash
 # ===== STEP 1: BUILD LOCALLY (Mac) =====
-cd /Users/kiki/Documents/Web\ Develop/KiBot
+cd /Users/kiki/Documents/Web\ Develop/KiCryp
 
 # Pull latest changes
 git pull origin main
@@ -109,19 +109,19 @@ git pull origin main
 
 # Verify build success
 ls -lh apps/mac-engine/build/libs/*.jar
-# Expected: kibot-mac-engine-VERSION-all.jar (~50-80MB)
+# Expected: kicryp-mac-engine-VERSION-all.jar (~50-80MB)
 ```
 
 ```bash
 # ===== STEP 2: TRANSFER TO SERVER (SCP) =====
 # Replace YOUR_ORACLE_IP with actual IP
 scp -i ~/.ssh/oracle_cloud_key \
-  apps/mac-engine/build/libs/kibot-mac-engine-*-all.jar \
-  ubuntu@YOUR_ORACLE_IP:~/kibot/
+  apps/mac-engine/build/libs/kicryp-mac-engine-*-all.jar \
+  ubuntu@YOUR_ORACLE_IP:~/kicryp/
 
 # Verify transfer
 ssh -i ~/.ssh/oracle_cloud_key ubuntu@YOUR_ORACLE_IP \
-  "ls -lh ~/kibot/*.jar"
+  "ls -lh ~/kicryp/*.jar"
 ```
 
 ```bash
@@ -129,22 +129,22 @@ ssh -i ~/.ssh/oracle_cloud_key ubuntu@YOUR_ORACLE_IP \
 ssh -i ~/.ssh/oracle_cloud_key ubuntu@YOUR_ORACLE_IP
 
 # Backup current JAR
-cd ~/kibot
-mv kibot-mac-engine-current.jar kibot-mac-engine-backup-$(date +%Y%m%d).jar
+cd ~/kicryp
+mv kicryp-mac-engine-current.jar kicryp-mac-engine-backup-$(date +%Y%m%d).jar
 
 # Install new JAR
-mv kibot-mac-engine-*-all.jar kibot-mac-engine-current.jar
+mv kicryp-mac-engine-*-all.jar kicryp-mac-engine-current.jar
 
 # Restart services
 sudo systemctl restart kidax-engine
-sudo systemctl restart kibot-manager
+sudo systemctl restart kicryp-manager
 
 # Verify services running
 sudo systemctl status kidax-engine
-sudo systemctl status kibot-manager
+sudo systemctl status kicryp-manager
 
 # Watch logs for new logic
-tail -f /var/log/kibot/kidax-engine.log | grep "BARBARIAN_DECAY_EXIT"
+tail -f /var/log/kicryp/kidax-engine.log | grep "BARBARIAN_DECAY_EXIT"
 ```
 
 ---
@@ -154,7 +154,7 @@ tail -f /var/log/kibot/kidax-engine.log | grep "BARBARIAN_DECAY_EXIT"
 ### **UDP Timeout Stability**
 ```bash
 # Watch for false disconnect (should NOT appear)
-tail -f /var/log/kibot/kidax-engine.log | grep -i "trinity.*disconnect\|heartbeat.*timeout"
+tail -f /var/log/kicryp/kidax-engine.log | grep -i "trinity.*disconnect\|heartbeat.*timeout"
 
 # Expected: NO false timeouts
 # If Kinance truly down, timeout will still trigger after 300ms (correct)
@@ -163,7 +163,7 @@ tail -f /var/log/kibot/kidax-engine.log | grep -i "trinity.*disconnect\|heartbea
 ### **Barbarian Decay Exit**
 ```bash
 # Watch for decay exit logs
-tail -f /var/log/kibot/kidax-engine.log | grep "BARBARIAN_DECAY_EXIT"
+tail -f /var/log/kicryp/kidax-engine.log | grep "BARBARIAN_DECAY_EXIT"
 
 # Expected output (when order book truly dead):
 # [2026-04-06 20:45:12] BARBARIAN_DECAY_EXIT shib_idr after 183s, tick velocity=1.2 (DEAD).
@@ -202,11 +202,11 @@ tail -f /var/log/kibot/kidax-engine.log | grep "BARBARIAN_DECAY_EXIT"
 ssh -i ~/.ssh/oracle_cloud_key ubuntu@YOUR_ORACLE_IP
 
 # Restore backup JAR
-cd ~/kibot
-sudo systemctl stop kidax-engine kibot-manager
-mv kibot-mac-engine-current.jar kibot-mac-engine-failed.jar
-mv kibot-mac-engine-backup-YYYYMMDD.jar kibot-mac-engine-current.jar
-sudo systemctl start kidax-engine kibot-manager
+cd ~/kicryp
+sudo systemctl stop kidax-engine kicryp-manager
+mv kicryp-mac-engine-current.jar kicryp-mac-engine-failed.jar
+mv kicryp-mac-engine-backup-YYYYMMDD.jar kicryp-mac-engine-current.jar
+sudo systemctl start kidax-engine kicryp-manager
 
 # Verify rollback
 sudo systemctl status kidax-engine
@@ -218,7 +218,7 @@ sudo systemctl status kidax-engine
 
 **FatJar Location (Mac):**
 ```
-/Users/kiki/Documents/Web Develop/KiBot/apps/mac-engine/build/libs/kibot-mac-engine-VERSION-all.jar
+/Users/kiki/Documents/Web Develop/KiCryp/apps/mac-engine/build/libs/kicryp-mac-engine-VERSION-all.jar
 ```
 
 **Size:** ~50-80MB (includes all dependencies)
@@ -248,6 +248,6 @@ sudo systemctl status kidax-engine
 
 **Ready for Production!** 🚀
 
-**Engineering Team:** KiBot Trinity  
+**Engineering Team:** KiCryp Trinity  
 **Review Status:** APPROVED  
 **Deployment Window:** IMMEDIATE (low-risk fixes)

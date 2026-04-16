@@ -9,7 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
-object KiBotWidgetHelper {
+object KiCrypWidgetHelper {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private const val PREFS_NAME = "kibot_widget_prefs"
     private const val MIN_UPDATE_INTERVAL_MS = 3_000L
@@ -45,7 +45,7 @@ object KiBotWidgetHelper {
         lastUpdateSignature = signature
         lastUpdateAtMs = now
 
-        android.util.Log.i("KiBotWidget", "📊 updateWidgetData called - balance=${botState.balance}, pnl=${botState.pnlToday}, connected=${botState.isConnected}")
+        android.util.Log.i("KiCrypWidget", "📊 updateWidgetData called - balance=${botState.balance}, pnl=${botState.pnlToday}, connected=${botState.isConnected}")
         
         try {
             // Save to SharedPreferences (reliable and fast)
@@ -61,21 +61,21 @@ object KiBotWidgetHelper {
                 putLong("last_update", System.currentTimeMillis())
                 apply() // async commit
                 
-                android.util.Log.i("KiBotWidget", "📊 Saved to SharedPreferences: balance=${botState.balance}, pnl=${botState.pnlToday}")
+                android.util.Log.i("KiCrypWidget", "📊 Saved to SharedPreferences: balance=${botState.balance}, pnl=${botState.pnlToday}")
             }
             
             // Trigger widget update
             scope.launch {
                 try {
-                    KiBotWidget().updateAll(context)
-                    android.util.Log.i("KiBotWidget", "📊 Widget updateAll() triggered")
+                    KiCrypWidget().updateAll(context)
+                    android.util.Log.i("KiCrypWidget", "📊 Widget updateAll() triggered")
                 } catch (e: Exception) {
-                    android.util.Log.e("KiBotWidget", "❌ Error triggering widget update", e)
+                    android.util.Log.e("KiCrypWidget", "❌ Error triggering widget update", e)
                 }
             }
             
         } catch (e: Exception) {
-            android.util.Log.e("KiBotWidget", "❌ Error updating widget data", e)
+            android.util.Log.e("KiCrypWidget", "❌ Error updating widget data", e)
             e.printStackTrace()
         }
     }

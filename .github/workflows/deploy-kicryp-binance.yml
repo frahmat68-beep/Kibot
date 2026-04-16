@@ -1,4 +1,4 @@
-name: Deploy Kinance
+name: Deploy KiCryp Binance
 
 on:
   push:
@@ -22,16 +22,16 @@ jobs:
       DEPLOY_USER: ${{ secrets.KINANCE_USER }}
       DEPLOY_KEY: ${{ secrets.KINANCE_SSH }}
       DEPLOY_PORT: ${{ secrets.KINANCE_SSH_PORT || '22' }}
-      REMOTE_ROOT: /home/ubuntu/Kinance
-      SERVICE_NAME: kinance-engine
-      SERVICE_FILE: infra/systemd/kinance-engine.service
+      REMOTE_ROOT: /home/ubuntu/KiBot
+      SERVICE_NAME: kicryp-binance
+      SERVICE_FILE: infra/systemd/kicryp-binance.service
       RUNTIME_PORT: "8788"
-      ENV_FILE: .env.kinance
-      BOT_ID: kinance
-      BOT_PROFILE_KEY: kinance
+      ENV_FILE: .env.kicryp
+      BOT_ID: binance
+      BOT_PROFILE_KEY: binance
       EXCHANGE_KIND: BINANCE_SPOT
-      DEVICE_ID: kinance-oracle-sg
-      DEVICE_DISPLAY_NAME: Kinance Oracle Singapore
+      DEVICE_ID: kicryp-oracle-binance
+      DEVICE_DISPLAY_NAME: KiCryp Oracle Binance
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -66,10 +66,10 @@ jobs:
           cp infra/scripts/engine-recovery.sh .deploy/engine-recovery.sh
           cp infra/scripts/setup-engine-autorecover.sh .deploy/setup-autorecover.sh
           cp scripts/sync_env_to_server.sh .deploy/scripts/
-          cp scripts/kibot_manager.py .deploy/scripts/
-          cp scripts/kibot_whatif_engine.py .deploy/scripts/
-          cp scripts/kibot_learning_engine.py .deploy/scripts/
-          cp scripts/kibot_timeframe_analyzer.py .deploy/scripts/
+          cp scripts/kicryp_manager.py .deploy/scripts/
+          cp scripts/kicryp_whatif_engine.py .deploy/scripts/
+          cp scripts/kicryp_learning_engine.py .deploy/scripts/
+          cp scripts/kicryp_timeframe_analyzer.py .deploy/scripts/
           cp scripts/dashboard_template.py .deploy/scripts/
 
       - name: Prepare Remote Directories
@@ -97,7 +97,7 @@ jobs:
           rsync -avz -e "ssh -p ${DEPLOY_PORT} -i ~/.ssh/id_rsa" .deploy/ "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_ROOT}/"
           rm -f ~/.ssh/id_rsa
 
-      - name: Install and Restart Kinance
+      - name: Install and Restart KiCryp Binance
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ env.DEPLOY_HOST }}
@@ -119,21 +119,21 @@ jobs:
               fi
             }
 
-            ensure_env KIBOT_RELEASE_LABEL "${RELEASE_LABEL}"
+            ensure_env KICRYP_RELEASE_LABEL "${RELEASE_LABEL}"
             ensure_env BOT_ID "${BOT_ID}"
             ensure_env BOT_PROFILE_KEY "${BOT_PROFILE_KEY}"
-            ensure_env KIBOT_EXCHANGE_KIND "${EXCHANGE_KIND}"
+            ensure_env KICRYP_EXCHANGE_KIND "${EXCHANGE_KIND}"
             ensure_env DEVICE_ID "${DEVICE_ID}"
             ensure_env DEVICE_DISPLAY_NAME "\"${DEVICE_DISPLAY_NAME}\""
-            ensure_env KIBOT_RUNTIME_ROOT "${REMOTE_ROOT}"
-            ensure_env KIBOT_DASHBOARD_PORT "${RUNTIME_PORT}"
-            ensure_env KIBOT_ENV_FILE "${REMOTE_ROOT}/${ENV_FILE}"
+            ensure_env KICRYP_RUNTIME_ROOT "${REMOTE_ROOT}"
+            ensure_env KICRYP_DASHBOARD_PORT "${RUNTIME_PORT}"
+            ensure_env KICRYP_ENV_FILE "${REMOTE_ROOT}/${ENV_FILE}"
             ensure_env MAC_ENGINE_PORT "${RUNTIME_PORT}"
             ensure_env MAC_ENGINE_BIND_HOST 0.0.0.0
 
             mv "${REMOTE_ROOT}/mac-engine-all.jar" "${REMOTE_ROOT}/server/mac-engine-all.jar"
             chmod +x "${REMOTE_ROOT}/engine-recovery.sh" "${REMOTE_ROOT}/setup-autorecover.sh" "${REMOTE_ROOT}/scripts/sync_env_to_server.sh" || true
-            sudo cp "${REMOTE_ROOT}/infra/systemd/kinance-engine.service" "/etc/systemd/system/${SERVICE_NAME}.service"
+            sudo cp "${REMOTE_ROOT}/infra/systemd/kicryp-binance.service" "/etc/systemd/system/${SERVICE_NAME}.service"
             sudo systemctl stop "${SERVICE_NAME}" || true
             sudo fuser -k "${RUNTIME_PORT}/tcp" || true
             sudo systemctl daemon-reload
@@ -143,13 +143,13 @@ jobs:
 
             echo "Waiting for health check on port ${RUNTIME_PORT}..."
             sleep 15
-            if ! curl -fsS --max-time 15 --retry 40 --retry-connrefused --retry-delay 5 http://127.0.0.1:${RUNTIME_PORT}/api/state >/tmp/kinance-state.json; then
+            if ! curl -fsS --max-time 15 --retry 40 --retry-connrefused --retry-delay 5 http://127.0.0.1:${RUNTIME_PORT}/api/state >/tmp/kicryp-state.json; then
               echo "❌ Health check failed! Logs:"
               sudo journalctl -u ${SERVICE_NAME} -n 100 --no-pager
               exit 1
             fi
             echo "✅ Deployment successful!"
-            cat /tmp/kinance-state.json
+            cat /tmp/kicryp-state.json
             rm -rf ${REMOTE_ROOT}/.deploy
             rm -rf ${REMOTE_ROOT}/.tmp/*
 

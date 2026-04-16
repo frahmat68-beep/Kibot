@@ -35,7 +35,7 @@ kotlin {
 }
 
 android {
-    namespace = "com.kibot.aisupport"
+    namespace = "com.kicryp.aisupport"
     compileSdk = 35
 
     defaultConfig {

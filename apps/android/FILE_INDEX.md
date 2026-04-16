@@ -1,4 +1,4 @@
-# KiBot Android Dashboard - Complete File Index
+# KiCryp Android Dashboard - Complete File Index
 
 ## Directory Structure
 ```
@@ -18,11 +18,11 @@ apps/android/
     └── src/main/
         ├── AndroidManifest.xml               (App permissions & config)
         │
-        ├── kotlin/com/kibot/android/
+        ├── kotlin/com/kicryp/android/
         │   ├── MainActivity.kt               (Activity entry point + ViewModel)
         │   │
         │   ├── websocket/
-        │   │   └── KiBotWebSocketClient.kt  (WebSocket connection logic)
+        │   │   └── KiCrypWebSocketClient.kt  (WebSocket connection logic)
         │   │
         │   ├── data/
         │   │   └── BotStatus.kt             (Data models & server config)
@@ -47,7 +47,7 @@ apps/android/
 ## Core Source Files (Kotlin)
 
 ### 1. MainActivity.kt (312 lines)
-**Location**: `app/src/main/kotlin/com/kibot/android/MainActivity.kt`
+**Location**: `app/src/main/kotlin/com/kicryp/android/MainActivity.kt`
 
 **Purpose**: App entry point, lifecycle management, state management
 
@@ -64,17 +64,17 @@ apps/android/
 - `DashboardViewModel.disconnect()` - Stop WebSocket
 - `MainApp()` - Navigate between dashboard and settings
 
-**Dependencies**: PreferencesManager, KiBotWebSocketClient, Compose
+**Dependencies**: PreferencesManager, KiCrypWebSocketClient, Compose
 
 ---
 
-### 2. KiBotWebSocketClient.kt (195 lines)
-**Location**: `app/src/main/kotlin/com/kibot/android/websocket/KiBotWebSocketClient.kt`
+### 2. KiCrypWebSocketClient.kt (195 lines)
+**Location**: `app/src/main/kotlin/com/kicryp/android/websocket/KiCrypWebSocketClient.kt`
 
 **Purpose**: WebSocket connection, data parsing, auto-reconnection
 
 **Key Classes**:
-- `KiBotWebSocketClient` - WebSocket lifecycle manager
+- `KiCrypWebSocketClient` - WebSocket lifecycle manager
 - `WebSocketListener` - Connection event handler
 
 **Key Methods**:
@@ -97,7 +97,7 @@ apps/android/
 ---
 
 ### 3. BotStatus.kt (60 lines)
-**Location**: `app/src/main/kotlin/com/kibot/android/data/BotStatus.kt`
+**Location**: `app/src/main/kotlin/com/kicryp/android/data/BotStatus.kt`
 
 **Purpose**: Data models for bot status and configuration
 
@@ -140,7 +140,7 @@ apps/android/
 ---
 
 ### 4. DashboardScreen.kt (560 lines)
-**Location**: `app/src/main/kotlin/com/kibot/android/ui/DashboardScreen.kt`
+**Location**: `app/src/main/kotlin/com/kicryp/android/ui/DashboardScreen.kt`
 
 **Purpose**: Main dashboard UI (Jetpack Compose)
 
@@ -183,7 +183,7 @@ SecondaryText = #B0B0B0
 ---
 
 ### 5. SettingsScreen.kt (140 lines)
-**Location**: `app/src/main/kotlin/com/kibot/android/ui/SettingsScreen.kt`
+**Location**: `app/src/main/kotlin/com/kicryp/android/ui/SettingsScreen.kt`
 
 **Purpose**: Server configuration UI
 
@@ -208,7 +208,7 @@ SecondaryText = #B0B0B0
 ---
 
 ### 6. PreferencesManager.kt (45 lines)
-**Location**: `app/src/main/kotlin/com/kibot/android/util/PreferencesManager.kt`
+**Location**: `app/src/main/kotlin/com/kicryp/android/util/PreferencesManager.kt`
 
 **Purpose**: Android SharedPreferences wrapper for local storage
 
@@ -294,8 +294,8 @@ versionName = "1.0.0"
 - ACCESS_NETWORK_STATE (for network monitoring)
 
 **Configuration**:
-- Application name: "KiBot Trading Dashboard"
-- Theme: Theme.KiBot
+- Application name: "KiCryp Trading Dashboard"
+- Theme: Theme.KiCryp
 - Cleartext traffic enabled (localhost development)
 - MainActivity as launcher
 
@@ -316,7 +316,7 @@ versionName = "1.0.0"
 **Location**: `app/src/main/res/values/strings.xml`
 
 **Content** (15 strings):
-- app_name: "KiBot Trading Dashboard"
+- app_name: "KiCryp Trading Dashboard"
 - UI button labels
 - Section headers
 - Status messages
@@ -344,7 +344,7 @@ versionName = "1.0.0"
 **Location**: `app/src/main/res/values/themes.xml`
 
 **Content**:
-- Theme.KiBot (Material.NoActionBar)
+- Theme.KiCryp (Material.NoActionBar)
 - Dark background
 - Light text color
 - Status/navigation bar colors
@@ -515,13 +515,13 @@ versionName = "1.0.0"
 
 ```
 MainActivity.kt
-├── KiBotWebSocketClient.kt
+├── KiCrypWebSocketClient.kt
 ├── PreferencesManager.kt
 ├── DashboardScreen.kt
 ├── SettingsScreen.kt
 └── BotStatus.kt
 
-KiBotWebSocketClient.kt
+KiCrypWebSocketClient.kt
 ├── BotStatus.kt
 ├── Gson (external)
 └── OkHttp (external)

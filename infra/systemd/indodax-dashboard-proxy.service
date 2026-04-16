@@ -1,5 +1,5 @@
 [Unit]
-Description=KiBot Indodax Dashboard Reverse Proxy
+Description=KiCryp Indodax Dashboard Reverse Proxy
 After=network-online.target kidax-engine.service
 Wants=network-online.target kidax-engine.service
 
@@ -7,9 +7,9 @@ Wants=network-online.target kidax-engine.service
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/KiDax
-Environment=KIBOT_PROXY_UPSTREAM=http://127.0.0.1:8788
-Environment=KIBOT_PROXY_LISTEN_HOST=0.0.0.0
-Environment=KIBOT_PROXY_LISTEN_PORT=8787
+Environment=KICRYP_PROXY_UPSTREAM=http://127.0.0.1:8788
+Environment=KICRYP_PROXY_LISTEN_HOST=0.0.0.0
+Environment=KICRYP_PROXY_LISTEN_PORT=8787
 ExecStart=/usr/bin/python3 /home/ubuntu/KiDax/infra/scripts/indodax_dashboard_proxy.py
 Restart=always
 RestartSec=2

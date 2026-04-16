@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KiBot Trinity - Alert Manager
+KiCryp Trinity - Alert Manager
 ==============================
 Real-time alert propagation to Telegram with intelligent throttling.
 

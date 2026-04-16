@@ -28,8 +28,8 @@ import com.kibot.android.data.*
 import com.kibot.android.ui.*
 import com.kibot.android.ui.theme.*
 import com.kibot.android.util.PreferencesManager
-import com.kibot.android.websocket.KiBotWebSocketClient
-import com.kibot.android.widget.KiBotWidgetHelper
+import com.kibot.android.websocket.KiCrypWebSocketClient
+import com.kibot.android.widget.KiCrypWidgetHelper
 import kotlinx.coroutines.flow.*
 
 // Navigation destinations
@@ -45,10 +45,10 @@ sealed class Screen(
     object Settings : Screen("settings", "Settings", Icons.Filled.Settings, Icons.Outlined.Settings)
 }
 
-class KiBotViewModel(application: Application) : AndroidViewModel(application) {
+class KiCrypViewModel(application: Application) : AndroidViewModel(application) {
     private val preferencesManager = PreferencesManager(application)
     private val initialServerConfig = preferencesManager.getServerConfig()
-    private val wsClient = KiBotWebSocketClient(initialServerConfig.getUrl())
+    private val wsClient = KiCrypWebSocketClient(initialServerConfig.getUrl())
     
     val botState: StateFlow<BotState> = wsClient.botState
     val connectionStatus: StateFlow<ConnectionStatus> = wsClient.connectionStatus
@@ -103,8 +103,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         
         setContent {
-            KiBotTheme {
-                KiBotApp()
+            KiCrypTheme {
+                KiCrypApp()
             }
         }
     }
@@ -112,12 +112,12 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun KiBotApp() {
+fun KiCrypApp() {
     // Get context INSIDE body, not as parameter default
     val context = androidx.compose.ui.platform.LocalContext.current
     
     // Get ViewModel
-    val viewModel: KiBotViewModel = viewModel()
+    val viewModel: KiCrypViewModel = viewModel()
     
     val botState by viewModel.botState.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
@@ -150,7 +150,7 @@ fun KiBotApp() {
     
     // Update widget with real-time data
     LaunchedEffect(botState) {
-        KiBotWidgetHelper.updateWidgetData(
+        KiCrypWidgetHelper.updateWidgetData(
             context = context,
             botState = botState
         )
@@ -167,7 +167,7 @@ fun KiBotApp() {
                     snackbarData = data,
                     containerColor = DarkSurfaceVariant,
                     contentColor = TextPrimary,
-                    actionColor = KiBotBlue
+                    actionColor = KiCrypBlue
                 )
             }
         },
@@ -176,7 +176,7 @@ fun KiBotApp() {
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = "KiBot",
+                            text = "KiCryp",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary
@@ -194,14 +194,14 @@ fun KiBotApp() {
                         Icon(
                             imageVector = Icons.Default.Settings,
                             contentDescription = "Settings",
-                            tint = KiBotBlue
+                            tint = KiCrypBlue
                         )
                     }
                     IconButton(onClick = { viewModel.refresh() }) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
                             contentDescription = "Refresh",
-                            tint = KiBotBlue
+                            tint = KiCrypBlue
                         )
                     }
                 },
@@ -237,11 +237,11 @@ fun KiBotApp() {
                             )
                         },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = KiBotBlue,
-                            selectedTextColor = KiBotBlue,
+                            selectedIconColor = KiCrypBlue,
+                            selectedTextColor = KiCrypBlue,
                             unselectedIconColor = TextSecondary,
                             unselectedTextColor = TextSecondary,
-                            indicatorColor = KiBotBlue.copy(alpha = 0.15f)
+                            indicatorColor = KiCrypBlue.copy(alpha = 0.15f)
                         )
                     )
                 }
@@ -395,11 +395,11 @@ private fun BootFallbackOverlay(
             Icon(
                 imageVector = Icons.Default.Memory,
                 contentDescription = null,
-                tint = KiBotBlue,
+                tint = KiCrypBlue,
                 modifier = Modifier.size(48.dp)
             )
             Text(
-                text = "KiBot sedang nyambung",
+                text = "KiCryp sedang nyambung",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 color = TextPrimary,
@@ -439,14 +439,14 @@ private fun BootFallbackOverlay(
                 OutlinedButton(
                     onClick = onOpenSettings,
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = KiBotBlue)
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = KiCrypBlue)
                 ) {
                     Text("Settings")
                 }
                 Button(
                     onClick = onRefresh,
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = KiBotBlue, contentColor = Color.White)
+                    colors = ButtonDefaults.buttonColors(containerColor = KiCrypBlue, contentColor = Color.White)
                 ) {
                     Text("Refresh")
                 }

@@ -9,7 +9,7 @@ BUNDLE_PATH="${DIST_DIR}/control-plane.sql"
 mkdir -p "${DIST_DIR}"
 
 {
-  echo "-- KiBot Supabase control-plane bundle"
+  echo "-- KiCryp Supabase control-plane bundle"
   echo "-- Generated at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   echo
   for file in "${MIGRATIONS_DIR}"/*.sql; do

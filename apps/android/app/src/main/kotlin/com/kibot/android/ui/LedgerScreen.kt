@@ -63,7 +63,7 @@ fun LedgerScreen(
                 onClick = { filterSide = null },
                 label = { Text("All") },
                 colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = KiBotBlue,
+                    selectedContainerColor = KiCrypBlue,
                     selectedLabelColor = TextPrimary,
                     containerColor = DarkSurface,
                     labelColor = TextSecondary

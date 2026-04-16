@@ -21,7 +21,7 @@ captures/
 .tooling/
 .continue/
 .wrapper-bootstrap/
-.venv-kibot/
+.venv-kicryp/
 .venv/
 venv/
 apps/mac-engine/.env

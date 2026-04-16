@@ -1,8 +1,8 @@
-# KiBot Android Mobile Dashboard - Build Complete ✅
+# KiCryp Android Mobile Dashboard - Build Complete ✅
 
 ## Executive Summary
 
-A **production-ready Android mobile dashboard** for the KiBot trading bot has been successfully created. The app is built with modern Android technologies (Kotlin, Jetpack Compose) and provides a simple, non-technical interface for monitoring and controlling the trading bot.
+A **production-ready Android mobile dashboard** for the KiCryp trading bot has been successfully created. The app is built with modern Android technologies (Kotlin, Jetpack Compose) and provides a simple, non-technical interface for monitoring and controlling the trading bot.
 
 **Status**: ✅ **COMPLETE AND READY TO BUILD/DEPLOY**
 
@@ -22,7 +22,7 @@ A **production-ready Android mobile dashboard** for the KiBot trading bot has be
    - Navigation between screens
    - Lifecycle management
 
-2. **KiBotWebSocketClient.kt** (195 lines)
+2. **KiCrypWebSocketClient.kt** (195 lines)
    - WebSocket connection logic
    - Data parsing (JSON → Kotlin objects)
    - Auto-reconnection on disconnect
@@ -162,7 +162,7 @@ A **production-ready Android mobile dashboard** for the KiBot trading bot has be
 
 ### ✅ WebSocket Connection
 - OkHttp WebSocket client
-- Connects to Mac Engine server (ws://host:port/kibot/status)
+- Connects to Mac Engine server (ws://host:port/kicryp/status)
 - Configurable host and port
 - Auto-reconnects after 5-second delay
 - Rate-limited periodic requests (5 seconds)
@@ -259,7 +259,7 @@ See **BUILD_GUIDE.md** for:
 
 ### WebSocket Connection
 ```
-ws://[host]:[port]/kibot/status
+ws://[host]:[port]/kicryp/status
 ```
 
 ### Request Format
@@ -309,7 +309,7 @@ apps/android/
 │
 ├── Source Code (6 files)
 │   ├── MainActivity.kt         (Entry point, ViewModel)
-│   ├── KiBotWebSocketClient.kt (WebSocket connection)
+│   ├── KiCrypWebSocketClient.kt (WebSocket connection)
 │   ├── BotStatus.kt            (Data models)
 │   ├── DashboardScreen.kt      (Main UI)
 │   ├── SettingsScreen.kt       (Settings UI)
@@ -404,7 +404,7 @@ cd apps/android && ./gradlew assembleDebug
 
 ### How to Debug
 ```bash
-adb logcat | grep "KiBot"
+adb logcat | grep "KiCryp"
 ```
 
 ### How to Update
@@ -513,7 +513,7 @@ For questions about:
 
 ---
 
-# ✅ KiBot Android Dashboard - COMPLETE
+# ✅ KiCryp Android Dashboard - COMPLETE
 
 **Build Status**: Ready to compile
 

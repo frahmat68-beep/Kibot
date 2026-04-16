@@ -1,16 +1,16 @@
-package com.kibot.core
+package com.kicryp.core
 
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlin.math.abs
 
 /**
- * KiBotVetoSystem - KiBot adalah APPROVAL AUTHORITY untuk semua trades
+ * KiCrypVetoSystem - KiCryp adalah APPROVAL AUTHORITY untuk semua trades
  * 
  * Filosofi:
  * - Kinance: "Ada pump signal coin ABC di Binance!"
  * - KiDax: "Oke, gw mau beli ABC_IDR"
- * - KiBot: "WAIT. Check risk dulu... OK APPROVE! BUY!"
+ * - KiCryp: "WAIT. Check risk dulu... OK APPROVE! BUY!"
  * 
  * Phase 1 Integration (70/30 Hybrid Strategy):
  * 1. PairWhitelistManager for pair filtering
@@ -18,7 +18,7 @@ import kotlin.math.abs
  * 3. OrderExecutionStrategy for order type recommendations
  * 4. FeeCalculator for profit target calculations
  * 
- * KiBot vetoers:
+ * KiCryp vetoers:
  * 1. Entry from KiDax buy signals + whitelist check
  * 2. Exit from KiDax sell signals  
  * 3. Entry from Kinance pump signals
@@ -26,7 +26,7 @@ import kotlin.math.abs
  * 5. Capital allocation (70% stable / 30% aggressive)
  * 6. Position quality (avoid losers)
  */
-class KiBotVetoSystem(
+class KiCrypVetoSystem(
     private val pairWhitelist: PairWhitelistManager = PairWhitelistManager(),
     private val capitalAllocator: CapitalAllocationManager = CapitalAllocationManager(),
     private val orderStrategy: OrderExecutionStrategy = OrderExecutionStrategy(),
@@ -36,7 +36,7 @@ class KiBotVetoSystem(
     
     /**
      * KiDax reports: "I want to BUY pair X"
-     * KiBot APPROVES or VETOES
+     * KiCryp APPROVES or VETOES
      * 
      * Phase 1: Now includes whitelist check + capital allocation
      */
@@ -156,7 +156,7 @@ class KiBotVetoSystem(
     
     /**
      * KiDax reports: "I want to SELL pair X"
-     * KiBot APPROVES or forces hold
+     * KiCryp APPROVES or forces hold
      */
     fun evaluateSellOrder(
         pairId: String,
@@ -238,7 +238,7 @@ class KiBotVetoSystem(
     
     /**
      * Kinance reports: "Pump signal detected!"
-     * KiBot APPROVES or says "meh, skip"
+     * KiCryp APPROVES or says "meh, skip"
      */
     fun evaluatePumpSignal(
         pairId: String,

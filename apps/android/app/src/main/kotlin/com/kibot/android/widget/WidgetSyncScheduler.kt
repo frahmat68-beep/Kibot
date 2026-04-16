@@ -22,7 +22,7 @@ object WidgetSyncScheduler {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
-        val request = PeriodicWorkRequestBuilder<KiBotWidgetSyncWorker>(15, TimeUnit.MINUTES)
+        val request = PeriodicWorkRequestBuilder<KiCrypWidgetSyncWorker>(15, TimeUnit.MINUTES)
             .setConstraints(constraints)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
             .build()
@@ -39,7 +39,7 @@ object WidgetSyncScheduler {
         val lastImmediateEnqueueAt = prefs.getLong(KEY_LAST_IMMEDIATE_ENQUEUE_AT, 0L)
         if (now - lastImmediateEnqueueAt < REPEAT_REQUEST_COOLDOWN_MS) return
         prefs.edit().putLong(KEY_LAST_IMMEDIATE_ENQUEUE_AT, now).apply()
-        val request = OneTimeWorkRequestBuilder<KiBotWidgetSyncWorker>()
+        val request = OneTimeWorkRequestBuilder<KiCrypWidgetSyncWorker>()
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
             .build()
         WorkManager.getInstance(context).enqueueUniqueWork(

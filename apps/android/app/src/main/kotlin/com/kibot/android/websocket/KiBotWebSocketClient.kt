@@ -18,7 +18,7 @@ import okio.ByteString
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
 
-class KiBotWebSocketClient(
+class KiCrypWebSocketClient(
     private var wsUrl: String = ServerConfig().getUrl()
 ) {
     private var webSocket: WebSocket? = null
@@ -71,7 +71,7 @@ class KiBotWebSocketClient(
                     .url(wsUrl)
                     .build()
                 Log.i(TAG, "📤 Creating WebSocket with URL: $wsUrl")
-                webSocket = client.newWebSocket(request, KiBotWebSocketListener())
+                webSocket = client.newWebSocket(request, KiCrypWebSocketListener())
                 Log.i(TAG, "📤 WebSocket request sent")
             } catch (e: Exception) {
                 Log.e(TAG, "🚨 Connection error: ${e.message}", e)
@@ -184,7 +184,7 @@ class KiBotWebSocketClient(
                 if (staleMs > 45_000) {
                     Log.w(TAG, "🛟 WebSocket stream stale (${staleMs}ms). Forcing reconnect.")
                     webSocket?.cancel()
-                    this@KiBotWebSocketClient.webSocket = null
+                    this@KiCrypWebSocketClient.webSocket = null
                     _connectionStatus.value = ConnectionStatus.DISCONNECTED
                     updateBotState { it.copy(isConnected = false) }
                     scheduleReconnect()
@@ -351,7 +351,7 @@ class KiBotWebSocketClient(
                 
                 val amount = quantityLabel.split(" ").firstOrNull()?.replace(",", ".")?.toDoubleOrNull() ?: run {
                     if (quantityLabel != "0") {
-                        android.util.Log.w("KiBotWebSocketClient", "⚠️ Failed to parse quantity from '$quantityLabel' for $assetCode")
+                        android.util.Log.w("KiCrypWebSocketClient", "⚠️ Failed to parse quantity from '$quantityLabel' for $assetCode")
                     }
                     0.0
                 }
@@ -651,7 +651,7 @@ class KiBotWebSocketClient(
      */
     private fun parseRupiahToDouble(value: String): Double {
         if (value.isBlank()) {
-            android.util.Log.w("KiBotWebSocketClient", "⚠️ parseRupiahToDouble: Empty input")
+            android.util.Log.w("KiCrypWebSocketClient", "⚠️ parseRupiahToDouble: Empty input")
             return 0.0
         }
         
@@ -675,7 +675,7 @@ class KiBotWebSocketClient(
 
         val result = cleaned.toDoubleOrNull()
         if (result == null) {
-            android.util.Log.w("KiBotWebSocketClient", "⚠️ parseRupiahToDouble: Failed to parse '$value' -> '$cleaned'")
+            android.util.Log.w("KiCrypWebSocketClient", "⚠️ parseRupiahToDouble: Failed to parse '$value' -> '$cleaned'")
             return 0.0
         }
         
@@ -698,7 +698,7 @@ class KiBotWebSocketClient(
         
         val result = cleaned.toDoubleOrNull()
         if (result == null) {
-            android.util.Log.w("KiBotWebSocketClient", "⚠️ parsePercentToDouble: Failed to parse '$value' -> '$cleaned'")
+            android.util.Log.w("KiCrypWebSocketClient", "⚠️ parsePercentToDouble: Failed to parse '$value' -> '$cleaned'")
             return 0.0
         }
         
@@ -712,7 +712,7 @@ class KiBotWebSocketClient(
             .trim()
         val amount = amountToken.replace(",", ".").toDoubleOrNull()
         if (amount == null && amountToken.isNotBlank() && amountToken != "~") {
-            android.util.Log.w("KiBotWebSocketClient", "⚠️ Failed to parse amount from trade detail: '$detail'")
+            android.util.Log.w("KiCrypWebSocketClient", "⚠️ Failed to parse amount from trade detail: '$detail'")
         }
         return amount ?: 0.0
     }
@@ -744,7 +744,7 @@ class KiBotWebSocketClient(
         else -> "offline"  // Default to offline for unknown/default states
     }
 
-    private inner class KiBotWebSocketListener : WebSocketListener() {
+    private inner class KiCrypWebSocketListener : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
             Log.i(TAG, "✅ WebSocket CONNECTED to $wsUrl")
             isConnecting = false
@@ -777,7 +777,7 @@ class KiBotWebSocketClient(
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             Log.w(TAG, "❌ WebSocket closed: $code - $reason")
-            this@KiBotWebSocketClient.webSocket = null
+            this@KiCrypWebSocketClient.webSocket = null
             watchdogJob?.cancel()
             _connectionStatus.value = ConnectionStatus.DISCONNECTED
             updateBotState { it.copy(isConnected = false) }
@@ -790,7 +790,7 @@ class KiBotWebSocketClient(
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
             Log.e(TAG, "🚨 WebSocket FAILURE: ${t.message}", t)
             isConnecting = false
-            this@KiBotWebSocketClient.webSocket = null
+            this@KiCrypWebSocketClient.webSocket = null
             watchdogJob?.cancel()
             _connectionStatus.value = ConnectionStatus.ERROR
             updateBotState { it.copy(isConnected = false) }
@@ -801,7 +801,7 @@ class KiBotWebSocketClient(
     }
 
     companion object {
-        private const val TAG = "KiBotWebSocket"
+        private const val TAG = "KiCrypWebSocket"
     }
 }
 
@@ -812,7 +812,7 @@ class LegacyWebSocketAdapter(
     private val onConnectionChange: (Boolean) -> Unit,
     private val onError: (String) -> Unit
 ) {
-    private val client = KiBotWebSocketClient(wsUrl)
+    private val client = KiCrypWebSocketClient(wsUrl)
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     
     init {

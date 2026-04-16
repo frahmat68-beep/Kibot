@@ -923,7 +923,7 @@ class StrategyOrchestrator(
         modeSnapshot: BotModeSnapshot,
         rankedByPair: Map<PairId, PairScore>,
     ): ExecutionPlan? {
-        val debugPlan = System.getProperty("KIBOT_DEBUG_PLAN") == "true"
+        val debugPlan = System.getProperty("KICRYP_DEBUG_PLAN") == "true"
         fun fail(reason: String): ExecutionPlan? {
             if (debugPlan) {
                 println("PLAN_FAIL ${pairId.value}: $reason")

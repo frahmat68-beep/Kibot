@@ -17,7 +17,7 @@ Bot trading Trinity **PASIF** dan **MELEWATKAN MARKET** karena threshold terlalu
 - [x] Deploy ke server dan verifikasi log
 
 ### 🔴 TASK 1: Lower AI Confidence Thresholds
-**File:** `scripts/kibot_manager.py`
+**File:** `scripts/kicryp_manager.py`
 
 | Line | Parameter | Current | Target |
 |------|-----------|---------|--------|
@@ -39,7 +39,7 @@ AI_APPROVAL_MIN_EXPECTED_NET_PCT = 0.08  # was 0.18
 ---
 
 ### 🔴 TASK 2: Dynamic FOMO_GUARD by Price Tier
-**File:** `scripts/kibot_manager.py` (around line 1176 in `_process_signal`)
+**File:** `scripts/kicryp_manager.py` (around line 1176 in `_process_signal`)
 
 **Logic baru:**
 ```python
@@ -66,7 +66,7 @@ if gain_pct > fomo_limit:
 ---
 
 ### 🔴 TASK 3: Add KINANCE Heartbeat Monitoring
-**File:** `scripts/kibot_manager.py`
+**File:** `scripts/kicryp_manager.py`
 
 **Tambah di global variables (sekitar line 100):**
 ```python
@@ -83,7 +83,7 @@ def _on_kinance_heartbeat_received():
     global _last_kinance_heartbeat_at, _kinance_healthy
     _last_kinance_heartbeat_at = time.time()
     if not _kinance_healthy:
-        print("[KIBOT][RECOVERY] KINANCE heartbeat restored!", flush=True)
+        print("[KICRYP][RECOVERY] KINANCE heartbeat restored!", flush=True)
     _kinance_healthy = True
 
 def _check_kinance_health() -> bool:
@@ -95,7 +95,7 @@ def _check_kinance_health() -> bool:
     
     if (now - _last_kinance_heartbeat_at) > KINANCE_HEARTBEAT_TIMEOUT_SEC:
         if _kinance_healthy:
-            print(f"[KIBOT][CRITICAL] KINANCE HEARTBEAT LOST! Last seen {now - _last_kinance_heartbeat_at:.1f}s ago", flush=True)
+            print(f"[KICRYP][CRITICAL] KINANCE HEARTBEAT LOST! Last seen {now - _last_kinance_heartbeat_at:.1f}s ago", flush=True)
             _kinance_healthy = False
         return False
     return True
@@ -109,7 +109,7 @@ def _process_signal(msg: dict) -> None:
         msg_type = msg.get("msgType", "")
         # Only allow EXIT signals when Kinance unhealthy
         if msg_type not in {"SELL_WALL_SURGE", "MOMENTUM_LOSS", "TRAILING_STOP_HIT"}:
-            print(f"[KIBOT][BLOCK] Blocking {msg_type} - KINANCE unhealthy", flush=True)
+            print(f"[KICRYP][BLOCK] Blocking {msg_type} - KINANCE unhealthy", flush=True)
             return
     
     # ... rest of existing code
@@ -126,7 +126,7 @@ if msg.get("msgType") == "HEARTBEAT" and msg.get("source") == "kinance":
 ---
 
 ### 🔴 TASK 4: Boost Low Price Bias
-**File:** `packages/core/src/commonMain/kotlin/com/kibot/core/PairSelector.kt`
+**File:** `packages/core/src/commonMain/kotlin/com/kicryp/core/PairSelector.kt`
 
 **Lines 185-195, ubah nilai:**
 ```kotlin
@@ -146,10 +146,10 @@ val lowPriceBias = when {
 ---
 
 ### 🟡 TASK 5: Implement AlwaysInvestedPolicy (NEW FILE)
-**File:** `packages/core/src/commonMain/kotlin/com/kibot/core/AlwaysInvestedPolicy.kt`
+**File:** `packages/core/src/commonMain/kotlin/com/kicryp/core/AlwaysInvestedPolicy.kt`
 
 ```kotlin
-package com.kibot.core
+package com.kicryp.core
 
 import kotlin.time.Duration.Companion.minutes
 
@@ -242,10 +242,10 @@ CREATE INDEX idx_dynamic_params_key ON dynamic_params(param_key);
 ---
 
 ### 🟡 TASK 7: Implement DynamicConfigReloader (NEW FILE)
-**File:** `packages/core/src/commonMain/kotlin/com/kibot/core/DynamicConfigReloader.kt`
+**File:** `packages/core/src/commonMain/kotlin/com/kicryp/core/DynamicConfigReloader.kt`
 
 ```kotlin
-package com.kibot.core
+package com.kicryp.core
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -327,7 +327,7 @@ class DynamicConfigReloader(
 ---
 
 ### 🟡 TASK 8: Integrate 70/30 Bucket with PairSelector
-**File:** `packages/core/src/commonMain/kotlin/com/kibot/core/PairSelector.kt`
+**File:** `packages/core/src/commonMain/kotlin/com/kicryp/core/PairSelector.kt`
 
 **Add enum:**
 ```kotlin
@@ -388,8 +388,8 @@ ssh -i SSH_BINANCE/ssh-key-2026-03-27.key ubuntu@152.69.218.198
 
 **Restart Services:**
 ```bash
-# After kibot_manager.py changes:
-sudo systemctl restart kibot-manager
+# After kicryp_manager.py changes:
+sudo systemctl restart kicryp-manager
 
 # After Kotlin changes (rebuild JAR first):
 ./gradlew :apps:mac-engine:shadowJar
@@ -404,8 +404,8 @@ ssh ubuntu@213.35.118.26 "sudo systemctl restart kidax-engine"
 Setelah setiap task, **WAJIB** verifikasi dengan log:
 
 ```bash
-# Check kibot_manager logs
-ssh ubuntu@213.35.118.26 "journalctl -u kibot-manager -f --no-pager -n 50"
+# Check kicryp_manager logs
+ssh ubuntu@213.35.118.26 "journalctl -u kicryp-manager -f --no-pager -n 50"
 
 # Check kidax logs
 ssh ubuntu@213.35.118.26 "journalctl -u kidax-engine -f --no-pager -n 50"

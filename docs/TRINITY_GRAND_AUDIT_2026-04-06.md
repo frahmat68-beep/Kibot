@@ -12,7 +12,7 @@
 Trinity adalah **High-Frequency Trading Engine** yang terdiri dari 3 node:
 - **KINANCE** (152.69.218.198) — Binance Radar, Lead-Lag Signal Generator
 - **KIDAX** (213.35.118.26) — Indodax Executor, Trade Execution
-- **KIBOT MANAGER** (213.35.118.26) — Brain, Veto Manager, AI Router
+- **KICRYP MANAGER** (213.35.118.26) — Brain, Veto Manager, AI Router
 
 ### Overall System Health: ⚠️ MODERATE CONCERN
 
@@ -52,7 +52,7 @@ Trinity adalah **High-Frequency Trading Engine** yang terdiri dari 3 node:
 **Required Implementation:**
 
 ```kotlin
-// packages/core/src/commonMain/kotlin/com/kibot/core/AlwaysInvestedPolicy.kt
+// packages/core/src/commonMain/kotlin/com/kicryp/core/AlwaysInvestedPolicy.kt
 
 class AlwaysInvestedPolicy(
     private val feeCalculator: FeeCalculator,
@@ -145,7 +145,7 @@ Saat ini bot **HARUS RESTART** untuk apply config changes. Ini melanggar filosof
             ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    HOT-RELOAD LISTENER                              │
-│  KiDax + KiBot polling dynamic_params setiap 60 detik               │
+│  KiDax + KiCryp polling dynamic_params setiap 60 detik               │
 │  Apply changes tanpa restart                                        │
 │  Emit [CONFIG_RELOAD] log untuk audit trail                         │
 └─────────────────────────────────────────────────────────────────────┘
@@ -154,7 +154,7 @@ Saat ini bot **HARUS RESTART** untuk apply config changes. Ini melanggar filosof
 **Required Implementation:**
 
 ```kotlin
-// packages/core/src/commonMain/kotlin/com/kibot/core/DynamicConfigReloader.kt
+// packages/core/src/commonMain/kotlin/com/kicryp/core/DynamicConfigReloader.kt
 
 class DynamicConfigReloader(
     private val controlPlane: ControlPlaneGateway,
@@ -212,7 +212,7 @@ KINANCE (152.69.218.198:9999)
     │
     │ UDP Signal (Lead-Lag, Anomaly Detection)
     ▼
-KIBOT MANAGER (213.35.118.26:9998)
+KICRYP MANAGER (213.35.118.26:9998)
     │
     │ UDP Veto Decision (APPROVED/REJECTED)
     ▼
@@ -225,19 +225,19 @@ KIDAX (213.35.118.26:8787)
 
 | Metric | Status | Evidence |
 |--------|--------|----------|
-| UDP Heartbeat | ⚠️ PARTIAL | KINANCE sends heartbeat, KIBOT MANAGER does NOT monitor |
-| Heartbeat Interval | ✅ 250ms | `KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=250` |
-| Heartbeat Timeout | ✅ 5000ms | `KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000` |
+| UDP Heartbeat | ⚠️ PARTIAL | KINANCE sends heartbeat, KICRYP MANAGER does NOT monitor |
+| Heartbeat Interval | ✅ 250ms | `KICRYP_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=250` |
+| Heartbeat Timeout | ✅ 5000ms | `KICRYP_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000` |
 | Memory (KiDax) | ✅ 164MB peak | Within 220MB limit |
 | Memory (Kinance) | ✅ 280MB peak | Borderline, 200MB limit set |
 | OOM Protection | ✅ EXISTS | `OOMPolicy=restart` (systemd) |
 
 #### Issues Found
 
-1. **KIBOT MANAGER tidak monitor heartbeat dari KINANCE**
-   - File: `scripts/kibot_manager.py`
+1. **KICRYP MANAGER tidak monitor heartbeat dari KINANCE**
+   - File: `scripts/kicryp_manager.py`
    - Hanya emit heartbeat, tidak receive/validate
-   - **Risk:** Jika KINANCE crash, KIBOT masih terima sinyal basi
+   - **Risk:** Jika KINANCE crash, KICRYP masih terima sinyal basi
 
 2. **Memory pressure di Kinance**
    - Peak 280MB, limit 200MB
@@ -247,7 +247,7 @@ KIDAX (213.35.118.26:8787)
 #### Fix Required
 
 ```python
-# scripts/kibot_manager.py — Add heartbeat monitoring
+# scripts/kicryp_manager.py — Add heartbeat monitoring
 
 KINANCE_HEARTBEAT_TIMEOUT_SEC = 10.0
 _last_kinance_heartbeat_at = 0.0
@@ -264,7 +264,7 @@ def _check_kinance_health():
     now = time.time()
     if (now - _last_kinance_heartbeat_at) > KINANCE_HEARTBEAT_TIMEOUT_SEC:
         if _kinance_healthy:
-            print("[KIBOT][CRITICAL] KINANCE HEARTBEAT LOST", flush=True)
+            print("[KICRYP][CRITICAL] KINANCE HEARTBEAT LOST", flush=True)
             _kinance_healthy = False
         return False
     return True
@@ -322,7 +322,7 @@ Real-time UI Sync
 
 #### Findings
 
-**File:** `apps/android/app/src/main/kotlin/com/kibot/android/websocket/KiBotWebSocketClient.kt`
+**File:** `apps/android/app/src/main/kotlin/com/kicryp/android/websocket/KiCrypWebSocketClient.kt`
 
 | Feature | Status | Implementation |
 |---------|--------|----------------|
@@ -345,7 +345,7 @@ Real-time UI Sync
 #### Fix Required
 
 ```kotlin
-// KiBotWebSocketClient.kt — Add rate limiting
+// KiCrypWebSocketClient.kt — Add rate limiting
 
 private val updateThrottler = MutableStateFlow<BotState?>(null)
 private var lastUpdateTime = 0L
@@ -366,7 +366,7 @@ fun onStateReceived(state: BotState) {
 
 #### Status: ✅ COMPREHENSIVE
 
-**File:** `packages/core/src/commonMain/kotlin/com/kibot/core/SelfHealingSystem.kt`
+**File:** `packages/core/src/commonMain/kotlin/com/kicryp/core/SelfHealingSystem.kt`
 
 | Feature | Status | Implementation |
 |---------|--------|----------------|
@@ -407,7 +407,7 @@ private suspend fun attemptReconnect(component: String, socket: DatagramSocket) 
 
 #### Status: ✅ EXISTS BUT NOT FULLY ENFORCED
 
-**File:** `packages/core/src/commonMain/kotlin/com/kibot/core/CapitalAllocationManager.kt`
+**File:** `packages/core/src/commonMain/kotlin/com/kicryp/core/CapitalAllocationManager.kt`
 
 #### Current Implementation
 
@@ -472,9 +472,9 @@ private fun classifyBucket(quote: MarketQuote, score: Double): BucketType {
 | # | Task | File | Status |
 |---|------|------|--------|
 | 1 | ✅ Fix Market Quote Fetch | `PlatformHttpClient.jvm.kt` | DONE |
-| 2 | ⬜ Lower AI confidence thresholds | `kibot_manager.py` | TODO |
-| 3 | ⬜ Add KINANCE heartbeat monitoring | `kibot_manager.py` | TODO |
-| 4 | ⬜ Dynamic FOMO_GUARD by price tier | `kibot_manager.py` | TODO |
+| 2 | ⬜ Lower AI confidence thresholds | `kicryp_manager.py` | TODO |
+| 3 | ⬜ Add KINANCE heartbeat monitoring | `kicryp_manager.py` | TODO |
+| 4 | ⬜ Dynamic FOMO_GUARD by price tier | `kicryp_manager.py` | TODO |
 
 ### 🟡 HIGH PRIORITY (Next Session)
 
@@ -490,7 +490,7 @@ private fun classifyBucket(quote: MarketQuote, score: Double): BucketType {
 | # | Task | File | Est. Time |
 |---|------|------|-----------|
 | 9 | AI Auditor hourly cron | `ai_auditor_hourly.py` | 3 hours |
-| 10 | Android rate limiting | `KiBotWebSocketClient.kt` | 1 hour |
+| 10 | Android rate limiting | `KiCrypWebSocketClient.kt` | 1 hour |
 | 11 | Telegram alerts for self-healing | `SelfHealingSystem.kt` | 1 hour |
 | 12 | Kinance memory optimization | `kinance-engine.service` | 30 min |
 
@@ -500,12 +500,12 @@ private fun classifyBucket(quote: MarketQuote, score: Double): BucketType {
 
 | Parameter | Current | Recommended | File |
 |-----------|---------|-------------|------|
-| `AI_APPROVAL_MIN_SCORE` | 0.62 | **0.62** | `kibot_manager.py:91` |
-| `AI_APPROVAL_MIN_EXPECTED_NET_PCT` | 0.18% | **0.08%** | `kibot_manager.py:92` |
-| `FOMO_GUARD_PCT` | 15% | **35%** (micro) | `kibot_manager.py:74` |
-| `STALE_SIGNAL_ABORT_MS` | 1500ms | **3500ms** | `kibot_manager.py:73` |
+| `AI_APPROVAL_MIN_SCORE` | 0.62 | **0.62** | `kicryp_manager.py:91` |
+| `AI_APPROVAL_MIN_EXPECTED_NET_PCT` | 0.18% | **0.08%** | `kicryp_manager.py:92` |
+| `FOMO_GUARD_PCT` | 15% | **35%** (micro) | `kicryp_manager.py:74` |
+| `STALE_SIGNAL_ABORT_MS` | 1500ms | **3500ms** | `kicryp_manager.py:73` |
 | `lowPriceBias` (urgent) | 0.14 | **0.28** | `PairSelector.kt:189` |
-| `KINANCE_HEARTBEAT_TIMEOUT` | N/A | **10.0s** | `kibot_manager.py` NEW |
+| `KINANCE_HEARTBEAT_TIMEOUT` | N/A | **10.0s** | `kicryp_manager.py` NEW |
 
 ---
 

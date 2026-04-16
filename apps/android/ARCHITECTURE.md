@@ -1,4 +1,4 @@
-# KiBot Android App - Architecture & Implementation Guide
+# KiCryp Android App - Architecture & Implementation Guide
 
 ## System Architecture
 
@@ -29,7 +29,7 @@
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │        Data Layer (WebSocket & Storage)              │  │
 │  ├──────────────────────────────────────────────────────┤  │
-│  │  • KiBotWebSocketClient - WS connection              │  │
+│  │  • KiCrypWebSocketClient - WS connection              │  │
 │  │  • PreferencesManager - SharedPreferences            │  │
 │  │  • BotStatus - Data models                          │  │
 │  └──────────────────────────────────────────────────────┘  │
@@ -54,7 +54,7 @@ MainActivity.onCreate()
   ↓
 viewModel.connect()
   ↓
-KiBotWebSocketClient.connect()
+KiCrypWebSocketClient.connect()
   ↓
 WebSocket connection established
   ↓
@@ -88,7 +88,7 @@ User taps button
   ↓
 viewModel.sendCommand("start" or "stop")
   ↓
-KiBotWebSocketClient.sendCommand(command)
+KiCrypWebSocketClient.sendCommand(command)
   ↓
 WebSocket.send(JSON command)
   ↓
@@ -138,10 +138,10 @@ Navigate back to dashboard
   - `isConnected` - Connection status
   - `isLoading` - Loading indicator
   - `errorMessage` - Error messages
-- **Dependencies**: KiBotWebSocketClient, PreferencesManager
+- **Dependencies**: KiCrypWebSocketClient, PreferencesManager
 - **Lifecycle**: Survives configuration changes via ViewModel
 
-### KiBotWebSocketClient
+### KiCrypWebSocketClient
 - **Responsibility**: WebSocket lifecycle, data parsing, reconnection
 - **Key Methods**:
   - `connect()` - Open WebSocket
@@ -405,15 +405,15 @@ Don't close settings dialog
 
 ### Enable Logging
 ```kotlin
-// In KiBotWebSocketClient
+// In KiCrypWebSocketClient
 Log.d(TAG, "Connecting to $wsUrl")
 Log.d(TAG, "Message received: $text")
 ```
 
 ### View Logs
 ```bash
-adb logcat -s "KiBot"
-adb logcat | grep "KiBotWebSocket"
+adb logcat -s "KiCryp"
+adb logcat | grep "KiCrypWebSocket"
 ```
 
 ### Inspect Network

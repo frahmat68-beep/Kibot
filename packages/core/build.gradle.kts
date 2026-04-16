@@ -28,7 +28,7 @@ kotlin {
 }
 
 android {
-    namespace = "com.kibot.core"
+    namespace = "com.kicryp.core"
     compileSdk = 35
 
     defaultConfig {

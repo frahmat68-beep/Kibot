@@ -11,7 +11,7 @@
 ### Servers Updated
 - **KiDax (213.35.118.26):**
   - ✅ `mac-engine-all.jar` (17MB) deployed
-  - ✅ `kibot_manager.py` updated
+  - ✅ `kicryp_manager.py` updated
   - ✅ Services restarted successfully
   - ✅ Running on port 8787
 
@@ -26,7 +26,7 @@
 ## ✅ TASK COMPLETION CHECKLIST
 
 ### 🔴 TASK 1: Lower AI Confidence Thresholds
-**File:** `scripts/kibot_manager.py`  
+**File:** `scripts/kicryp_manager.py`  
 **Status:** ✅ DONE
 
 | Parameter | Before | After |
@@ -40,7 +40,7 @@
 ---
 
 ### 🔴 TASK 2: Dynamic FOMO_GUARD by Price Tier
-**File:** `scripts/kibot_manager.py`  
+**File:** `scripts/kicryp_manager.py`  
 **Status:** ✅ DONE
 
 ```python
@@ -55,7 +55,7 @@ def _get_dynamic_fomo_guard(price_idr: float) -> float:
 ---
 
 ### 🔴 TASK 3: KINANCE Heartbeat Monitoring
-**File:** `scripts/kibot_manager.py`  
+**File:** `scripts/kicryp_manager.py`  
 **Status:** ✅ DONE
 
 - Added global health tracking (`_kinance_healthy`)
@@ -68,7 +68,7 @@ def _get_dynamic_fomo_guard(price_idr: float) -> float:
 ---
 
 ### 🔴 TASK 4: Boost Low Price Bias
-**File:** `packages/core/src/commonMain/kotlin/com/kibot/core/PairSelector.kt`  
+**File:** `packages/core/src/commonMain/kotlin/com/kicryp/core/PairSelector.kt`  
 **Status:** ✅ DONE
 
 | Mode | Before | After |
@@ -81,7 +81,7 @@ def _get_dynamic_fomo_guard(price_idr: float) -> float:
 ---
 
 ### 🟡 TASK 5: AlwaysInvestedPolicy Class
-**File:** `packages/core/src/commonMain/kotlin/com/kibot/core/AlwaysInvestedPolicy.kt`  
+**File:** `packages/core/src/commonMain/kotlin/com/kicryp/core/AlwaysInvestedPolicy.kt`  
 **Status:** ✅ DONE (NEW FILE CREATED)
 
 **Features:**
@@ -129,7 +129,7 @@ CREATE TABLE dynamic_params (
 ---
 
 ### 🟡 TASK 7: DynamicConfigReloader
-**File:** `packages/core/src/commonMain/kotlin/com/kibot/core/DynamicConfigReloader.kt`  
+**File:** `packages/core/src/commonMain/kotlin/com/kicryp/core/DynamicConfigReloader.kt`  
 **Status:** ✅ DONE (NEW FILE CREATED)
 
 **Critical Features:**
@@ -149,8 +149,8 @@ delay(delayMinutes.minutes)  // NO SPAM!
 
 ### 🟡 TASK 8: 70/30 Bucket Classification
 **Files:**
-- `packages/shared-models/src/commonMain/kotlin/com/kibot/shared/models/TradingModels.kt`
-- `packages/core/src/commonMain/kotlin/com/kibot/core/PairSelector.kt`
+- `packages/shared-models/src/commonMain/kotlin/com/kicryp/shared/models/TradingModels.kt`
+- `packages/core/src/commonMain/kotlin/com/kicryp/core/PairSelector.kt`
 
 **Status:** ✅ DONE
 
@@ -212,9 +212,9 @@ CPU: 20.615s
 Port: 8787 ✅
 ```
 
-### KiBot Manager
+### KiCryp Manager
 ```
-● kibot-manager.service - active (running)
+● kicryp-manager.service - active (running)
 Memory: 31.7M (max: 128.0M)
 Port: 9998 ✅
 Heartbeat: Broadcasting every 100ms ✅
@@ -252,13 +252,13 @@ Heartbeat: Broadcasting every 100ms ✅
 ssh -i SSH_INDODAX/ssh-key-2026-03-22.key ubuntu@213.35.118.26 \
   "journalctl -u kidax-engine -f --no-pager | grep -E 'ENTRY|VETO'"
 
-# Check KIBOT veto decisions  
+# Check KICRYP veto decisions  
 ssh -i SSH_INDODAX/ssh-key-2026-03-22.key ubuntu@213.35.118.26 \
-  "journalctl -u kibot-manager -f --no-pager | grep -E 'RELAY|REJECTED|APPROVED'"
+  "journalctl -u kicryp-manager -f --no-pager | grep -E 'RELAY|REJECTED|APPROVED'"
 
 # Watch heartbeat monitoring
 ssh -i SSH_INDODAX/ssh-key-2026-03-22.key ubuntu@213.35.118.26 \
-  "journalctl -u kibot-manager -f --no-pager | grep -E 'KINANCE|HEARTBEAT'"
+  "journalctl -u kicryp-manager -f --no-pager | grep -E 'KINANCE|HEARTBEAT'"
 ```
 
 ---

@@ -17,15 +17,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import asyncio
 
 import requests
-import kibot_engine_v2 as engine
+import kicryp_engine_v2 as engine
 try:
     from scripts.dashboard_template import DASHBOARD_HTML
 except ImportError:
     from dashboard_template import DASHBOARD_HTML
 
 try:
-    from kibot_whatif_engine import run_simulation
-    from kibot_timeframe_analyzer import analyze_timeframes
+    from kicryp_whatif_engine import run_simulation
+    from kicryp_timeframe_analyzer import analyze_timeframes
     _WHATIF_AVAILABLE = True
 except ImportError:
     _WHATIF_AVAILABLE = False
@@ -39,7 +39,7 @@ try:
     import defusedxml.ElementTree as ET
 except ImportError:
     from xml.etree import ElementTree as ET
-    print("[KIBOT][WARN] defusedxml not installed, using stdlib xml (XXE risk)", flush=True)
+    print("[KICRYP][WARN] defusedxml not installed, using stdlib xml (XXE risk)", flush=True)
 
 # Global lock for thread-safe access to shared state
 _state_lock = threading.RLock()
@@ -74,11 +74,13 @@ _last_screener_run_at = 0.0
 _active_trails: Dict[str, Dict[str, Any]] = {}  # pair_id -> {entry_price, max_price, trailing_pct, ...}
 _global_whiteboard: Dict[str, Dict[str, Any]] = {}  # symbol -> {binance: price, cryptocom: price, ts: time}
 _market_regime: str = "SIDEWAYS" # Updated by KiCryp Radar
+LOCAL_SIGNAL_PORT = 9999
+_signal_engine_proc: Optional[threading.Thread] = None
 
 
 def _load_dotenv_if_exists() -> None:
     candidates = []
-    explicit = os.getenv("KIBOT_MANAGER_ENV_FILE")
+    explicit = os.getenv("KICRYP_MANAGER_ENV_FILE")
     if explicit:
         candidates.append(Path(explicit))
     cwd = Path.cwd()
@@ -100,17 +102,17 @@ def _load_dotenv_if_exists() -> None:
 _load_dotenv_if_exists()
 
 try:
-    from kibot_learning_engine import get_engine as _get_learning_engine, get_regime_detector as _get_regime_detector
+    from kicryp_learning_engine import get_engine as _get_learning_engine, get_regime_detector as _get_regime_detector
 
     _learning_engine = _get_learning_engine()
     _regime_detector = _get_regime_detector()
     _learning_enabled = True
-    print("[KIBOT][LEARN] mathematical learning engine loaded", flush=True)
+    print("[KICRYP][LEARN] mathematical learning engine loaded", flush=True)
 except Exception as _learning_error:
     _learning_enabled = False
     _learning_engine = None
     _regime_detector = None
-    print(f"[KIBOT][LEARN][WARN] learning engine unavailable: {_learning_error}", flush=True)
+    print(f"[KICRYP][LEARN][WARN] learning engine unavailable: {_learning_error}", flush=True)
 
 def _load_json_file(path: Path, default: Any) -> Any:
     try:
@@ -154,7 +156,7 @@ def _telegram_send(message: str) -> None:
             timeout=10,
         )
     except Exception as error:
-        print(f"[KIBOT][TELEGRAM][WARN] {error}", flush=True)
+        print(f"[KICRYP][TELEGRAM][WARN] {error}", flush=True)
 
 
 import math, statistics
@@ -166,8 +168,8 @@ from datetime import datetime, timedelta, date
 # Simpan ke local file DAN Supabase
 # =============================================
 
-TRADE_LOG_FILE = Path("/home/ubuntu/KiBot/state/trade_log.jsonl")
-DAILY_SUMMARY_FILE = Path("/home/ubuntu/KiBot/state/daily_summary.json")
+TRADE_LOG_FILE = Path("/home/ubuntu/KiCryp/state/trade_log.jsonl")
+DAILY_SUMMARY_FILE = Path("/home/ubuntu/KiCryp/state/daily_summary.json")
 
 class TradeLogger:
     """Log setiap trade dan hitung statistik untuk learning."""
@@ -432,7 +434,7 @@ def _maybe_run_30min_math_review():
 
 
 # ═══════════════════════════════════════════════════════════
-# KIBOT TRINITY v6.0 — PAIR UNIVERSE & PORTFOLIO MANAGER
+# KICRYP TRINITY v6.0 — PAIR UNIVERSE & PORTFOLIO MANAGER
 # ═══════════════════════════════════════════════════════════
 
 # === PAIR CATEGORY SYSTEM ===
@@ -1314,17 +1316,17 @@ def _process_signal_multipos(msg: dict):
         if binance_sym:
             wb = _global_whiteboard.get(binance_sym)
             if not wb or not wb.get("binance") or not wb.get("cryptocom"):
-                print(f"[KIBOT][VETO] Rejected {pair_id} - Missing consensus data (AND gate failed)", flush=True)
+                print(f"[KICRYP][VETO] Rejected {pair_id} - Missing consensus data (AND gate failed)", flush=True)
                 return
             
             diff = abs(wb["binance"] - wb["cryptocom"]) / wb["binance"]
             if diff > 0.015: # Arbitrage/Spread > 1.5% = Suspicious
-                print(f"[KIBOT][VETO] Rejected {pair_id} - Consensus failed (Spread {diff:.2%})", flush=True)
+                print(f"[KICRYP][VETO] Rejected {pair_id} - Consensus failed (Spread {diff:.2%})", flush=True)
                 return
                 
         # BTC Regime Guard
         if _market_regime == "BREAKDOWN_PANIC":
-            print(f"[KIBOT][VETO] Rejected {pair_id} - Market Regime Panic", flush=True)
+            print(f"[KICRYP][VETO] Rejected {pair_id} - Market Regime Panic", flush=True)
             return
 
     # === 3. GATE 1: DYNAMIC THRESHOLD & RISK LADDER ===
@@ -1359,7 +1361,7 @@ def _process_signal_multipos(msg: dict):
         
         analysis = ConvictionScoreCalculator.compute(pair_id, ticker, closes, volumes, depth)
         if analysis["recommendation"] != "ENTER": 
-            print(f"[KIBOT][BUCKET_B] {pair_id} Rejected: {analysis['blocks']}", flush=True)
+            print(f"[KICRYP][BUCKET_B] {pair_id} Rejected: {analysis['blocks']}", flush=True)
             return
             
         msg.update(analysis) # merge results
@@ -1417,8 +1419,28 @@ def _process_signal_multipos(msg: dict):
         "sentAtEpochMs": int(time.time() * 1000),
         "expiresAtEpochMs": int((time.time() + 60) * 1000),
         "traceId": trade_id,
-        "senderBotId": "kibot_manager_trinity"
+        "senderBotId": "kicryp_manager_trinity"
     })
+
+def _process_local_signal(msg: dict):
+    """Handle signals from the local Indodax anomaly engine."""
+    pair_id = msg.get("symbol", "").lower().strip()
+    if not pair_id: return
+    
+    # Enrich signal for multi-position vetting
+    refined = {
+        "source": "KICRYP_LOCAL_ENGINE",
+        "type": "LOCAL_PUMP_SIGNAL",
+        "pairId": pair_id,
+        "price": msg.get("price", 0),
+        "pumpScore": float(msg.get("score", 0)) * 10, # Normalize to 0-100
+        "reason": msg.get("reason", "Local anomaly detected"),
+        "pump_phase": "EARLY", # Local signals are by definition early
+        "target_pct": 0.035,   # Conservative target for local anomalies
+        "trailing_stop_pct": 0.02,
+        "timestamp": msg.get("timestamp", time.time())
+    }
+    _process_signal_multipos(refined)
 
 def _check_portfolio_pnl():
     """Monitor positions via Trinity What-If logic."""
@@ -1471,7 +1493,7 @@ def run_discovery_loop():
         try:
             asyncio.run(run_ai_coin_discovery())
         except Exception as e:
-            print(f"[KIBOT][AI-CMS] Discovery loop error: {e}", flush=True)
+            print(f"[KICRYP][AI-CMS] Discovery loop error: {e}", flush=True)
         if _shutdown_event.wait(timeout=21600): break
 
 def run_portfolio_monitor_loop():
@@ -1480,8 +1502,41 @@ def run_portfolio_monitor_loop():
         try:
             _check_portfolio_pnl()
         except Exception as e:
-            print(f"[KIBOT][PORTFOLIO] Monitor loop error: {e}", flush=True)
+            print(f"[KICRYP][PORTFOLIO] Monitor loop error: {e}", flush=True)
         if _shutdown_event.wait(timeout=30): break
+
+def run_local_signal_engine_manager():
+    """Starts and monitors the kicryp_local_signal.py script."""
+    import subprocess
+    cmd = [sys.executable, str(Path(__file__).parent / "kicryp_local_signal.py")]
+    print(f"[KICRYP][SIGNAL-MGR] Starting local signal engine: {' '.join(cmd)}", flush=True)
+    
+    while not _shutdown_event.is_set():
+        try:
+            # We want to catch the output, so we use Popen
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1
+            )
+            
+            # Print output in real-time
+            for line in proc.stdout:
+                if line.strip():
+                    print(f"[SIGNAL-PROC] {line.strip()}", flush=True)
+                if _shutdown_event.is_set():
+                    proc.terminate()
+                    break
+            
+            proc.wait()
+            if not _shutdown_event.is_set():
+                print(f"[KICRYP][SIGNAL-MGR] Signal engine exited with code {proc.returncode}. Restarting in 5s...", flush=True)
+                time.sleep(5)
+        except Exception as e:
+            print(f"[KICRYP][SIGNAL-MGR] Manager error: {e}. Restarting in 10s...", flush=True)
+            time.sleep(10)
 
 
 @dataclass
@@ -2023,7 +2078,7 @@ def update_trailing_stop(pair_id: str, price_now: float, phase: str = "MID"):
     
     # Check Partial Take Profit
     if not trail.get("partial_tp_done") and current_profit_pct >= config.partial_tp_trigger:
-        print(f"[KIBOT][TRAIL] {pair_id} Partial TP Triggered at {current_profit_pct:.2%}", flush=True)
+        print(f"[KICRYP][TRAIL] {pair_id} Partial TP Triggered at {current_profit_pct:.2%}", flush=True)
         # In actual exec, this would call smart_exit(pair_id, size=config.partial_tp_size)
         trail["partial_tp_done"] = True
         return "PARTIAL_TP"
@@ -2039,7 +2094,7 @@ def update_trailing_stop(pair_id: str, price_now: float, phase: str = "MID"):
     stop_price = trail["max_price"] * (1 - dynamic_callback)
     
     if price_now <= stop_price:
-        print(f"[KIBOT][TRAIL] {pair_id} Stop Hit! Exit at {price_now} (Profit: {current_profit_pct:.2%})", flush=True)
+        print(f"[KICRYP][TRAIL] {pair_id} Stop Hit! Exit at {price_now} (Profit: {current_profit_pct:.2%})", flush=True)
         return "EXIT_NOW"
         
     return None
@@ -2058,7 +2113,7 @@ def smart_entry(pair_id: str, analysis: PumpAnalysis, budget_idr: float, trace_i
             tf = analyze_timeframes(pair_id)
             eq = tf.entry_quality()
             if eq not in ["A", "A-", "B"]:
-                print(f"[KIBOT][SMART_ENTRY] Multi-Timeframe Score {eq} for {pair_id} is too weak. Aborting entry.", flush=True)
+                print(f"[KICRYP][SMART_ENTRY] Multi-Timeframe Score {eq} for {pair_id} is too weak. Aborting entry.", flush=True)
                 return
             
             # Fetch Kelly size from What-If logic
@@ -2073,22 +2128,22 @@ def smart_entry(pair_id: str, analysis: PumpAnalysis, budget_idr: float, trace_i
                 pass
                 
         except Exception as e:
-            print(f"[KIBOT][SMART_ENTRY] Analysis error: {e}", flush=True)
+            print(f"[KICRYP][SMART_ENTRY] Analysis error: {e}", flush=True)
             
     # Sizing constraints
     if budget_idr < MIN_POSITION_IDR:
-        print(f"[KIBOT][SMART_ENTRY] Budget {budget_idr} below min position {MIN_POSITION_IDR}. Aborting.", flush=True)
+        print(f"[KICRYP][SMART_ENTRY] Budget {budget_idr} below min position {MIN_POSITION_IDR}. Aborting.", flush=True)
         return
     budget_idr = min(budget_idr, MAX_POSITION_IDR)
     use_market = False
     if analysis.legitimacy_score >= 85 and analysis.pump_phase == "EARLY":
         use_market = True
-        print(f"[KIBOT][SMART_ENTRY] Urgent High-Confidence EARLY pump. Using MARKET for {pair_id}", flush=True)
+        print(f"[KICRYP][SMART_ENTRY] Urgent High-Confidence EARLY pump. Using MARKET for {pair_id}", flush=True)
     elif analysis.legitimacy_score >= 70:
         use_market = True
-        print(f"[KIBOT][SMART_ENTRY] High-Confidence pump. Using MARKET for {pair_id}", flush=True)
+        print(f"[KICRYP][SMART_ENTRY] High-Confidence pump. Using MARKET for {pair_id}", flush=True)
     else:
-        print(f"[KIBOT][SMART_ENTRY] Moderate-Confidence. Using LIMIT at mid-price for {pair_id}", flush=True)
+        print(f"[KICRYP][SMART_ENTRY] Moderate-Confidence. Using LIMIT at mid-price for {pair_id}", flush=True)
     
     msg = {
         "msgType": "DETECTOR_HIT",
@@ -2102,7 +2157,7 @@ def smart_entry(pair_id: str, analysis: PumpAnalysis, budget_idr: float, trace_i
         "expectedNetPct": analysis.exit_target_pct,
         "trailingStopPct": analysis.stop_loss_pct,
         "confidence": analysis.legitimacy_score / 100.0,
-        "senderBotId": "kibot_trinity_v5"
+        "senderBotId": "kicryp_trinity_v5"
     }
     _broadcast_udp(msg)
 
@@ -2113,7 +2168,7 @@ def smart_exit(pair_id: str, reason: str, trace_id: str, size_multiplier: float 
     use_market = False
     if "emergency" in reason.lower() or "stop_hit" in reason.lower():
         use_market = True
-        print(f"[KIBOT][SMART_EXIT] Urgent exit ({reason}). Using MARKET for {pair_id}", flush=True)
+        print(f"[KICRYP][SMART_EXIT] Urgent exit ({reason}). Using MARKET for {pair_id}", flush=True)
     
     msg = {
         "msgType": "EMERGENCY_VETO_SELL",
@@ -2123,7 +2178,7 @@ def smart_exit(pair_id: str, reason: str, trace_id: str, size_multiplier: float 
         "use_market": use_market,
         "reason": reason,
         "size_multiplier": size_multiplier,
-        "senderBotId": "kibot_trinity_v5"
+        "senderBotId": "kicryp_trinity_v5"
     }
     _broadcast_udp(msg)
 
@@ -2142,7 +2197,7 @@ def run_30min_math_review():
     if not _math_review_trade_journal:
         return
 
-    print("[KIBOT][MATH] Running 30-minute performance review...", flush=True)
+    print("[KICRYP][MATH] Running 30-minute performance review...", flush=True)
     
     wins = [t for t in _math_review_trade_journal if t["gross_pnl_pct"] > 0]
     win_rate = len(wins) / len(_math_review_trade_journal)
@@ -2250,20 +2305,20 @@ def _env_first(*keys: str, default: str = "") -> str:
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
-TIMEOUT = float(os.getenv("KIBOT_MANAGER_HTTP_TIMEOUT_SEC", "12"))
-UDP_BIND_HOST = os.getenv("KIBOT_MANAGER_UDP_BIND_HOST", "0.0.0.0")
-UDP_BIND_PORT = int(os.getenv("KIBOT_MANAGER_UDP_BIND_PORT", "9998"))
+TIMEOUT = float(os.getenv("KICRYP_MANAGER_HTTP_TIMEOUT_SEC", "12"))
+UDP_BIND_HOST = os.getenv("KICRYP_MANAGER_UDP_BIND_HOST", "0.0.0.0")
+UDP_BIND_PORT = int(os.getenv("KICRYP_MANAGER_UDP_BIND_PORT", "9998"))
 KINANCE_UDP_HOST = os.getenv("KINANCE_UDP_HOST", "")
 KINANCE_UDP_PORT = int(os.getenv("KINANCE_UDP_PORT", "9999"))
 KIDAX_UDP_HOST = os.getenv("KIDAX_UDP_HOST", "127.0.0.1")
 KIDAX_UDP_PORT = int(os.getenv("KIDAX_UDP_PORT", "9999"))
-MANAGER_HEARTBEAT_INTERVAL_SEC = float(os.getenv("KIBOT_MANAGER_HEARTBEAT_INTERVAL_SEC", "1.0"))
+MANAGER_HEARTBEAT_INTERVAL_SEC = float(os.getenv("KICRYP_MANAGER_HEARTBEAT_INTERVAL_SEC", "1.0"))
 TAKER_FEE_PCT = float(os.getenv("KIDAX_TAKER_FEE_PCT", "0.51"))
-STALE_SIGNAL_ABORT_MS = int(os.getenv("KIBOT_STALE_SIGNAL_ABORT_MS", "500"))
-FOMO_GUARD_PCT = float(os.getenv("KIBOT_FOMO_GUARD_PCT", "15.0"))
-FOMO_LIMIT_CORRECTION_PCT = float(os.getenv("KIBOT_FOMO_LIMIT_CORRECTION_PCT", "4.0"))
+STALE_SIGNAL_ABORT_MS = int(os.getenv("KICRYP_STALE_SIGNAL_ABORT_MS", "500"))
+FOMO_GUARD_PCT = float(os.getenv("KICRYP_FOMO_GUARD_PCT", "15.0"))
+FOMO_LIMIT_CORRECTION_PCT = float(os.getenv("KICRYP_FOMO_LIMIT_CORRECTION_PCT", "4.0"))
 COINGECKO_BASE = os.getenv("COINGECKO_BASE_URL", "https://api.coingecko.com/api/v3")
-NEWS_SCAN_INTERVAL_SEC = int(os.getenv("KIBOT_NEWS_SCAN_INTERVAL_SEC", "45"))
+NEWS_SCAN_INTERVAL_SEC = int(os.getenv("KICRYP_NEWS_SCAN_INTERVAL_SEC", "45"))
 BINANCE_ANNOUNCEMENT_RSS = os.getenv(
     "BINANCE_ANNOUNCEMENT_RSS",
     "https://www.binance.com/en/support/announcement/rss",
@@ -2272,54 +2327,54 @@ COINGECKO_NEWS_FEED = os.getenv(
     "COINGECKO_NEWS_FEED",
     "https://www.coingecko.com/en/rss",
 )
-POST_MORTEM_ENABLED = os.getenv("KIBOT_POST_MORTEM_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
-POST_MORTEM_API_URL = os.getenv("KIBOT_POST_MORTEM_API_URL", "")
-POST_MORTEM_API_KEY = os.getenv("KIBOT_POST_MORTEM_API_KEY", "")
-POST_MORTEM_MODEL = os.getenv("KIBOT_POST_MORTEM_MODEL", "llama-3.1-8b-instant")
-POST_MORTEM_TIMEOUT_SEC = float(os.getenv("KIBOT_POST_MORTEM_TIMEOUT_SEC", "12"))
-AI_APPROVAL_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_MIN_SCORE", "0.62"))
-AI_APPROVAL_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_MIN_EXPECTED_NET_PCT", "0.0018"))
-AI_APPROVAL_INSTANT_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_SCORE", "0.62"))
-AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT", "0.0018"))
-INDODAX_TAKER_FEE = float(os.getenv("KIBOT_INDODAX_TAKER_FEE", "0.003"))
-INDODAX_MAKER_FEE = float(os.getenv("KIBOT_INDODAX_MAKER_FEE", "0.0015"))
-ROUND_TRIP_TAKER_COST = float(os.getenv("KIBOT_ROUND_TRIP_TAKER_COST", "0.006"))
-ROUND_TRIP_MAKER_COST = float(os.getenv("KIBOT_ROUND_TRIP_MAKER_COST", "0.003"))
-SLIPPAGE_BUFFER = float(os.getenv("KIBOT_SLIPPAGE_BUFFER", "0.002"))
-MIN_GROSS_PROFIT_TARGET = float(os.getenv("KIBOT_MIN_GROSS_PROFIT_TARGET", "0.011"))
-PARTIAL_TP_TRIGGER = float(os.getenv("KIBOT_PARTIAL_TP_TRIGGER", "0.012"))
-PARTIAL_TP_SIZE = float(os.getenv("KIBOT_PARTIAL_TP_SIZE", "0.40"))
-TRAILING_STOP_MIN_PCT = float(os.getenv("KIBOT_TRAILING_STOP_MIN_PCT", "0.015"))
-POST_MORTEM_BLACKLIST_ENABLED = os.getenv("KIBOT_POST_MORTEM_BLACKLIST_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
-POST_MORTEM_BLACKLIST_MINUTES = int(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_MINUTES", "30"))
-POST_MORTEM_BLACKLIST_NET_LOSS_IDR = float(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_NET_LOSS_IDR", "500"))
-POST_MORTEM_BLACKLIST_PNL_PCT = float(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_PNL_PCT", "-1.0"))
-MINIMUM_VIABLE_CAPITAL_IDR = float(os.getenv("KIBOT_MINIMUM_VIABLE_CAPITAL_IDR", "300000"))
-MINIMUM_POSITION_SIZE_IDR = float(os.getenv("KIBOT_MINIMUM_POSITION_SIZE_IDR", "10000"))
-MAXIMUM_POSITION_SIZE_IDR = float(os.getenv("KIBOT_MAXIMUM_POSITION_SIZE_IDR", "15000"))
-MAXIMUM_ACTIVE_POSITIONS = int(os.getenv("KIBOT_MAXIMUM_ACTIVE_POSITIONS", "2"))
-INDODAX_ALL_IN_TAKER_FEE_PCT = float(os.getenv("KIBOT_INDODAX_ALL_IN_TAKER_FEE_PCT", "0.0055"))
-INDODAX_ALL_IN_MAKER_FEE_PCT = float(os.getenv("KIBOT_INDODAX_ALL_IN_MAKER_FEE_PCT", "0.0004"))
-INDODAX_LIMIT_FILL_RATE = float(os.getenv("KIBOT_INDODAX_LIMIT_FILL_RATE", "0.70"))
-SURVIVAL_MODE = os.getenv("KIBOT_SURVIVAL_MODE", "true").lower() in {"1", "true", "yes", "on"}
-SURVIVAL_MODE_EQUITY_THRESHOLD_IDR = float(os.getenv("KIBOT_SURVIVAL_MODE_EQUITY_THRESHOLD_IDR", "200000"))
+POST_MORTEM_ENABLED = os.getenv("KICRYP_POST_MORTEM_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+POST_MORTEM_API_URL = os.getenv("KICRYP_POST_MORTEM_API_URL", "")
+POST_MORTEM_API_KEY = os.getenv("KICRYP_POST_MORTEM_API_KEY", "")
+POST_MORTEM_MODEL = os.getenv("KICRYP_POST_MORTEM_MODEL", "llama-3.1-8b-instant")
+POST_MORTEM_TIMEOUT_SEC = float(os.getenv("KICRYP_POST_MORTEM_TIMEOUT_SEC", "12"))
+AI_APPROVAL_MIN_SCORE = float(os.getenv("KICRYP_AI_APPROVAL_MIN_SCORE", "0.62"))
+AI_APPROVAL_MIN_EXPECTED_NET_PCT = float(os.getenv("KICRYP_AI_APPROVAL_MIN_EXPECTED_NET_PCT", "0.0018"))
+AI_APPROVAL_INSTANT_MIN_SCORE = float(os.getenv("KICRYP_AI_APPROVAL_INSTANT_MIN_SCORE", "0.62"))
+AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT = float(os.getenv("KICRYP_AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT", "0.0018"))
+INDODAX_TAKER_FEE = float(os.getenv("KICRYP_INDODAX_TAKER_FEE", "0.003"))
+INDODAX_MAKER_FEE = float(os.getenv("KICRYP_INDODAX_MAKER_FEE", "0.0015"))
+ROUND_TRIP_TAKER_COST = float(os.getenv("KICRYP_ROUND_TRIP_TAKER_COST", "0.006"))
+ROUND_TRIP_MAKER_COST = float(os.getenv("KICRYP_ROUND_TRIP_MAKER_COST", "0.003"))
+SLIPPAGE_BUFFER = float(os.getenv("KICRYP_SLIPPAGE_BUFFER", "0.002"))
+MIN_GROSS_PROFIT_TARGET = float(os.getenv("KICRYP_MIN_GROSS_PROFIT_TARGET", "0.011"))
+PARTIAL_TP_TRIGGER = float(os.getenv("KICRYP_PARTIAL_TP_TRIGGER", "0.012"))
+PARTIAL_TP_SIZE = float(os.getenv("KICRYP_PARTIAL_TP_SIZE", "0.40"))
+TRAILING_STOP_MIN_PCT = float(os.getenv("KICRYP_TRAILING_STOP_MIN_PCT", "0.015"))
+POST_MORTEM_BLACKLIST_ENABLED = os.getenv("KICRYP_POST_MORTEM_BLACKLIST_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+POST_MORTEM_BLACKLIST_MINUTES = int(os.getenv("KICRYP_POST_MORTEM_BLACKLIST_MINUTES", "30"))
+POST_MORTEM_BLACKLIST_NET_LOSS_IDR = float(os.getenv("KICRYP_POST_MORTEM_BLACKLIST_NET_LOSS_IDR", "500"))
+POST_MORTEM_BLACKLIST_PNL_PCT = float(os.getenv("KICRYP_POST_MORTEM_BLACKLIST_PNL_PCT", "-1.0"))
+MINIMUM_VIABLE_CAPITAL_IDR = float(os.getenv("KICRYP_MINIMUM_VIABLE_CAPITAL_IDR", "300000"))
+MINIMUM_POSITION_SIZE_IDR = float(os.getenv("KICRYP_MINIMUM_POSITION_SIZE_IDR", "10000"))
+MAXIMUM_POSITION_SIZE_IDR = float(os.getenv("KICRYP_MAXIMUM_POSITION_SIZE_IDR", "15000"))
+MAXIMUM_ACTIVE_POSITIONS = int(os.getenv("KICRYP_MAXIMUM_ACTIVE_POSITIONS", "2"))
+INDODAX_ALL_IN_TAKER_FEE_PCT = float(os.getenv("KICRYP_INDODAX_ALL_IN_TAKER_FEE_PCT", "0.0055"))
+INDODAX_ALL_IN_MAKER_FEE_PCT = float(os.getenv("KICRYP_INDODAX_ALL_IN_MAKER_FEE_PCT", "0.0004"))
+INDODAX_LIMIT_FILL_RATE = float(os.getenv("KICRYP_INDODAX_LIMIT_FILL_RATE", "0.70"))
+SURVIVAL_MODE = os.getenv("KICRYP_SURVIVAL_MODE", "true").lower() in {"1", "true", "yes", "on"}
+SURVIVAL_MODE_EQUITY_THRESHOLD_IDR = float(os.getenv("KICRYP_SURVIVAL_MODE_EQUITY_THRESHOLD_IDR", "200000"))
 SURVIVAL_ALLOWED_PAIRS = tuple(
     pair.strip().lower()
     for pair in os.getenv(
-        "KIBOT_SURVIVAL_ALLOWED_PAIRS",
+        "KICRYP_SURVIVAL_ALLOWED_PAIRS",
         "xlm_idr,doge_idr,xrp_idr,trx_idr,ada_idr,bnb_idr,enj_idr,fun_idr,arb_idr,inj_idr,ondo_idr,wld_idr,tia_idr,ethfi_idr,sol_idr,near_idr,hbar_idr,link_idr,atom_idr,avax_idr,ton_idr,sui_idr,pol_idr,ldo_idr,op_idr,render_idr,grt_idr,lunc_idr,pepe_idr,shib_idr,bonk_idr,wif_idr,floki_idr,bome_idr,cat_idr,fartcoin_idr",
     ).split(",")
     if pair.strip()
 )
-SURVIVAL_MIN_DAILY_VOLUME_IDR = float(os.getenv("KIBOT_SURVIVAL_MIN_DAILY_VOLUME_IDR", "500000000"))
-SURVIVAL_MAX_SPREAD_PCT = float(os.getenv("KIBOT_SURVIVAL_MAX_SPREAD_PCT", "0.008"))
-SURVIVAL_MAX_SLIPPAGE_PCT = float(os.getenv("KIBOT_SURVIVAL_MAX_SLIPPAGE_PCT", "0.010"))
-SURVIVAL_TARGET_PROFIT_PCT = float(os.getenv("KIBOT_SURVIVAL_TARGET_PROFIT_PCT", "0.025"))
-SURVIVAL_HARD_STOP_PCT = float(os.getenv("KIBOT_SURVIVAL_HARD_STOP_PCT", "0.01"))
-CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR", "100000"))
-CAPITAL_BUCKET_CONSERVATIVE_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_CONSERVATIVE_THRESHOLD_IDR", str(MINIMUM_VIABLE_CAPITAL_IDR)))
-CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR", "300000"))
-CAPITAL_BUCKET_FULL_EXPANSION_THRESHOLD_IDR = float(os.getenv("KIBOT_CAPITAL_BUCKET_FULL_EXPANSION_THRESHOLD_IDR", "750000"))
+SURVIVAL_MIN_DAILY_VOLUME_IDR = float(os.getenv("KICRYP_SURVIVAL_MIN_DAILY_VOLUME_IDR", "500000000"))
+SURVIVAL_MAX_SPREAD_PCT = float(os.getenv("KICRYP_SURVIVAL_MAX_SPREAD_PCT", "0.008"))
+SURVIVAL_MAX_SLIPPAGE_PCT = float(os.getenv("KICRYP_SURVIVAL_MAX_SLIPPAGE_PCT", "0.010"))
+SURVIVAL_TARGET_PROFIT_PCT = float(os.getenv("KICRYP_SURVIVAL_TARGET_PROFIT_PCT", "0.025"))
+SURVIVAL_HARD_STOP_PCT = float(os.getenv("KICRYP_SURVIVAL_HARD_STOP_PCT", "0.01"))
+CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR = float(os.getenv("KICRYP_CAPITAL_BUCKET_NORMAL_THRESHOLD_IDR", "100000"))
+CAPITAL_BUCKET_CONSERVATIVE_THRESHOLD_IDR = float(os.getenv("KICRYP_CAPITAL_BUCKET_CONSERVATIVE_THRESHOLD_IDR", str(MINIMUM_VIABLE_CAPITAL_IDR)))
+CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR = float(os.getenv("KICRYP_CAPITAL_BUCKET_EXPANSION_THRESHOLD_IDR", "300000"))
+CAPITAL_BUCKET_FULL_EXPANSION_THRESHOLD_IDR = float(os.getenv("KICRYP_CAPITAL_BUCKET_FULL_EXPANSION_THRESHOLD_IDR", "750000"))
 
 PAIR_CONFIG: Dict[str, Dict[str, Any]] = {
     "xlm_idr": {"tier": "A", "max_size_idr": 15000.0, "min_target_profit_pct": 0.020, "max_spread_pct": 0.010, "max_slippage_pct": 0.012},
@@ -2401,40 +2456,40 @@ _last_kinance_heartbeat_at: float = 0.0
 _kinance_healthy: bool = True
 
 
-DAILY_SUMMARY_ENABLED = os.getenv("KIBOT_DAILY_SUMMARY_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
-CORRELATION_ENABLED = os.getenv("KIBOT_CORRELATION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
-CORRELATION_INTERVAL_SEC = int(os.getenv("KIBOT_CORRELATION_INTERVAL_SEC", "1800"))
-CORRELATION_API_URL = os.getenv("KIBOT_CORRELATION_API_URL", POST_MORTEM_API_URL)
-CORRELATION_API_KEY = os.getenv("KIBOT_CORRELATION_API_KEY", POST_MORTEM_API_KEY)
-CORRELATION_MODEL = os.getenv("KIBOT_CORRELATION_MODEL", POST_MORTEM_MODEL)
-CORRELATION_TIMEOUT_SEC = float(os.getenv("KIBOT_CORRELATION_TIMEOUT_SEC", "20"))
-AI_ROUTER_ENABLED = os.getenv("KIBOT_AI_ROUTER_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+DAILY_SUMMARY_ENABLED = os.getenv("KICRYP_DAILY_SUMMARY_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+CORRELATION_ENABLED = os.getenv("KICRYP_CORRELATION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+CORRELATION_INTERVAL_SEC = int(os.getenv("KICRYP_CORRELATION_INTERVAL_SEC", "1800"))
+CORRELATION_API_URL = os.getenv("KICRYP_CORRELATION_API_URL", POST_MORTEM_API_URL)
+CORRELATION_API_KEY = os.getenv("KICRYP_CORRELATION_API_KEY", POST_MORTEM_API_KEY)
+CORRELATION_MODEL = os.getenv("KICRYP_CORRELATION_MODEL", POST_MORTEM_MODEL)
+CORRELATION_TIMEOUT_SEC = float(os.getenv("KICRYP_CORRELATION_TIMEOUT_SEC", "20"))
+AI_ROUTER_ENABLED = os.getenv("KICRYP_AI_ROUTER_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 AI_PROVIDER_ORDER = [
     token.strip().lower()
     for token in os.getenv(
-        "KIBOT_AI_PROVIDER_ORDER",
+        "KICRYP_AI_PROVIDER_ORDER",
         "groq,openrouter,cohere,gemini",
     ).split(",")
     if token.strip()
 ]
-AI_REQUEST_TIMEOUT_SEC = float(os.getenv("KIBOT_AI_REQUEST_TIMEOUT_SEC", "18"))
-AI_PROVIDER_DEFAULT_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_DEFAULT_COOLDOWN_SEC", "600"))
-AI_PROVIDER_NETWORK_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_NETWORK_COOLDOWN_SEC", "180"))
-AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC", "3600"))
-AI_PROVIDER_EMPTY_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_EMPTY_COOLDOWN_SEC", "120"))
-STATE_ROOT = Path(os.getenv("KIBOT_MANAGER_STATE_DIR", str(Path.cwd() / ".state")))
+AI_REQUEST_TIMEOUT_SEC = float(os.getenv("KICRYP_AI_REQUEST_TIMEOUT_SEC", "18"))
+AI_PROVIDER_DEFAULT_COOLDOWN_SEC = int(os.getenv("KICRYP_AI_PROVIDER_DEFAULT_COOLDOWN_SEC", "600"))
+AI_PROVIDER_NETWORK_COOLDOWN_SEC = int(os.getenv("KICRYP_AI_PROVIDER_NETWORK_COOLDOWN_SEC", "180"))
+AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC = int(os.getenv("KICRYP_AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC", "3600"))
+AI_PROVIDER_EMPTY_COOLDOWN_SEC = int(os.getenv("KICRYP_AI_PROVIDER_EMPTY_COOLDOWN_SEC", "120"))
+STATE_ROOT = Path(os.getenv("KICRYP_MANAGER_STATE_DIR", str(Path.cwd() / ".state")))
 PROVIDER_STATE_PATH = Path(
-    os.getenv("KIBOT_MANAGER_PROVIDER_STATE_FILE", str(STATE_ROOT / "ai_provider_state.json"))
+    os.getenv("KICRYP_MANAGER_PROVIDER_STATE_FILE", str(STATE_ROOT / "ai_provider_state.json"))
 )
 RUNTIME_NOTE_PATH = Path(
-    os.getenv("KIBOT_MANAGER_RUNTIME_NOTE_FILE", str(STATE_ROOT / "runtime_note.json"))
+    os.getenv("KICRYP_MANAGER_RUNTIME_NOTE_FILE", str(STATE_ROOT / "runtime_note.json"))
 )
-RUNTIME_NOTE_MIN_INTERVAL_SEC = int(os.getenv("KIBOT_MANAGER_RUNTIME_NOTE_MIN_INTERVAL_SEC", "15"))
-DAILY_SUMMARY_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_SUMMARY_FILE", str(STATE_ROOT / "daily_summary.json")))
-PAIR_MEMORY_PATH = Path(os.getenv("KIBOT_MANAGER_PAIR_MEMORY_FILE", str(STATE_ROOT / "pair_memory.json")))
-PAIR_MEMORY_ROLLING_WINDOW = int(os.getenv("KIBOT_PAIR_MEMORY_ROLLING_WINDOW", "50"))
-PAIR_MEMORY_MIN_TRADES_FOR_WINRATE = int(os.getenv("KIBOT_PAIR_MEMORY_MIN_TRADES_FOR_WINRATE", "3"))
-AI_BATCH_REVIEW_INTERVAL_SEC = int(os.getenv("KIBOT_AI_BATCH_REVIEW_INTERVAL_SEC", str(6 * 60 * 60)))
+RUNTIME_NOTE_MIN_INTERVAL_SEC = int(os.getenv("KICRYP_MANAGER_RUNTIME_NOTE_MIN_INTERVAL_SEC", "15"))
+DAILY_SUMMARY_PATH = Path(os.getenv("KICRYP_MANAGER_DAILY_SUMMARY_FILE", str(STATE_ROOT / "daily_summary.json")))
+PAIR_MEMORY_PATH = Path(os.getenv("KICRYP_MANAGER_PAIR_MEMORY_FILE", str(STATE_ROOT / "pair_memory.json")))
+PAIR_MEMORY_ROLLING_WINDOW = int(os.getenv("KICRYP_PAIR_MEMORY_ROLLING_WINDOW", "50"))
+PAIR_MEMORY_MIN_TRADES_FOR_WINRATE = int(os.getenv("KICRYP_PAIR_MEMORY_MIN_TRADES_FOR_WINRATE", "3"))
+AI_BATCH_REVIEW_INTERVAL_SEC = int(os.getenv("KICRYP_AI_BATCH_REVIEW_INTERVAL_SEC", str(6 * 60 * 60)))
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
@@ -2462,23 +2517,23 @@ _ai_provider_last_status: Dict[str, Any] = {
     "at_epoch_ms": 0,
     "ok": False,
 }
-COINGECKO_TRENDING_INTERVAL_SEC = int(os.getenv("KIBOT_COINGECKO_TRENDING_INTERVAL_SEC", "300"))
+COINGECKO_TRENDING_INTERVAL_SEC = int(os.getenv("KICRYP_COINGECKO_TRENDING_INTERVAL_SEC", "300"))
 INDODAX_SUMMARIES_URL = os.getenv("INDODAX_SUMMARIES_URL", "https://indodax.com/api/summaries")
-INDODAX_TICKER_CACHE_TTL_SEC = int(os.getenv("KIBOT_INDODAX_TICKER_CACHE_TTL_SEC", "600"))
-EMERGENCY_SELL_NEGATIVE_PNL_PCT = float(os.getenv("KIBOT_EMERGENCY_SELL_NEGATIVE_PNL_PCT", "-2.2"))
-EMERGENCY_SELL_COOLDOWN_SEC = int(os.getenv("KIBOT_EMERGENCY_SELL_COOLDOWN_SEC", "20"))
-API_HEALTH_CHECK_INTERVAL_SEC = float(os.getenv("KIBOT_API_HEALTH_CHECK_INTERVAL_SEC", "15"))
-API_HEALTH_FAIL_THRESHOLD = int(os.getenv("KIBOT_API_HEALTH_FAIL_THRESHOLD", "2"))
-CONTROL_PLANE_TIMEOUT_SEC = float(os.getenv("KIBOT_CONTROL_PLANE_TIMEOUT_SEC", "3.0"))
-CONTROL_PLANE_STALE_SEC = float(os.getenv("KIBOT_CONTROL_PLANE_STALE_SEC", "30"))
-DAILY_LOSS_LIMIT_PCT = float(os.getenv("KIBOT_DAILY_LOSS_LIMIT_PCT", "0.02"))
-WIB_UTC_OFFSET_HOURS = int(os.getenv("KIBOT_WIB_UTC_OFFSET_HOURS", "7"))
-DAILY_GUARD_STATE_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_GUARD_FILE", str(STATE_ROOT / "daily_guard.json")))
-MANAGER_GATE_STATE_PATH = Path(os.getenv("KIBOT_MANAGER_GATE_STATE_FILE", str(STATE_ROOT / "manager_gate.json")))
+INDODAX_TICKER_CACHE_TTL_SEC = int(os.getenv("KICRYP_INDODAX_TICKER_CACHE_TTL_SEC", "600"))
+EMERGENCY_SELL_NEGATIVE_PNL_PCT = float(os.getenv("KICRYP_EMERGENCY_SELL_NEGATIVE_PNL_PCT", "-2.2"))
+EMERGENCY_SELL_COOLDOWN_SEC = int(os.getenv("KICRYP_EMERGENCY_SELL_COOLDOWN_SEC", "20"))
+API_HEALTH_CHECK_INTERVAL_SEC = float(os.getenv("KICRYP_API_HEALTH_CHECK_INTERVAL_SEC", "15"))
+API_HEALTH_FAIL_THRESHOLD = int(os.getenv("KICRYP_API_HEALTH_FAIL_THRESHOLD", "2"))
+CONTROL_PLANE_TIMEOUT_SEC = float(os.getenv("KICRYP_CONTROL_PLANE_TIMEOUT_SEC", "3.0"))
+CONTROL_PLANE_STALE_SEC = float(os.getenv("KICRYP_CONTROL_PLANE_STALE_SEC", "30"))
+DAILY_LOSS_LIMIT_PCT = float(os.getenv("KICRYP_DAILY_LOSS_LIMIT_PCT", "0.02"))
+WIB_UTC_OFFSET_HOURS = int(os.getenv("KICRYP_WIB_UTC_OFFSET_HOURS", "7"))
+DAILY_GUARD_STATE_PATH = Path(os.getenv("KICRYP_MANAGER_DAILY_GUARD_FILE", str(STATE_ROOT / "daily_guard.json")))
+MANAGER_GATE_STATE_PATH = Path(os.getenv("KICRYP_MANAGER_GATE_STATE_FILE", str(STATE_ROOT / "manager_gate.json")))
 SAFE_ENTRY_MSG_TYPES = {"DETECTOR_HIT", "INSTANT_BUY_ANOMALY"}
 EXIT_MSG_TYPES = {"SELL_WALL_SURGE", "MOMENTUM_LOSS", "TRAILING_STOP_HIT", "THESIS_INVALID_EXIT"}
 # Maximum size for unbounded caches
-_SEEN_NEWS_IDS_MAX_SIZE = int(os.getenv("KIBOT_SEEN_NEWS_IDS_MAX_SIZE", "5000"))
+_SEEN_NEWS_IDS_MAX_SIZE = int(os.getenv("KICRYP_SEEN_NEWS_IDS_MAX_SIZE", "5000"))
 _seen_news_ids: set[str] = set()
 _seen_news_ids_timestamps: Dict[str, float] = {}  # Track when IDs were added for TTL cleanup
 _indodax_ticker_cache: set[str] = set()
@@ -2497,7 +2552,7 @@ _api_health_state: str = "HEALTHY"
 _control_plane_healthy: bool = True
 _control_plane_last_success_at: float = 0.0
 _capital_sufficient_since_at: float = 0.0
-_normal_mode_promotion_grace_sec: float = float(os.getenv("KIBOT_NORMAL_PROMOTION_GRACE_SEC", "1800"))
+_normal_mode_promotion_grace_sec: float = float(os.getenv("KICRYP_NORMAL_PROMOTION_GRACE_SEC", "1800"))
 _gate_state: Dict[str, Any] = _load_json_file(
     MANAGER_GATE_STATE_PATH,
     {
@@ -2532,7 +2587,7 @@ def _clean_pair_memory() -> None:
         return
     for key in invalid_keys:
         _pair_memory.pop(key, None)
-        print(f"[KIBOT][LEARNING] removed invalid pair_memory key='{key}'", flush=True)
+        print(f"[KICRYP][LEARNING] removed invalid pair_memory key='{key}'", flush=True)
     _write_json_file(PAIR_MEMORY_PATH, _pair_memory)
 
 
@@ -2601,7 +2656,7 @@ def _update_pair_memory(
 ) -> None:
     pair_key = pair_id.lower().strip()
     if not pair_key or pair_key in {"unknown", "null", "none"}:
-        print(f"[KIBOT][LEARNING][WARN] skip invalid pair_id='{pair_id}'", flush=True)
+        print(f"[KICRYP][LEARNING][WARN] skip invalid pair_id='{pair_id}'", flush=True)
         return
     memory = _pair_memory_for(pair_key)
     if slippage_pct is not None:
@@ -2708,7 +2763,7 @@ def _suspend_new_entries(reason: str, *, daily_hard_stop: bool = False) -> None:
         return
     _set_entry_state("SUSPENDED", reason=reason, daily_hard_stop=daily_hard_stop)
     _append_runtime_event("entry_suspended", {"reason": reason, "daily_hard_stop": daily_hard_stop})
-    print(f"[KIBOT][GATE] entry suspended reason={reason} daily_hard_stop={daily_hard_stop}", flush=True)
+    print(f"[KICRYP][GATE] entry suspended reason={reason} daily_hard_stop={daily_hard_stop}", flush=True)
 
 
 def _resume_new_entries(reason: str) -> None:
@@ -2718,7 +2773,7 @@ def _resume_new_entries(reason: str) -> None:
         return
     _set_entry_state("HEALTHY", reason=reason, daily_hard_stop=False)
     _append_runtime_event("entry_resumed", {"reason": reason})
-    print(f"[KIBOT][GATE] entry resumed reason={reason}", flush=True)
+    print(f"[KICRYP][GATE] entry resumed reason={reason}", flush=True)
 
 
 def _set_conservative_mode(reason: str) -> None:
@@ -2729,7 +2784,7 @@ def _set_conservative_mode(reason: str) -> None:
     _gate_state["reason"] = reason
     _save_gate_state()
     _append_runtime_event("trading_mode_changed", {"mode": "CONSERVATIVE", "reason": reason})
-    print(f"[KIBOT][MODE] switched to CONSERVATIVE reason={reason}", flush=True)
+    print(f"[KICRYP][MODE] switched to CONSERVATIVE reason={reason}", flush=True)
 
 
 def _set_normal_mode(reason: str) -> None:
@@ -2740,7 +2795,7 @@ def _set_normal_mode(reason: str) -> None:
     _gate_state["reason"] = reason
     _save_gate_state()
     _append_runtime_event("trading_mode_changed", {"mode": "NORMAL", "reason": reason})
-    print(f"[KIBOT][MODE] switched to NORMAL reason={reason}", flush=True)
+    print(f"[KICRYP][MODE] switched to NORMAL reason={reason}", flush=True)
 
 
 def _record_control_plane_success() -> None:
@@ -2750,7 +2805,7 @@ def _record_control_plane_success() -> None:
     if _api_fail_streak != 0 or _api_health_state != "HEALTHY":
         _api_fail_streak = 0
         _api_health_state = "HEALTHY"
-        print("[KIBOT][HEALTH] API/control-plane recovered", flush=True)
+        print("[KICRYP][HEALTH] API/control-plane recovered", flush=True)
         _append_runtime_event("api_health", {"state": "HEALTHY"})
 
 
@@ -2762,13 +2817,13 @@ def _record_control_plane_failure(reason: str) -> None:
         if _api_health_state != "SUSPENDED":
             _api_health_state = "SUSPENDED"
             _append_runtime_event("api_health", {"state": "SUSPENDED", "reason": reason, "streak": _api_fail_streak})
-            print(f"[KIBOT][HEALTH] API suspended reason={reason} streak={_api_fail_streak}", flush=True)
+            print(f"[KICRYP][HEALTH] API suspended reason={reason} streak={_api_fail_streak}", flush=True)
         _suspend_new_entries(reason="API health fail streak")
     else:
         if _api_health_state != "DEGRADED":
             _api_health_state = "DEGRADED"
             _append_runtime_event("api_health", {"state": "DEGRADED", "reason": reason, "streak": _api_fail_streak})
-        print(f"[KIBOT][HEALTH] API degraded reason={reason} streak={_api_fail_streak}", flush=True)
+        print(f"[KICRYP][HEALTH] API degraded reason={reason} streak={_api_fail_streak}", flush=True)
 
 
 def _daily_guard_reset_due() -> bool:
@@ -2876,7 +2931,7 @@ def _trigger_daily_hard_stop(current_equity: float | None, daily_pnl_pct: float)
     _suspend_new_entries("daily_loss_limit_hit", daily_hard_stop=True)
     _append_runtime_event("daily_hard_stop", {"daily_pnl_pct": daily_pnl_pct, "reset_at": reset_at})
     _metric_inc("entries_blocked_hard_stop")
-    print(f"[KIBOT][GATE] daily hard stop triggered pnl_pct={daily_pnl_pct:.4f} reset_at={reset_at}", flush=True)
+    print(f"[KICRYP][GATE] daily hard stop triggered pnl_pct={daily_pnl_pct:.4f} reset_at={reset_at}", flush=True)
 
 
 def _check_daily_loss_limit(current_equity: float | None = None) -> None:
@@ -2891,7 +2946,7 @@ def _check_daily_loss_limit(current_equity: float | None = None) -> None:
         _gate_state["daily_hard_stop_reset_at"] = ""
         _save_gate_state()
         _resume_new_entries("daily hard stop reset")
-        print("[KIBOT][GATE] daily hard stop reset", flush=True)
+        print("[KICRYP][GATE] daily hard stop reset", flush=True)
     start_equity = float(_daily_guard_state.get("start_of_day_equity") or 0.0)
     if not start_equity or not current_equity:
         return
@@ -2963,7 +3018,7 @@ def _health_gate_loop() -> None:
             _ensure_hard_stop_consistency()
             _maybe_auto_promote_trading_mode()
         except Exception as error:
-            print(f"[KIBOT][HEALTH][ERROR] gate loop failed reason={error}", flush=True)
+            print(f"[KICRYP][HEALTH][ERROR] gate loop failed reason={error}", flush=True)
         _shutdown_event.wait(API_HEALTH_CHECK_INTERVAL_SEC)
 
 
@@ -3077,7 +3132,7 @@ def _run_math_review() -> Dict[str, Any]:
             "trades_possible": round(trades_possible, 2),
         },
     )
-    print(f"[KIBOT][MATH_REVIEW] action={action} reason={reason}", flush=True)
+    print(f"[KICRYP][MATH_REVIEW] action={action} reason={reason}", flush=True)
     return {"action": action, "reason": reason, "metrics": metrics}
 
 
@@ -3092,7 +3147,7 @@ def _math_review_loop() -> None:
                 _math_review_last_action = str(result.get("action") or "UNKNOWN")
                 _math_review_last_reason = str(result.get("reason") or "")
         except Exception as error:
-            print(f"[KIBOT][MATH_REVIEW][ERROR] {error}", flush=True)
+            print(f"[KICRYP][MATH_REVIEW][ERROR] {error}", flush=True)
         _shutdown_event.wait(60.0)
 
 
@@ -3132,9 +3187,9 @@ def _run_ai_batch_review() -> None:
         parsed = _parse_json_candidate(text)
         if isinstance(parsed, dict) and parsed:
             _apply_ai_recommendation(parsed)
-            print(f"[KIBOT][AI_REVIEW] provider={provider} applied={json.dumps(parsed, ensure_ascii=False)[:240]}", flush=True)
+            print(f"[KICRYP][AI_REVIEW] provider={provider} applied={json.dumps(parsed, ensure_ascii=False)[:240]}", flush=True)
     except Exception as error:
-        print(f"[KIBOT][AI_REVIEW][WARN] failed reason={error}", flush=True)
+        print(f"[KICRYP][AI_REVIEW][WARN] failed reason={error}", flush=True)
 
 
 def _ai_batch_review_loop() -> None:
@@ -3142,7 +3197,7 @@ def _ai_batch_review_loop() -> None:
         try:
             _run_ai_batch_review()
         except Exception as error:
-            print(f"[KIBOT][AI_REVIEW][ERROR] {error}", flush=True)
+            print(f"[KICRYP][AI_REVIEW][ERROR] {error}", flush=True)
         _shutdown_event.wait(AI_BATCH_REVIEW_INTERVAL_SEC)
 
 
@@ -3254,9 +3309,9 @@ def _heartbeat_loop() -> None:
     while not _shutdown_event.is_set():
         try:
             _emit_trinity_heartbeat()
-            _append_runtime_event("trinity_heartbeat_emit", {"sender": "kibot"})
+            _append_runtime_event("trinity_heartbeat_emit", {"sender": "kicryp"})
         except Exception as error:
-            print(f"[KIBOT][HEARTBEAT][WARN] emit failed reason={error}", flush=True)
+            print(f"[KICRYP][HEARTBEAT][WARN] emit failed reason={error}", flush=True)
         if _shutdown_event.wait(timeout=interval):
             break
 
@@ -3269,7 +3324,7 @@ def _write_runtime_note(*, force: bool = False) -> None:
     _last_runtime_note_write_at = now_ts
     note = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "service": "kibot_manager",
+        "service": "kicryp_manager",
         "host_bind": f"{UDP_BIND_HOST}:{UDP_BIND_PORT}",
         "kidax_target": f"{KIDAX_UDP_HOST}:{KIDAX_UDP_PORT}" if KIDAX_UDP_HOST else "",
         "kinance_target": f"{KINANCE_UDP_HOST}:{KINANCE_UDP_PORT}" if KINANCE_UDP_HOST else "",
@@ -3304,7 +3359,7 @@ def _write_runtime_note(*, force: bool = False) -> None:
     try:
         _write_json_file(RUNTIME_NOTE_PATH, note)
     except Exception as error:
-        print(f"[KIBOT][NOTE][WARN] write failed reason={error}", flush=True)
+        print(f"[KICRYP][NOTE][WARN] write failed reason={error}", flush=True)
 
 
 def _classify_provider_failure(message: str) -> Tuple[int, str]:
@@ -3663,7 +3718,7 @@ def _call_ai_router(
             _broadcast_udp(
                 {
                     "msgType": "AI_PROVIDER_STATUS",
-                    "senderBotId": "kibot",
+                    "senderBotId": "kicryp",
                     "task": task,
                     "provider": provider,
                     "ok": True,
@@ -3692,7 +3747,7 @@ def _call_ai_router(
     _broadcast_udp(
         {
             "msgType": "AI_PROVIDER_STATUS",
-            "senderBotId": "kibot",
+            "senderBotId": "kicryp",
             "task": task,
             "provider": "",
             "ok": False,
@@ -3741,14 +3796,14 @@ def _broadcast_udp(payload: Dict[str, Any]) -> None:
     finally:
         sock.close()
     print(
-        f"[KIBOT][UDP_BROADCAST] msgType={payload.get('msgType')} pair={payload.get('pairId')} trace={payload.get('traceId')}",
+        f"[KICRYP][UDP_BROADCAST] msgType={payload.get('msgType')} pair={payload.get('pairId')} trace={payload.get('traceId')}",
         flush=True,
     )
 
 
 def _emit_trinity_heartbeat() -> None:
     sent_at = int(time.time() * 1000)
-    for sender_bot_id in ("kibot", "kidax", "kinance"):
+    for sender_bot_id in ("kicryp", "kidax", "kinance"):
         payload = {
             "kind": "trinity_state",
             "msgType": "HEARTBEAT",
@@ -3776,7 +3831,7 @@ def _coingecko_track_record_score(pair: str) -> float:
         adaptive_penalty = _get_adaptive_score_penalty(pair)
         return max(0.0, base_score - adaptive_penalty)
     except Exception as error:
-        print(f"[KIBOT][WARN] CoinGecko API error pair={pair} reason={error}", flush=True)
+        print(f"[KICRYP][WARN] CoinGecko API error pair={pair} reason={error}", flush=True)
         return 0.60
 
 
@@ -3827,7 +3882,7 @@ def _fetch_coingecko_trending() -> list[dict[str, Any]]:
             )
         return out
     except Exception as error:
-        print(f"[KIBOT][COINGECKO][ERROR] trending fetch failed reason={error}", flush=True)
+        print(f"[KICRYP][COINGECKO][ERROR] trending fetch failed reason={error}", flush=True)
         return []
 
 
@@ -3839,7 +3894,7 @@ def _refresh_coingecko_trending_cache() -> None:
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     _coingecko_trending_cache = {"coins": coins, "fetched_at_epoch_ms": now_ms}
     preview = ",".join(c["symbol"] for c in coins[:5])
-    print(f"[KIBOT][COINGECKO][TRENDING] count={len(coins)} top={preview}", flush=True)
+    print(f"[KICRYP][COINGECKO][TRENDING] count={len(coins)} top={preview}", flush=True)
 
 
 def _get_coingecko_trending_cache() -> list[dict[str, Any]]:
@@ -3899,11 +3954,11 @@ def _get_total_equity_estimate() -> float | None:
 def _check_minimum_capital() -> bool:
     equity = _get_total_equity_estimate()
     if equity is None:
-        print("[KIBOT][CAPITAL][WARN] unable to read equity; allowing entry fail-open", flush=True)
+        print("[KICRYP][CAPITAL][WARN] unable to read equity; allowing entry fail-open", flush=True)
         return True
     if equity < MINIMUM_VIABLE_CAPITAL_IDR:
         print(
-            f"[KIBOT][CAPITAL] equity Rp{equity:,.0f} < minimum Rp{MINIMUM_VIABLE_CAPITAL_IDR:,.0f}; entry suspended",
+            f"[KICRYP][CAPITAL] equity Rp{equity:,.0f} < minimum Rp{MINIMUM_VIABLE_CAPITAL_IDR:,.0f}; entry suspended",
             flush=True,
         )
         return False
@@ -4261,7 +4316,7 @@ def _pair_screen_loop() -> None:
                 if _screen_cache:
                     top = _screen_cache[0]
                     print(
-                        f"[KIBOT][SCREEN] top={top['pair_id']} score={top['analysis'].legitimacy_score:.1f} phase={top['analysis'].pump_phase}",
+                        f"[KICRYP][SCREEN] top={top['pair_id']} score={top['analysis'].legitimacy_score:.1f} phase={top['analysis'].pump_phase}",
                         flush=True,
                     )
                     _append_runtime_event(
@@ -4275,7 +4330,7 @@ def _pair_screen_loop() -> None:
                     )
                     _write_runtime_note()
         except Exception as error:
-            print(f"[KIBOT][WARN] pair_screen_loop error: {error}", flush=True)
+            print(f"[KICRYP][WARN] pair_screen_loop error: {error}", flush=True)
         if _shutdown_event.wait(timeout=30.0):
             break
 
@@ -4362,13 +4417,13 @@ def _upsert_trade_history(entry: Dict[str, Any]) -> None:
     # Fallback when table trade_history is absent on this project.
     fallback_url = f"{SUPABASE_URL}/rest/v1/logs"
     fallback_payload = {
-        "bot_id": "kibot",
-        "device_id": "kibot-manager",
+        "bot_id": "kicryp",
+        "device_id": "kicryp-manager",
         "term": 0,
         "level": "INFO",
         "category": "BOOK_ENTRY",
         "message": json.dumps(entry, ensure_ascii=False),
-        "metadata": {"source": "kibot_manager", "fallback_from": "trade_history"},
+        "metadata": {"source": "kicryp_manager", "fallback_from": "trade_history"},
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
@@ -4410,9 +4465,9 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
     try:
         _record_trade_result(pair_id, gross_pnl_pct=pnl_pct, entry_time=float(msg.get("entry_timestamp") or msg.get("timestamp") or time.time()))
     except Exception as error:
-        print(f"[KIBOT][MATH_REVIEW][WARN] trade record failed pair={pair_id} reason={error}", flush=True)
+        print(f"[KICRYP][MATH_REVIEW][WARN] trade record failed pair={pair_id} reason={error}", flush=True)
     print(
-        f"[KIBOT][LEARNING] pair_memory updated pair={pair_id} pnl_pct={pnl_pct:.4f} slippage_pct={slippage_pct:.4f}",
+        f"[KICRYP][LEARNING] pair_memory updated pair={pair_id} pnl_pct={pnl_pct:.4f} slippage_pct={slippage_pct:.4f}",
         flush=True,
     )
     try:
@@ -4420,7 +4475,7 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
             {
                 "pair_id": msg.get("pair") or msg.get("pairId") or "unknown",
                 "status": "BOOK_ENTRY",
-                "source_bot": "kibot",
+                "source_bot": "kicryp",
                 "message": json.dumps(
                     {
                         "trace_id": msg.get("traceId"),
@@ -4436,7 +4491,7 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
             }
         )
         print(
-            f"[KIBOT][LEDGER] BOOK_ENTRY pair={msg.get('pair')} net={net:.4f} trace={msg.get('traceId')}",
+            f"[KICRYP][LEDGER] BOOK_ENTRY pair={msg.get('pair')} net={net:.4f} trace={msg.get('traceId')}",
             flush=True,
         )
         _append_runtime_event(
@@ -4446,7 +4501,7 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
         _write_runtime_note()
     except Exception as error:
         print(
-            f"[KIBOT][LEDGER][WARN] upsert failed pair={msg.get('pair')} trace={msg.get('traceId')} reason={error}",
+            f"[KICRYP][LEDGER][WARN] upsert failed pair={msg.get('pair')} trace={msg.get('traceId')} reason={error}",
             flush=True,
         )
     if POST_MORTEM_ENABLED and net < 0:
@@ -4473,7 +4528,7 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
                 },
             ),
             daemon=True,
-            name="kibot-postmortem",
+            name="kicryp-postmortem",
         )
         thread.start()
 
@@ -4490,7 +4545,7 @@ def evaluate_foolish_trade(trade_data: Dict[str, Any]) -> None:
     )
     if routed_text:
         print(
-            f"[KIBOT][POST_MORTEM] provider={provider} trace={trade_data.get('trace_id')} result={routed_text[:320]}",
+            f"[KICRYP][POST_MORTEM] provider={provider} trace={trade_data.get('trace_id')} result={routed_text[:320]}",
             flush=True,
         )
         parsed = _parse_json_candidate(routed_text)
@@ -4514,7 +4569,7 @@ def evaluate_foolish_trade(trade_data: Dict[str, Any]) -> None:
             _write_runtime_note(force=True)
         return
     if not POST_MORTEM_API_URL:
-        print("[KIBOT][POST_MORTEM] skipped (router+legacy unavailable).", flush=True)
+        print("[KICRYP][POST_MORTEM] skipped (router+legacy unavailable).", flush=True)
         return
     payload = {
         "model": POST_MORTEM_MODEL,
@@ -4536,17 +4591,17 @@ def evaluate_foolish_trade(trade_data: Dict[str, Any]) -> None:
         )
         if response.status_code >= 300:
             print(
-                f"[KIBOT][POST_MORTEM][WARN] status={response.status_code} body={response.text[:240]}",
+                f"[KICRYP][POST_MORTEM][WARN] status={response.status_code} body={response.text[:240]}",
                 flush=True,
             )
             return
         result = response.json()
         print(
-            f"[KIBOT][POST_MORTEM] evaluated trace={trade_data.get('trace_id')} result={json.dumps(result, ensure_ascii=False)[:320]}",
+            f"[KICRYP][POST_MORTEM] evaluated trace={trade_data.get('trace_id')} result={json.dumps(result, ensure_ascii=False)[:320]}",
             flush=True,
         )
     except Exception as error:
-        print(f"[KIBOT][POST_MORTEM][ERROR] trace={trade_data.get('trace_id')} reason={error}", flush=True)
+        print(f"[KICRYP][POST_MORTEM][ERROR] trace={trade_data.get('trace_id')} reason={error}", flush=True)
 
 
 def force_evaluate_recent_loss() -> None:
@@ -4591,10 +4646,10 @@ def force_evaluate_recent_loss() -> None:
                     "trigger": "force_recent_loss_eval",
                 }
             )
-            print(f"[KIBOT][POST_MORTEM][FORCE] recent loss evaluated pair={row.get('pair_id')} net={net:.4f}", flush=True)
+            print(f"[KICRYP][POST_MORTEM][FORCE] recent loss evaluated pair={row.get('pair_id')} net={net:.4f}", flush=True)
             return
     except Exception as error:
-        print(f"[KIBOT][POST_MORTEM][FORCE][ERROR] {error}", flush=True)
+        print(f"[KICRYP][POST_MORTEM][FORCE][ERROR] {error}", flush=True)
 
 
 def _get_dynamic_fomo_guard(price_idr: float) -> float:
@@ -4616,7 +4671,7 @@ def _on_kinance_heartbeat_received():
     global _last_kinance_heartbeat_at, _kinance_healthy
     _last_kinance_heartbeat_at = time.time()
     if not _kinance_healthy:
-        print("[KIBOT][RECOVERY] KINANCE heartbeat restored!", flush=True)
+        print("[KICRYP][RECOVERY] KINANCE heartbeat restored!", flush=True)
     _kinance_healthy = True
 
 
@@ -4629,7 +4684,7 @@ def _check_kinance_health() -> bool:
     
     if (now - _last_kinance_heartbeat_at) > KINANCE_HEARTBEAT_TIMEOUT_SEC:
         if _kinance_healthy:
-            print(f"[KIBOT][CRITICAL] KINANCE HEARTBEAT LOST! Last seen {now - _last_kinance_heartbeat_at:.1f}s ago", flush=True)
+            print(f"[KICRYP][CRITICAL] KINANCE HEARTBEAT LOST! Last seen {now - _last_kinance_heartbeat_at:.1f}s ago", flush=True)
             _kinance_healthy = False
         return False
     return True
@@ -4643,17 +4698,17 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         if _is_hard_stop_active():
             _metric_inc("entries_blocked_hard_stop")
             print(
-                f"[KIBOT][BLOCK] Blocking {msg_type} - daily hard stop active",
+                f"[KICRYP][BLOCK] Blocking {msg_type} - daily hard stop active",
                 flush=True,
             )
             return
     except Exception as error:
         _metric_inc("entries_blocked_hard_stop")
-        print(f"[KIBOT][BLOCK] Blocking {msg_type} - hard stop guard failed reason={error}", flush=True)
+        print(f"[KICRYP][BLOCK] Blocking {msg_type} - hard stop guard failed reason={error}", flush=True)
         return
 
     if not _check_minimum_capital():
-        print(f"[KIBOT][BLOCK] Blocking {msg_type} - minimum viable capital not met", flush=True)
+        print(f"[KICRYP][BLOCK] Blocking {msg_type} - minimum viable capital not met", flush=True)
         return
     
     # === HANDLE KINANCE HEARTBEAT ===
@@ -4665,13 +4720,13 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         pass
     elif msg_type in SAFE_ENTRY_MSG_TYPES and _entry_state_is_suspended():
         print(
-            f"[KIBOT][BLOCK] Blocking {msg_type} - entry suspended state={_gate_state.get('entry_state')} reason={_gate_state.get('reason')}",
+            f"[KICRYP][BLOCK] Blocking {msg_type} - entry suspended state={_gate_state.get('entry_state')} reason={_gate_state.get('reason')}",
             flush=True,
         )
         return
     elif _entry_state_is_suspended():
         print(
-            f"[KIBOT][BLOCK] Blocking {msg_type} - entry suspended state={_gate_state.get('entry_state')} reason={_gate_state.get('reason')}",
+            f"[KICRYP][BLOCK] Blocking {msg_type} - entry suspended state={_gate_state.get('entry_state')} reason={_gate_state.get('reason')}",
             flush=True,
         )
         return
@@ -4680,7 +4735,7 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     if not _check_kinance_health():
         # Only allow EXIT signals when Kinance unhealthy
         if msg_type not in EXIT_MSG_TYPES:
-            print(f"[KIBOT][BLOCK] Blocking {msg_type} - KINANCE unhealthy", flush=True)
+            print(f"[KICRYP][BLOCK] Blocking {msg_type} - KINANCE unhealthy", flush=True)
             return
     
     if msg_type == "ACTIVE_POSITIONS":
@@ -4697,13 +4752,13 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     # Relay original detector signal so KiDax can hold Kinance-side evidence for double-confirmation.
     _broadcast_udp(msg)
     print(
-        f"[KIBOT][RELAY] msgType={msg_type} pair={msg.get('pair') or msg.get('pairId')} trace={msg.get('traceId')}",
+        f"[KICRYP][RELAY] msgType={msg_type} pair={msg.get('pair') or msg.get('pairId')} trace={msg.get('traceId')}",
         flush=True,
     )
 
     pair = str(msg.get("pair") or msg.get("pairId") or "")
     if not pair:
-        print(f"[KIBOT][WARN] missing pair in msgType={msg_type}", flush=True)
+        print(f"[KICRYP][WARN] missing pair in msgType={msg_type}", flush=True)
         return
     pair_cfg = _get_pair_config(pair)
 
@@ -4719,7 +4774,7 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         allowed, reason = _learning_engine.should_entry(pair)
         if not allowed:
             _metric_inc("entries_blocked_learn_gate")
-            print(f"[KIBOT][LEARN GATE] pair={pair} blocked reason={reason}", flush=True)
+            print(f"[KICRYP][LEARN GATE] pair={pair} blocked reason={reason}", flush=True)
             _append_runtime_event(
                 "learning_block",
                 {"pair": pair, "reason": reason, "msg_type": msg_type},
@@ -4752,13 +4807,13 @@ def _process_signal(msg: Dict[str, Any]) -> None:
             )
             _append_runtime_event("what_if", what_if)
             print(
-                f"[KIBOT][WHATIF] pair={pair} tiers={','.join(capital_bucket)} ev={what_if['expected_net_pct']:.4f} rr={what_if['risk_reward_ratio']:.2f} rec={what_if['recommendation']}",
+                f"[KICRYP][WHATIF] pair={pair} tiers={','.join(capital_bucket)} ev={what_if['expected_net_pct']:.4f} rr={what_if['risk_reward_ratio']:.2f} rec={what_if['recommendation']}",
                 flush=True,
             )
             if what_if["recommendation"] == "SKIP":
                 _metric_inc("entries_blocked_whatif")
                 _metric_inc("whatif_skips_today")
-                print(f"[KIBOT][BLOCK] Blocking {msg_type} - what-if rejected", flush=True)
+                print(f"[KICRYP][BLOCK] Blocking {msg_type} - what-if rejected", flush=True)
                 return
             _metric_inc("whatif_enters_today")
             if msg.get("one_shot_mode"):
@@ -4773,20 +4828,20 @@ def _process_signal(msg: Dict[str, Any]) -> None:
             slippage_pct=slippage_pct,
         )
         if not allowed:
-            print(f"[KIBOT][SURVIVAL] pair={pair} blocked reason={reason}", flush=True)
+            print(f"[KICRYP][SURVIVAL] pair={pair} blocked reason={reason}", flush=True)
             return
     pair_on_cooldown, cooldown_reason = _pair_cooldown_active(pair)
     if pair_on_cooldown and msg_type not in EXIT_MSG_TYPES:
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         print(
-            f"[KIBOT][VETO_REJECTED] pair={pair} reason=PAIR_COOLDOWN cooldown_reason={cooldown_reason}",
+            f"[KICRYP][VETO_REJECTED] pair={pair} reason=PAIR_COOLDOWN cooldown_reason={cooldown_reason}",
             flush=True,
         )
         veto = {
             "kind": "lead_lag_breakout",
             "msgType": "VETO_REJECTED",
             "traceId": str(msg.get("traceId") or f"trace-{now_ms}"),
-            "senderBotId": "kibot",
+            "senderBotId": "kicryp",
             "pairId": pair,
             "trend": "UP",
             "detectedAtEpochMs": now_ms,
@@ -4813,14 +4868,14 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     ttl_ms = 200 if str(pair_cfg.get("tier") or "").upper() == "C" or msg.get("one_shot_mode") else STALE_SIGNAL_ABORT_MS
     if signal_age_ms > ttl_ms:
         print(
-            f"[KIBOT][VETO_REJECTED] pair={pair} reason=STALE_SIGNAL age_ms={signal_age_ms}",
+            f"[KICRYP][VETO_REJECTED] pair={pair} reason=STALE_SIGNAL age_ms={signal_age_ms}",
             flush=True,
         )
         veto = {
             "kind": "lead_lag_breakout",
             "msgType": "VETO_REJECTED",
             "traceId": trace_id,
-            "senderBotId": "kibot",
+            "senderBotId": "kicryp",
             "pairId": pair,
             "trend": "UP",
             "detectedAtEpochMs": now_ms,
@@ -4839,7 +4894,7 @@ def _process_signal(msg: Dict[str, Any]) -> None:
 
     if msg_type in SAFE_ENTRY_MSG_TYPES and (not _control_plane_healthy or (time.time() - _control_plane_last_success_at) > CONTROL_PLANE_STALE_SEC):
         _suspend_new_entries("control_plane_stale")
-        print(f"[KIBOT][BLOCK] Blocking {msg_type} - control-plane stale", flush=True)
+        print(f"[KICRYP][BLOCK] Blocking {msg_type} - control-plane stale", flush=True)
         return
     expected_move_pct = float(
         payload.get("expectedMovePct")
@@ -4877,21 +4932,21 @@ def _process_signal(msg: Dict[str, Any]) -> None:
                 bollinger_lower=lower,
                 has_binance_pair=False, # Default if not checked
             )
-            print(f"[KIBOT][TRINITY] {pair} Legitimacy Score: {analysis.legitimacy_score} ({analysis.pump_phase})", flush=True)
+            print(f"[KICRYP][TRINITY] {pair} Legitimacy Score: {analysis.legitimacy_score} ({analysis.pump_phase})", flush=True)
             if analysis.legitimacy_score < 40:
-                print(f"[KIBOT][BLOCK] {pair} REJECTED by Trinity Legitimacy Detector (Score: {analysis.legitimacy_score})", flush=True)
+                print(f"[KICRYP][BLOCK] {pair} REJECTED by Trinity Legitimacy Detector (Score: {analysis.legitimacy_score})", flush=True)
                 return
 
     if msg_type == "DETECTOR_HIT" and short_term_return_pct >= fomo_limit:
         print(
-            f"[KIBOT][VETO_REJECTED] pair={pair} reason=FOMO_GUARD rise_pct={short_term_return_pct:.2f} limit={fomo_limit:.1f}% price={current_price_idr:.0f}",
+            f"[KICRYP][VETO_REJECTED] pair={pair} reason=FOMO_GUARD rise_pct={short_term_return_pct:.2f} limit={fomo_limit:.1f}% price={current_price_idr:.0f}",
             flush=True,
         )
         veto = {
             "kind": "lead_lag_breakout",
             "msgType": "VETO_REJECTED",
             "traceId": trace_id,
-            "senderBotId": "kibot",
+            "senderBotId": "kicryp",
             "pairId": pair,
             "trend": "UP",
             "detectedAtEpochMs": now_ms,
@@ -4941,14 +4996,14 @@ def _process_signal(msg: Dict[str, Any]) -> None:
     if not approved:
         veto_msg_type = "VETO_REJECTED"
         print(
-            f"[KIBOT][VETO_REJECTED] pair={pair} net={viability['net_profit_pct']:.4f}% reason=AI_CONFIDENCE_GATE score={score:.3f} ai={ai_confidence:.3f}",
+            f"[KICRYP][VETO_REJECTED] pair={pair} net={viability['net_profit_pct']:.4f}% reason=AI_CONFIDENCE_GATE score={score:.3f} ai={ai_confidence:.3f}",
             flush=True,
         )
         _veto_metrics["rejected"] += 1
         _update_daily_summary("veto_metric", {"name": "rejected"})
     else:
         print(
-            f"[KIBOT][{veto_msg_type}] pair={pair} net={viability['net_profit_pct']:.4f}% trackScore={score:.3f} ai={ai_confidence:.3f}",
+            f"[KICRYP][{veto_msg_type}] pair={pair} net={viability['net_profit_pct']:.4f}% trackScore={score:.3f} ai={ai_confidence:.3f}",
             flush=True,
         )
         if veto_msg_type == "VETO_APPROVED":
@@ -4962,7 +5017,7 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         "kind": "lead_lag_breakout",
         "msgType": veto_msg_type,
         "traceId": trace_id,
-        "senderBotId": "kibot",
+        "senderBotId": "kicryp",
         "pairId": pair,
         "trend": "REVERSAL" if msg_type in {"SELL_WALL_SURGE", "MOMENTUM_LOSS"} else "UP",
         "detectedAtEpochMs": now_ms,
@@ -5031,10 +5086,10 @@ def _scan_rss_and_initiate_detector(feed_url: str, source: str) -> None:
             return
         root = ET.fromstring(response.text)
     except (requests.exceptions.RequestException, ET.ParseError) as e:
-        print(f"[KIBOT][WARN] RSS parse/fetch error source={source} reason={type(e).__name__}", flush=True)
+        print(f"[KICRYP][WARN] RSS parse/fetch error source={source} reason={type(e).__name__}", flush=True)
         return
     except Exception as e:
-        print(f"[KIBOT][WARN] RSS unexpected error source={source} reason={e}", flush=True)
+        print(f"[KICRYP][WARN] RSS unexpected error source={source} reason={e}", flush=True)
         return
     items = root.findall(".//item")[:12]
     for item in items:
@@ -5059,7 +5114,7 @@ def _scan_rss_and_initiate_detector(feed_url: str, source: str) -> None:
             "kind": "lead_lag_breakout",
             "msgType": "DETECTOR_HIT",
             "traceId": f"news-{source}-{symbol}-{now_ms}",
-            "senderBotId": "kibot",
+            "senderBotId": "kicryp",
             "pairId": pair_id,
             "trend": "UP",
             "detectedAtEpochMs": now_ms,
@@ -5092,7 +5147,7 @@ def _news_scanner_loop() -> None:
                 _cleanup_seen_news_ids()
                 cleanup_counter = 0
         except Exception as e:
-            print(f"[KIBOT][WARN] news_scanner_loop error: {e}", flush=True)
+            print(f"[KICRYP][WARN] news_scanner_loop error: {e}", flush=True)
         # Use event.wait for graceful shutdown
         if _shutdown_event.wait(timeout=max(30, NEWS_SCAN_INTERVAL_SEC)):
             break
@@ -5188,10 +5243,10 @@ def _fetch_dynamic_correlation_map() -> Dict[str, list[str]]:
         timeout_sec=CORRELATION_TIMEOUT_SEC,
     )
     if routed_text:
-        print(f"[KIBOT][AI_CORRELATION_FETCH] provider={provider}", flush=True)
+        print(f"[KICRYP][AI_CORRELATION_FETCH] provider={provider}", flush=True)
         return _normalize_sector_map(_parse_json_candidate(routed_text))
     if not CORRELATION_API_URL:
-        print("[KIBOT][AI_CORRELATION_FETCH][SKIP] router+legacy unavailable.", flush=True)
+        print("[KICRYP][AI_CORRELATION_FETCH][SKIP] router+legacy unavailable.", flush=True)
         return {}
     payload = {
         "model": CORRELATION_MODEL,
@@ -5222,16 +5277,16 @@ def _broadcast_dynamic_correlation_map() -> None:
         _last_sector_map = sectors
         msg = {
             "msgType": "CORRELATION_MATRIX",
-            "senderBotId": "kibot",
+            "senderBotId": "kicryp",
             "updatedAtEpochMs": int(datetime.now(timezone.utc).timestamp() * 1000),
             "sectors": sectors,
         }
         _broadcast_udp(msg)
-        print(f"[KIBOT][AI_CORRELATION_FETCH] sectors={len(sectors)}", flush=True)
+        print(f"[KICRYP][AI_CORRELATION_FETCH] sectors={len(sectors)}", flush=True)
         _append_runtime_event("correlation_matrix_refresh", {"sector_count": len(sectors)})
         _write_runtime_note()
     except Exception as error:
-        print(f"[KIBOT][AI_CORRELATION_FETCH][ERROR] {error}", flush=True)
+        print(f"[KICRYP][AI_CORRELATION_FETCH][ERROR] {error}", flush=True)
 
 
 def _correlation_loop() -> None:
@@ -5239,7 +5294,7 @@ def _correlation_loop() -> None:
         try:
             _broadcast_dynamic_correlation_map()
         except Exception as e:
-            print(f"[KIBOT][WARN] correlation_loop error: {e}", flush=True)
+            print(f"[KICRYP][WARN] correlation_loop error: {e}", flush=True)
         if _shutdown_event.wait(timeout=max(300, CORRELATION_INTERVAL_SEC)):
             break
 
@@ -5249,7 +5304,7 @@ def _coingecko_trending_loop() -> None:
         try:
             _refresh_coingecko_trending_cache()
         except Exception as e:
-            print(f"[KIBOT][WARN] coingecko_trending_loop error: {e}", flush=True)
+            print(f"[KICRYP][WARN] coingecko_trending_loop error: {e}", flush=True)
         if _shutdown_event.wait(timeout=max(180, COINGECKO_TRENDING_INTERVAL_SEC)):
             break
 
@@ -5286,7 +5341,7 @@ def _emit_emergency_veto_sell(
     now_ms = int(now * 1000)
     payload_obj = {
         "reason": reason,
-        "trigger": "kibot_active_overwatch",
+        "trigger": "kicryp_active_overwatch",
     }
     if isinstance(extra_payload, dict):
         payload_obj.update(extra_payload)
@@ -5294,7 +5349,7 @@ def _emit_emergency_veto_sell(
         "kind": "lead_lag_breakout",
         "msgType": "EMERGENCY_VETO_SELL",
         "traceId": trace_id or f"eveto-{pair_key}-{now_ms}",
-        "senderBotId": "kibot",
+        "senderBotId": "kicryp",
         "pairId": pair_key,
         "trend": "REVERSAL",
         "detectedAtEpochMs": now_ms,
@@ -5310,7 +5365,7 @@ def _emit_emergency_veto_sell(
     }
     _broadcast_udp(veto)
     print(
-        f"[KIBOT][EMERGENCY_VETO_SELL] pair={pair_key} reason={reason} trace={veto['traceId']}",
+        f"[KICRYP][EMERGENCY_VETO_SELL] pair={pair_key} reason={reason} trace={veto['traceId']}",
         flush=True,
     )
     _veto_metrics["emergency_sell"] += 1
@@ -5371,7 +5426,7 @@ def _process_active_positions(msg: Dict[str, Any]) -> None:
                 "partial_tp_done": False,
                 "entry_time": time.time()
             }
-            print(f"[KIBOT][TRAIL] Started trailing for {pair} at {entry_price}", flush=True)
+            print(f"[KICRYP][TRAIL] Started trailing for {pair} at {entry_price}", flush=True)
 
     # Check for closed positions to record math
     for pair in previous_cache_pairs - current_cache_pairs:
@@ -5382,7 +5437,7 @@ def _process_active_positions(msg: Dict[str, Any]) -> None:
             last_row = _active_positions_cache.get(pair, {})
             pnl_pct = float(last_row.get("pnlPct") or 0.0)
             _record_trade_result(pair, gross_pnl_pct=pnl_pct, entry_time=trail["entry_time"])
-            print(f"[KIBOT][MATH] Recorded trade for {pair}: {pnl_pct:+.2%}", flush=True)
+            print(f"[KICRYP][MATH] Recorded trade for {pair}: {pnl_pct:+.2%}", flush=True)
 
     # Update active trails
     for pair, row in tracked_pairs.items():
@@ -5402,7 +5457,7 @@ def _process_active_positions(msg: Dict[str, Any]) -> None:
     if (now_ts - _last_active_positions_log_at) >= 30:
         _last_active_positions_log_at = now_ts
         print(
-            f"[KIBOT][ACTIVE_POSITIONS] count={len(tracked_pairs)} pairs={','.join(sorted(tracked_pairs.keys())[:6])}",
+            f"[KICRYP][ACTIVE_POSITIONS] count={len(tracked_pairs)} pairs={','.join(sorted(tracked_pairs.keys())[:6])}",
             flush=True,
         )
         _append_runtime_event(
@@ -5413,7 +5468,7 @@ def _process_active_positions(msg: Dict[str, Any]) -> None:
     relay_payload = {
         "kind": "trinity_state",
         "msgType": "ACTIVE_POSITIONS",
-        "senderBotId": "kibot",
+        "senderBotId": "kicryp",
         "sentAtEpochMs": now_ms,
         "positions": list(tracked_pairs.values()),
     }
@@ -5444,7 +5499,7 @@ def _signal_handler(signum: int, frame: Any) -> None:
     """Handle shutdown signals gracefully."""
     global _main_socket
     sig_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
-    print(f"\n[KIBOT][SHUTDOWN] Received {sig_name}, initiating graceful shutdown...", flush=True)
+    print(f"\n[KICRYP][SHUTDOWN] Received {sig_name}, initiating graceful shutdown...", flush=True)
     _shutdown_event.set()
     # Close main socket to unblock recvfrom
     if _main_socket:
@@ -5466,7 +5521,7 @@ def _http_state_payload() -> Dict[str, Any]:
     with _state_lock:
         return {
             "ok": True,
-            "service": "kibot-manager",
+            "service": "kicryp-manager",
             "system_state": str(_gate_state.get("entry_state") or "HEALTHY"),
             "trading_mode": str(_gate_state.get("mode") or "CONSERVATIVE"),
             "effectiveState": "RUNNING" if not _entry_state_is_suspended() else "DEGRADED",
@@ -5575,7 +5630,7 @@ class _ManagerStateHandler(BaseHTTPRequestHandler):
             payload = json.loads(body or "{}")
             message = str(payload.get("msg") or "").strip()
             if message:
-                print(f"[KIBOT][NOTIFY] {message}", flush=True)
+                print(f"[KICRYP][NOTIFY] {message}", flush=True)
                 _append_runtime_event("notify", {"message": message})
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -5593,15 +5648,15 @@ class _ManagerStateHandler(BaseHTTPRequestHandler):
 
 def _state_server_loop() -> None:
     global _http_server
-    bind_host = os.getenv("KIBOT_MANAGER_HTTP_BIND_HOST", "127.0.0.1")
-    bind_port = int(os.getenv("KIBOT_MANAGER_HTTP_BIND_PORT", str(UDP_BIND_PORT)))
+    bind_host = os.getenv("KICRYP_MANAGER_HTTP_BIND_HOST", "127.0.0.1")
+    bind_port = int(os.getenv("KICRYP_MANAGER_HTTP_BIND_PORT", str(UDP_BIND_PORT)))
     try:
         server = ThreadingHTTPServer((bind_host, bind_port), _ManagerStateHandler)
         _http_server = server
-        print(f"[KIBOT][HTTP] state server listening on {bind_host}:{bind_port}", flush=True)
+        print(f"[KICRYP][HTTP] state server listening on {bind_host}:{bind_port}", flush=True)
         server.serve_forever(poll_interval=0.5)
     except Exception as error:
-        print(f"[KIBOT][HTTP][ERROR] failed to start state server reason={error}", flush=True)
+        print(f"[KICRYP][HTTP][ERROR] failed to start state server reason={error}", flush=True)
     finally:
         _http_server = None
 
@@ -5609,7 +5664,7 @@ def _pair_screen_loop() -> None:
     """
     Background thread for Phase 2: Dynamic Screener.
     """
-    print("[KIBOT] Screener loop started.", flush=True)
+    print("[KICRYP] Screener loop started.", flush=True)
     while not _shutdown_event.is_set():
         try:
             recommended = screen_all_pairs()
@@ -5628,7 +5683,7 @@ def _pair_screen_loop() -> None:
                         smart_entry(best.pair_id, best, budget_idr=MAXIMUM_POSITION_SIZE_IDR, trace_id=trace_id)
             
         except Exception as e:
-            print(f"[KIBOT][WARN] pair_screen_loop error: {e}", flush=True)
+            print(f"[KICRYP][WARN] pair_screen_loop error: {e}", flush=True)
             
         if _shutdown_event.wait(timeout=900): # 15 minutes
             break
@@ -5639,10 +5694,10 @@ def _simulation_loop() -> None:
     Runs every 15 minutes.
     """
     if not _WHATIF_AVAILABLE:
-        print("[KIBOT] Simulation engine not available (missing kibot_whatif_engine).", flush=True)
+        print("[KICRYP] Simulation engine not available (missing kicryp_whatif_engine).", flush=True)
         return
         
-    print("[KIBOT] Simulation loop started.", flush=True)
+    print("[KICRYP] Simulation loop started.", flush=True)
     while not _shutdown_event.is_set():
         try:
             # 1. Fetch current price snapshot
@@ -5658,11 +5713,11 @@ def _simulation_loop() -> None:
             
             # 2. Run simulation
             if market_prices:
-                print(f"[KIBOT][SIM] Analyzing {len(market_prices)} pairs...", flush=True)
+                print(f"[KICRYP][SIM] Analyzing {len(market_prices)} pairs...", flush=True)
                 run_simulation(market_prices)
             
         except Exception as e:
-            print(f"[KIBOT][WARN] simulation_loop error: {e}", flush=True)
+            print(f"[KICRYP][WARN] simulation_loop error: {e}", flush=True)
         
         if _shutdown_event.wait(timeout=900): # Run every 15 minutes
             break
@@ -5671,12 +5726,12 @@ def _math_review_loop() -> None:
     """
     Background thread for Phase 5: Math Review.
     """
-    print("[KIBOT] Math review loop started.", flush=True)
+    print("[KICRYP] Math review loop started.", flush=True)
     while not _shutdown_event.is_set():
         try:
             run_30min_math_review()
         except Exception as e:
-            print(f"[KIBOT][WARN] math_review_loop error: {e}", flush=True)
+            print(f"[KICRYP][WARN] math_review_loop error: {e}", flush=True)
         
         if _shutdown_event.wait(timeout=60): # Check every minute
             break
@@ -5687,7 +5742,7 @@ def _maybe_run_30min_math_review() -> None:
 import urllib.request
 from datetime import datetime, timedelta
 
-DATA_DIR = Path("/home/ubuntu/KiBot/data")
+DATA_DIR = Path("/home/ubuntu/KiCryp/data")
 DATA_DIR.mkdir(exist_ok=True)
 
 def append_trade_to_daily_log(trade: dict):
@@ -5781,32 +5836,35 @@ def main() -> None:
     )
     _write_runtime_note(force=True)
     force_evaluate_recent_loss()
-    scanner_thread = threading.Thread(target=_news_scanner_loop, name="kibot-news-scanner", daemon=True)
+    scanner_thread = threading.Thread(target=_news_scanner_loop, name="kicryp-news-scanner", daemon=True)
     scanner_thread.start()
-    corr_thread = threading.Thread(target=_correlation_loop, name="kibot-correlation-loop", daemon=True)
+    corr_thread = threading.Thread(target=_correlation_loop, name="kicryp-correlation-loop", daemon=True)
     corr_thread.start()
-    gecko_thread = threading.Thread(target=_coingecko_trending_loop, name="kibot-coingecko-loop", daemon=True)
+    gecko_thread = threading.Thread(target=_coingecko_trending_loop, name="kicryp-coingecko-loop", daemon=True)
     gecko_thread.start()
-    screen_thread = threading.Thread(target=_pair_screen_loop, name="kibot-pair-screen-loop", daemon=True)
+    screen_thread = threading.Thread(target=_pair_screen_loop, name="kicryp-pair-screen-loop", daemon=True)
     screen_thread.start()
-    heartbeat_thread = threading.Thread(target=_heartbeat_loop, name="kibot-heartbeat-loop", daemon=True)
+    heartbeat_thread = threading.Thread(target=_heartbeat_loop, name="kicryp-heartbeat-loop", daemon=True)
     heartbeat_thread.start()
-    health_gate_thread = threading.Thread(target=_health_gate_loop, name="kibot-health-gate-loop", daemon=True)
+    health_gate_thread = threading.Thread(target=_health_gate_loop, name="kicryp-health-gate-loop", daemon=True)
     health_gate_thread.start()
-    ai_review_thread = threading.Thread(target=_ai_batch_review_loop, name="kibot-ai-review-loop", daemon=True)
+    ai_review_thread = threading.Thread(target=_ai_batch_review_loop, name="kicryp-ai-review-loop", daemon=True)
     ai_review_thread.start()
-    math_review_thread = threading.Thread(target=_math_review_loop, name="kibot-math-review-loop", daemon=True)
-    sim_thread = threading.Thread(target=_simulation_loop, name="kibot-simulation-loop", daemon=True)
+    math_review_thread = threading.Thread(target=_math_review_loop, name="kicryp-math-review-loop", daemon=True)
+    sim_thread = threading.Thread(target=_simulation_loop, name="kicryp-simulation-loop", daemon=True)
     math_review_thread.start()
     sim_thread.start()
-    state_server_thread = threading.Thread(target=_state_server_loop, name="kibot-state-server", daemon=True)
+    state_server_thread = threading.Thread(target=_state_server_loop, name="kicryp-state-server", daemon=True)
     state_server_thread.start()
 
     # v6.0 Background Threads
-    discovery_thread = threading.Thread(target=run_discovery_loop, name="kibot-discovery", daemon=True)
+    discovery_thread = threading.Thread(target=run_discovery_loop, name="kicryp-discovery", daemon=True)
     discovery_thread.start()
-    portfolio_thread = threading.Thread(target=run_portfolio_monitor_loop, name="kibot-portfolio", daemon=True)
+    portfolio_thread = threading.Thread(target=run_portfolio_monitor_loop, name="kicryp-portfolio", daemon=True)
     portfolio_thread.start()
+    
+    signal_mgr_thread = threading.Thread(target=run_local_signal_engine_manager, name="kicryp-signal-mgr", daemon=True)
+    signal_mgr_thread.start()
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # Allow socket reuse for quick restarts
@@ -5820,7 +5878,7 @@ def main() -> None:
             json.dumps(
                 {
                     "ok": True,
-                    "service": "kibot_manager_udp_veto",
+                    "service": "kicryp_manager_udp_veto",
                     "bind": f"{UDP_BIND_HOST}:{UDP_BIND_PORT}",
                     "kidax_target": f"{KIDAX_UDP_HOST}:{KIDAX_UDP_PORT}",
                     "kinance_target": f"{KINANCE_UDP_HOST}:{KINANCE_UDP_PORT}" if KINANCE_UDP_HOST else None,
@@ -5832,7 +5890,11 @@ def main() -> None:
             try:
                 raw, _ = sock.recvfrom(65535)
                 msg = json.loads(raw.decode("utf-8"))
-                _process_signal_multipos(msg)
+                
+                if msg.get("source") == "KICRYP_LOCAL_ENGINE":
+                    _process_local_signal(msg)
+                else:
+                    _process_signal_multipos(msg)
             except socket.timeout:
                 # Normal timeout, check shutdown event
                 now = time.time()
@@ -5900,20 +5962,20 @@ def main() -> None:
             except OSError as e:
                 if _shutdown_event.is_set():
                     break
-                print(f"[KIBOT][UDP][ERROR] socket error: {e}", flush=True)
+                print(f"[KICRYP][UDP][ERROR] socket error: {e}", flush=True)
             except json.JSONDecodeError as e:
-                print(f"[KIBOT][UDP][ERROR] JSON parse failed: {e}", flush=True)
+                print(f"[KICRYP][UDP][ERROR] JSON parse failed: {e}", flush=True)
             except Exception as error:
-                print(f"[KIBOT][UDP][ERROR] process failed reason={error}", flush=True)
+                print(f"[KICRYP][UDP][ERROR] process failed reason={error}", flush=True)
     finally:
-        print("[KIBOT][SHUTDOWN] Closing UDP socket...", flush=True)
+        print("[KICRYP][SHUTDOWN] Closing UDP socket...", flush=True)
         try:
             sock.close()
         except Exception:
             pass
         _main_socket = None
     
-    print("[KIBOT][SHUTDOWN] KiBot Manager stopped gracefully.", flush=True)
+    print("[KICRYP][SHUTDOWN] KiCryp Manager stopped gracefully.", flush=True)
     sys.exit(0)
 
 

@@ -57,7 +57,7 @@ sleep_backoff() {
   sleep "${delay}"
 }
 
-echo "== KiBot OCI Recovery =="
+echo "== KiCryp OCI Recovery =="
 echo "Instance: ${INSTANCE_OCID}"
 echo "Profile : ${PROFILE}"
 echo

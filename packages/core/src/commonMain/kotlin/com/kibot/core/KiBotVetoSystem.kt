@@ -5,14 +5,14 @@ import kotlinx.datetime.Instant
 import kotlin.math.abs
 
 /**
- * KiBotVetoSystem - KiBot adalah APPROVAL AUTHORITY untuk semua trades
+ * KiCrypVetoSystem - KiCryp adalah APPROVAL AUTHORITY untuk semua trades
  * 
  * Phase 1-3 Integration (Trinity Bot Hybrid Strategy):
  * Phase 1: PairWhitelistManager, CapitalAllocationManager, OrderExecutionStrategy
  * Phase 2: PairPerformanceTracker, DynamicStopLossManager, ForceRotateManager
  * Phase 3: ChartPatternRecognizer, BTCETHCorrelationFilter, SelfLearningSystem
  */
-class KiBotVetoSystem(
+class KiCrypVetoSystem(
     private val pairWhitelist: PairWhitelistManager = PairWhitelistManager(),
     private val capitalAllocator: CapitalAllocationManager = CapitalAllocationManager(),
     private val orderStrategy: OrderExecutionStrategy = OrderExecutionStrategy(),
@@ -38,7 +38,7 @@ class KiBotVetoSystem(
     
     /**
      * KiDax reports: "I want to BUY pair X"
-     * KiBot APPROVES or VETOES
+     * KiCryp APPROVES or VETOES
      * 
      * Phase 1: Whitelist + Capital allocation
      * Phase 2: Dynamic stops + Force rotation checks

@@ -1,7 +1,7 @@
 import sys
 
 def run_tests():
-    print("Running KiBot Python Tests...")
+    print("Running KiCryp Python Tests...")
     print("All python services syntax OK.")
     print("Tests passed.")
 

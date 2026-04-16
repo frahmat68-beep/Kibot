@@ -1,6 +1,6 @@
 # Access & Secrets
 
-Dokumen ini fokus ke data yang masih perlu Anda siapkan supaya KiBot bisa jalan dengan aman, tanpa menulis secret ke repo.
+Dokumen ini fokus ke data yang masih perlu Anda siapkan supaya KiCryp bisa jalan dengan aman, tanpa menulis secret ke repo.
 
 ## 1. Yang Sudah Cukup
 
@@ -79,7 +79,7 @@ Saya sengaja tidak menyimpan secret Anda ke file yang ke-track.
 
 ## 4. Cara Buat User Login Supabase
 
-KiBot client sekarang login ke Supabase pakai email + password user private Anda sendiri.
+KiCryp client sekarang login ke Supabase pakai email + password user private Anda sendiri.
 
 Rekomendasi:
 
@@ -154,7 +154,7 @@ Langkah:
 
 1. Install Android Studio.
 2. Saat pertama buka, install Android SDK.
-3. Copy [local.properties.example](/Users/kiki/Documents/Web%20Develop/KiBot/local.properties.example) jadi `local.properties`.
+3. Copy [local.properties.example](/Users/kiki/Documents/Web%20Develop/KiCryp/local.properties.example) jadi `local.properties`.
 4. Ganti `sdk.dir` ke path SDK Anda.
 
 Contoh umum di macOS:
@@ -197,8 +197,8 @@ Kalau belum punya, buat sekali di Mac:
 ```bash
 keytool -genkeypair \
   -v \
-  -keystore kibot-release.jks \
-  -alias kibot-release \
+  -keystore kicryp-release.jks \
+  -alias kicryp-release \
   -keyalg RSA \
   -keysize 4096 \
   -validity 3650
@@ -206,7 +206,7 @@ keytool -genkeypair \
 
 Lalu simpan:
 
-- file `kibot-release.jks`
+- file `kicryp-release.jks`
 - alias
 - password keystore
 - password key
@@ -224,7 +224,7 @@ scripts/generate_release_keystore.sh
 Kalau mau jalur update private laptop -> HP:
 
 1. buka menu `Storage` di dashboard Supabase
-2. buat bucket private, misalnya `kibot-releases`
+2. buat bucket private, misalnya `kicryp-releases`
 3. nanti laptop upload `apk + manifest + checksum`
 4. Android cek manifest dan tawarkan install update
 

@@ -297,11 +297,18 @@ class MacEngineDaemon(
     private val heartbeatMonitor = TrinityHeartbeatMonitor()  // Monitor bot health
     private val latePumpEntry = LatePumpEntryStrategy()  // Enter pumps that already started
     private val tradingStallDetector = TradingStallDetector(stallTimeoutMinutes = 60)  // Stall detection: 1 hour
-    private var capitalAllocationManager: CapitalAllocationManager? = null  // 70/30 capital split (initialized in syncOnce)
+    private var dualBucketManager: DualBucketManager? = null  // 50/50 capital split (initialized in syncOnce)
     private val dualEngineConfig = DualEngineConfig()
     private val dualEngineCoordinator = DualEngineCoordinator(config = dualEngineConfig)
     
-    // === KiBot Trinity v6.0 Pair Universe ===
+    // KiCryp v7.0 Systems
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val tradeLogger = com.kibot.core.TradeLogger(scope, controlPlane)
+    private val cascadeTrackerByPair = java.util.concurrent.ConcurrentHashMap<String, Int>() // pair -> current cascade level
+    private val alwaysInvestedPolicy = AlwaysInvestedPolicy()
+    private val dynamicConfigReloader = DynamicConfigReloader(controlPlane, config.controlPlane.botId)
+    
+    // === KiCryp Trinity v6.0 Pair Universe ===
     private val LEAD_LAG_PAIRS = setOf(
         "btc_idr", "eth_idr", "bnb_idr", "sol_idr", "xrp_idr", "ada_idr", "doge_idr",
         "trx_idr", "dot_idr", "matic_idr", "link_idr", "ltc_idr", "shib_idr", "uni_idr",
@@ -445,6 +452,7 @@ class MacEngineDaemon(
         val dynamicTrailingStopPct: Double,
         val armed: Boolean,
         val retroactivePeakApplied: Boolean = false,
+        val cascadeLevel: Int = 0, // 0=None, 1=1.5% target, 2=3.0% target, 3=5.0% target
     )
 
     @Serializable
@@ -861,7 +869,7 @@ class MacEngineDaemon(
     private data class RecentExitSignal(val at: Instant, val reason: String)
     private val recentExitSignalByPair = java.util.concurrent.ConcurrentHashMap<String, RecentExitSignal>()
     private val hiveExtraUdpPeers: List<Pair<String, Int>> = run {
-        val raw = System.getenv("KIBOT_HIVE_UDP_PEERS")
+        val raw = System.getenv("KICRYP_HIVE_UDP_PEERS")
             ?.split(",")
             ?.mapNotNull { token ->
                 val trimmed = token.trim()
@@ -2562,24 +2570,49 @@ class MacEngineDaemon(
                 entryPrice = entryPx,
                 sinceEpochMs = recentBuySinceMs,
             )
-            val gainPct = ((peak - entryPx) / entryPx) * 100.0
-            val dynamicTrailingStopPct = dynamicTrailingStopPct(gainPct, currentBid, position.pairId)
-            val armed = peak >= (entryPx * (1.0 + (hyperConfig.trailingArmMinGainPct / 100.0)))
-            val floor = calculateProfitLockedFloor(entryPx, peak, gainPct, dynamicTrailingStopPct)
-            val notional = position.currentValueIdr.toDoubleOrZero().takeIf { it > 0.0 }
-                ?: (currentBid * position.quantity.toDoubleOrZero().coerceAtLeast(0.0))
-            if (notional < dustHoldingsIgnoreMinValueIdr) return@mapNotNull null
-            val hasActiveSellOrder = activeByPair[position.pairId].orEmpty().any { it.side == com.kibot.shared.models.OrderSide.SELL }
-            val snapshot = LocalTrailingSnapshot(
-                pair = position.pairId,
-                entryPrice = entryPx,
-                peakPrice = peak,
-                floorPrice = floor,
-                currentBid = currentBid,
-                dynamicTrailingStopPct = dynamicTrailingStopPct,
-                armed = armed && !hasActiveSellOrder,
-                retroactivePeakApplied = retroApplied,
-            )
+                val gainPct = ((peak - entryPx) / entryPx) * 100.0
+                val dynamicTrailingStopPct = dynamicTrailingStopPct(gainPct, currentBid, position.pairId)
+                val armedOriginal = peak >= (entryPx * (1.0 + (hyperConfig.trailingArmMinGainPct / 100.0)))
+                
+                val currentGainPx = currentBid - entryPx
+                val currentGainPct = (currentGainPx / entryPx) * 100.0
+                
+                // Cascade Levels
+                var cascadeLevel = 0
+                var cascadeFloorValue = entryPx * 0.975 // Default -2.5% stop
+                
+                if (currentGainPct >= 5.0) {
+                    cascadeLevel = 3
+                    cascadeFloorValue = entryPx * 1.035
+                } else if (currentGainPct >= 3.0) {
+                    cascadeLevel = 2
+                    cascadeFloorValue = entryPx * 1.018
+                } else if (currentGainPct >= 1.5) {
+                    cascadeLevel = 1
+                    cascadeFloorValue = entryPx * 1.005
+                }
+
+                val floor = if (cascadeLevel > 0) {
+                    kotlin.math.max(calculateProfitLockedFloor(entryPx, peak, gainPct, dynamicTrailingStopPct), cascadeFloorValue)
+                } else {
+                    calculateProfitLockedFloor(entryPx, peak, gainPct, dynamicTrailingStopPct)
+                }
+
+                val notional = position.currentValueIdr.toDoubleOrZero().takeIf { it > 0.0 }
+                    ?: (currentBid * position.quantity.toDoubleOrZero().coerceAtLeast(0.0))
+                if (notional < dustHoldingsIgnoreMinValueIdr) return@mapNotNull null
+                val hasActiveSellOrder = activeByPair[position.pairId].orEmpty().any { it.side == com.kibot.shared.models.OrderSide.SELL }
+                val snapshot = LocalTrailingSnapshot(
+                    pair = position.pairId,
+                    entryPrice = entryPx,
+                    peakPrice = peak,
+                    floorPrice = floor,
+                    currentBid = currentBid,
+                    dynamicTrailingStopPct = dynamicTrailingStopPct,
+                    armed = (armedOriginal || cascadeLevel > 0) && !hasActiveSellOrder,
+                    retroactivePeakApplied = retroApplied,
+                    cascadeLevel = cascadeLevel
+                )
             val previousFloor = localAutonomyTrailingFloorLogByPair[pairKey]
             if (previousFloor == null || kotlin.math.abs(previousFloor - floor) > 0.0000001) {
                 logger.info(
@@ -4483,19 +4516,12 @@ class MacEngineDaemon(
         // [DAILY PNL AUTO-RESET] Check if midnight WIB crossed — reset baseline
         maybeAutoResetDailyPnl(totalEquityIdr.toDoubleOrZero())
         
-        if (capitalAllocationManager == null && totalEquityIdr.toDoubleOrZero() > 0) {
-            capitalAllocationManager = CapitalAllocationManager(
-                totalCapitalIdr = totalEquityIdr.toDoubleOrZero(),
-                stableRotationPercent = config.stableCapitalAllocationPercent,
-                aggressivePercent = config.aggressiveCapitalAllocationPercent,
+        if (dualBucketManager == null && totalEquityIdr.toDoubleOrZero() > 0) {
+            dualBucketManager = DualBucketManager(
+                totalCapitalIdr = totalEquityIdr.toDoubleOrZero()
             )
-            repository.noteStatus(
-                "[CAPITAL ALLOCATION] Initialized ${formatDecimal(config.stableCapitalAllocationPercent * 100.0, 0)}/" +
-                    "${formatDecimal(config.aggressiveCapitalAllocationPercent * 100.0, 0)} split with Rp${formatDecimal(totalEquityIdr.toDoubleOrZero(), 0)}",
-            )
+            logger.info("[CAPITAL_INIT] DualBucketManager initialized with Rp${formatDecimal(totalEquityIdr.toDoubleOrZero(), 0)} budget (50/50 split)")
         }
-        
-        // UPDATE CAPITAL ALLOCATION: Pass both free balance AND total equity for proper 70/30 calculation
         
         // Calculate holdings per bucket based on DYNAMIC ANOMALY DETECTION (not hardcoded list!)
         // FIX: Hapus stableAnomalies hardcode, ganti dengan deteksi volume anomaly dari Kinance signal
@@ -4556,15 +4582,15 @@ class MacEngineDaemon(
         }
         
 	        // UPDATE CAPITAL ALLOCATION: use live holdings so the 70/30 sleeves reflect actual deployed capital.
-	        capitalAllocationManager?.updateFreeCapital(
-	            freeQuoteBalance,
-	            totalEquityIdr.toDoubleOrZero(),
-	            stableHoldingsIdr,
-	            aggressiveHoldingsIdr,
-	        )
+	        dualBucketManager?.updateEquity(
+                totalEquityIdr = totalEquityIdr.toDoubleOrZero(),
+                freeIdr = freeQuoteBalance,
+                deployedA = aggressiveHoldingsIdr,
+                deployedB = stableHoldingsIdr
+            )
         
         // DEBUG: Log capital allocation status
-        val capStatus = capitalAllocationManager?.getStatus()
+        val capStatus = dualBucketManager?.getStatus()
         if (capStatus != null) {
             logger.info("[CAPITAL_REBALANCE] stable_available=${capStatus.stableCapitalIdr.toLong()} aggressive_available=${capStatus.aggressiveCapitalIdr.toLong()} stable_deployed=${capStatus.totalDeployedStable.toLong()} aggressive_deployed=${capStatus.totalDeployedAggressive.toLong()}")
         }
@@ -5040,7 +5066,7 @@ class MacEngineDaemon(
                     buildString {
                         appendLine("🚀 Trinity Status")
                         appendLine("━━━━━━")
-                        appendLine("KiBot    ${normalizeTelegramNodeStatus(currentState.kibotNodeStatus)}")
+                        appendLine("KiCryp    ${normalizeTelegramNodeStatus(currentState.kibotNodeStatus)}")
                         appendLine("KiDax    ${normalizeTelegramNodeStatus(currentState.kidaxNodeStatus)}")
                         append("KiNance  ${normalizeTelegramNodeStatus(currentState.kinanceNodeStatus)}")
                     }.trimEnd()
@@ -5284,10 +5310,10 @@ class MacEngineDaemon(
             appendAuditLog(
                 level = LogLevel.WARN,
                 category = "LEAD_LAG",
-                message = "KiBot blacklist/cooldown aktif untuk $pairKey sampai ${formatJktTime(cooldownUntil)}.",
+                message = "KiCryp blacklist/cooldown aktif untuk $pairKey sampai ${formatJktTime(cooldownUntil)}.",
             )
-            repository.noteStatus("KiBot blacklist aktif untuk $pairKey sampai ${formatJktTime(cooldownUntil)}.")
-            return "Pair ${payload.pairId} masuk cooldown dari KiBot; entry lokal diblok."
+            repository.noteStatus("KiCryp blacklist aktif untuk $pairKey sampai ${formatJktTime(cooldownUntil)}.")
+            return "Pair ${payload.pairId} masuk cooldown dari KiCryp; entry lokal diblok."
         }
         if (normalizedMsgType in setOf("DETECTOR_HIT", "INSTANT_BUY_ANOMALY")) {
             markDynamicVip(
@@ -6027,7 +6053,7 @@ class MacEngineDaemon(
         }.getOrDefault(false)
     }
 
-    private fun isKiBotManagerNode(): Boolean = config.controlPlane.botId.value.equals("kibot", ignoreCase = true)
+    private fun isKiCrypManagerNode(): Boolean = config.controlPlane.botId.value.equals("kibot", ignoreCase = true)
 
     private fun holdingResearchTargetBotId(): BotId = config.leadLagTargetBotId ?: BotId("kidax")
 
@@ -6065,7 +6091,7 @@ class MacEngineDaemon(
     }
 
     private fun fetchKidaxLocalHoldingTargets(now: Instant): List<HoldingResearchTarget> {
-        if (!isKiBotManagerNode()) return emptyList()
+        if (!isKiCrypManagerNode()) return emptyList()
         return runCatching {
             val request = HttpRequest.newBuilder()
                 .uri(URI.create("http://127.0.0.1:8787/api/state"))
@@ -7207,7 +7233,7 @@ class MacEngineDaemon(
                     val netProfit = pnlIdr - estimatedFees
                     
                     // Deposit profit + original capital back to bucket
-                    capitalAllocationManager?.depositProfit(netProfit, wasAggressiveTrade)
+                    dualBucketManager?.depositProfit(netProfit, wasAggressiveTrade)
                     
                     logger.info(
                         "[CAPITAL_DEPOSIT] ${pairKey}: profit=${formatDecimal(netProfit, 0)} deposited to ${bucketType} bucket " +
@@ -7311,28 +7337,12 @@ class MacEngineDaemon(
                     )
                     val executionFillQty = sellQty ?: requestedSellQty.coerceAtLeast(0.0)
                     
-                    com.kibot.macengine.logging.TradeLogger.record(com.kibot.macengine.logging.TradeRecord(
-                        id = java.util.UUID.randomUUID().toString(),
-                        timestamp = now.toString(),
-                        pair = pairKey,
-                        side = "SELL",
-                        orderType = smartRoutedExitPlan.orderType.name,
-                        requestedPrice = exitExpectedPrice,
-                        filledPrice = sellPrice ?: exitExpectedPrice,
-                        filledAmount = executionFillQty,
-                        filledIdr = (sellPrice ?: exitExpectedPrice) * executionFillQty,
-                        feeIdr = estimatedFees / 2.0,
-                        feeType = if (smartRoutedExitPlan.orderType.name == "LIMIT") "MAKER" else "TAKER",
-                        grossPnlPct = (sellPnlPct ?: 0.0) / 100.0,
-                        netPnlPct = netProfit / maxOf(1.0, (entryExpectedPrice * executionFillQty)),
-                        netPnlIdr = netProfit,
-                        holdingDurationMs = ((exitAt.toEpochMilliseconds() - filteredExitDecision.position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L)),
+                    tradeLogger.recordExit(
+                        tradeId = java.util.UUID.randomUUID().toString(),
+                        exitPrice = sellPrice ?: exitExpectedPrice,
                         exitReason = filteredExitDecision.message,
-                        signalSource = "EXIT",
-                        entryScore = 0.0,
-                        balanceAfter = 0.0,
-                        marketRegime = "UNKNOWN"
-                    ))
+                        orderTypeExit = smartRoutedExitPlan.orderType.name
+                    )
                     
                     notifyManagerExecutionFilled(
                         pairId = pairKey,
@@ -8007,18 +8017,27 @@ class MacEngineDaemon(
             }
             val budgetNeeded = effectiveExecutionPlan.quantity.toDoubleOrZero() * limitPriceVal
             
-            // Get allocation from capital manager
-            val freeIdr = resolveAllocatableIdr(cycle, balances)
-            val currentPosCount = managedPositions.count { it.currentValueIdr.toDoubleOrZero() >= dustHoldingsIgnoreMinValueIdr }
-            val allocResult = capitalAllocationManager?.allocate(
-                isAnomalyCoin = isAnomalyCoin,
+            // Apply AlwaysInvestedPolicy check
+            val movePct = effectiveExecutionPlan.signal.expectedMovePercent?.toDoubleOrZero() ?: 0.0
+            val policyResult = alwaysInvestedPolicy.shouldEnter(expectedMovePercent = movePct)
+            if (!policyResult.allowed) {
+                logger.warn("[POLICY_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: ${policyResult.rationale}")
+                return@forEach
+            }
+
+            // Get allocation from dual bucket manager
+            val convictionScore = effectiveExecutionPlan.signal.convictionScore?.toDoubleOrZero() ?: 0.0
+            val allocResult = dualBucketManager?.allocate(
+                isAggressive = isAnomalyCoin,
                 requestedAmountIdr = budgetNeeded,
-                totalFreeIdr = freeIdr,
+                convictionScore = convictionScore,
                 currentPositionCount = currentPosCount
             )
+            
             if (allocResult == null || allocResult.allocatedIdr <= 0.0) {
-                logger.error("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: allocation denied (allocated=${allocResult?.allocatedIdr ?: 0})")
-                lastBlockedReason = "Capital allocation REJECTED: bucket insufficient for ${effectiveExecutionPlan.signal.pairId.value}"
+                val failReason = allocResult?.reason ?: "Allocation denied"
+                logger.error("[CAPITAL_BLOCKED] ${effectiveExecutionPlan.signal.pairId.value}: $failReason")
+                lastBlockedReason = "Capital allocation REJECTED: $failReason"
                 lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
                 return@forEach
             }
@@ -8091,28 +8110,17 @@ class MacEngineDaemon(
                     result.message,
                 )
                 
-                com.kibot.macengine.logging.TradeLogger.record(com.kibot.macengine.logging.TradeRecord(
-                    id = java.util.UUID.randomUUID().toString(),
-                    timestamp = now.toString(),
-                    pair = effectiveExecutionPlan.signal.pairId.value.lowercase(),
-                    side = "BUY",
+                // NEW TradeLogger Entry
+                tradeLogger.recordEntry(
+                    pairId = effectiveExecutionPlan.signal.pairId.value.lowercase(),
+                    entryPrice = result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0,
+                    budgetIdr = (result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0) * finalQuantity,
+                    category = "GENERAL",
+                    pumpPhase = "UNKNOWN",
+                    pumpScore = 0.0,
                     orderType = finalExecutionPlan.orderType.name,
-                    requestedPrice = finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0,
-                    filledPrice = result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0,
-                    filledAmount = finalQuantity,
-                    filledIdr = (result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0) * finalQuantity,
-                    feeIdr = 0.0,
-                    feeType = if (finalExecutionPlan.orderType.name == "LIMIT") "MAKER" else "TAKER",
-                    grossPnlPct = 0.0,
-                    netPnlPct = 0.0,
-                    netPnlIdr = 0.0,
-                    holdingDurationMs = 0L,
-                    exitReason = "",
-                    signalSource = "ENTRY",
-                    entryScore = 0.0,
-                    balanceAfter = 0.0,
-                    marketRegime = "UNKNOWN"
-                ))
+                    bucketType = if (isAnomalyCoin) "AGGRESSIVE" else "STABLE"
+                )
 
                 // [CAPITAL ALLOCATION] Track bucket type for this position
                 val pairKey = effectiveExecutionPlan.signal.pairId.value.lowercase()
@@ -8628,11 +8636,12 @@ class MacEngineDaemon(
             logger.warn("[CAPITAL_BLOCKED] BUY_MOMENTUM holdings limit reached (max=10)")
             return false
         }
-        val allocResult2 = capitalAllocationManager?.allocate(
-            isAnomalyCoin = isAnomaly2,
+        val currentPosCount = managedPositions.count { it.currentValueIdr.toDoubleOrZero() >= dustHoldingsIgnoreMinValueIdr }
+        val allocResult2 = dualBucketManager?.allocate(
+            isAggressive = isAnomaly2,
             requestedAmountIdr = budget2,
-            totalFreeIdr = resolveAllocatableIdr(cycle, balances),
-            currentPositionCount = managedPositions.count { it.currentValueIdr.toDoubleOrZero() >= dustHoldingsIgnoreMinValueIdr }
+            convictionScore = 0.8,
+            currentPositionCount = currentPosCount
         )
         if (allocResult2 == null || allocResult2.allocatedIdr <= 0.0) {
             logger.error("[CAPITAL_BLOCKED] BUY_MOMENTUM ${normalizedSynthetic.signal.pairId.value}: allocation denied")
@@ -9047,11 +9056,12 @@ class MacEngineDaemon(
                     return false
                 }
             }
-            val allocResult3 = capitalAllocationManager?.allocate(
-                isAnomalyCoin = isAnomaly3,
+            val currentPosCount = managedPositions.count { it.currentValueIdr.toDoubleOrZero() >= dustHoldingsIgnoreMinValueIdr }
+            val allocResult3 = dualBucketManager?.allocate(
+                isAggressive = isAnomaly3,
                 requestedAmountIdr = budget3,
-                totalFreeIdr = resolveAllocatableIdr(cycle, balances),
-                currentPositionCount = managedPositions.count { it.currentValueIdr.toDoubleOrZero() >= dustHoldingsIgnoreMinValueIdr }
+                convictionScore = 0.8,
+                currentPositionCount = currentPosCount
             )
             if (allocResult3 == null || allocResult3.allocatedIdr <= 0.0) {
                 logger.error("[CAPITAL_BLOCKED] DYNAMIC_VIP ${normalized.signal.pairId.value}: allocation denied")
@@ -9428,11 +9438,12 @@ class MacEngineDaemon(
                 logger.warn(reason)
                 return false
             }
-            val allocResult4 = capitalAllocationManager?.allocate(
-                isAnomalyCoin = isAnomaly4,
+            val currentPosCount = managedPositions.count { it.currentValueIdr.toDoubleOrZero() >= dustHoldingsIgnoreMinValueIdr }
+            val allocResult4 = dualBucketManager?.allocate(
+                isAggressive = isAnomaly4,
                 requestedAmountIdr = budget4,
-                totalFreeIdr = resolveAllocatableIdr(cycle, balances),
-                currentPositionCount = managedPositions.count { it.currentValueIdr.toDoubleOrZero() >= dustHoldingsIgnoreMinValueIdr }
+                convictionScore = 0.8,
+                currentPositionCount = currentPosCount
             )
             logger.info(
                 "[ALLOC_DEBUG] LIGHT_SCALPING pair={} freeIdr={} requested={} allocated={} bucket={} msg={}",
@@ -9783,7 +9794,7 @@ class MacEngineDaemon(
             pairId = forcedPair.pairId,
             signalType = com.kibot.shared.models.StrategySignalType.EXIT,
             confidence = 0.99,
-            rationale = listOf("REVERSAL confirmed (Kinance + KiBot veto): sell paksa tanpa menunggu stagnan."),
+            rationale = listOf("REVERSAL confirmed (Kinance + KiCryp veto): sell paksa tanpa menunggu stagnan."),
             entryPrice = forcedPair.currentBidPrice,
             takeProfitPrice = forcedPair.takeProfitPrice,
             stopPrice = forcedPair.stopPrice,
@@ -10025,14 +10036,15 @@ class MacEngineDaemon(
                             logger.warn("[CAPITAL_BLOCKED] ORDER_CHASE holdings limit reached (max=10)")
                             return@forEach
                         }
-                        val allocResult5 = capitalAllocationManager?.allocate(
-                            isAnomalyCoin = isAnomaly5,
+                        val currentPosCount = cycle.portfolio.positions.count {
+                            it.state != com.kibot.shared.models.PositionState.CLOSED &&
+                                (it.quantity.toDoubleOrZero() * it.averageEntryPrice.toDoubleOrZero()) >= dustHoldingsIgnoreMinValueIdr
+                        }
+                        val allocResult5 = dualBucketManager?.allocate(
+                            isAggressive = isAnomaly5,
                             requestedAmountIdr = budget5,
-                            totalFreeIdr = resolveAllocatableIdr(cycle, balances),
-                            currentPositionCount = cycle.portfolio.positions.count {
-                                it.state != com.kibot.shared.models.PositionState.CLOSED &&
-                                    (it.quantity.toDoubleOrZero() * it.averageEntryPrice.toDoubleOrZero()) >= dustHoldingsIgnoreMinValueIdr
-                            }
+                            convictionScore = 0.8,
+                            currentPositionCount = currentPosCount
                         )
                         if (allocResult5 == null || allocResult5.allocatedIdr <= 0.0) {
                             logger.error("[CAPITAL_BLOCKED] ORDER_CHASE ${slicedChasePlan.signal.pairId.value}: allocation denied")

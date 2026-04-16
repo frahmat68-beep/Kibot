@@ -1,6 +1,6 @@
 # Trading Intelligence
 
-Dokumen ini merangkum otak bot KiBot yang ditambahkan pada FASE 2.
+Dokumen ini merangkum otak bot KiCryp yang ditambahkan pada FASE 2.
 
 ## Pilar Utama
 

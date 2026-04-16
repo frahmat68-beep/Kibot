@@ -107,16 +107,16 @@ touch "$ENV_FILE"
     printf '\nSHADOW_MODE=false\n' >> "$ENV_FILE"
   fi
 
-  if grep -q '^KIBOT_HIVE_UDP_PEERS=' "$ENV_FILE"; then
-    sed -i 's|^KIBOT_HIVE_UDP_PEERS=.*|KIBOT_HIVE_UDP_PEERS=213.35.118.26:9997,213.35.118.26:9999|' "$ENV_FILE"
+  if grep -q '^KICRYP_HIVE_UDP_PEERS=' "$ENV_FILE"; then
+    sed -i 's|^KICRYP_HIVE_UDP_PEERS=.*|KICRYP_HIVE_UDP_PEERS=213.35.118.26:9997,213.35.118.26:9999|' "$ENV_FILE"
   else
-    printf '\nKIBOT_HIVE_UDP_PEERS=213.35.118.26:9997,213.35.118.26:9999\n' >> "$ENV_FILE"
+    printf '\nKICRYP_HIVE_UDP_PEERS=213.35.118.26:9997,213.35.118.26:9999\n' >> "$ENV_FILE"
   fi
 
-  if grep -q '^KIBOT_HIVE_EXPECTED_BOT_IDS=' "$ENV_FILE"; then
-    sed -i 's/^KIBOT_HIVE_EXPECTED_BOT_IDS=.*/KIBOT_HIVE_EXPECTED_BOT_IDS=kidax,kibot/' "$ENV_FILE"
+  if grep -q '^KICRYP_HIVE_EXPECTED_BOT_IDS=' "$ENV_FILE"; then
+    sed -i 's/^KICRYP_HIVE_EXPECTED_BOT_IDS=.*/KICRYP_HIVE_EXPECTED_BOT_IDS=kidax,kicryp/' "$ENV_FILE"
   else
-    printf '\nKIBOT_HIVE_EXPECTED_BOT_IDS=kidax,kibot\n' >> "$ENV_FILE"
+    printf '\nKICRYP_HIVE_EXPECTED_BOT_IDS=kidax,kicryp\n' >> "$ENV_FILE"
   fi
 
   if ! grep -q '^SHADOW_MODE=false$' "$ENV_FILE"; then
@@ -207,10 +207,10 @@ touch "$ENV_FILE"
     printf '\nSHADOW_MODE=false\n' >> "$ENV_FILE"
   fi
 
-  if grep -q '^KIBOT_HIVE_UDP_PEERS=' "$ENV_FILE"; then
-    sed -i 's|^KIBOT_HIVE_UDP_PEERS=.*|KIBOT_HIVE_UDP_PEERS=213.35.118.26:9999|' "$ENV_FILE"
+  if grep -q '^KICRYP_HIVE_UDP_PEERS=' "$ENV_FILE"; then
+    sed -i 's|^KICRYP_HIVE_UDP_PEERS=.*|KICRYP_HIVE_UDP_PEERS=213.35.118.26:9999|' "$ENV_FILE"
   else
-    printf '\nKIBOT_HIVE_UDP_PEERS=213.35.118.26:9999\n' >> "$ENV_FILE"
+    printf '\nKICRYP_HIVE_UDP_PEERS=213.35.118.26:9999\n' >> "$ENV_FILE"
   fi
 
   if ! grep -q '^SHADOW_MODE=false$' "$ENV_FILE"; then

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SECRETS_DIR="${ROOT_DIR}/.secrets"
-KEYSTORE_PATH="${ROOT_DIR}/kibot-release.jks"
+KEYSTORE_PATH="${ROOT_DIR}/kicryp-release.jks"
 KEYSTORE_ENV="${SECRETS_DIR}/android-keystore.env"
 
 mkdir -p "${SECRETS_DIR}"
@@ -22,7 +22,7 @@ fi
 
 STORE_PASSWORD="$(random_secret)"
 KEY_PASSWORD="${STORE_PASSWORD}"
-KEY_ALIAS="kibot-release"
+KEY_ALIAS="kicryp-release"
 
 keytool -genkeypair \
   -v \
@@ -33,7 +33,7 @@ keytool -genkeypair \
   -keyalg RSA \
   -keysize 4096 \
   -validity 3650 \
-  -dname "CN=KiBot Private, OU=Private Trading, O=KiBot, L=Jakarta, ST=DKI Jakarta, C=ID"
+  -dname "CN=KiCryp Private, OU=Private Trading, O=KiCryp, L=Jakarta, ST=DKI Jakarta, C=ID"
 
 cat > "${KEYSTORE_ENV}" <<EOF
 ANDROID_RELEASE_KEYSTORE_PATH=${KEYSTORE_PATH}

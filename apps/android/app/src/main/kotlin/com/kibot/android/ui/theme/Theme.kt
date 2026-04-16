@@ -11,9 +11,9 @@ import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
 // Brand Colors
-val KiBotGreen = Color(0xFF7ED957)     // From logo background
-val KiBotBlue = Color(0xFF4A9FD4)      // Robot body blue
-val KiBotOrange = Color(0xFFF5A623)    // Robot accents
+val KiCrypGreen = Color(0xFF7ED957)     // From logo background
+val KiCrypBlue = Color(0xFF4A9FD4)      // Robot body blue
+val KiCrypOrange = Color(0xFFF5A623)    // Robot accents
 
 // Semantic Colors
 val ProfitGreen = Color(0xFF00C853)    // Bright green for profits
@@ -61,17 +61,17 @@ val PieColors = listOf(
 )
 
 private val DarkColorScheme = darkColorScheme(
-    primary = KiBotBlue,
+    primary = KiCrypBlue,
     onPrimary = Color.White,
     primaryContainer = Color(0xFF003258),
     onPrimaryContainer = Color(0xFFD1E4FF),
     
-    secondary = KiBotGreen,
+    secondary = KiCrypGreen,
     onSecondary = Color.Black,
     secondaryContainer = Color(0xFF1B5E20),
     onSecondaryContainer = Color(0xFFC8E6C9),
     
-    tertiary = KiBotOrange,
+    tertiary = KiCrypOrange,
     onTertiary = Color.Black,
     tertiaryContainer = Color(0xFF5D4037),
     onTertiaryContainer = Color(0xFFFFE0B2),
@@ -94,7 +94,7 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 @Composable
-fun KiBotTheme(
+fun KiCrypTheme(
     darkTheme: Boolean = true, // Always dark
     content: @Composable () -> Unit
 ) {

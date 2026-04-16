@@ -61,7 +61,7 @@ Key Improvements:
 
 2. Deploy to Oracle Cloud:
    sudo systemctl stop kidax-engine
-   cp apps/mac-engine/build/libs/mac-engine-all.jar /opt/kibot/kidax-engine.jar
+   cp apps/mac-engine/build/libs/mac-engine-all.jar /opt/kicryp/kidax-engine.jar
    sudo systemctl start kidax-engine
 
 3. Monitor logs:

@@ -1,6 +1,6 @@
 # Multi-Bot Foundation
 
-KiBot sekarang disiapkan untuk menjalankan beberapa bot dengan logic inti yang sama tetapi runtime terpisah.
+KiCryp sekarang disiapkan untuk menjalankan beberapa bot dengan logic inti yang sama tetapi runtime terpisah.
 
 ## Prinsip
 
@@ -14,7 +14,7 @@ KiBot sekarang disiapkan untuk menjalankan beberapa bot dengan logic inti yang s
 - `BOT_ID`
 - `DEVICE_ID`
 - `MAC_ENGINE_PORT`
-- `KIBOT_RELEASE_LABEL`
+- `KICRYP_RELEASE_LABEL`
 - AI config per bot
 - credential exchange per bot
 

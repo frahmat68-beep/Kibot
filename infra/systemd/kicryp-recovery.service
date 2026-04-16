@@ -1,10 +1,10 @@
 [Unit]
-Description=KiBot Auto-Recovery Watchdog
+Description=KiCryp Auto-Recovery Watchdog
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash /home/ubuntu/KiDax/kibot-recovery.sh
+ExecStart=/bin/bash /home/ubuntu/KiDax/kicryp-recovery.sh
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

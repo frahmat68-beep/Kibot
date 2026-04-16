@@ -8,7 +8,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Fast chart heuristics for KiBot/KiDax/Kinance.
+ * Fast chart heuristics for KiCryp/KiDax/Kinance.
  *
  * The analyzer is intentionally lightweight so it can be evaluated every cycle
  * without waiting on heavyweight AI inference.

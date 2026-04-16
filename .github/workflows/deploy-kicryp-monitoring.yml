@@ -57,7 +57,7 @@ jobs:
             sudo mkdir -p /etc/grafana/provisioning/dashboards/
             sudo cp /tmp/grafana-config/infra/grafana/provisioning/datasources/*.yaml /etc/grafana/provisioning/datasources/
             sudo cp /tmp/grafana-config/infra/grafana/provisioning/dashboards/*.yaml /etc/grafana/provisioning/dashboards/
-            sudo cp /tmp/grafana-config/infra/grafana/dashboard-v1.json /etc/grafana/provisioning/dashboards/kibot-v1.json
+            sudo cp /tmp/grafana-config/infra/grafana/dashboard-v1.json /etc/grafana/provisioning/dashboards/kicryp-v1.json
             
             echo "Enabling and Starting Grafana..."
             sudo systemctl daemon-reload

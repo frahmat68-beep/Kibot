@@ -9,7 +9,7 @@ Trinity adalah sistem High-Frequency Trading (HFT) otomatis berbasis Microservic
 1. **KINANCE (The Predictive Radar)** — Binance Server
    - Mengawasi pergerakan market global di Binance
    - Mendeteksi Volume Anomaly, Imbalance Order Book, Sector Lead-Lag
-   - Mengirim sinyal UDP ke KiDax/KiBot dengan latensi sangat rendah
+   - Mengirim sinyal UDP ke KiDax/KiCryp dengan latensi sangat rendah
    - Mode PEKA: mendeteksi Bandar Ignition sebelum pump di Indodax
 
 2. **KIDAX (The Executioner)** — Indodax Server
@@ -17,7 +17,7 @@ Trinity adalah sistem High-Frequency Trading (HFT) otomatis berbasis Microservic
    - Menghitung slippage, optimalisasi fee (Maker/Taker)
    - Trailing Stop dengan adaptive threshold untuk micro-caps
 
-3. **KIBOT Manager (The Brain)** — Indodax Server (Python)
+3. **KICRYP Manager (The Brain)** — Indodax Server (Python)
    - Manajer stabilitas, capital rotation, dan VETO eksekusi
    - AI-powered approval via Groq/OpenRouter/Cohere/Gemini
    - Post-mortem learning untuk continuous improvement
@@ -34,7 +34,7 @@ Trinity adalah sistem High-Frequency Trading (HFT) otomatis berbasis Microservic
 
 ## Infrastructure
 
-- **Indodax Server** (Oracle Cloud, 1GB RAM): KiDax + KiBot Manager
+- **Indodax Server** (Oracle Cloud, 1GB RAM): KiDax + KiCryp Manager
 - **Binance Server** (Oracle Cloud, 1GB RAM): Kinance only (scanner mode)
 - Communication: UDP broadcasting for signals, Supabase for control plane
 
@@ -50,7 +50,7 @@ Trinity adalah sistem High-Frequency Trading (HFT) otomatis berbasis Microservic
   Supabase auth, polling snapshot client, RPC wrappers.
 - `packages/indodax-client`
   Exchange adapter, signed REST helpers.
-- `scripts/kibot_manager.py`
+- `scripts/kicryp_manager.py`
   Python AI veto daemon with multi-provider LLM support.
 - `infra/supabase`
   SQL schema, RLS, RPC functions, cleanup policy.
