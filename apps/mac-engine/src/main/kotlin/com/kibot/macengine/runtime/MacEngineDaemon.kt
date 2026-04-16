@@ -11,7 +11,7 @@ import com.kibot.core.LossPreventionSystem
 import com.kibot.core.SharedPositionTracker
 import com.kibot.core.TradeLedger
 import com.kibot.core.TrinityHeartbeatMonitor
-import com.kibot.core.CapitalAllocationManager
+import com.kibot.core.DualBucketManager
 import com.kibot.core.DualEngineConfig
 import com.kibot.core.DualEngineCoordinator
 import com.kibot.core.EngineSignalDecision
@@ -20,6 +20,8 @@ import com.kibot.core.LatePumpEntryStrategy
 import com.kibot.core.PositionStrategy
 import com.kibot.core.ControlPlaneGateway
 import com.kibot.core.ExchangeGateway
+import com.kibot.core.logging.TradeLogger
+import com.kibot.core.logging.TradeRecord
 import com.kibot.core.MarketBuyImpactEstimate
 import com.kibot.core.HealthAdvisor
 import com.kibot.core.LeaseCoordinator
@@ -410,6 +412,7 @@ class MacEngineDaemon(
         val forceRotation: Boolean = true,
         val sentAtEpochMs: Long,
         val expiresAtEpochMs: Long,
+        val conviction: Double = 0.0, // KiBot v7.0 Local Signal specific
         val payload: JsonObject? = null,
     )
 
@@ -420,6 +423,7 @@ class MacEngineDaemon(
         val trend: String,
         val msgType: String,
         val confidence: Double,
+        val conviction: Double = 0.0, // KiBot v7.0
         val expectedNetPct: Double,
         val shortTermReturnPct: Double,
         val coinClass: CoinClass,
@@ -1545,12 +1549,17 @@ class MacEngineDaemon(
         val accumulatedPnlPct = ((current - opening) / opening) * 100.0
         val hourlyPnlPct = accumulatedPnlPct / hoursElapsed
         val targetHourlyPct = hyperConfig.targetDailyPct / 24.0
+        val globalCircuitBreaker = lossPreventionSystem.isGlobalCircuitBreakerActive()
+        if (globalCircuitBreaker) {
+            logger.warn("[CIRCUIT_BREAKER] Global cascade loss guard active (3+ losses in 1h). Halting all Bucket B entries for safety.")
+        }
+        
         return HyperAggressiveTracker(
             hoursElapsed = hoursElapsed,
             accumulatedPnlPct = accumulatedPnlPct,
             hourlyPnlPct = hourlyPnlPct,
             targetHourlyPct = targetHourlyPct,
-            hungry = hourlyPnlPct < targetHourlyPct,
+            hungry = (hourlyPnlPct < targetHourlyPct) && !globalCircuitBreaker,
         )
     }
 
@@ -1919,13 +1928,25 @@ class MacEngineDaemon(
                     ),
                 )
             }
-            val dynamicTrailingStopPct = dynamicTrailingStopPct(gainPct, currentBid, position.pairId)
+            val ageMinutes = ((now.toEpochMilliseconds() - position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 60_000.0)
+            val quote = scoredByPair[position.pairId]?.let { marketQuotes.firstOrNull { q -> q.pairId == it.pairId } }
+            val riskDecision = lossPreventionSystem.shouldForceExit(
+                pairId = pairKey,
+                entryPrice = entryPx,
+                currentPrice = currentBid,
+                ageMinutes = ageMinutes,
+                unrealizedPnlPct = position.unrealizedPnlPct,
+                quote = quote
+            )
+
+            val dynamicTrailingStopPct = riskDecision.trailingAdjustmentPct 
+                ?: dynamicTrailingStopPct(gainPct, currentBid, position.pairId)
+            
             val armed = peak >= (entryPx * (1.0 + (hyperConfig.trailingArmMinGainPct / 100.0)))
-            if (!armed) continue
+            if (!armed && !riskDecision.shouldExit) continue
             
             // Use profit-locked floor instead of simple trailing floor
-            val profitLockedFloor = calculateProfitLockedFloor(entryPx, peak, gainPct, dynamicTrailingStopPct)
-            val shouldExitByTrail = currentBid <= profitLockedFloor && noSellOrder
+            val shouldExitByTrail = (currentBid <= profitLockedFloor && noSellOrder) || riskDecision.shouldExit
             
             // Log profit lock status for debugging
             if (gainPct >= 1.5) {
@@ -5261,10 +5282,10 @@ class MacEngineDaemon(
         if (!config.leadLagSignalEnabled) return null  // Accept signals on any exchange
         lastLeadLagSignalAt = now
         val payload = payloadJson
-            ?.takeIf { it.contains("lead_lag_breakout") || it.contains("\"msgType\"") }
+            ?.takeIf { it.contains("lead_lag_breakout") || it.contains("local_signal") || it.contains("\"msgType\"") }
             ?.let { raw -> runCatching { json.decodeFromString<LeadLagCalloutPayload>(raw) }.getOrNull() }
             ?: return null
-        if (payload.kind != "lead_lag_breakout") return null
+        if (payload.kind != "lead_lag_breakout" && payload.kind != "local_signal") return null
         val normalizedMsgType = payload.msgType.uppercase()
         val payloadPairId = PairId(payload.pairId)
         val payloadReason = payload.payload?.get("reason")?.jsonPrimitive?.contentOrNull?.uppercase()
@@ -5345,6 +5366,7 @@ class MacEngineDaemon(
             sentAtEpochMs = payload.sentAtEpochMs,
             expiresAtEpochMs = payload.expiresAtEpochMs,
             confidence = payload.confidence,
+            conviction = payload.conviction, // KiBot v7.0
             expectedNetPct = payload.expectedNetPct,
             forceRotation = payload.forceRotation,
             // FIX: Derive volume anomaly multiplier from signal type
@@ -5772,6 +5794,18 @@ class MacEngineDaemon(
                     }
                 }
                 val payload = String(packet.data, 0, packet.length, Charsets.UTF_8)
+                
+                // [PHASE 7] Send UDP ACK if traceId is present
+                runCatching {
+                    val jsonNode = json.parseToJsonElement(payload).jsonObject
+                    val traceId = jsonNode["traceId"]?.jsonPrimitive?.contentOrNull
+                    if (traceId != null) {
+                        val ackBytes = """{"kind":"ack","traceId":"$traceId"}""".toByteArray()
+                        val ackPacket = DatagramPacket(ackBytes, ackBytes.size, packet.address, packet.port)
+                        socket.send(ackPacket)
+                    }
+                }
+
                 if (handleTrinityHeartbeatPayload(payload, now)) return@repeat
                 if (handleActivePositionsPayload(payload)) return@repeat
                 if (handleDynamicCorrelationPayload(payload)) return@repeat
@@ -7282,6 +7316,36 @@ class MacEngineDaemon(
                         exitReason = filteredExitDecision.message,
                         timestamp = now,
                     )
+
+                    // [KiBot v7.0] NEW HIGH-FIDELITY TRADE LOGGER
+                    TradeLogger.record(
+                        TradeRecord(
+                            id = java.util.UUID.randomUUID().toString(),
+                            timestampUtc = java.time.Instant.now().toString(),
+                            pair = pairKey,
+                            side = "SELL",
+                            orderType = smartRoutedExitPlan.orderType.name,
+                            requestedPrice = exitExpectedPrice,
+                            filledPrice = sellPrice ?: 0.0,
+                            filledBaseAmount = sellQty ?: 0.0,
+                            filledIdr = (sellPrice ?: 0.0) * (sellQty ?: 0.0),
+                            feeIdr = estimatedFees / 2.0,
+                            feeType = if (smartRoutedExitPlan.orderType.name == "LIMIT") "MAKER" else "TAKER",
+                            grossPnlPct = (sellPnlPct ?: 0.0) + 0.003, // estimate gross
+                            netPnlPct = sellPnlPct ?: 0.0,
+                            netPnlIdr = netProfit,
+                            holdingDurationMs = (exitAt.toEpochMilliseconds() - filteredExitDecision.position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L),
+                            exitReason = filteredExitDecision.message,
+                            signalSource = filteredExitDecision.position.signalSource,
+                            bucket = positionBucketTypeByPair[pairKey] ?: "BUCKET_A",
+                            entryConvictionScore = 1.0, // default for now
+                            entryKellyFraction = 0.08, // default for now
+                            balanceAfterIdr = currentBalanceIdr,
+                            marketRegimeAtEntry = currentRegime?.name ?: "UNKNOWN",
+                            btcChange1hAtEntry = 0.0 // placeholder
+                        )
+                    )
+
                     localLearningMemoryStore.recordTrade(
                         LearningTradeEvent(
                             timestampUtc = now.toString(),
@@ -8091,28 +8155,34 @@ class MacEngineDaemon(
                     result.message,
                 )
                 
-                com.kibot.macengine.logging.TradeLogger.record(com.kibot.macengine.logging.TradeRecord(
-                    id = java.util.UUID.randomUUID().toString(),
-                    timestamp = now.toString(),
-                    pair = effectiveExecutionPlan.signal.pairId.value.lowercase(),
-                    side = "BUY",
-                    orderType = finalExecutionPlan.orderType.name,
-                    requestedPrice = finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0,
-                    filledPrice = result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0,
-                    filledAmount = finalQuantity,
-                    filledIdr = (result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0) * finalQuantity,
-                    feeIdr = 0.0,
-                    feeType = if (finalExecutionPlan.orderType.name == "LIMIT") "MAKER" else "TAKER",
-                    grossPnlPct = 0.0,
-                    netPnlPct = 0.0,
-                    netPnlIdr = 0.0,
-                    holdingDurationMs = 0L,
-                    exitReason = "",
-                    signalSource = "ENTRY",
-                    entryScore = 0.0,
-                    balanceAfter = 0.0,
-                    marketRegime = "UNKNOWN"
-                ))
+                // [KiBot v7.0] NEW CORE TRADE LOGGER (ENTRY)
+                TradeLogger.record(
+                    TradeRecord(
+                        id = java.util.UUID.randomUUID().toString(),
+                        timestampUtc = now.toString(),
+                        pair = pairKey,
+                        side = "BUY",
+                        orderType = finalExecutionPlan.orderType.name,
+                        requestedPrice = finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0,
+                        filledPrice = result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0,
+                        filledBaseAmount = finalQuantity,
+                        filledIdr = (result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0) * finalQuantity,
+                        feeIdr = 0.0, // entry fee estimate
+                        feeType = if (finalExecutionPlan.orderType.name == "LIMIT") "MAKER" else "TAKER",
+                        grossPnlPct = 0.0,
+                        netPnlPct = 0.0,
+                        netPnlIdr = 0.0,
+                        holdingDurationMs = 0L,
+                        exitReason = "",
+                        signalSource = effectiveExecutionPlan.signal.setupType.name,
+                        bucket = if (wasAggressiveTrade) "BUCKET_B" else "BUCKET_A",
+                        entryConvictionScore = 1.0, 
+                        entryKellyFraction = 0.0, 
+                        balanceAfterIdr = currentBalanceIdr,
+                        marketRegimeAtEntry = currentRegime?.name ?: "UNKNOWN",
+                        btcChange1hAtEntry = 0.0
+                    )
+                )
 
                 // [CAPITAL ALLOCATION] Track bucket type for this position
                 val pairKey = effectiveExecutionPlan.signal.pairId.value.lowercase()
@@ -10973,7 +11043,8 @@ class MacEngineDaemon(
                 )
             }
         }.sortedByDescending { parseMonetaryLabel(it.valueIdrLabel) }
-        
+                val capitalStatus = capitalAllocationManager?.getStatus()
+
         return com.kibot.macengine.state.MacDashboardState(
             isBotRunning = botState.effectiveState != BotEffectiveState.STOPPED,
             effectiveState = botState.effectiveState,
@@ -11049,6 +11120,12 @@ class MacEngineDaemon(
             trailingFloors = trailingFloors,
             netWorthHistory = netWorthHistory,
             assetAllocationDetailed = assetAllocationDetailed,
+            globalCircuitBreakerActive = lossPreventionSystem.isGlobalCircuitBreakerActive(),
+            bucketAAllocationPct = capitalStatus?.aggressivePercent ?: 50.0,
+            bucketBAllocationPct = capitalStatus?.stablePercent ?: 50.0,
+            bucketAUsageIdr = capitalStatus?.totalDeployedAggressive ?: 0.0,
+            bucketBUsageIdr = capitalStatus?.totalDeployedStable ?: 0.0,
+            lastLossTimestampEpochMs = null,
             whatIfSimulation = whatIfSimulationSummary,
         )
     }
