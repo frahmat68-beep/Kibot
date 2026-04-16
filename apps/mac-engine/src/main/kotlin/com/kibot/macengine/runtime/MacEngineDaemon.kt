@@ -4,6 +4,7 @@ import com.kibot.aisupport.GeminiSupportCoordinator
 import com.kibot.aisupport.HoldingResearchAction
 import com.kibot.aisupport.HoldingResearchRequest
 import com.kibot.aisupport.MultiAIClient
+import com.kibot.core.CapitalAllocationManager
 import com.kibot.core.CapitalDeploymentEngine
 import com.kibot.core.ChartAnalyzer
 import com.kibot.core.PumpDetector
