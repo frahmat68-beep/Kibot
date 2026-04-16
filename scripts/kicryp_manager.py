@@ -12,23 +12,21 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import asyncio
 
 import requests
 import kicryp_engine_v2 as engine
-try:
-    from scripts.dashboard_template import DASHBOARD_HTML
-except ImportError:
-    from dashboard_template import DASHBOARD_HTML
-
-try:
-    from kicryp_whatif_engine import run_simulation
-    from kicryp_timeframe_analyzer import analyze_timeframes
-    _WHATIF_AVAILABLE = True
-except ImportError:
-    _WHATIF_AVAILABLE = False
+from kicryp_engine_v2 import (
+    trade_logger, cascade_state, position_manager,
+    screen_bucket_b, dual_scanner_agree, fetch_kicom,
+    compute_conviction, evaluate_exit, run_math_review,
+    simulate_what_if, update_btc, btc_change_1h,
+    size_bucket_a, size_bucket_b, is_btc_ok,
+    LEAD_LAG_PAIRS, INDODAX_ONLY_PAIRS, ROUND_TRIP_LIMIT,
+    _shutting_down, SCREEN_INTERVAL_S, BTC_UPDATE_S, REVIEW_INTERVAL_S
+)
 
 TRADING_CAPITAL_PCT = 0.50
 MIN_POSITION_IDR = 50_000
@@ -51,7 +49,7 @@ _last_daily_guard_check_at = 0.0
 _learning_engine = None
 _regime_detector = None
 _learning_enabled = False
-_metrics: Dict[str, float | int] = {
+_metrics: Dict[str, Union[float, int]] = {
     "market_orders_today": 0,
     "limit_orders_today": 0,
     "entries_blocked_hard_stop": 0,
@@ -64,11 +62,11 @@ _metrics: Dict[str, float | int] = {
 }
 _one_shot_used_today = False
 _full_stop_active = False
-_one_shot_result: str | None = None
+_one_shot_result: Optional[str] = None
 _last_math_review_at = 0.0
 _math_review_last_action = "INIT"
 _math_review_last_reason = ""
-_math_review_trade_journal: list[dict[str, Any]] = []
+_math_review_trade_journal: List[Dict[str, Any]] = []
 _price_history: Dict[str, List[float]] = {}  # pair_id -> [price1, price2, ...]
 _last_screener_run_at = 0.0
 _active_trails: Dict[str, Dict[str, Any]] = {}  # pair_id -> {entry_price, max_price, trailing_pct, ...}
@@ -5880,12 +5878,15 @@ def main() -> None:
                     "ok": True,
                     "service": "kicryp_manager_udp_veto",
                     "bind": f"{UDP_BIND_HOST}:{UDP_BIND_PORT}",
-                    "kidax_target": f"{KIDAX_UDP_HOST}:{KIDAX_UDP_PORT}",
-                    "kinance_target": f"{KINANCE_UDP_HOST}:{KINANCE_UDP_PORT}" if KINANCE_UDP_HOST else None,
                 },
                 ensure_ascii=False,
             )
         )
+
+        _last_screen  = 0.0
+        _last_btc_upd = 0.0
+        _last_review  = 0.0
+
         while not _shutdown_event.is_set():
             try:
                 raw, _ = sock.recvfrom(65535)
@@ -5896,67 +5897,50 @@ def main() -> None:
                 else:
                     _process_signal_multipos(msg)
             except socket.timeout:
-                # Normal timeout, check shutdown event
                 now = time.time()
-                
-                # 30 second checks: Cascade, Screen B, Discovery
-                if (now - globals().get("_last_daily_guard_check_at", 0)) >= 30.0:
-                    globals()["_last_daily_guard_check_at"] = now
+
+                # Update BTC
+                if now - _last_btc_upd > BTC_UPDATE_S:
+                    _last_btc_upd = now
                     try:
-                        import urllib.request
-                        req = urllib.request.Request("https://indodax.com/api/tickers", headers={"User-Agent": "Mozilla"})
-                        resp = urllib.request.urlopen(req, timeout=5)
-                        tdata = json.loads(resp.read()).get("tickers", {})
-                        
-                        btc_ticker = tdata.get("btc_idr", {})
-                        if btc_ticker:
-                            engine.update_btc_price(float(btc_ticker.get("last", 0)))
-                        
-                        # 2. Cascade Update (Daily PnL Check)
-                        daily_pnl_pct = _metrics.get("daily_pnl_pct", 0.0)
-                        if daily_pnl_pct <= -0.02:
-                            engine.cascade_state.on_loss(daily_pnl_pct)
-                        elif daily_pnl_pct > 0.01: # Small growth threshold for recovery
-                             engine.cascade_state.on_win()
-                        
-                        # 3. Screen Bucket B Candidates
-                        cfg = engine.cascade_state.get_config()
-                        if cfg.get("bucket_b_active"):
-                            candidates = engine.screen_bucket_b_candidates(tdata, engine.get_btc_change_1h(), cfg)
+                        import urllib.request, json
+                        req = urllib.request.Request("https://indodax.com/api/ticker/btcidr", headers={"User-Agent": "Mozilla"})
+                        with urllib.request.urlopen(req, timeout=5) as r:
+                            btc_data = json.loads(r.read())
+                        update_btc(float(btc_data.get("ticker",{}).get("last",0)))
+                    except Exception:
+                        pass
+
+                # Screen Bucket B
+                if now - _last_screen > SCREEN_INTERVAL_S:
+                    _last_screen = now
+                    if not _shutting_down:
+                        try:
+                            import urllib.request, json
+                            req = urllib.request.Request("https://indodax.com/api/tickers", headers={"User-Agent": "Mozilla"})
+                            with urllib.request.urlopen(req, timeout=10) as r:
+                                tickers_raw = json.loads(r.read())
+                            all_tickers = tickers_raw.get("tickers", tickers_raw)
+                            equity = float(_metrics.get("total_equity_idr", 60000.0))
+                            candidates = screen_bucket_b(
+                                all_tickers, btc_change_1h(), cascade_state.cfg(), equity
+                            )
                             if candidates:
                                 top = candidates[0]
-                                print(f"[SCREEN-B] Top: {top['pair_id']} score={top['score']:.3f}")
-                        
-                        # 4. New Coin Discovery
-                        engine.discover_new_listings(tdata)
-                        
+                                print(f"[SCREEN-B] {top['pair_id']} score={top['conv']['score']:.3f} phase={top['conv']['phase']} ev=Rp{top['sim']['ev_idr']:.0f}", flush=True)
+                        except Exception as e:
+                            print(f"[SCREEN] {e}", flush=True)
+
+                # 30-min review
+                if now - _last_review > REVIEW_INTERVAL_S:
+                    _last_review = now
+                    try:
+                        equity = float(_metrics.get("total_equity_idr", 60000.0))
+                        pnl = float(_metrics.get("daily_pnl_pct", 0.0))
+                        msg = run_math_review(equity, pnl)
+                        _telegram_send(msg)
                     except Exception as e:
-                        print(f"[TRINITY-LOOP] err: {e}")
-                
-                # 30-min Math Review
-                if (now - globals().get("_last_math_review_at", 0)) >= 1800.0:
-                    globals()["_last_math_review_at"] = now
-                    equity = _metrics.get("total_equity_idr", 60000.0)
-                    msg = engine.run_30min_review(equity, _metrics.get("daily_pnl_pct", 0.0))
-                    _telegram_send(msg)
-                
-                # 6 hours: supabase ping
-                if (now - globals().get("_last_supabase_ping", 0)) >= 21600.0:
-                    globals()["_last_supabase_ping"] = now
-                    try:
-                        keep_supabase_alive()
-                    except NameError:
-                        pass
-                    
-                wib_hour = (datetime.utcnow() + timedelta(hours=7)).hour
-                if wib_hour == 2 and not globals().get("_daily_sync_done_today"):
-                    globals()["_daily_sync_done_today"] = True
-                    try:
-                        run_daily_data_sync()
-                    except NameError:
-                        pass
-                elif wib_hour != 2:
-                    globals()["_daily_sync_done_today"] = False
+                        print(f"[REVIEW] {e}", flush=True)
 
                 continue
             except OSError as e:

@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional, Union, Any
 
 
 SYSTEM_ROLE = (
@@ -225,7 +225,7 @@ def call_cohere(trade_json: str, env: Dict[str, str], model_override: str = "") 
         raise RuntimeError("Cohere API key missing.")
     preferred_model = model_override or env.get("COHERE_MODEL", "command-r")
     model_candidates = [preferred_model, "command-r7b-12-2024", "command-r-plus-08-2024"]
-    last_error: Exception | None = None
+    last_error: Optional[Exception] = None
 
     for model in list(dict.fromkeys(model_candidates)):
         try:
@@ -375,7 +375,7 @@ def write_outputs(
     results: Dict[str, str],
     errors: Dict[str, str],
     skipped: Dict[str, str],
-    policy: Dict | None = None,
+    policy: Optional[Dict] = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for provider, markdown_text in results.items():
