@@ -4718,6 +4718,9 @@ class MacEngineDaemon(
                         marketQuotes = resolvedMarketQuotes,
                         recentOrders = effectiveRecentOrders,
                         aiSoftAuditOnly = aiSupportEvaluation?.blockedReason != null,
+                        currentRegime = currentRegime,
+                        currentBalanceIdr = currentBalanceIdr,
+                        wasAggressiveTrade = wasAggressiveTrade,
                     )
                     
                     // [TRINITY V7.0] LOGGING PERSISTENCE VARIABLES (ALREADY DECLARED IN GLOBAL SCOPE)
@@ -6822,13 +6825,16 @@ class MacEngineDaemon(
     private suspend fun maybeManageLiveTrading(
         now: Instant,
         lease: EngineLeaseSnapshot,
-        cycle: com.kibot.core.StrategyCycleResult,
+        cycle: com.kibot.core.StrategyCycleResult?,
         weeklyReview: com.kibot.shared.models.WeeklyLearningSummary?,
         health: EngineHealthSnapshot,
         balances: List<BalanceSnapshot>,
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
         recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
         aiSoftAuditOnly: Boolean = false,
+        currentRegime: com.kibot.shared.models.MarketRegime?,
+        currentBalanceIdr: Double,
+        wasAggressiveTrade: Boolean,
     ) {
         val botId = config.controlPlane.botId.value.trim().lowercase()
         val validBotIds = when (config.exchangeKind) {

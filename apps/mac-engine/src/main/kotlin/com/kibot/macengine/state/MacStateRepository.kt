@@ -27,6 +27,7 @@ data class MacHoldingDetail(
     val currentPriceLabel: String,
     val pnlIdrLabel: String,
     val pnlPctLabel: String,
+    val signalSource: String = "UNKNOWN",
 )
 
 @Serializable
@@ -135,7 +136,7 @@ data class MacDashboardState(
     val bucketBAllocationPct: Double = 50.0,
     val bucketAUsageIdr: Double = 0.0,
     val bucketBUsageIdr: Double = 0.0,
-    val lastLossTimestampEpochMs: Long? = null,
+    val lastLossTimestampEpochMs: Long = 0L,
     val whatIfSimulation: com.kibot.shared.models.CommandCenterSimulationSummary? = null,
     val tradeHistory: kotlinx.serialization.json.JsonElement? = null,
 ) {
@@ -199,7 +200,7 @@ data class MacDashboardState(
             bucketBAllocationPct = 50.0,
             bucketAUsageIdr = 0.0,
             bucketBUsageIdr = 0.0,
-            lastLossTimestampEpochMs = null,
+            lastLossTimestampEpochMs = 0L,
             whatIfSimulation = null,
             tradeHistory = null,
         )
