@@ -4157,7 +4157,7 @@ class MacEngineDaemon(
             val now = clock.now()
             val jakartaDate = jakartaNowDate(now)
             logger.info("DEAD_ZONE_TRACE: checking local balance / peer state cache")
-            val peerBotStates = listOf("kidax", "kibot", "kinance")
+            val peerBotStates = listOf("kidax", "kicryp", "kinance")
             .associateWith { peerId ->
                 if (peerId.equals(config.controlPlane.botId.value, ignoreCase = true)) {
                     null
@@ -5294,7 +5294,7 @@ class MacEngineDaemon(
         val normalizedMsgType = payload.msgType.uppercase()
         val payloadPairId = PairId(payload.pairId)
         val payloadReason = payload.payload?.get("reason")?.jsonPrimitive?.contentOrNull?.uppercase()
-        val pairCooldownReject = payload.senderBotId.contains("kibot", ignoreCase = true) &&
+        val pairCooldownReject = payload.senderBotId.contains("kicryp", ignoreCase = true) &&
             normalizedMsgType == "VETO_REJECTED" &&
             payloadReason == "PAIR_COOLDOWN"
         if (pairCooldownReject) {
@@ -5323,7 +5323,7 @@ class MacEngineDaemon(
             )
             armUdpExecutionPrewarm(payload, now)
         }
-        val isEmergencySell = payload.senderBotId.contains("kibot", ignoreCase = true) &&
+        val isEmergencySell = payload.senderBotId.contains("kicryp", ignoreCase = true) &&
             normalizedMsgType == "EMERGENCY_VETO_SELL"
         if (isEmergencySell) {
             forcedSellTraceByPair[payload.pairId.lowercase()] = ForcedSellSignal(
@@ -5359,7 +5359,7 @@ class MacEngineDaemon(
             normalizedMsgType == "INSTANT_BUY_ANOMALY"
         val isKinanceSignal = payload.senderBotId.contains("kinance", ignoreCase = true) &&
             normalizedMsgType in setOf("DETECTOR_HIT", "INSTANT_BUY_ANOMALY", "SELL_WALL_SURGE", "MOMENTUM_LOSS")
-        val isKibotVeto = payload.senderBotId.contains("kibot", ignoreCase = true) &&
+        val isKibotVeto = payload.senderBotId.contains("kicryp", ignoreCase = true) &&
             normalizedMsgType in setOf("VETO_APPROVED", "VETO_SELL_CONFIRMED")
         val trinitySignal = TrinityPendingSignal(
             traceId = payload.traceId,
@@ -5545,14 +5545,14 @@ class MacEngineDaemon(
 
     private fun senderCodeFor(botId: String): Byte = when {
         botId.contains("kinance", ignoreCase = true) -> 1
-        botId.contains("kibot", ignoreCase = true) -> 2
+        botId.contains("kicryp", ignoreCase = true) -> 2
         botId.contains("kidax", ignoreCase = true) -> 3
         else -> 15
     }
 
     private fun botIdForSenderCode(code: Byte): String = when (code.toInt()) {
         1 -> "kinance"
-        2 -> "kibot"
+        2 -> "kicryp"
         3 -> "kidax"
         else -> "unknown"
     }
@@ -6053,7 +6053,7 @@ class MacEngineDaemon(
         }.getOrDefault(false)
     }
 
-    private fun isKiCrypManagerNode(): Boolean = config.controlPlane.botId.value.equals("kibot", ignoreCase = true)
+    private fun isKiCrypManagerNode(): Boolean = config.controlPlane.botId.value.equals("kicryp", ignoreCase = true) || config.controlPlane.botId.value.equals("kibot", ignoreCase = true)
 
     private fun holdingResearchTargetBotId(): BotId = config.leadLagTargetBotId ?: BotId("kidax")
 
@@ -6812,8 +6812,8 @@ class MacEngineDaemon(
     ) {
         val botId = config.controlPlane.botId.value.trim().lowercase()
         val validBotIds = when (config.exchangeKind) {
-            ExchangeKind.INDODAX -> listOf("main", "kidax", "kibot")
-            ExchangeKind.BINANCE_SPOT -> listOf("main", "kinance", "kibot")
+            ExchangeKind.INDODAX -> listOf("main", "kidax", "kicryp")
+            ExchangeKind.BINANCE_SPOT -> listOf("main", "kinance", "kicryp")
         }
         logger.info(
             "OWNERSHIP_AUDIT: Current BotID={}, isOwner={}, activeIDs={}",
@@ -11052,7 +11052,7 @@ class MacEngineDaemon(
             exchangePingValueMs = localHealth.feedLatencyMs
                 ?.takeIf { it in 1..5_000L },
             kidaxNodeStatus = peerNodeStatus("kidax"),
-            kibotNodeStatus = peerNodeStatus("kibot"),
+            kibotNodeStatus = peerNodeStatus("kicryp"),
             kinanceNodeStatus = peerNodeStatus("kinance"),
             serverLocation = "Oracle Cloud (24/7)",
             serverUptime = repository.state.value.serverUptime,
