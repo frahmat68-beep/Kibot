@@ -1871,6 +1871,7 @@ class MacEngineDaemon(
         hungry: Boolean,
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
     ): com.kibot.core.ExitDecision? {
+        val now = kotlinx.datetime.Clock.System.now()
         if (!hungry || managedPositions.isEmpty()) return null
         val activeByPair = activeOrders.filter { it.status in activeOrderStatuses }.groupBy { it.pairId }
         val scoredByPair = cycle.rankedPairs.associateBy { it.pairId }
@@ -1947,6 +1948,7 @@ class MacEngineDaemon(
             if (!armed && !riskDecision.shouldExit) continue
             
             // Use profit-locked floor instead of simple trailing floor
+            val profitLockedFloor = peak * (1.0 - (dynamicTrailingStopPct / 100.0))
             val shouldExitByTrail = (currentBid <= profitLockedFloor && noSellOrder) || riskDecision.shouldExit
             
             // Log profit lock status for debugging
@@ -4457,7 +4459,7 @@ class MacEngineDaemon(
 	                    ?.free?.toDoubleOrZero()
 	                    ?: 0.0
 	                val activeEngineDecision = activeEngineDecisionForCallout(now = now, freeIdr = freeQuoteBalance)
-                val allTrades = com.kibot.macengine.logging.TradeLogger.readAll()
+                val allTrades = com.kibot.core.logging.TradeLogger.readAll()
                 val globalHistoricalWinRate = allTrades.groupBy { it.pair.lowercase() }
                     .mapValues { (_, trades) -> 
                         val wins = trades.count { it.netPnlPct > 0 }
@@ -4492,6 +4494,12 @@ class MacEngineDaemon(
                 } else {
                     null
                 }
+
+                // [TRINITY V7.0] GLOBAL LOOP TELEMETRY VARIABLES
+                val currentRegime = strategyCycle?.marketSnapshot?.regime
+                val currentBalanceIdr = freeQuoteBalance
+                val wasAggressiveTrade = (strategyCycle?.modeSnapshot?.mode == com.kibot.shared.models.BotMode.HYPER_AGGRESSIVE)
+
                 if (strategyCycle != null && resolvedMarketQuotes.isNotEmpty()) {
                     refreshLocalLearningSnapshot(
                         now = now,
@@ -4711,6 +4719,9 @@ class MacEngineDaemon(
                         recentOrders = effectiveRecentOrders,
                         aiSoftAuditOnly = aiSupportEvaluation?.blockedReason != null,
                     )
+                    
+                    // [TRINITY V7.0] LOGGING PERSISTENCE VARIABLES (ALREADY DECLARED IN GLOBAL SCOPE)
+                    
                     maybeDispatchLeadLagCallout(
                         now = now,
                         lease = leaseForSideEffects,
@@ -7315,7 +7326,7 @@ class MacEngineDaemon(
                         netProfitPct = sellPnlPct ?: 0.0,
                         holdMinutes = ((exitAt.toEpochMilliseconds() - filteredExitDecision.position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 60_000.0),
                         exitReason = filteredExitDecision.message,
-                        timestamp = now,
+                        timestamp = kotlinx.datetime.Clock.System.now(),
                     )
 
                     // [KiBot v7.0] NEW HIGH-FIDELITY TRADE LOGGER
@@ -7376,7 +7387,7 @@ class MacEngineDaemon(
                     )
                     val executionFillQty = sellQty ?: requestedSellQty.coerceAtLeast(0.0)
                     
-                    com.kibot.macengine.logging.TradeLogger.record(com.kibot.macengine.logging.TradeRecord(
+                    com.kibot.core.logging.TradeLogger.record(com.kibot.core.logging.TradeRecord(
                         id = java.util.UUID.randomUUID().toString(),
                         timestamp = now.toString(),
                         pair = pairKey,
@@ -8157,6 +8168,7 @@ class MacEngineDaemon(
                 )
                 
                 // [KiBot v7.0] NEW CORE TRADE LOGGER (ENTRY)
+                val pairKey = effectiveExecutionPlan.signal.pairId.value.lowercase()
                 TradeLogger.record(
                     TradeRecord(
                         id = java.util.UUID.randomUUID().toString(),
@@ -8186,7 +8198,6 @@ class MacEngineDaemon(
                 )
 
                 // [CAPITAL ALLOCATION] Track bucket type for this position
-                val pairKey = effectiveExecutionPlan.signal.pairId.value.lowercase()
                 val bucketType = if (isAnomalyCoin) "AGGRESSIVE" else "STABLE"
                 positionBucketTypeByPair[pairKey] = bucketType
                 positionEntryCapitalByPair[pairKey] = allocResult.allocatedIdr

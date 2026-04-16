@@ -55,6 +55,7 @@ data class CommandCenterLiveSnapshot(
     val netWorthHistory: List<CommandCenterNetWorthPoint> = emptyList(),
     val assetAllocationDetailed: List<CommandCenterAssetAllocation> = emptyList(),
     val whatIfSimulation: CommandCenterSimulationSummary? = null,
+    val lastLossTimestampEpochMs: Long = 0L,
     val updatedAtEpochMs: Long,
 )
 
@@ -87,6 +88,7 @@ data class CommandCenterHolding(
     val currentPriceLabel: String = "",
     val pnlIdrLabel: String = "",
     val pnlPctLabel: String = "",
+    val signalSource: String = "UNKNOWN",
 )
 
 @Serializable

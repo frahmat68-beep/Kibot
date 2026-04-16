@@ -109,7 +109,14 @@ class LocalDashboardServer(
     private data class DashboardConnections(val kidax: DashboardConnectionStatus, val kinance: DashboardConnectionStatus)
 
     @Serializable
-    private data class ActivePositionState(val pair: String, val currentPrice: String, val pnlPct: String, val pnlIdr: String, val size: String)
+    private data class ActivePositionState(
+        val pair: String,
+        val currentPrice: String,
+        val pnlPct: String,
+        val pnlIdr: String,
+        val size: String,
+        val signalSource: String = "UNKNOWN",
+    )
 
     @Serializable
     private data class PairScoreState(val pair: String)
@@ -154,6 +161,7 @@ class LocalDashboardServer(
         val bucketBAllocationPct: Double = 50.0,
         val bucketAUsageIdr: Double = 0.0,
         val bucketBUsageIdr: Double = 0.0,
+        val lastLossTimestampEpochMs: Long = 0L,
         val stale: Boolean = false,
         val cacheAgeMs: Long = 0L,
     )
@@ -506,7 +514,7 @@ class LocalDashboardServer(
                 kinance = DashboardConnectionStatus(state.kinanceNodeStatus, 150),
             ),
             activePositions = state.holdingsDetailed.map { h ->
-                ActivePositionState(h.assetCode, h.currentPriceLabel, h.pnlPctLabel, h.pnlIdrLabel, h.quantityLabel)
+                ActivePositionState(h.assetCode, h.currentPriceLabel, h.pnlPctLabel, h.pnlIdrLabel, h.quantityLabel, h.signalSource)
             },
             pairScores = state.radarPairs.map { p -> PairScoreState(p) },
             learningState = JsonObject(emptyMap()),
@@ -517,6 +525,7 @@ class LocalDashboardServer(
             bucketBAllocationPct = state.bucketBAllocationPct,
             bucketAUsageIdr = state.bucketAUsageIdr,
             bucketBUsageIdr = state.bucketBUsageIdr,
+            lastLossTimestampEpochMs = state.lastLossTimestampEpochMs,
         )
     }
 
@@ -797,6 +806,7 @@ private fun MacDashboardState.toLiveSnapshot(
                 currentPriceLabel = it.currentPriceLabel,
                 pnlIdrLabel = it.pnlIdrLabel,
                 pnlPctLabel = it.pnlPctLabel,
+                signalSource = it.signalSource,
             )
         },
         recentOrders = recentOrders.map {
@@ -831,6 +841,7 @@ private fun MacDashboardState.toLiveSnapshot(
             )
         },
         whatIfSimulation = whatIfSimulation,
+        lastLossTimestampEpochMs = lastLossTimestampEpochMs,
         updatedAtEpochMs = lastUpdatedEpochMs,
     )
 }
