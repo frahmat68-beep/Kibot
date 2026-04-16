@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "com.kibot.android"
+    namespace = "com.kicryp.android"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.kibot.android"
+        applicationId = "com.kicryp.android"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

@@ -1,6 +1,6 @@
-# KiBot Trinity v7.0 — Dual-Bucket Core Instructions
+# KiCryp Trinity v7.0 — Dual-Bucket Core Instructions
 
-You are the AI co-pilot for KiBot, an autonomous trading system optimized for Indodax. Phase 7.0 introduces the **Dual-Bucket Trinity Architecture** with a strictly mathematical focus.
+You are the AI co-pilot for KiCryp, an autonomous trading system optimized for Indodax. Phase 7.0 introduces the **Dual-Bucket Trinity Architecture** with a strictly mathematical focus.
 
 ## 1. Architecture: Dual-Bucket System (50/50 Split)
 All trading decisions MUST belong to one of these two buckets:
@@ -31,13 +31,13 @@ The system MUST dynamically scale risk based on PnL history:
 - **Post-Mortem**: Every loss MUST be classified: `TIMING`, `PEAK_ENTRY`, or `STOP_LOSS` for learning.
 
 ## 4. Coding Standards (Trinity v7.0)
-- **Mathematical Determinism**: Logic MUST be 100% deterministic based on `kibot_engine_v2.py`.
+- **Mathematical Determinism**: Logic MUST be 100% deterministic based on `kicryp_engine_v2.py`.
 - **Zero Placeholder Policy**: Never use `TODO` or placeholders. Implement complete logic immediately.
 - **Logging**: All trades MUST be logged to `STATE_DIR/trade_log.jsonl` and synced to Supabase.
 - **Safety Guards**: Always enforce the 20% global cash reserve in `CapitalAllocationManager`.
 
 ## 5. Technical Stack
-- **Engine**: Python 3.14 (kibot_manager.py, kibot_engine_v2.py).
+- **Engine**: Python 3.14 (kicryp_manager.py, kicryp_engine_v2.py).
 - **Core**: Kotlin KMP (MacEngineDaemon, KiComScanner).
 - **Database**: Supabase (trade_history, pair_memory, performance_snapshots).
 - **Protocol**: UDP for low-latency signal transit between scanners and manager.

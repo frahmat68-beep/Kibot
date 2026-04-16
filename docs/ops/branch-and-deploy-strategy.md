@@ -2,7 +2,7 @@
 
 ## Source Of Truth
 - Keep one main source branch for now.
-- Do not split `KiDax`, `Kinance`, and `KiBot` into separate long-lived branches.
+- Do not split `KiDax`, `Kinance`, and `KiCryp` into separate long-lived branches.
 - Shared trading logic stays aligned by editing one code path, then selecting runtime behavior with profile/env/service separation.
 
 ## Why
@@ -13,24 +13,24 @@
 ## Deployment Split
 - `deploy-kidax.yml` -> KiDax / Indodax server only
 - `deploy-kinance.yml` -> Kinance / Binance server only
-- Future: `deploy-kibot.yml` -> reporting/orchestration brain only
+- Future: `deploy-kicryp.yml` -> reporting/orchestration brain only
 
 ## Identity Rules
 ### KiDax
 - `BOT_ID=kidax`
 - `BOT_PROFILE_KEY=kidax`
-- `KIBOT_EXCHANGE_KIND=INDODAX`
+- `KICRYP_EXCHANGE_KIND=INDODAX`
 - root `/home/ubuntu/KiDax`
 - port `8787`
 
 ### Kinance
 - `BOT_ID=kinance`
 - `BOT_PROFILE_KEY=kinance`
-- `KIBOT_EXCHANGE_KIND=BINANCE_SPOT`
+- `KICRYP_EXCHANGE_KIND=BINANCE_SPOT`
 - root `/home/ubuntu/Kinance`
 - port `8788`
 
-### KiBot
+### KiCryp
 - reporting/orchestration brain only
 - no direct reuse of exchange trading env files
 

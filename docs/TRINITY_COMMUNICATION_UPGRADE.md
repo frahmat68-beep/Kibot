@@ -2,7 +2,7 @@
 
 ## 📋 SUMMARY (SIMPLE INDONESIAN)
 
-Gw udah implement 4 sistem baru untuk 3 bot lu (Kinance, KiDax, KiBot):
+Gw udah implement 4 sistem baru untuk 3 bot lu (Kinance, KiDax, KiCryp):
 
 ### ✅ 1. SHARED POSITION TRACKER
 **Apa ini?** Semua bot tau KiDax pegang koin apa, beli diharga berapa, fee berapa
@@ -14,10 +14,10 @@ KiDax beli BTC:
   - Fee: 0.3%
   - Target profit: 3%
   
-BROADCAST UDP → Kinance & KiBot langsung tau!
+BROADCAST UDP → Kinance & KiCryp langsung tau!
 
 Kinance:  "OK, BTC position open, gw pantau Binance untuk exit signal"
-KiBot:    "OK, BTC entry Rp150, gw hitung profit/loss real-time"
+KiCryp:    "OK, BTC entry Rp150, gw hitung profit/loss real-time"
 ```
 
 ### ✅ 2. LATE PUMP ENTRY STRATEGY  
@@ -43,14 +43,14 @@ Jika parabolic pump (80%+):
 Setiap 10 detik:
   Kinance: "I'm alive!"
   KiDax:   "I'm alive!"
-  KiBot:   "I'm alive!"
+  KiCryp:   "I'm alive!"
 
 Jika Kinance tidak respon 30 detik:
   Status: DEGRADED → Warning
   
 Jika Kinance tidak respon 60 detik:
   Status: DEAD → RESTART NOW!
-  KiBot: "Gw restart Kinance!" → ssh restart command
+  KiCryp: "Gw restart Kinance!" → ssh restart command
 ```
 
 ### ✅ 4. TRADE LEDGER (LEARNING SYSTEM)
@@ -107,27 +107,27 @@ Bot BLOCK entry jika:
 
 ## 📦 NEW FILES CREATED
 
-### 1. `/packages/core/src/commonMain/kotlin/com/kibot/core/SharedPositionTracker.kt`
+### 1. `/packages/core/src/commonMain/kotlin/com/kicryp/core/SharedPositionTracker.kt`
 - All bots know what KiDax is holding
 - Broadcast position open/close via UDP
 - Validate 20/80 capital allocation
 
-### 2. `/packages/core/src/commonMain/kotlin/com/kibot/core/LatePumpEntryStrategy.kt`
+### 2. `/packages/core/src/commonMain/kotlin/com/kicryp/core/LatePumpEntryStrategy.kt`
 - Enter pumps that are ALREADY running
 - Wait for healthy pullback (5-15%)
 - Don't chase exhausted pumps (80%+)
 
-### 3. `/packages/core/src/commonMain/kotlin/com/kibot/core/TrinityHeartbeatMonitor.kt`
+### 3. `/packages/core/src/commonMain/kotlin/com/kicryp/core/TrinityHeartbeatMonitor.kt`
 - Monitor all 3 bots health
 - Detect dead bots (> 60s no heartbeat)
 - Generate restart commands
 
-### 4. `/packages/core/src/commonMain/kotlin/com/kibot/core/TradeLedger.kt`
+### 4. `/packages/core/src/commonMain/kotlin/com/kicryp/core/TradeLedger.kt`
 - Track every trade with fees and slippage
 - Learn which pairs are profitable
 - Learn which strategies lose money
 
-### 5. `/packages/core/src/commonMain/kotlin/com/kibot/core/PositionStrategy.kt` (enum)
+### 5. `/packages/core/src/commonMain/kotlin/com/kicryp/core/PositionStrategy.kt` (enum)
 - `ANOMALY`: 20% capital, chase pumps
 - `STABLE`: 80% capital, steady trading
 
@@ -235,7 +235,7 @@ if ((now - lastHeartbeatCheckAt) > 10.seconds) {
                 // Generate restart command
                 val serverHost = when (alert.botName) {
                     "kinance" -> "152.69.218.198"
-                    "kidax", "kibot" -> "213.35.118.26"
+                    "kidax", "kicryp" -> "213.35.118.26"
                     else -> return@forEach
                 }
                 
@@ -339,9 +339,9 @@ Dari screenshot lu, BR/IDR lagi pump. Begini bot harus handle:
 5. Broadcast ke semua bot:
    "KiDax bought BR at 5500, target 6050, stop 5280"
    
-6. Kinance & KiBot monitor:
+6. Kinance & KiCryp monitor:
    - Kinance: Watch Binance BR/USDT for dump signal
-   - KiBot: Track profit/loss real-time
+   - KiCryp: Track profit/loss real-time
    
 7. BR/IDR naik 10% → Hit target:
    - KiDax sell

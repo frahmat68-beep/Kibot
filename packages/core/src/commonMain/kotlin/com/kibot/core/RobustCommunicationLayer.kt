@@ -170,14 +170,14 @@ data class BotMessage(
 )
 
 enum class MessageType {
-    PUMP_SIGNAL,           // Kinance → KiBot: "Pump detected"
-    POSITION_UPDATE,       // KiDax → KiBot: "Bought BTC"
-    BUY_REQUEST,           // KiDax → KiBot: "Want to buy ABC"
-    BUY_APPROVAL,          // KiBot → KiDax: "Approved!"
-    BUY_REJECTION,         // KiBot → KiDax: "VETO!"
-    SELL_REQUEST,          // KiDax → KiBot: "Want to sell ABC"
-    SELL_APPROVAL,         // KiBot → KiDax: "Approved!"
-    SELL_REJECTION,        // KiBot → KiDax: "HOLD!"
+    PUMP_SIGNAL,           // Kinance → KiCryp: "Pump detected"
+    POSITION_UPDATE,       // KiDax → KiCryp: "Bought BTC"
+    BUY_REQUEST,           // KiDax → KiCryp: "Want to buy ABC"
+    BUY_APPROVAL,          // KiCryp → KiDax: "Approved!"
+    BUY_REJECTION,         // KiCryp → KiDax: "VETO!"
+    SELL_REQUEST,          // KiDax → KiCryp: "Want to sell ABC"
+    SELL_APPROVAL,         // KiCryp → KiDax: "Approved!"
+    SELL_REJECTION,        // KiCryp → KiDax: "HOLD!"
     HEARTBEAT,             // Any bot: "I'm alive"
     ALERT,                 // Any bot: "Emergency!"
     PRICE_UPDATE,          // Kinance/KiDax: Price info

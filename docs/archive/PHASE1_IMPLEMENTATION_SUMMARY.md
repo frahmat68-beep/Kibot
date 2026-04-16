@@ -1,12 +1,12 @@
 # Trinity Bot Hybrid Strategy Phase 1 - Implementation Summary
 
 ## Overview
-Successfully implemented Trinity Bot Phase 1 (70/30 Hybrid Strategy) with 3 new Kotlin components and integrated them into the KiBotVetoSystem.
+Successfully implemented Trinity Bot Phase 1 (70/30 Hybrid Strategy) with 3 new Kotlin components and integrated them into the KiCrypVetoSystem.
 
 ## Files Created
 
 ### 1. **PairWhitelistManager.kt** (146 lines)
-Location: `packages/core/src/commonMain/kotlin/com/kibot/core/PairWhitelistManager.kt`
+Location: `packages/core/src/commonMain/kotlin/com/kicryp/core/PairWhitelistManager.kt`
 
 **Purpose**: Maintains whitelist of high-conviction trading pairs with dynamic learning.
 
@@ -37,7 +37,7 @@ fun getSummary(): WhitelistSummary
 ---
 
 ### 2. **CapitalAllocationManager.kt** (145 lines)
-Location: `packages/core/src/commonMain/kotlin/com/kibot/core/CapitalAllocationManager.kt`
+Location: `packages/core/src/commonMain/kotlin/com/kicryp/core/CapitalAllocationManager.kt`
 
 **Purpose**: Manages 70/30 capital split between stable and aggressive trading strategies.
 
@@ -69,7 +69,7 @@ fun reset()
 ---
 
 ### 3. **HybridStrategyTests.kt** (297 lines)
-Location: `packages/core/src/commonTest/kotlin/com/kibot/core/HybridStrategyTests.kt`
+Location: `packages/core/src/commonTest/kotlin/com/kicryp/core/HybridStrategyTests.kt`
 
 **Purpose**: Comprehensive unit tests for Phase 1 with 3 scenario stories.
 
@@ -110,16 +110,16 @@ Results:
 
 ---
 
-## Integration into KiBotVetoSystem
+## Integration into KiCrypVetoSystem
 
 ### Updated File
-Location: `packages/core/src/commonMain/kotlin/com/kibot/core/KiBotVetoSystem.kt`
+Location: `packages/core/src/commonMain/kotlin/com/kicryp/core/KiCrypVetoSystem.kt`
 
 ### Integration Points
 
 #### Constructor (Dependency Injection)
 ```kotlin
-class KiBotVetoSystem(
+class KiCrypVetoSystem(
     private val pairWhitelist: PairWhitelistManager = PairWhitelistManager(),
     private val capitalAllocator: CapitalAllocationManager = CapitalAllocationManager(),
     private val orderStrategy: OrderExecutionStrategy = OrderExecutionStrategy(),
@@ -160,13 +160,13 @@ fun getCapitalAllocator(): CapitalAllocationManager
 | PairWhitelistManager.kt | 146 | Low | Core logic |
 | CapitalAllocationManager.kt | 145 | Low | Core logic |
 | HybridStrategyTests.kt | 297 | Medium | Test scenarios |
-| KiBotVetoSystem.kt | 387 | Medium | Updated |
+| KiCrypVetoSystem.kt | 387 | Medium | Updated |
 | **Total** | **~975** | - | - |
 
 **Metrics**:
 - New files: 2 (PairWhitelistManager, CapitalAllocationManager)
 - Test files: 1 (HybridStrategyTests)
-- Updated files: 1 (KiBotVetoSystem)
+- Updated files: 1 (KiCrypVetoSystem)
 - Total new code: ~545 lines
 - Total modified code: ~75 lines
 
@@ -281,7 +281,7 @@ Total: +880 IDR = +1.9% daily
 - [x] PairWhitelistManager created and tested
 - [x] CapitalAllocationManager created and tested
 - [x] HybridStrategyTests created with 3 scenarios
-- [x] KiBotVetoSystem updated with Phase 1 integration
+- [x] KiCrypVetoSystem updated with Phase 1 integration
 - [x] Whitelist check in buy order evaluation
 - [x] Capital allocation in buy order evaluation
 - [x] Order type recommendation in buy order
@@ -329,7 +329,7 @@ Expected output:
 
 ## Deployment Notes
 
-1. **Backward Compatibility**: KiBotVetoSystem now requires additional parameters in evaluateBuyOrder (spreadPercent, volumeScore, volatility). Existing callers need updates.
+1. **Backward Compatibility**: KiCrypVetoSystem now requires additional parameters in evaluateBuyOrder (spreadPercent, volumeScore, volatility). Existing callers need updates.
 2. **Production Safety**: Phase 1 uses soft filtering (whitelist check doesn't block new pairs), allowing safe testing.
 3. **Monitoring**: Use getPairWhitelistManager().getSummary() for daily metrics.
 4. **Capital Recovery**: If capital depletes, deposit profits with depositProfit() to trigger rebalance.
@@ -338,7 +338,7 @@ Expected output:
 
 ## Summary
 
- **Phase 1 Complete**: 70/30 Hybrid Strategy fully implemented with 3 new components, comprehensive testing, and KiBotVetoSystem integration. Ready for live testing on Indodax.
+ **Phase 1 Complete**: 70/30 Hybrid Strategy fully implemented with 3 new components, comprehensive testing, and KiCrypVetoSystem integration. Ready for live testing on Indodax.
 
 - **Expected Win Rate**: 90% on stable trades (70% bucket) + 70% on aggressive (30% bucket) = ~85% overall
 - **Daily Target**: +3-5% on capital = +1,500-2,500 IDR/day

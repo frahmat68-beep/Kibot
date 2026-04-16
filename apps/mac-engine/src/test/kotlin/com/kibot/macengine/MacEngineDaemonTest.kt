@@ -306,8 +306,8 @@ class MacEngineDaemonTest {
 
     @Test
     fun `master submits live order when execution is enabled and gate is clean`() = runBlocking {
-        val previousPlanDebug = System.getProperty("KIBOT_DEBUG_PLAN")
-        System.setProperty("KIBOT_DEBUG_PLAN", "true")
+        val previousPlanDebug = System.getProperty("KICRYP_DEBUG_PLAN")
+        System.setProperty("KICRYP_DEBUG_PLAN", "true")
         try {
         val controlPlane = FakeControlPlaneGateway(botId = botId)
         controlPlane.botState = BotStateSnapshot(
@@ -387,9 +387,9 @@ class MacEngineDaemonTest {
         assertTrue(controlPlane.fetchRecentOrders(botId).all { it.side == OrderSide.BUY })
         } finally {
             if (previousPlanDebug == null) {
-                System.clearProperty("KIBOT_DEBUG_PLAN")
+                System.clearProperty("KICRYP_DEBUG_PLAN")
             } else {
-                System.setProperty("KIBOT_DEBUG_PLAN", previousPlanDebug)
+                System.setProperty("KICRYP_DEBUG_PLAN", previousPlanDebug)
             }
         }
     }

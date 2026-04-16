@@ -4,7 +4,7 @@ DASHBOARD_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KiBot Trinity v6.0 | Command Center</title>
+    <title>KiCryp Trinity v6.0 | Command Center</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -276,14 +276,14 @@ DASHBOARD_HTML = """
     <div id="error-overlay">
         <div class="error-card">
             <h2 style="color: var(--danger); margin-bottom: 1rem;">CONNECTION LOST</h2>
-            <p>Attempting to reconnect to KiBot Core...</p>
+            <p>Attempting to reconnect to KiCryp Core...</p>
         </div>
     </div>
 
     <div class="container">
         <header>
             <div class="logo-area">
-                <h1>KIBOT TRINITY</h1>
+                <h1>KICRYP TRINITY</h1>
                 <span>Enterprise Trading Engine v6.0</span>
             </div>
             <div class="system-status">
@@ -359,7 +359,7 @@ DASHBOARD_HTML = """
         </div>
 
         <div class="footer">
-            KiBot Trinity v6.0 © 2026 | Local Engine: <span id="local-time">--:--:--</span>
+            KiCryp Trinity v6.0 © 2026 | Local Engine: <span id="local-time">--:--:--</span>
         </div>
     </div>
 

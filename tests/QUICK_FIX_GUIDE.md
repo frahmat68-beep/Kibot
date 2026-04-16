@@ -41,9 +41,9 @@ sudo systemctl status kinance-engine.service
 
 ### Step 3: Start MANAGER (2 min)
 ```bash
-sudo systemctl start kibot-manager.service
-sudo systemctl enable kibot-manager.service
-sudo systemctl status kibot-manager.service
+sudo systemctl start kicryp-manager.service
+sudo systemctl enable kicryp-manager.service
+sudo systemctl status kicryp-manager.service
 # Expected: "active (running)"
 ```
 
@@ -65,7 +65,7 @@ KIDAX_UDP_PORT=9999
 
 # Restart all services
 sudo systemctl restart kinance-engine.service
-sudo systemctl restart kibot-manager.service
+sudo systemctl restart kicryp-manager.service
 sudo systemctl restart kidax-engine.service
 ```
 
@@ -89,7 +89,7 @@ AI_APPROVAL_MIN_SCORE=0.62
 AI_APPROVAL_INSTANT_MIN_SCORE=0.62
 
 # Save and restart manager
-sudo systemctl restart kibot-manager.service
+sudo systemctl restart kicryp-manager.service
 ```
 
 ### Step 6: Verify Trinity (5 min)
@@ -97,22 +97,22 @@ sudo systemctl restart kibot-manager.service
 # Check all services
 sudo systemctl status kinance-engine.service | head -10
 sudo systemctl status kidax-engine.service | head -10
-sudo systemctl status kibot-manager.service | head -10
+sudo systemctl status kicryp-manager.service | head -10
 
 # Expected: All show "active (running)"
 
 # Check UDP communication
-sudo journalctl -u kibot-manager.service --since "1 minute ago" | grep -i udp
+sudo journalctl -u kicryp-manager.service --since "1 minute ago" | grep -i udp
 
 # Expected: See UDP messages flowing
 
 # Check live status
-curl -s http://localhost:8787/api/state | jq '.kinanceNodeStatus, .kidaxNodeStatus, .kibotNodeStatus, .aiProviderSummary'
+curl -s http://localhost:8787/api/state | jq '.kinanceNodeStatus, .kidaxNodeStatus, .kicrypNodeStatus, .aiProviderSummary'
 
 # Expected:
 # "online"   (kinance)
 # "online"   (kidax)
-# "online"   (kibot)
+# "online"   (kicryp)
 # "Groq (active)" or similar
 ```
 
@@ -225,7 +225,7 @@ All 12 tests PASSED ✅:
 ```bash
 # Check logs
 sudo journalctl -u kinance-engine.service -n 50
-sudo journalctl -u kibot-manager.service -n 50
+sudo journalctl -u kicryp-manager.service -n 50
 
 # Common issues:
 # - JAR file missing
@@ -262,9 +262,9 @@ curl -H "Authorization: Bearer $POST_MORTEM_API_KEY" \
 sudo find / -name ".env" 2>/dev/null | head -20
 
 # Common locations:
-# /home/ubuntu/kibot/.env
-# /opt/kibot/.env
-# /root/kibot/.env
+# /home/ubuntu/kicryp/.env
+# /opt/kicryp/.env
+# /root/kicryp/.env
 # /home/ubuntu/apps/mac-engine/.env
 ```
 
@@ -303,7 +303,7 @@ You know the fix worked when:
 1. ✅ All 3 services show "active (running)"
 2. ✅ `/api/state` shows:
    - `"kinanceNodeStatus": "online"`
-   - `"kibotNodeStatus": "online"`
+   - `"kicrypNodeStatus": "online"`
    - `"kidaxNodeStatus": "online"`
    - `"aiProviderSummary": "Groq (active)"` (NOT "AI OFFLINE")
 3. ✅ Logs show UDP messages flowing

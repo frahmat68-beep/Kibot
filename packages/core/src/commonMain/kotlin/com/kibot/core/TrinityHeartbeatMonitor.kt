@@ -15,10 +15,10 @@ import kotlin.time.Duration.Companion.seconds
  * Example:
  * Kinance: "I'm alive!" (every 10s)
  * KiDax:   "I'm alive!" (every 10s)
- * KiBot:   "I'm alive!" (every 10s)
+ * KiCryp:   "I'm alive!" (every 10s)
  * 
  * If Kinance stops talking:
- * KiBot:   "Eh Kinance mati! Gw restart dia!"
+ * KiCryp:   "Eh Kinance mati! Gw restart dia!"
  * KiDax:   "Gw juga coba restart Kinance!"
  */
 class TrinityHeartbeatMonitor {

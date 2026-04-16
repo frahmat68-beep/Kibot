@@ -6,7 +6,7 @@ Trinity consists of 3 independent services running on 2 Oracle Cloud servers:
 
 **Indodax Server (213.35.118.26):**
 - kidax-engine (KiDax trading bot)
-- kibot-manager (Python AI veto daemon)
+- kicryp-manager (Python AI veto daemon)
 
 **Binance Server (152.69.218.198):**
 - kinance-engine (Kinance scanner)
@@ -37,11 +37,11 @@ scp -i "SSH_INDODAX/ssh-key-2026-03-22.key" \
 
 # Restart services
 ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
-  'sudo systemctl restart kidax-engine kibot-manager'
+  'sudo systemctl restart kidax-engine kicryp-manager'
 
 # Verify
 ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
-  'systemctl status kidax-engine kibot-manager'
+  'systemctl status kidax-engine kicryp-manager'
 ```
 
 ## Deploy to Binance Server
@@ -90,9 +90,9 @@ ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 'free -m'
 ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
   'journalctl -u kidax-engine -f'
 
-# KiBot Manager
+# KiCryp Manager
 ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
-  'journalctl -u kibot-manager -f'
+  'journalctl -u kicryp-manager -f'
 
 # Kinance
 ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
@@ -120,7 +120,7 @@ ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
 ```bash
 # Stop all trading
 ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
-  'sudo systemctl stop kidax-engine kibot-manager'
+  'sudo systemctl stop kidax-engine kicryp-manager'
 
 ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
   'sudo systemctl stop kinance-engine'
@@ -130,9 +130,9 @@ ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
 
 ### Indodax Server
 - `/home/ubuntu/KiDax/.env.kidax` - KiDax config
-- `/home/ubuntu/KiBot/.env.kibot_manager` - Python AI daemon config
+- `/home/ubuntu/KiCryp/.env.kicryp_manager` - Python AI daemon config
 - `/etc/systemd/system/kidax-engine.service` - KiDax systemd
-- `/etc/systemd/system/kibot-manager.service` - Manager systemd
+- `/etc/systemd/system/kicryp-manager.service` - Manager systemd
 
 ### Binance Server
 - `/home/ubuntu/Kinance/.env.kinance` - Kinance config

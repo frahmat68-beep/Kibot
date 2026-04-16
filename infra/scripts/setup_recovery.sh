@@ -6,7 +6,7 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-PRIMARY_SERVICES=("kinance-engine" "kibot-engine" "kidax-engine")
+PRIMARY_SERVICES=("kinance-engine" "kicryp-engine" "kidax-engine")
 OPTIONAL_SERVICES=()
 SWAPFILE="/swapfile"
 SWAPSIZE="2G"

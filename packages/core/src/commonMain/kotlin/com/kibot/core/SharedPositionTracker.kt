@@ -9,7 +9,7 @@ import kotlin.math.abs
  * When KiDax buys:
  * - Broadcast UDP: "I bought BTC at 150, fee 0.3%, target 165"
  * - Kinance knows: "OK, BTC position open, watch Binance for exit signal"
- * - KiBot knows: "OK, track BTC performance, ready to veto exit"
+ * - KiCryp knows: "OK, track BTC performance, ready to veto exit"
  */
 class SharedPositionTracker {
     private val positions = mutableMapOf<String, SharedPosition>()

@@ -49,10 +49,10 @@ ssh -i "$INDODAX_KEY" ubuntu@$INDODAX_SERVER << 'EOF'
     systemctl status kidax-engine --no-pager || echo "Status check failed"
     echo "✅ KiDax restarted"
     
-    echo "Checking KiBot Manager..."
-    sudo -n systemctl restart kibot-manager || true
+    echo "Checking KiCryp Manager..."
+    sudo -n systemctl restart kicryp-manager || true
     sleep 2
-    echo "✅ KiBot Manager restarted"
+    echo "✅ KiCryp Manager restarted"
 EOF
 
 # Step 5: Restart Binance services

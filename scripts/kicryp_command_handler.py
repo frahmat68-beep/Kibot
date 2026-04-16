@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KiBot Trinity - Telegram Command Handler
+KiCryp Trinity - Telegram Command Handler
 ========================================
 Handles user commands for querying bot status, trades, positions, and performance.
 Integrates with AlertManager for real-time alerts.
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 # Import AlertManager
 try:
-    from kibot_alert_manager import AlertManager, AlertType, AlertSeverity, create_alert_manager
+    from kicryp_alert_manager import AlertManager, AlertType, AlertSeverity, create_alert_manager
 except ImportError:
     # Fallback if import fails
     AlertManager = None
@@ -50,7 +50,7 @@ logging.basicConfig(
     format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger("KiBot.CommandHandler")
+logger = logging.getLogger("KiCryp.CommandHandler")
 
 # ============================================================================
 # ICONS & FORMATTING
@@ -216,7 +216,7 @@ class CommandHandler:
         
         # Bot health
         msg += "<b>🤖 Bot Status:</b>\n"
-        msg += f"  {ICONS['status']} KiBot Manager: <b>ONLINE</b>\n"
+        msg += f"  {ICONS['status']} KiCryp Manager: <b>ONLINE</b>\n"
         msg += f"  {ICONS['status']} KiDax: <b>ONLINE</b>\n"
         msg += f"  {ICONS['status']} Kinance: <b>ONLINE</b>\n\n"
         
@@ -409,7 +409,7 @@ class CommandHandler:
         msg += make_separator() + "\n\n"
         
         msg += "<b>Bot Status:</b>\n"
-        msg += f"  {ICONS['status']} KiBot Manager: ONLINE\n"
+        msg += f"  {ICONS['status']} KiCryp Manager: ONLINE\n"
         msg += f"  {ICONS['status']} KiDax: ONLINE\n"
         msg += f"  {ICONS['status']} Kinance: ONLINE\n\n"
         
@@ -686,7 +686,7 @@ async def demo():
     ]
     
     print("=" * 60)
-    print("  KiBot Trinity - Telegram Command Handler Demo")
+    print("  KiCryp Trinity - Telegram Command Handler Demo")
     print("=" * 60)
     
     for cmd in commands:

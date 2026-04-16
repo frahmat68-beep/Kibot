@@ -1,4 +1,4 @@
-# KiBot Trinity - User Brief: How to Ask Questions
+# KiCryp Trinity - User Brief: How to Ask Questions
 
 ## Quick Reference - 5 Essential Commands
 
@@ -201,7 +201,7 @@ Weekly/daily review of win rate, best/worst trades, and P&L trends.
 
 ## What Each Bot Does (Context)
 
-**KiBot Manager (Python) - The Brain**
+**KiCryp Manager (Python) - The Brain**
 - Makes entry decisions
 - Manages capital allocation (70/30 split)
 - Sends VETO commands if conditions bad
@@ -308,7 +308,7 @@ Rather than "gimana bot gw?", be specific:
 
 ## One-Minute Briefing
 
-Think of the Telegram command system as **KiBot's Chatbot**:
+Think of the Telegram command system as **KiCryp's Chatbot**:
 
 - 5 main commands cover 95% of use cases
 - All data is **real-time** from the 3 running bots

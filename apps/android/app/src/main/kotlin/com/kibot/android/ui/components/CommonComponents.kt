@@ -468,13 +468,13 @@ fun HoldingItem(
                 modifier = Modifier
                     .size(32.dp)
                     .clip(CircleShape)
-                    .background(KiBotBlue.copy(alpha = 0.2f)),
+                    .background(KiCrypBlue.copy(alpha = 0.2f)),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = coin.take(2).uppercase(),
                     style = MaterialTheme.typography.labelSmall,
-                    color = KiBotBlue,
+                    color = KiCrypBlue,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -547,7 +547,7 @@ fun LoadingOverlay(
             contentAlignment = Alignment.Center
         ) {
             CircularProgressIndicator(
-                color = KiBotBlue,
+                color = KiCrypBlue,
                 modifier = Modifier.size(48.dp)
             )
         }

@@ -1,4 +1,4 @@
-# KiBot Trinity - TIER 1 Implementation Complete
+# KiCryp Trinity - TIER 1 Implementation Complete
 
 > **Status: ✅ ALL CRITICAL ITEMS IMPLEMENTED**
 
@@ -42,7 +42,7 @@ state/config.json
 ```
 
 **Integration Points:**
-- KiBot Manager reads `trading_paused` before entry decisions
+- KiCryp Manager reads `trading_paused` before entry decisions
 - KiDax reads `emergency_mode` and executes force close
 - Telegram commands send alerts immediately
 
@@ -129,7 +129,7 @@ Real-time alert system that notifies user of critical events via Telegram.
 
 ### Implementation
 
-**New Module: kibot_alert_manager.py**
+**New Module: kicryp_alert_manager.py**
 ```python
 class AlertManager:
     async def alert(
@@ -192,7 +192,7 @@ Ensures state.json stays valid and provides automatic recovery from corruption.
 
 ### Implementation
 
-**New Module: kibot_state_validator.py**
+**New Module: kicryp_state_validator.py**
 ```python
 class StateValidator:
     def load_state() -> Dict[str, Any]     # Load with auto-recovery
@@ -266,7 +266,7 @@ temp_file.rename(state_file)
                      │
                      ▼
         ┌──────────────────────────────┐
-        │  kibot_command_handler.py    │
+        │  kicryp_command_handler.py    │
         │  - /stop                     │
         │  - /emergency                │
         │  - /resume                   │
@@ -286,7 +286,7 @@ temp_file.rename(state_file)
            │
            ▼
       ┌────────────────────────────────┐
-      │  KiBot Manager (Python)        │
+      │  KiCryp Manager (Python)        │
       │  - Read trading_paused flag    │
       │  - Block entries if paused     │
       └────────────────────────────────┘
@@ -317,7 +317,7 @@ state/
 ### Emergency Commands
 ```bash
 # Test /stop
-python3 -c "from scripts.kibot_command_handler import CommandHandler; ..."
+python3 -c "from scripts.kicryp_command_handler import CommandHandler; ..."
 ✅ /stop command: Pauses bot correctly
 ✅ Alert sent to Telegram: "Bot Paused"
 
@@ -398,13 +398,13 @@ All 4 TIER 1 critical items are **COMPLETE and TESTED**:
 ## Files Modified/Created
 
 ### New Files
-- `scripts/kibot_alert_manager.py` (400+ lines)
-- `scripts/kibot_state_validator.py` (350+ lines)
+- `scripts/kicryp_alert_manager.py` (400+ lines)
+- `scripts/kicryp_state_validator.py` (350+ lines)
 - `state/config.json` (control flags)
 
 ### Modified Files
-- `scripts/kibot_command_handler.py` (alert integration)
-- `apps/mac-engine/src/main/kotlin/com/kibot/macengine/runtime/MacEngineDaemon.kt` (timeout logic)
+- `scripts/kicryp_command_handler.py` (alert integration)
+- `apps/mac-engine/src/main/kotlin/com/kicryp/macengine/runtime/MacEngineDaemon.kt` (timeout logic)
 
 ### Commits
 - d92c68c: Emergency stop commands

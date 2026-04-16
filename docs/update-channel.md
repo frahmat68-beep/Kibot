@@ -10,7 +10,7 @@ Update **kode aplikasi Android** tidak bisa dipasang full-silent secara normal p
 - mode device owner / MDM enterprise, atau
 - distribusi khusus
 
-Jadi desain paling aman dan realistis untuk KiBot adalah:
+Jadi desain paling aman dan realistis untuk KiCryp adalah:
 
 - **config/state update**: otomatis penuh
 - **APK/code update**: semi otomatis, user tinggal tap install
@@ -53,10 +53,10 @@ Flow yang saya rekomendasikan:
 
 Kalau Anda tidak mau banyak setting, saya akan pakai default:
 
-- bucket: `kibot-releases`
+- bucket: `kicryp-releases`
 - channel: `stable-private`
 - manifest path: `android/stable/latest.json`
-- artifact name: `kibot-android-latest.apk`
+- artifact name: `kicryp-android-latest.apk`
 
 ## 5. Kenapa Tidak Full Otomatis Install
 
@@ -113,7 +113,7 @@ scripts/install_android_release.sh
 
 Output default:
 
-- APK: `.dist/android/stable/kibot-android-latest.apk`
+- APK: `.dist/android/stable/kicryp-android-latest.apk`
 - manifest: `.dist/android/stable/latest.json`
 
 Upload ke private bucket Supabase bisa ditambahkan setelah auth owner Supabase aktif.

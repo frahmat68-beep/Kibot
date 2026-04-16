@@ -2,7 +2,7 @@
 
 **Date:** April 6, 2026  
 **Auditor:** GitHub Copilot CLI  
-**System:** KiBot Trinity (KINANCE + KIDAX + KIBOT MANAGER)  
+**System:** KiCryp Trinity (KINANCE + KIDAX + KICRYP MANAGER)  
 **Live Server:** http://213.35.118.26:8787/api/state  
 **Current Capital:** Rp 110,345
 
@@ -259,12 +259,12 @@ sudo systemctl start kinance-engine.service
 sudo systemctl enable kinance-engine.service
 
 # Start MANAGER
-sudo systemctl start kibot-manager.service
-sudo systemctl enable kibot-manager.service
+sudo systemctl start kicryp-manager.service
+sudo systemctl enable kicryp-manager.service
 
 # Verify status
 sudo systemctl status kinance-engine.service
-sudo systemctl status kibot-manager.service
+sudo systemctl status kicryp-manager.service
 ```
 
 ### Priority 2: Configure UDP Communication (15 min)
@@ -281,7 +281,7 @@ KIDAX_UDP_PORT=9999
 
 # Restart services
 sudo systemctl restart kinance-engine.service
-sudo systemctl restart kibot-manager.service
+sudo systemctl restart kicryp-manager.service
 sudo systemctl restart kidax-engine.service
 ```
 
@@ -297,14 +297,14 @@ POST_MORTEM_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxx
 POST_MORTEM_MODEL=llama-3.1-8b-instant
 
 # Restart manager
-sudo systemctl restart kibot-manager.service
+sudo systemctl restart kicryp-manager.service
 ```
 
 ### Verification (5 min)
 
 ```bash
 # Check Trinity heartbeat
-sudo journalctl -u kibot-manager.service -f | grep UDP
+sudo journalctl -u kicryp-manager.service -f | grep UDP
 
 # Check AI status
 curl http://213.35.118.26:8787/api/state | jq .aiProviderSummary

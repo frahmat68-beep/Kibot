@@ -2,13 +2,13 @@
 
 set -euo pipefail
 
-RUNTIME_ROOT="${KIBOT_RUNTIME_ROOT:-/home/ubuntu/KiDax}"
-SERVICE_NAME="${KIBOT_SERVICE_NAME:-kidax-engine}"
-SERVICE_FILE_PATH="${KIBOT_SERVICE_FILE_PATH:-${RUNTIME_ROOT}/infra/systemd/${SERVICE_NAME}.service}"
-DASHBOARD_PORT="${KIBOT_DASHBOARD_PORT:-8787}"
-RECOVERY_SCRIPT_PATH="${KIBOT_RECOVERY_SCRIPT_PATH:-${RUNTIME_ROOT}/engine-recovery.sh}"
-AI_SCRIPT_PATH="${KIBOT_AI_SCRIPT_PATH:-${RUNTIME_ROOT}/scripts/ai_learning_cycle.sh}"
-RECOVERY_INTERVAL_SECONDS="${KIBOT_RECOVERY_INTERVAL_SECONDS:-90}"
+RUNTIME_ROOT="${KICRYP_RUNTIME_ROOT:-/home/ubuntu/KiDax}"
+SERVICE_NAME="${KICRYP_SERVICE_NAME:-kidax-engine}"
+SERVICE_FILE_PATH="${KICRYP_SERVICE_FILE_PATH:-${RUNTIME_ROOT}/infra/systemd/${SERVICE_NAME}.service}"
+DASHBOARD_PORT="${KICRYP_DASHBOARD_PORT:-8787}"
+RECOVERY_SCRIPT_PATH="${KICRYP_RECOVERY_SCRIPT_PATH:-${RUNTIME_ROOT}/engine-recovery.sh}"
+AI_SCRIPT_PATH="${KICRYP_AI_SCRIPT_PATH:-${RUNTIME_ROOT}/scripts/ai_learning_cycle.sh}"
+RECOVERY_INTERVAL_SECONDS="${KICRYP_RECOVERY_INTERVAL_SECONDS:-90}"
 RECOVERY_TIMER_NAME="${SERVICE_NAME}-recovery.timer"
 RECOVERY_SERVICE_NAME="${SERVICE_NAME}-recovery.service"
 
@@ -30,7 +30,7 @@ sudo cp "$SERVICE_FILE_PATH" "/etc/systemd/system/${SERVICE_NAME}.service"
 sudo chmod 644 "/etc/systemd/system/${SERVICE_NAME}.service"
 sudo mkdir -p "/etc/systemd/system/${SERVICE_NAME}.service.d"
 sudo rm -f "/etc/systemd/system/${SERVICE_NAME}.service.d/memory-optimize.conf"
-sudo tee "/etc/systemd/system/${SERVICE_NAME}.service.d/00-kibot-memory.conf" >/dev/null <<'EOF'
+sudo tee "/etc/systemd/system/${SERVICE_NAME}.service.d/00-kicryp-memory.conf" >/dev/null <<'EOF'
 [Service]
 Environment="JAVA_OPTS=-XX:+UseSerialGC -Xms96m -Xmx256m -XX:MaxMetaspaceSize=80m -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
 EOF
@@ -53,14 +53,14 @@ Wants=network-online.target ${SERVICE_NAME}.service
 
 [Service]
 Type=oneshot
-Environment=KIBOT_RUNTIME_ROOT=${RUNTIME_ROOT}
-Environment=KIBOT_SERVICE_NAME=${SERVICE_NAME}
-Environment=KIBOT_DASHBOARD_PORT=${DASHBOARD_PORT}
-Environment=KIBOT_ENV_FILE=${KIBOT_ENV_FILE:-}
-Environment=KIBOT_EXPECT_LIVE_EXECUTION=${KIBOT_EXPECT_LIVE_EXECUTION:-true}
-Environment=KIBOT_RECOVERY_HTTP_TIMEOUT_SECONDS=${KIBOT_RECOVERY_HTTP_TIMEOUT_SECONDS:-20}
-Environment=KIBOT_RECOVERY_ALLOW_SLOW_PORT_FALLBACK=${KIBOT_RECOVERY_ALLOW_SLOW_PORT_FALLBACK:-true}
-Environment=KIBOT_RECOVERY_WARMUP_GRACE_SECONDS=${KIBOT_RECOVERY_WARMUP_GRACE_SECONDS:-300}
+Environment=KICRYP_RUNTIME_ROOT=${RUNTIME_ROOT}
+Environment=KICRYP_SERVICE_NAME=${SERVICE_NAME}
+Environment=KICRYP_DASHBOARD_PORT=${DASHBOARD_PORT}
+Environment=KICRYP_ENV_FILE=${KICRYP_ENV_FILE:-}
+Environment=KICRYP_EXPECT_LIVE_EXECUTION=${KICRYP_EXPECT_LIVE_EXECUTION:-true}
+Environment=KICRYP_RECOVERY_HTTP_TIMEOUT_SECONDS=${KICRYP_RECOVERY_HTTP_TIMEOUT_SECONDS:-20}
+Environment=KICRYP_RECOVERY_ALLOW_SLOW_PORT_FALLBACK=${KICRYP_RECOVERY_ALLOW_SLOW_PORT_FALLBACK:-true}
+Environment=KICRYP_RECOVERY_WARMUP_GRACE_SECONDS=${KICRYP_RECOVERY_WARMUP_GRACE_SECONDS:-300}
 ExecStart=${RECOVERY_SCRIPT_PATH}
 EOF
 

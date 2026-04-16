@@ -1,13 +1,13 @@
-# KiBot Optimizer (Manager-Only Local Scenarios)
+# KiCryp Optimizer (Manager-Only Local Scenarios)
 
-Folder ini khusus untuk optimisasi **KiBot sebagai otak manajer**, terpisah dari mesin eksekusi:
+Folder ini khusus untuk optimisasi **KiCryp sebagai otak manajer**, terpisah dari mesin eksekusi:
 - `KiDax` = executor Indodax
 - `Kinance` = executor Binance
-- `KiBot` = manager/auditor/pengarah target
+- `KiCryp` = manager/auditor/pengarah target
 
 ## Tujuan
-- Uji local story-based scenario supaya KiBot dipakai maksimal.
-- Pastikan KiBot:
+- Uji local story-based scenario supaya KiCryp dipakai maksimal.
+- Pastikan KiCryp:
   - membaca kondisi dua bot sekaligus,
   - menegur bila pace target meleset,
   - memberi command adaptif terpisah ke KiDax/Kinance,
@@ -15,14 +15,14 @@ Folder ini khusus untuk optimisasi **KiBot sebagai otak manajer**, terpisah dari
 
 ## File
 - `scenarios.json`: kumpulan skenario cerita lokal.
-- `run_local_kibot_scenarios.py`: runner + assertion otomatis.
+- `run_local_kicryp_scenarios.py`: runner + assertion otomatis.
 
 ## Jalankan
 ```bash
-python3 kibot_optimizer/run_local_kibot_scenarios.py
+python3 kicryp_optimizer/run_local_kicryp_scenarios.py
 ```
 
 Jika semua lulus, output akan menampilkan:
 - status `PASS` per skenario
-- command KiBot ke tiap bot
+- command KiCryp ke tiap bot
 - manager report ringkas yang siap dipush ke app/web.

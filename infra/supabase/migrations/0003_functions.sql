@@ -20,7 +20,7 @@ begin
     on conflict (user_id) do nothing;
 
     insert into public.bots (bot_id, user_id, display_name)
-    values ('main', new.id, 'KiBot Main')
+    values ('main', new.id, 'KiCryp Main')
     on conflict (bot_id) do nothing;
 
     insert into public.bot_state (bot_id)

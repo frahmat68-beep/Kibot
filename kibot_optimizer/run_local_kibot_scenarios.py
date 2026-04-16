@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Local scenario runner for KiBot manager (brain-only).
-This does NOT execute real trades. It validates KiBot decision logic quality.
+Local scenario runner for KiCryp manager (brain-only).
+This does NOT execute real trades. It validates KiCryp decision logic quality.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ def evaluate_scenario(item: Dict, target_hourly: float) -> Decision:
         ]
 
     report = (
-        f"KiBot Manager [{mode}] | pace={pace:.2f}%/jam vs target={target_hourly:.2f}%/jam | "
+        f"KiCryp Manager [{mode}] | pace={pace:.2f}%/jam vs target={target_hourly:.2f}%/jam | "
         f"KiDax(lat={kidax['latency_ms']}ms,conv={kidax['conversion_quality']}) | "
         f"Kinance(lat={kinance['latency_ms']}ms,conv={kinance['conversion_quality']}). "
         f"Instruksi: {', '.join(commands)}."
@@ -113,7 +113,7 @@ def main() -> None:
     target_hourly = float(payload["target_hourly_pct"])
     scenarios = payload["scenarios"]
 
-    print("== KiBot Local Manager Scenario Suite ==")
+    print("== KiCryp Local Manager Scenario Suite ==")
     print(f"Target hourly: {target_hourly:.2f}%")
     print(f"Scenario count: {len(scenarios)}")
     print("")

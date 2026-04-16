@@ -24,7 +24,7 @@ internal actual fun createPlatformHttpClient(json: Json): HttpClient = HttpClien
         socketTimeoutMillis = 15_000
     }
     defaultRequest {
-        headers.append(HttpHeaders.UserAgent, "KiBot/1.0 (+https://kibot.local)")
+        headers.append(HttpHeaders.UserAgent, "KiCryp/1.0 (+https://kibot.local)")
         headers.append(HttpHeaders.Accept, "application/json,text/plain,*/*")
     }
     // ContentEncoding MUST be installed BEFORE ContentNegotiation

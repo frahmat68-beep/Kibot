@@ -47,7 +47,7 @@ class LanServiceAdvertiser(
 
     private companion object {
         const val SERVICE_TYPE = "_kibot._tcp.local."
-        const val SERVICE_NAME = "KiBot-Mac-Engine"
+        const val SERVICE_NAME = "KiCryp-Mac-Engine"
 
         fun detectLanHost(host: String): String? {
             if (host != "0.0.0.0" && host != "127.0.0.1" && host != "localhost") {

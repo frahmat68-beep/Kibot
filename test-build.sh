@@ -1,5 +1,5 @@
 #!/bin/bash
-echo "Building KiBot core package..."
+echo "Building KiCryp core package..."
 ./gradlew :packages:core:build -x test --no-daemon 2>&1 | tee build-output.txt | tail -100
 echo ""
 echo "Build Status: $?"

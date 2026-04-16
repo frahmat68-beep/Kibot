@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "KiBot"
+rootProject.name = "KiCryp"
 include(":app")

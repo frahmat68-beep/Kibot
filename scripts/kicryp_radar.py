@@ -10,8 +10,8 @@ from datetime import datetime
 # === CONFIGURATION ===
 KICRYP_WS_URL = "wss://stream.crypto.com/v2/market"
 # Target the same port as Kinance for shared signal processing
-MANAGER_UDP_HOST = os.getenv("KIBOT_MANAGER_HOST", "127.0.0.1")
-MANAGER_UDP_PORT = int(os.getenv("KIBOT_MANAGER_PORT", "9999"))
+MANAGER_UDP_HOST = os.getenv("KICRYP_MANAGER_HOST", "127.0.0.1")
+MANAGER_UDP_PORT = int(os.getenv("KICRYP_MANAGER_PORT", "9999"))
 
 # Default top-50 volume pairs on Crypto.com (can be expanded)
 DEFAULT_PAIRS = [
@@ -26,7 +26,7 @@ class KiCrypRadar:
         self.last_heartbeat = 0
 
     def broadcast_to_whiteboard(self, symbol, price, vol_24h):
-        """Send price update to the KiBot Manager's whiteboard."""
+        """Send price update to the KiCryp Manager's whiteboard."""
         msg = {
             "source": "CRYPTOCOM",
             "type": "TICKER_UPDATE",

@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-ROOT_DIR="${ROOT_DIR:-/home/ubuntu/KiBot}"
-LOG_FILE="${LOG_FILE:-$ROOT_DIR/kibot-recovery.log}"
+ROOT_DIR="${ROOT_DIR:-/home/ubuntu/KiCryp}"
+LOG_FILE="${LOG_FILE:-$ROOT_DIR/kicryp-recovery.log}"
 FAIL_THRESHOLD="${FAIL_THRESHOLD:-3}"
 CHECK_INTERVAL="${CHECK_INTERVAL:-30}"
 RESTART_COOLDOWN="${RESTART_COOLDOWN:-60}"
@@ -12,7 +12,7 @@ CRASH_WINDOW_SEC="${CRASH_WINDOW_SEC:-300}"
 
 source "$ROOT_DIR/.env" 2>/dev/null || true
 
-SERVICES=("kibot-manager" "kidax-engine" "kinance-engine")
+SERVICES=("kicryp-manager" "kidax-engine" "kinance-engine")
 ENDPOINTS=("http://127.0.0.1:9998/api/state" "http://127.0.0.1:8787/api/state" "http://127.0.0.1:8788/api/state")
 
 declare -A fail_streak
@@ -47,7 +47,7 @@ crash_loop_active() {
 
 restart_service() {
     local service="$1"
-    if hard_stop_active && [[ "$service" == "kibot-manager" || "$service" == "kidax-engine" ]]; then
+    if hard_stop_active && [[ "$service" == "kicryp-manager" || "$service" == "kidax-engine" ]]; then
         log "[SKIP] ${service}: hard stop aktif"
         return 0
     fi
@@ -61,7 +61,7 @@ restart_service() {
 }
 
 main() {
-    log "=== KiBot recovery v2 started ==="
+    log "=== KiCryp recovery v2 started ==="
     while true; do
         for idx in "${!SERVICES[@]}"; do
             service="${SERVICES[$idx]}"

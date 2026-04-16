@@ -66,10 +66,10 @@ fun DashboardScreen(
                 LiveActivitySectionV2(botState = botState)
             }
             
-            // KiBot Manager Status Card
+            // KiCryp Manager Status Card
             item {
                 BotStatusCard(
-                    name = "KiBot Manager",
+                    name = "KiCryp Manager",
                     subtitle = kibotSubtitle(botState),
                     status = botState.heartbeat.kibot.status,
                     pingMs = null,
@@ -177,7 +177,7 @@ fun DashboardScreen(
                                 Text(
                                     text = "See All",
                                     style = MaterialTheme.typography.labelMedium,
-                                    color = KiBotBlue
+                                    color = KiCrypBlue
                                 )
                             }
                         }

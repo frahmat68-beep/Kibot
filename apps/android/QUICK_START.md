@@ -1,11 +1,11 @@
-# KiBot Android App - Quick Start Guide
+# KiCryp Android App - Quick Start Guide
 
 ## 5-Minute Setup
 
 ### 1. Prerequisites
 - Android Studio installed
 - Android SDK 34 installed
-- KiBot Mac Engine running (on same network)
+- KiCryp Mac Engine running (on same network)
 
 ### 2. Build the App
 ```bash
@@ -72,7 +72,7 @@ async def handler(websocket, path):
 
 async def main():
     async with serve(handler, "0.0.0.0", 8787):
-        print("Test server running on ws://0.0.0.0:8787/kibot/status")
+        print("Test server running on ws://0.0.0.0:8787/kicryp/status")
         await asyncio.Future()
 
 asyncio.run(main())
@@ -110,7 +110,7 @@ apps/android/
 ├── QUICK_START.md           # This file
 ├── MOCK_DATA.json           # Example server response
 ├── app/src/main/
-│   ├── kotlin/com/kibot/android/
+│   ├── kotlin/com/kicryp/android/
 │   │   ├── MainActivity.kt   # Entry point & ViewModel
 │   │   ├── websocket/        # Connection logic
 │   │   ├── data/             # Data models
@@ -126,7 +126,7 @@ apps/android/
 |-------|---------|
 | `MainActivity` | App entry point, manages lifecycle |
 | `DashboardViewModel` | State management, WebSocket control |
-| `KiBotWebSocketClient` | WebSocket connection & data parsing |
+| `KiCrypWebSocketClient` | WebSocket connection & data parsing |
 | `BotStatus` | Data models (balance, P&L, trades, etc.) |
 | `DashboardScreen` | Main UI (Compose) |
 | `SettingsScreen` | Configuration UI (Compose) |
@@ -161,7 +161,7 @@ apps/android/
 1. **Use WiFi**: Local network connection is faster
 2. **Enable Developer Logs**:
    ```bash
-   adb logcat -s "KiBot"
+   adb logcat -s "KiCryp"
    ```
 3. **Test Offline First**: Verify UI renders without connection
 4. **Monitor Network**: Use Chrome DevTools to inspect WebSocket traffic
@@ -181,4 +181,4 @@ For full documentation, see **README.md**
 
 ---
 
-**Need help?** Check logs with `adb logcat | grep -i kibot`
+**Need help?** Check logs with `adb logcat | grep -i kicryp`

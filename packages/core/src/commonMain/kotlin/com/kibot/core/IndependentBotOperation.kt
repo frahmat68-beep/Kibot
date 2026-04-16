@@ -11,7 +11,7 @@ package com.kibot.core
  * 
  * Kinance: Scan sendiri, entry/exit sendiri
  * KiDax:   Trade sendiri, jangan tunggu Kinance signal
- * KiBot:   Monitor sendiri, approve/veto dari data local
+ * KiCryp:   Monitor sendiri, approve/veto dari data local
  */
 class IndependentBotOperation {
     
@@ -79,12 +79,12 @@ class IndependentBotOperation {
     }
     
     /**
-     * KiBot can monitor independently
+     * KiCryp can monitor independently
      */
     fun kibotLocalOperation(): KibotLocalMode {
         return KibotLocalMode(
-            name = "KIBOT_LOCAL",
-            description = "KiBot monitors and manages independently",
+            name = "KICRYP_LOCAL",
+            description = "KiCryp monitors and manages independently",
             responsibilities = listOf(
                 "Monitor Indodax balance and positions",
                 "Calculate daily P&L",
@@ -98,7 +98,7 @@ class IndependentBotOperation {
             doesNotNeedUdp = true,
             doesNotNeedKinance = true,
             monitoringLogic = """
-                KiBot local monitoring:
+                KiCryp local monitoring:
                 1. Check current equity every 10 seconds
                 2. IF loss > 5%: Trigger recovery system
                 3. FOR each position: Check if stagnant
@@ -121,15 +121,15 @@ class IndependentBotOperation {
             whenUdpIsWorking = """
                 Benefits:
                 - Kinance tells KiDax about pump early
-                - KiDax tells KiBot about entries early
-                - KiBot tells others about risks early
+                - KiDax tells KiCryp about entries early
+                - KiCryp tells others about risks early
                 = FASTER coordination, better timing
             """.trimIndent(),
             whenUdpIsDown = """
                 Fallback:
                 - Kinance: Continue scanning, keep logs
                 - KiDax: Continue trading, keep logs  
-                - KiBot: Continue monitoring, keep logs
+                - KiCryp: Continue monitoring, keep logs
                 = SLOWER but STILL WORKS!
                 
                 Later when UDP back:
@@ -147,11 +147,11 @@ class IndependentBotOperation {
     fun panicPreventionProtocol(): PanicPreventionRules {
         return PanicPreventionRules(
             rule1 = "UDP timeout ≠ market emergency → NO PANIC SELL",
-            rule2 = "If can't reach KiBot → KiDax keeps trading from local rules",
+            rule2 = "If can't reach KiCryp → KiDax keeps trading from local rules",
             rule3 = "If can't reach Kinance → KiDax uses local Indodax analysis",
             rule4 = "NO FORCED EXITS due to network issues",
             rule5 = "Trailing stop is LOCAL in KiDax, doesn't need UDP",
-            rule6 = "Recovery system is LOCAL in KiBot, doesn't need UDP",
+            rule6 = "Recovery system is LOCAL in KiCryp, doesn't need UDP",
             rule7 = "All positions tracked LOCALLY, backed by exchange",
             implementation = """
                 In MacEngineDaemon:

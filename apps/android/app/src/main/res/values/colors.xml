@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Brand Colors -->
-    <color name="kibot_green">#7ED957</color>
-    <color name="kibot_blue">#4A9FD4</color>
-    <color name="kibot_orange">#F5A623</color>
+    <color name="kicryp_green">#7ED957</color>
+    <color name="kicryp_blue">#4A9FD4</color>
+    <color name="kicryp_orange">#F5A623</color>
     
     <!-- Semantic Colors -->
     <color name="profit_green">#00C853</color>

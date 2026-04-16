@@ -36,7 +36,7 @@ kotlin {
 }
 
 android {
-    namespace = "com.kibot.controlplane"
+    namespace = "com.kicryp.controlplane"
     compileSdk = 35
 
     defaultConfig {

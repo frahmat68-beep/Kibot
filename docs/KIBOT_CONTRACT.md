@@ -1,12 +1,12 @@
-# KiBot Contract (Trinity) V6.9.8
+# KiCryp Contract (Trinity) V6.9.8
 
-Dokumen ini adalah sumber kebenaran utama untuk sistem **KiBot (Manager)**, **KiDax (Indodax Executor)**, dan **Kinance (Binance Radar)**.
+Dokumen ini adalah sumber kebenaran utama untuk sistem **KiCryp (Manager)**, **KiDax (Indodax Executor)**, dan **Kinance (Binance Radar)**.
 
 Tujuan utama: mesin trading 24/7 yang agresif, adaptif, dan tetap punya guardrail eksekusi.
 
 ## 1) Peran Tiap Bot
 
-- **KiBot (Manager/Intel)**
+- **KiCryp (Manager/Intel)**
   - Membaca sinyal lintas sistem.
   - Menjalankan evaluasi veto (viability: potensi profit vs biaya/slippage).
   - Menjalankan job intel korelasi dinamis AI (background).
@@ -16,7 +16,7 @@ Tujuan utama: mesin trading 24/7 yang agresif, adaptif, dan tetap punya guardrai
 - **Kinance (Detector Binance)**
   - Radar utama market cepat (Binance Spot).
   - Deteksi momentum, detector hit, sell-wall/reversal.
-  - Broadcast sinyal via UDP ke KiBot + KiDax.
+  - Broadcast sinyal via UDP ke KiCryp + KiDax.
   - Menjadi sumber “early warning” untuk rotasi cepat.
 
 - **KiDax (Executor Indodax)**
@@ -58,7 +58,7 @@ Tujuan utama: mesin trading 24/7 yang agresif, adaptif, dan tetap punya guardrai
 ## 5) Dynamic AI Correlation (Intel Division)
 
 - Tidak mengandalkan hardcode sektor statis sebagai sumber utama.
-- KiBot menjalankan background fetch korelasi dari LLM periodik.
+- KiCryp menjalankan background fetch korelasi dari LLM periodik.
 - Hasil format korelasi disiarkan sebagai `CORRELATION_MATRIX`.
 - Kinance/KiDax menyimpan matrix ini di RAM lokal untuk keputusan cepat.
 
@@ -76,7 +76,7 @@ Tujuan utama: mesin trading 24/7 yang agresif, adaptif, dan tetap punya guardrai
   - Jika posisi dipegang `> 1 jam` dan PnL berada di rentang `-0.5% s.d +0.5%`, posisi dianggap stagnan.
   - Wajib `FORCE_ROTATE` ke kandidat lain yang lebih aktif (modal tidak boleh tidur).
 - **AI Hallucination Guard:**
-  - Sebelum broadcast `CORRELATION_MATRIX`, KiBot wajib melakukan sanity-check terhadap daftar ticker resmi exchange tujuan.
+  - Sebelum broadcast `CORRELATION_MATRIX`, KiCryp wajib melakukan sanity-check terhadap daftar ticker resmi exchange tujuan.
   - Untuk eksekusi KiDax, simbol yang tidak ada di ticker resmi Indodax wajib dibuang dari payload.
 - **Partial Take Profit (Scaling Out):**
   - Saat posisi mencapai `PnL > +10%`, jual sebagian (`50%`) untuk mengunci profit/modal.
@@ -100,9 +100,9 @@ Semua log lain non-kritis dibatasi/seminimal mungkin.
 ## 8) Data Source & Integrasi
 
 - Engine trading: Kotlin/JVM (`mac-engine`).
-- Manager intel: Python (`scripts/kibot_manager.py`).
+- Manager intel: Python (`scripts/kicryp_manager.py`).
 - Control plane: Supabase (dipakai hemat; update non-kritis dibatasi interval).
-- UI App/Web: view monitoring dari agregasi KiBot/KiDax/Kinance.
+- UI App/Web: view monitoring dari agregasi KiCryp/KiDax/Kinance.
 
 ## 9) Secrets & Credential Policy
 
@@ -114,9 +114,9 @@ Gunakan environment variable, contoh:
 - `COHERE_API_KEY`
 - `OPENROUTER_API_KEY`
 - `BLACKBOX_API_KEY`
-- `KIBOT_CORRELATION_API_URL`
-- `KIBOT_CORRELATION_API_KEY`
-- `KIBOT_CORRELATION_MODEL`
+- `KICRYP_CORRELATION_API_URL`
+- `KICRYP_CORRELATION_API_KEY`
+- `KICRYP_CORRELATION_MODEL`
 
 Catatan keamanan:
 - Jika key pernah terekspos di chat/log, lakukan rotate key.
@@ -125,10 +125,10 @@ Catatan keamanan:
 
 1. Kinance scan market Binance (live).
 2. Kinance kirim sinyal UDP (`DETECTOR_HIT` / `SELL_WALL_SURGE`).
-3. KiBot evaluasi viability + intel + veto.
-4. KiBot broadcast hasil (`VETO_APPROVED` / `VETO_REJECTED` / `VETO_SELL_CONFIRMED`) + `CORRELATION_MATRIX` periodik.
+3. KiCryp evaluasi viability + intel + veto.
+4. KiCryp broadcast hasil (`VETO_APPROVED` / `VETO_REJECTED` / `VETO_SELL_CONFIRMED`) + `CORRELATION_MATRIX` periodik.
 5. KiDax eksekusi buy/sell/rotasi sesuai sinyal valid dan guardrail.
-6. KiBot/KiDax/Kinance kirim data operasional untuk monitoring.
+6. KiCryp/KiDax/Kinance kirim data operasional untuk monitoring.
 
 ## 11) Batasan Realita Operasional
 
@@ -146,7 +146,7 @@ Mulai dokumen ini berlaku:
   - menonaktifkan sinyal mesh/veto/correlation,
   - mengubah guardrail kunci tanpa approval,
   - mengubah log policy sehingga boros egress lagi,
-  - mengubah peran utama KiBot/Kinance/KiDax.
+  - mengubah peran utama KiCryp/Kinance/KiDax.
 
 Format approval yang dianggap sah:
 - Pesan eksplisit user di chat: “setuju ubah X menjadi Y”.
@@ -163,10 +163,10 @@ Format approval yang dianggap sah:
 
 ## 13) Referensi File Implementasi Utama
 
-- `apps/mac-engine/src/main/kotlin/com/kibot/macengine/runtime/MacEngineDaemon.kt`
-- `apps/mac-engine/src/main/kotlin/com/kibot/macengine/config/MacRuntimeConfig.kt`
-- `packages/core/src/commonMain/kotlin/com/kibot/core/LiveRolloutGuard.kt`
-- `scripts/kibot_manager.py`
+- `apps/mac-engine/src/main/kotlin/com/kicryp/macengine/runtime/MacEngineDaemon.kt`
+- `apps/mac-engine/src/main/kotlin/com/kicryp/macengine/config/MacRuntimeConfig.kt`
+- `packages/core/src/commonMain/kotlin/com/kicryp/core/LiveRolloutGuard.kt`
+- `scripts/kicryp_manager.py`
 
 ## 14) Status Versi Dokumen
 
@@ -178,10 +178,10 @@ Format approval yang dianggap sah:
 ## 15) Change Log
 
 - `2026-03-31` — Multi-Provider AI Integration (`V7.0.0`):
-  - **KiBot AI Router** (`scripts/kibot_manager.py`) kini aktif failover berurutan lintas provider: `Blackbox -> Groq -> OpenRouter -> Cohere -> Gemini` (urutan bisa diatur via env `KIBOT_AI_PROVIDER_ORDER`).
+  - **KiCryp AI Router** (`scripts/kicryp_manager.py`) kini aktif failover berurutan lintas provider: `Blackbox -> Groq -> OpenRouter -> Cohere -> Gemini` (urutan bisa diatur via env `KICRYP_AI_PROVIDER_ORDER`).
   - **Post-mortem AI** dan **Correlation Matrix AI** sudah memakai router provider yang sama, tidak lagi single endpoint statis.
   - Tambah dukungan provider baru **Blackbox** (`BLACKBOX_API_KEY`, `BLACKBOX_MODEL`, `BLACKBOX_API_URL`) dengan fallback aman ke jalur legacy jika router gagal.
-  - KiBot broadcast status provider aktif via UDP (`AI_PROVIDER_STATUS`) agar KiDax/Kinance dapat visibilitas runtime AI yang sedang dipakai.
+  - KiCryp broadcast status provider aktif via UDP (`AI_PROVIDER_STATUS`) agar KiDax/Kinance dapat visibilitas runtime AI yang sedang dipakai.
   - **AI auditor script** (`scripts/audit_trading_6h_ai.py`) ditingkatkan untuk mengenali provider `blackbox` pada auto-chain/override.
 
 - `2026-03-31` — Adaptive Coin Selection Revision (`V6.9.8`):
@@ -219,18 +219,18 @@ Format approval yang dianggap sah:
   - Kotlin: TTL stagnan `>3 jam` + PnL `-0.5..+0.5` memicu `Zombie TTL rotate`.
   - Kotlin: partial take-profit `50%` saat gain `>10%`, sisanya tetap trailing.
   - Kotlin: market buy spread cap `1.5%` (fallback otomatis ke limit mid-price).
-  - Python (KiBot): sanity-check korelasi AI terhadap ticker resmi Indodax sebelum `CORRELATION_MATRIX` broadcast.
+  - Python (KiCryp): sanity-check korelasi AI terhadap ticker resmi Indodax sebelum `CORRELATION_MATRIX` broadcast.
 - `2026-03-28` — Patch live V4.3 lanjutan:
   - Hapus blokir **False Entry Mingguan** dari `LiveRolloutGuard` (gate usang dibypass penuh).
   - Tambah deteksi **GRADUAL_UPTREND** pada radar Kinance (tracker 5-15 menit, non-spike volume).
   - KiDax eksekusi sinyal `GRADUAL_UP` dengan **LIMIT mid-price** (bukan market chase).
-  - Tambah **force post-mortem** untuk loss terbaru saat startup KiBot Manager.
+  - Tambah **force post-mortem** untuk loss terbaru saat startup KiCryp Manager.
   - Jika insert ledger gagal, evaluasi AI loss tetap jalan (`fail-open` untuk pembelajaran).
 - `2026-03-28` — Upgrade `V4.4` (Absolute Unleash):
   - Bypass total seluruh gate historis `LiveRolloutGuard` pada jalur entry runtime (`MacEngineDaemon`).
   - Perbaikan ledger Supabase: jika tabel `trade_history` tidak tersedia (404), payload otomatis fallback ke tabel `logs` kategori `BOOK_ENTRY`.
 - `2026-03-29` — Upgrade `V5.0` (Integrasi 8 Kasus Alurasi):
-  - Tambah hard abort sinyal stale `>1500ms` pada jalur double-confirmation (KiDax + KiBot).
+  - Tambah hard abort sinyal stale `>1500ms` pada jalur double-confirmation (KiDax + KiCryp).
   - Tambah FOMO guard: jika sinyal sudah terbang tinggi (`>=15%`), veto diarahkan ke mode `LIMIT_PULLBACK` (koreksi sekitar `-4%`) alih-alih market chase.
   - Tambah crash guard absolut di KiDax: hard stop-loss `-3.5%` atau panic BTC/ETH `<= -2%` memicu `MARKET SELL` langsung tanpa tunggu evaluasi AI.
   - Tambah fail-open control-plane pada engine runtime: jika `BotState` Supabase gagal diambil, engine lanjut trading dengan fallback state lokal (degraded fail-open), tidak mati total.
@@ -246,8 +246,8 @@ Format approval yang dianggap sah:
   - Turunkan noise runtime: lease-conflict transient tidak lagi di-log sebagai error keras.
 - `2026-03-30` — Upgrade `V6.0` (Trinity Sell Protocol):
   - **Dust Liberation**: aset dust tidak dikunci permanen; jika value naik menembus ambang release (>= Rp11.000), otomatis keluar dari karantina dan kembali bisa dijual.
-  - **Sell Signal Expansion**: tambah sinyal `MOMENTUM_LOSS` selain `SELL_WALL_SURGE` pada jalur Kinance -> KiBot -> KiDax.
-  - **KiBot Veto Update** (`scripts/kibot_manager.py`): `MOMENTUM_LOSS` diperlakukan sebagai jalur reversal dan memicu `VETO_SELL_CONFIRMED`.
+  - **Sell Signal Expansion**: tambah sinyal `MOMENTUM_LOSS` selain `SELL_WALL_SURGE` pada jalur Kinance -> KiCryp -> KiDax.
+  - **KiCryp Veto Update** (`scripts/kicryp_manager.py`): `MOMENTUM_LOSS` diperlakukan sebagai jalur reversal dan memicu `VETO_SELL_CONFIRMED`.
   - **Smart Sell Routing** (`MacEngineDaemon.kt`):
     - reversal gradual -> prefer `LIMIT SELL` maker di best ask,
     - crash-style exit (`CRASH_GUARD`/panic) -> paksa `MARKET SELL` taker.
@@ -258,9 +258,9 @@ Format approval yang dianggap sah:
   - **Exit Priority Fix**: saat banyak pair menembus floor bersamaan, prioritas sell dipilih berdasarkan severity breach + notional exposure (mencegah pair penting kalah antre dari pair kecil).
   - **/api/state**: `trailingFloors` tetap diekspos untuk transparansi harga floor aktif per pair.
 - `2026-03-30` — Upgrade `V6.3` (CoinGecko Global Oracle):
-  - **Trending Radar** (`kibot_manager.py`): integrasi CoinGecko `search/trending` dengan scheduler 3-5 menit + cache internal untuk jaga rate limit.
+  - **Trending Radar** (`kicryp_manager.py`): integrasi CoinGecko `search/trending` dengan scheduler 3-5 menit + cache internal untuk jaga rate limit.
   - **AI Prompt Enrichment**: data trending CoinGecko diinjeksikan ke prompt korelasi LLM sebelum pembentukan `CORRELATION_MATRIX`.
-  - **Cross Validation**: saat menerima sinyal Kinance, KiBot melakukan boost confidence jika pair juga masuk daftar trending global CoinGecko.
+  - **Cross Validation**: saat menerima sinyal Kinance, KiCryp melakukan boost confidence jika pair juga masuk daftar trending global CoinGecko.
 - `2026-03-30` — Upgrade `V6.5` (Garbage Coin Nuke + Technical Armor):
   - **Blue Chip Volume Guard** (`MacEngineDaemon.kt`): blokir BUY pada pair Indodax dengan volume harian `< Rp200.000.000`.
   - **Emergency Garbage Liquidation**: pair di daftar nuke diprioritaskan sebagai exit darurat sebelum exit lain.
@@ -271,12 +271,12 @@ Format approval yang dianggap sah:
   - **Garbage Nuke List Update** (`MacEngineDaemon.kt`): daftar force-liquidation diperluas ke `mpro_idr`, `dusk_idr`, `fet_idr`, `wlfi_idr`, `kaito_idr`, `plpa_idr` (+ kompatibilitas `xpr_idr`/`xrp_idr`).
   - **KiDax Active Position Broadcast**: KiDax broadcast UDP `ACTIVE_POSITIONS` tiap ~3 detik (entry/current/PnL/notional) untuk telemetri intervensi real-time.
   - **Kinance Watchlist Priority**: Kinance mengutamakan pair yang sedang di-hold KiDax pada radar entry dan memantau gejala longsor depth/momentum.
-  - **KiBot Active Overwatch** (`scripts/kibot_manager.py`): KiBot menyerap `ACTIVE_POSITIONS`, cross-check CoinGecko + matrix AI, lalu dapat menembakkan `EMERGENCY_VETO_SELL`.
+  - **KiCryp Active Overwatch** (`scripts/kicryp_manager.py`): KiCryp menyerap `ACTIVE_POSITIONS`, cross-check CoinGecko + matrix AI, lalu dapat menembakkan `EMERGENCY_VETO_SELL`.
   - **KiDax Emergency Sell Bypass**: saat menerima `EMERGENCY_VETO_SELL`, KiDax bypass trailing lokal dan memaksa jalur force-sell prioritas.
 - `2026-03-30` — Upgrade `V6.7` (Android UI Nuke + Zero-Egress Monitor Stabilization):
-  - **UI Nuke Enforcement** (`KiBotRoot.kt`): dashboard monitor dipaksa minimalis (Hero Card + pills + Live Pair chips), tanpa mengandalkan kontainer detail lama.
-  - **Mode Pair/PnL Isolation** (`KiBotRoot.kt`): lookup pair + PnL dipisah ketat per mode (`_idr` untuk KiDax, `_usdt/_btc/_eth/_bnb` untuk Kinance) agar chip tidak tercampur lintas exchange.
-  - **Unified Wealth Stabilization** (`AppRepository.kt`): total saldo KiBot menjaga akumulasi `KiDax + Kinance` dan tidak drop ke nilai parsial saat salah satu feed sementara telat.
+  - **UI Nuke Enforcement** (`KiCrypRoot.kt`): dashboard monitor dipaksa minimalis (Hero Card + pills + Live Pair chips), tanpa mengandalkan kontainer detail lama.
+  - **Mode Pair/PnL Isolation** (`KiCrypRoot.kt`): lookup pair + PnL dipisah ketat per mode (`_idr` untuk KiDax, `_usdt/_btc/_eth/_bnb` untuk Kinance) agar chip tidak tercampur lintas exchange.
+  - **Unified Wealth Stabilization** (`AppRepository.kt`): total saldo KiCryp menjaga akumulasi `KiDax + Kinance` dan tidak drop ke nilai parsial saat salah satu feed sementara telat.
   - **Zero-Egress Path** (`AppRepository.kt`): jalur monitor Android tetap polling langsung endpoint Ktor `/api/state` (KiDax/Kinance) dan tidak memakai Supabase Realtime untuk telemetry rutin.
 - `2026-03-30` — Runtime Ops Note `V6.7.1` (Self-Audit Command Readiness):
   - **KiDax identity override** di systemd ditetapkan ke `DEVICE_ID=kidax-oracle-sg` agar konsisten dengan env server dan mengurangi konflik lease lintas runtime.
@@ -299,8 +299,8 @@ Format approval yang dianggap sah:
     - scoring target anomaly dan fallback baseline diberi bobot A-List agar pair likuid-volatile diprioritaskan.
   - **KiDax Fast Response** (`MacEngineDaemon.kt`):
     - `INSTANT_BUY_ANOMALY` dari Kinance diproses langsung (tanpa menunggu double-confirm veto AI), namun tetap melewati guard spread/slippage.
-  - **KiBot Awareness Update** (`scripts/kibot_manager.py`):
-    - KiBot kini mengenali `INSTANT_BUY_ANOMALY` untuk evaluasi cepat dan tetap menyiarkan veto/insight ke mesh.
+  - **KiCryp Awareness Update** (`scripts/kicryp_manager.py`):
+    - KiCryp kini mengenali `INSTANT_BUY_ANOMALY` untuk evaluasi cepat dan tetap menyiarkan veto/insight ke mesh.
 - `2026-03-30` — Upgrade `V6.9.2` (A-List Tunnel Vision Hard-Skip):
   - **Hard-skip pipeline awal** (`MacEngineDaemon.kt`): seluruh jalur signal/entry Kinance + KiDax kini memproses hanya pair A-List/tunnel (`A-List statis + pair volume stabil >= Rp80 Juta`), sehingga pair receh tidak lagi memakan CPU cycle.
   - **Lead-lag dispatch filter**: `maybeDispatchLeadLagCallout` sekarang drop kandidat non A-List sebelum scoring/anomaly check; fallback quote juga hanya A-List tunnel.
@@ -314,9 +314,9 @@ Format approval yang dianggap sah:
   - **Indodax Panopticon Radar** (`MacEngineDaemon.kt`):
     - Kinance mengambil universe pair dari `https://indodax.com/api/summaries` (refresh periodik) agar deteksi anomali meliputi seluruh listing Indodax.
     - Eksekusi tetap diproteksi guardrail spread/slippage/fee dan jalur owner KiDax.
-  - **Phalanx Formation** (`MacEngineDaemon.kt`, `scripts/kibot_manager.py`):
+  - **Phalanx Formation** (`MacEngineDaemon.kt`, `scripts/kicryp_manager.py`):
     - Fokus holdings diprioritaskan (toggle fokus pair hold aktif untuk callout/reversal) dengan emergency warning depth/momentum collapse.
-    - Jalur `ACTIVE_POSITIONS` -> KiBot/Kinance dipertahankan sebagai prioritas intervensi sell cepat (`MOMENTUM_LOSS/ORDERBOOK_COLLAPSE/EMERGENCY_VETO_SELL`).
+    - Jalur `ACTIVE_POSITIONS` -> KiCryp/Kinance dipertahankan sebagai prioritas intervensi sell cepat (`MOMENTUM_LOSS/ORDERBOOK_COLLAPSE/EMERGENCY_VETO_SELL`).
 - `2026-03-30` — Upgrade `V6.9.4` (Lease Lockdown Hardening + Full Indodax Universe Tracking):
   - **Lease Lockdown Hardening** (`MacEngineDaemon.kt`):
     - Tambah `ensureLeaseLockdownOwnership()` agar KiDax (`BOT_ID=main`) memverifikasi kepemilikan lease di beberapa titik siklus (`pre-command`, `pre-trade`, `post-trade`) bukan hanya saat error.

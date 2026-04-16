@@ -1,7 +1,7 @@
-# KiBot Trinity - Telegram Command Guide
+# KiCryp Trinity - Telegram Command Guide
 
 ## Overview
-Real-time command interface to query KiBot Trinity system status, trades, positions, and performance metrics via Telegram.
+Real-time command interface to query KiCryp Trinity system status, trades, positions, and performance metrics via Telegram.
 
 ## Available Commands
 
@@ -9,7 +9,7 @@ Real-time command interface to query KiBot Trinity system status, trades, positi
 Show quick overview of all 3 bots and current positions.
 
 **Shows:**
-- Bot online status (KiBot Manager, KiDax, Kinance)
+- Bot online status (KiCryp Manager, KiDax, Kinance)
 - Balance snapshot (Total, P&L Today, Total Return)
 - Active positions count and top 3 positions
 
@@ -19,7 +19,7 @@ Show quick overview of all 3 bots and current positions.
 ─────────────────
 
 🤖 Bot Status:
-  🟢 KiBot Manager: ONLINE
+  🟢 KiCryp Manager: ONLINE
   🟢 KiDax: ONLINE
   🟢 Kinance: ONLINE
 
@@ -200,7 +200,7 @@ Real-time system health metrics and network latency.
 ────────────────
 
 Bot Status:
-  🟢 KiBot Manager: ONLINE
+  🟢 KiCryp Manager: ONLINE
   🟢 KiDax: ONLINE
   🟢 Kinance: ONLINE
 
@@ -292,7 +292,7 @@ Quick Tips:
 ## How to Use
 
 ### Getting Started
-1. Open Telegram and find the KiBot Trinity bot
+1. Open Telegram and find the KiCryp Trinity bot
 2. Type `/help` to see all commands
 3. Type any command to get information
 
@@ -347,9 +347,9 @@ User (Telegram)
     ↓
 Telegram API
     ↓
-kibot_telegram_listener.py (Webhook)
+kicryp_telegram_listener.py (Webhook)
     ↓
-kibot_command_handler.py (Command Router)
+kicryp_command_handler.py (Command Router)
     ↓
 State Files:
   - state/balance.json
@@ -384,7 +384,7 @@ state/
 └── runtime_notes.json    # Runtime events and alerts
 ```
 
-These files are updated by KiBot Manager and Kotlin engines in real-time.
+These files are updated by KiCryp Manager and Kotlin engines in real-time.
 
 ---
 

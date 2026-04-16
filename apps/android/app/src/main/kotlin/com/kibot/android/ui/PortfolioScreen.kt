@@ -235,7 +235,7 @@ private fun NetWorthChartCard(
                                 )
                             },
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = KiBotBlue,
+                                selectedContainerColor = KiCrypBlue,
                                 selectedLabelColor = TextPrimary,
                                 containerColor = DarkSurfaceVariant,
                                 labelColor = TextSecondary
@@ -641,13 +641,13 @@ private fun HoldingRow(
                 modifier = Modifier
                     .size(32.dp)
                     .clip(CircleShape)
-                    .background(KiBotBlue.copy(alpha = 0.2f)),
+                    .background(KiCrypBlue.copy(alpha = 0.2f)),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = assetCode.take(3),
                     style = MaterialTheme.typography.labelSmall,
-                    color = KiBotBlue,
+                    color = KiCrypBlue,
                     fontWeight = FontWeight.Bold
                 )
             }

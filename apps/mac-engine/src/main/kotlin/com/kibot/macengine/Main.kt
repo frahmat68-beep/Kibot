@@ -27,7 +27,7 @@ import java.nio.file.Paths
 import java.util.concurrent.atomic.AtomicReference
 
 fun main(args: Array<String>) {
-    val logger = LoggerFactory.getLogger("KiBotMac")
+    val logger = LoggerFactory.getLogger("KiCrypMac")
     val config = MacRuntimeConfigLoader.load()
     val repository = MacStateRepository()
     val controlPlane = SupabaseControlPlaneClient(config.controlPlane)
@@ -77,7 +77,7 @@ fun main(args: Array<String>) {
     val daemonRef = AtomicReference<MacEngineDaemon?>()
     Runtime.getRuntime().addShutdownHook(
         Thread {
-            logger.info("Shutting down KiBot mac engine.")
+            logger.info("Shutting down KiCryp mac engine.")
             runBlocking {
                 runCatching { daemonRef.get()?.shutdown() }
                     .onFailure { logger.warn("Failed to cancel daemon scopes on shutdown: {}", it.message) }

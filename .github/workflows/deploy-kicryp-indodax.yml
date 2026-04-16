@@ -1,4 +1,4 @@
-name: Deploy KiDax
+name: Deploy KiCryp Indodax
 
 on:
   push:
@@ -22,16 +22,16 @@ jobs:
       DEPLOY_USER: ${{ secrets.KIDAX_USER }}
       DEPLOY_KEY: ${{ secrets.KIDAX_SSH }}
       DEPLOY_PORT: ${{ secrets.KIDAX_SSH_PORT || '22' }}
-      REMOTE_ROOT: /home/ubuntu/KiDax
-      SERVICE_NAME: kidax-engine
-      SERVICE_FILE: infra/systemd/kidax-engine.service
+      REMOTE_ROOT: /home/ubuntu/KiBot
+      SERVICE_NAME: kicryp-indodax
+      SERVICE_FILE: infra/systemd/kicryp-indodax.service
       RUNTIME_PORT: "8787"
-      ENV_FILE: .env.kidax
+      ENV_FILE: .env.kicryp
       BOT_ID: main
       BOT_PROFILE_KEY: indodax
       EXCHANGE_KIND: INDODAX
-      DEVICE_ID: kidax-oracle-sg
-      DEVICE_DISPLAY_NAME: KiDax Oracle Singapore
+      DEVICE_ID: kicryp-oracle-indodax
+      DEVICE_DISPLAY_NAME: KiCryp Oracle Indodax
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -92,7 +92,7 @@ jobs:
           rsync -avz -e "ssh -p ${{ env.DEPLOY_PORT }} -i ~/.ssh/id_rsa" .deploy/ ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.REMOTE_ROOT }}/
           rm -f ~/.ssh/id_rsa
 
-      - name: Install and Restart KiDax
+      - name: Install and Restart KiCryp Indodax
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ env.DEPLOY_HOST }}
@@ -112,33 +112,33 @@ jobs:
                 echo "${KEY}=${VALUE}" >> ${REMOTE_ROOT}/${ENV_FILE}
               fi
             }
-            ensure_env KIBOT_RELEASE_LABEL ${RELEASE_LABEL}
+            ensure_env KICRYP_RELEASE_LABEL ${RELEASE_LABEL}
             ensure_env BOT_ID ${BOT_ID}
             ensure_env BOT_PROFILE_KEY ${BOT_PROFILE_KEY}
-            ensure_env KIBOT_EXCHANGE_KIND ${EXCHANGE_KIND}
+            ensure_env KICRYP_EXCHANGE_KIND ${EXCHANGE_KIND}
             ensure_env DEVICE_ID ${DEVICE_ID}
             ensure_env DEVICE_DISPLAY_NAME '"'"${DEVICE_DISPLAY_NAME}"'"'
-            ensure_env KIBOT_RUNTIME_ROOT ${REMOTE_ROOT}
-            ensure_env KIBOT_DASHBOARD_PORT ${RUNTIME_PORT}
-            ensure_env KIBOT_ENV_FILE ${REMOTE_ROOT}/${ENV_FILE}
+            ensure_env KICRYP_RUNTIME_ROOT ${REMOTE_ROOT}
+            ensure_env KICRYP_DASHBOARD_PORT ${RUNTIME_PORT}
+            ensure_env KICRYP_ENV_FILE ${REMOTE_ROOT}/${ENV_FILE}
             ensure_env MAC_ENGINE_PORT ${RUNTIME_PORT}
             ensure_env MAC_ENGINE_BIND_HOST 0.0.0.0
 
             mv ${REMOTE_ROOT}/mac-engine-all.jar ${REMOTE_ROOT}/server/mac-engine-all.jar
-            sudo cp ${REMOTE_ROOT}/infra/systemd/kidax-engine.service /etc/systemd/system/${SERVICE_NAME}.service
+            sudo cp ${REMOTE_ROOT}/infra/systemd/kicryp-indodax.service /etc/systemd/system/${SERVICE_NAME}.service
             sudo systemctl daemon-reload
             sudo systemctl enable ${SERVICE_NAME}
             sudo systemctl restart ${SERVICE_NAME}
 
             echo "Waiting for health check on port ${RUNTIME_PORT}..."
             sleep 10
-            if ! curl -fsS --retry 10 --retry-delay 5 http://127.0.0.1:${RUNTIME_PORT}/api/state > /tmp/kidax-state.json; then
+            if ! curl -fsS --retry 10 --retry-delay 5 http://127.0.0.1:${RUNTIME_PORT}/api/state > /tmp/kicryp-state.json; then
               echo "❌ Health check failed! Logs:"
               sudo journalctl -u ${SERVICE_NAME} -n 50 --no-pager
               exit 1
             fi
             echo "✅ Deployment successful!"
-            cat /tmp/kidax-state.json
+            cat /tmp/kicryp-state.json
             rm -rf ${REMOTE_ROOT}/.deploy
             rm -rf ${REMOTE_ROOT}/.tmp/*
 

@@ -632,10 +632,10 @@ private data class DashboardCommandAuth(
 
     companion object {
         fun fromEnv(bindHost: String): DashboardCommandAuth {
-            val token = System.getenv("KIBOT_DASHBOARD_AUTH_TOKEN")?.trim().orEmpty()
+            val token = System.getenv("KICRYP_DASHBOARD_AUTH_TOKEN")?.trim().orEmpty()
             val required = token.isNotBlank() && !isLoopbackHost(bindHost)
-            val allowlist = System.getenv("KIBOT_DASHBOARD_ALLOWED_IPS")
-                ?: System.getenv("KIBOT_DASHBOARD_ALLOWED_CIDRS")
+            val allowlist = System.getenv("KICRYP_DASHBOARD_ALLOWED_IPS")
+                ?: System.getenv("KICRYP_DASHBOARD_ALLOWED_CIDRS")
             val allowedCidrs = allowlist
                 ?.split(",", " ", "\n", "\t")
                 ?.mapNotNull { raw -> raw.trim().takeIf { it.isNotBlank() }?.let(IpCidr::parseOrNull) }
@@ -704,7 +704,7 @@ private data class IpCidr(
 }
 
 private class DashboardCommandRateLimiter(
-    private val maxCommandsPerMinute: Int = (System.getenv("KIBOT_DASHBOARD_COMMANDS_PER_MIN")?.toIntOrNull() ?: 30)
+    private val maxCommandsPerMinute: Int = (System.getenv("KICRYP_DASHBOARD_COMMANDS_PER_MIN")?.toIntOrNull() ?: 30)
         .coerceIn(5, 600),
 ) {
     private var windowStartMs: Long = System.currentTimeMillis()
@@ -1703,8 +1703,8 @@ private fun isBenignClientDisconnect(error: Throwable): Boolean {
 private fun locateDashboardIcon(): File? {
     val cwd = File(System.getProperty("user.dir"))
     val candidates = listOf(
-        File("/home/ubuntu/KiBot/kibot-small.png"),
-        File("/home/ubuntu/KiBot/kibot.png"),
+        File("/home/ubuntu/KiCryp/kibot-small.png"),
+        File("/home/ubuntu/KiCryp/kibot.png"),
         File(cwd, "kibot-small.png"),
         File(cwd, "kibot.png"),
         File(cwd, "../../kibot-small.png"),

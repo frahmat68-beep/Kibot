@@ -1,4 +1,4 @@
-# 🔥 KIBOT TRINITY — MICRO-CAP OPTIMIZATION (v5.0 READY)
+# 🔥 KICRYP TRINITY — MICRO-CAP OPTIMIZATION (v5.0 READY)
 
 **Last Updated:** 2026-04-14 (Post-Audit Remediation)  
 **Status:** Audit Fixed, Logic Hardened, Credentials Redacted, Ready for Production Clean-up.

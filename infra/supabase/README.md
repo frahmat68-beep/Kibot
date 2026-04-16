@@ -1,6 +1,6 @@
 # Supabase Infra
 
-This folder contains the control-plane schema for KiBot.
+This folder contains the control-plane schema for KiCryp.
 
 ## Apply Migrations
 

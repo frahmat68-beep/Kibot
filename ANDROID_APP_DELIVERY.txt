@@ -1,5 +1,5 @@
 
- KiBot Android App - DELIVERY STATUS
+ KiCryp Android App - DELIVERY STATUS
 
 
 **Status INSTALLED & WEBSOCKET FIXED:** 
@@ -15,7 +15,7 @@
 - Size: 19MB
 - Min SDK: Android 8.0 (API 26)
 - Target SDK: Android 14 (API 34)
-- Package: com.kibot.android
+- Package: com.kicryp.android
 
 **Installation:**
 - Device: 40d203460421
@@ -23,7 +23,7 @@
 - Location: Internal storage
 
 **Screens:**
-1. Dashboard - Balance, PnL, Bot status (KiBot/Kinance/KiDax)
+1. Dashboard - Balance, PnL, Bot status (KiCryp/Kinance/KiDax)
 2. Portfolio - Net worth chart, asset allocation, holdings
 3. Ledger - Trade history with buy/sell details
 4. Settings - WebSocket connection config
@@ -70,7 +70,7 @@
 **Features:**
  Total Balance (Rp formatted)
  PnL% (green/red color coded)
- Bot Status (KiBot, Kinance, KiDax)
+ Bot Status (KiCryp, Kinance, KiDax)
  Ping indicators (<90ms green, >220ms red)
  Current Holdings (top 10)
  Recent Trades (last 20)
@@ -90,7 +90,7 @@
 
  Balance  Bot  Holdings (scrollable)         Status   Card  
  (Big  3  - Coin name                   bots       numbers) 
- -  - Amount & value              KiBot                     
+ -  - Amount & value              KiCryp                     
  -  - PnL%                        Kinance                   
  -                                KiDax                     
                                
@@ -172,7 +172,7 @@
 
 
 **Android App:**
-1. Buka app "KiBot" di HP
+1. Buka app "KiCryp" di HP
 2. Otomatis connect ke ws://213.35.118.26:8787/ws
 3. Dashboard akan show balance, PnL, bot status
 4. Swipe untuk Portfolio dan Ledger

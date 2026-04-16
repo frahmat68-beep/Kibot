@@ -1,12 +1,12 @@
-# KiBot Trinity v7.0 (Dual-Bucket Engine)
+# KiCryp Trinity v7.0 (Dual-Bucket Engine)
 
-KiBot Trinity is a high-performance, math-first trading architecture designed for Indodax and Binance markets. Version 7.0 introduces the **Dual-Bucket Trinity Architecture**, a strictly mathematical and consensus-driven system.
+KiCryp Trinity is a high-performance, math-first trading architecture designed for Indodax and Binance markets. Version 7.0 introduces the **Dual-Bucket Trinity Architecture**, a strictly mathematical and consensus-driven system.
 
 ---
 
 ## 🏗️ Architecture
 
-- **`kibot_manager.py` (The General)**:
+- **`kicryp_manager.py` (The General)**:
   - **Cascade Loss Intelligence**: Dynamic risk states (`GROWTH` → `HARD_STOP`) scaling risk Exposure.
   - **Dual-Bucket Manager**: Strictly 50/50 split between Bucket A and Bucket B.
   - **What-If Engine**: 5 mathematical scenarios for entry validation.
@@ -49,7 +49,7 @@ KiBot Trinity is a high-performance, math-first trading architecture designed fo
 ## 🚀 Quick Start
 
 1.  Ensure `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set.
-2.  Run the manager: `python3 scripts/kibot_manager.py`
+2.  Run the manager: `python3 scripts/kicryp_manager.py`
 3.  Verify the engine: `./gradlew :apps:mac-engine:run`
 
 ---

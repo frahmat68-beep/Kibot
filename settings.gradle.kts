@@ -14,7 +14,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "kibot"
+rootProject.name = "kicryp"
 
 include(
     ":apps:android",
