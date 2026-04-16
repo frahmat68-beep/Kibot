@@ -99,6 +99,7 @@ data class ManagedPosition(
     val updatedAt: Instant,
     val horizon: TradingHorizon,
     val setupType: SetupType,
+    val signalSource: String = "UNKNOWN",
     val pairTier: com.kibot.shared.models.PairTier,
     val speculativePocket: Boolean,
     val bucketType: String? = null, // "STABLE" or "AGGRESSIVE"
@@ -340,6 +341,12 @@ class TradeAutomationCoordinator(
                     horizon == TradingHorizon.SWING -> SetupType.SWING_TREND_CONTINUATION
                     quote.shortTermReturnPct < 0.0 -> SetupType.HEALTHY_SHORT_TERM_PULLBACK
                     else -> SetupType.LIGHT_BREAKOUT_CONTINUATION
+                },
+                signalSource = when {
+                    speculativePocket -> "SPECULATIVE"
+                    horizon == TradingHorizon.SWING -> "SWING_TREND"
+                    quote.shortTermReturnPct < 0.0 -> "PULLBACK"
+                    else -> "BREAKOUT"
                 },
                 pairTier = rankedPair?.pairTier ?: com.kibot.shared.models.PairTier.TIER_B,
                 speculativePocket = speculativePocket,
