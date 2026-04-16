@@ -25,12 +25,12 @@ data class TradeRecord(
     val holdingDurationMs: Long,
     val exitReason: String,        // "TRAILING_STOP"|"PARTIAL_TP_1"|"PARTIAL_TP_2"|"TIME_EXIT"|"HARD_STOP"|"EMERGENCY"|"VOLUME_COLLAPSE"|"PEAK_DETECTED"
     val signalSource: String,      // "LEAD_LAG_BINANCE"|"LEAD_LAG_CRYPTOCOM"|"LOCAL_INDODAX"|"MANUAL"
-    val bucket: String,            // "BUCKET_A"|"BUCKET_B"
-    val entryConvictionScore: Double,
-    val entryKellyFraction: Double,
-    val balanceAfterIdr: Double,
-    val marketRegimeAtEntry: String,    // "BULLISH"|"BEARISH"|"SIDEWAYS"
-    val btcChange1hAtEntry: Double,
+    val bucket: String = "UNKNOWN", // "BUCKET_A"|"BUCKET_B"
+    val entryConvictionScore: Double = 0.0,
+    val entryKellyFraction: Double = 0.0,
+    val balanceAfterIdr: Double = 0.0,
+    val marketRegimeAtEntry: String = "UNKNOWN",    // "BULLISH"|"BEARISH"|"SIDEWAYS"
+    val btcChange1hAtEntry: Double = 0.0,
     val lossReason: String = ""         // post-mortem jika netPnlPct < 0
 )
 
