@@ -11,6 +11,7 @@ import com.kibot.macengine.config.MacRuntimeConfigLoader
 import com.kibot.macengine.runtime.MacEngineDaemon
 import com.kibot.macengine.runtime.MacCommandDispatcher
 import com.kibot.macengine.runtime.PassiveExchangeGateway
+import com.kibot.core.TradeLogger
 import com.kibot.macengine.server.LocalDashboardServer
 import com.kibot.macengine.state.MacCommand
 import com.kibot.macengine.state.MacStateRepository
@@ -58,6 +59,12 @@ fun main(args: Array<String>) {
         logPollIntervalMillis = config.dashboardLogPollIntervalMillis,
     )
 
+    val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        logger.error("Mac engine daemon coroutine crashed.", throwable)
+    }
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + exceptionHandler)
+    val tradeLogger = TradeLogger(scope, controlPlane)
+
     if (args.isNotEmpty()) {
         val daemon = MacEngineDaemon(
             repository = repository,
@@ -65,6 +72,7 @@ fun main(args: Array<String>) {
             exchange = exchange,
             config = config,
             aiSupportCoordinator = config.aiSupportConfig?.let { GeminiSupportCoordinator(it, GeminiSupportClient(it)) },
+            tradeLogger = tradeLogger,
         )
         handleCliCommand(args.first(), repository, daemon, dispatcher, logger)
         return
@@ -98,6 +106,7 @@ fun main(args: Array<String>) {
             exchange = exchange,
             config = config,
             aiSupportCoordinator = config.aiSupportConfig?.let { GeminiSupportCoordinator(it, GeminiSupportClient(it)) },
+            tradeLogger = tradeLogger,
         )
         daemonRef.set(daemon)
         daemon.run()

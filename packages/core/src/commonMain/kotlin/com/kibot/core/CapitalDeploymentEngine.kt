@@ -9,6 +9,8 @@ import com.kibot.shared.models.PortfolioSnapshot
 import com.kibot.shared.models.PositionSnapshot
 import com.kibot.shared.models.PositionState
 import com.kibot.shared.models.RiskLadderLevel
+import com.kibot.shared.models.DecimalValue
+import com.kibot.shared.models.BalanceSnapshot
 import kotlinx.datetime.Clock
 import kotlin.math.absoluteValue
 import kotlin.math.max
@@ -48,54 +50,54 @@ class CapitalDeploymentEngine(
             BotMode.GROWTH -> config.minimumCashReservePct
             BotMode.ATTACK -> config.attackCashReservePct
         }
-        val currentEquity = portfolio.totalEquityIdr.toDoubleOrZero()
+        val currentEquity = portfolio.totalEquityIdr
         val openPositions = portfolio.positions.count { it.state != PositionState.CLOSED }
-        val freeCashIdr = portfolio.balances.sumOf { balance ->
-            when {
-                balance.asset.equals("idr", ignoreCase = true) -> balance.free.toDoubleOrZero()
+        val freeCashIdr = portfolio.balances.fold<BalanceSnapshot, DecimalValue>(DecimalValue.Zero) { acc, balance ->
+            acc + when {
+                balance.asset.equals("idr", ignoreCase = true) -> balance.free
                 balance.asset.equals("usdt", ignoreCase = true) ||
                     balance.asset.equals("usdc", ignoreCase = true) ||
                     balance.asset.equals("fdusd", ignoreCase = true) ||
                     balance.asset.equals("tusd", ignoreCase = true) ||
                     balance.asset.equals("busd", ignoreCase = true) ->
-                    balance.totalValueInIdr?.toDoubleOrZero() ?: balance.free.toDoubleOrZero()
-                else -> 0.0
+                    balance.totalValueInIdr ?: balance.free
+                else -> DecimalValue.Zero
             }
-        }.coerceAtLeast(0.0)
+        }
         val dynamicFreeCashSlots = CapitalAllocationManager.calculateDynamicAdditionalSlots(freeCashIdr)
         val openPositionValues = portfolio.positions
             .filter { it.state != PositionState.CLOSED }
             .map { position ->
-                ((position.quantity.toDoubleOrZero() * position.averageEntryPrice.toDoubleOrZero()) +
-                    position.unrealizedPnlIdr.toDoubleOrZero()).coerceAtLeast(0.0)
+                ((position.quantity * position.averageEntryPrice) + position.unrealizedPnlIdr)
+                    .coerceAtLeast(DecimalValue.Zero)
             }
-            .sortedDescending()
+            .sortedByDescending { it }
         val baseCapitalUtilizationTargetPct = (1.0 - reservePct).coerceIn(0.0, 1.0)
-        val deployableEquity = (currentEquity * baseCapitalUtilizationTargetPct).coerceAtLeast(0.0)
-        val top1DeployableConcentration = if (deployableEquity > 0.0) {
-            openPositionValues.firstOrNull().orZero() / deployableEquity
+        val deployableEquity = (currentEquity * baseCapitalUtilizationTargetPct).coerceAtLeast(DecimalValue.Zero)
+        val top1DeployableConcentration = if (deployableEquity > DecimalValue.Zero) {
+            (openPositionValues.firstOrNull() ?: DecimalValue.Zero) / deployableEquity
         } else {
             0.0
         }
-        val top2DeployableConcentration = if (deployableEquity > 0.0) {
-            openPositionValues.take(2).sum() / deployableEquity
+        val top2DeployableConcentration = if (deployableEquity.compareTo(DecimalValue.Zero) > 0) {
+            openPositionValues.take(2).fold<DecimalValue, DecimalValue>(DecimalValue.Zero) { acc, v -> acc + v } / deployableEquity
         } else {
             0.0
         }
-        val loserHeatPct = if (currentEquity > 0.0) {
+        val loserHeatPct = if (currentEquity > DecimalValue.Zero) {
             portfolio.positions
                 .filter { it.state != PositionState.CLOSED }
-                .sumOf { position -> position.unrealizedPnlIdr.toDoubleOrZero().takeIf { it < 0.0 }?.absoluteValue ?: 0.0 } / currentEquity
+                .sumOf { position -> position.unrealizedPnlIdr.toDoubleOrZero().takeIf { it < 0.0 }?.absoluteValue ?: 0.0 } / currentEquity.toDoubleOrZero()
         } else {
             0.0
         }
         val affordableSlotCap = when {
-            currentEquity <= 0.0 -> 1
+            currentEquity <= DecimalValue.Zero -> 1
             else -> kotlin.math.floor(
-                ((currentEquity * (1.0 - reservePct)).coerceAtLeast(0.0)) / config.targetMinPositionBudgetIdr,
+                ((currentEquity * (1.0 - reservePct)).coerceAtLeast(DecimalValue.Zero)).divide(config.targetMinPositionBudgetIdr).toDouble(),
             ).toInt().coerceAtLeast(1)
         }.coerceAtMost(config.maxConcurrentPositions)
-        val baseTotalCap = max(
+        val baseTotalCap = maxOf(
             (openPositions + risk.maxAllowedAdditionalPositions)
                 .coerceAtMost(config.maxConcurrentPositions)
                 .coerceAtMost(affordableSlotCap),
@@ -173,16 +175,16 @@ class CapitalDeploymentEngine(
         }
         val hasNewSlotCapacity = maxActivePositions > openPositions
         val dominanceBoost = topCandidateGap.coerceIn(0.0, 0.10) * 0.35
-        val perPositionBudget = minOf(
-            risk.suggestedPerPositionBudgetIdr.coerceAtLeast(0.0),
+        val perPositionBudget = DecimalValue.minOf(
+            risk.suggestedPerPositionBudgetIdr,
             currentEquity * (1.0 - effectiveReservePct).coerceIn(0.0, 1.0) * if (dominantAllInReady) {
                 config.dominantAllInMaxAllocationPct
             } else {
                 config.maxPerPositionBudgetPct
             },
-            if (speculativePocketReady) currentEquity * config.speculativePocketMaxEquityPct else Double.MAX_VALUE,
-            deployableEquity.coerceAtLeast(0.0),
-        ).coerceAtLeast(0.0)
+            if (speculativePocketReady) currentEquity * config.speculativePocketMaxEquityPct else DecimalValue.Infinity,
+            deployableEquity
+        ).coerceAtLeast(DecimalValue.Zero)
         val rankedByPair = rankedPairs.associateBy { it.pairId }
         val rotatableWinners = portfolio.positions.filter { position ->
             position.state != PositionState.CLOSED &&
@@ -278,7 +280,7 @@ class CapitalDeploymentEngine(
         if (costBasisIdr <= 0.0) return false
         val pnlIdr = unrealizedPnlIdr.toDoubleOrZero()
         val pnlPct = (pnlIdr / costBasisIdr) * 100.0
-        return pnlIdr >= config.rotationMinClearProfitIdr && pnlPct >= config.rotationMinClearProfitPct
+        return pnlIdr >= config.rotationMinClearProfitIdr.toDoubleOrZero() && pnlPct >= config.rotationMinClearProfitPct
     }
 
     private fun PositionSnapshot.isWeakRotationCandidate(pairScore: PairScore?): Boolean {

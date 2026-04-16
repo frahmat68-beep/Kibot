@@ -1,5 +1,6 @@
 package com.kibot.core
 
+import com.kibot.shared.models.*
 import kotlinx.datetime.Instant
 import kotlin.math.abs
 
@@ -19,10 +20,10 @@ class SharedPositionTracker {
      */
     fun broadcastPositionOpened(
         pair: String,
-        entryPrice: Double,
-        quantity: Double,
-        entryFeeIdr: Double,
-        capitalUsedIdr: Double,
+        entryPrice: DecimalValue,
+        quantity: DecimalValue,
+        entryFeeIdr: DecimalValue,
+        capitalUsedIdr: DecimalValue,
         strategy: PositionStrategy,  // ANOMALY or STABLE
     ): PositionBroadcast {
         val position = SharedPosition(
@@ -62,10 +63,10 @@ class SharedPositionTracker {
      */
     fun broadcastPositionClosed(
         pair: String,
-        exitPrice: Double,
-        exitFeeIdr: Double,
-        netProfitIdr: Double,
-        netProfitPct: Double,
+        exitPrice: DecimalValue,
+        exitFeeIdr: DecimalValue,
+        netProfitIdr: DecimalValue,
+        netProfitPct: DecimalValue,
         holdMinutes: Double,
         reason: String,
     ): PositionBroadcast {
@@ -81,11 +82,11 @@ class SharedPositionTracker {
         return PositionBroadcast(
             action = "POSITION_CLOSED",
             pair = pair,
-            entryPrice = position?.entryPrice ?: 0.0,
+            entryPrice = position?.entryPrice ?: DecimalValue.Zero,
             exitPrice = exitPrice,
             netProfitIdr = netProfitIdr,
             netProfitPct = netProfitPct,
-            totalFeeIdr = (position?.entryFeeIdr ?: 0.0) + exitFeeIdr,
+            totalFeeIdr = (position?.entryFeeIdr ?: DecimalValue.Zero) + exitFeeIdr,
             holdMinutes = holdMinutes,
             reason = reason,
         )
@@ -108,17 +109,17 @@ class SharedPositionTracker {
     /**
      * Calculate total capital deployed
      */
-    fun getTotalCapitalDeployed(): Double {
-        return getOpenPositions().sumOf { it.capitalUsedIdr }
+    fun getTotalCapitalDeployed(): DecimalValue {
+        return getOpenPositions().fold(DecimalValue.Zero) { acc, p -> acc + p.capitalUsedIdr }
     }
     
     /**
      * Calculate capital by strategy
      */
-    fun getCapitalByStrategy(strategy: PositionStrategy): Double {
+    fun getCapitalByStrategy(strategy: PositionStrategy): DecimalValue {
         return getOpenPositions()
             .filter { it.strategy == strategy }
-            .sumOf { it.capitalUsedIdr }
+            .fold(DecimalValue.Zero) { acc, p -> acc + p.capitalUsedIdr }
     }
     
     /**
@@ -126,13 +127,12 @@ class SharedPositionTracker {
      * 20% for ANOMALY, 80% for STABLE
      */
     fun validateCapitalAllocation(
-        totalCash: Double,
+        totalCash: DecimalValue,
         proposedStrategy: PositionStrategy,
-        proposedAmount: Double,
+        proposedAmount: DecimalValue,
     ): CapitalAllocationCheck {
         val currentAnomalyCapital = getCapitalByStrategy(PositionStrategy.ANOMALY)
         val currentStableCapital = getCapitalByStrategy(PositionStrategy.STABLE)
-        val totalDeployed = getTotalCapitalDeployed()
         
         val maxAnomalyCapital = totalCash * 0.20  // 20% max for anomaly
         val maxStableCapital = totalCash * 0.80   // 80% max for stable
@@ -144,7 +144,7 @@ class SharedPositionTracker {
                     CapitalAllocationCheck(
                         allowed = false,
                         reason = "ANOMALY_CAPITAL_EXCEEDED",
-                        currentAnomalyPct = (currentAnomalyCapital / totalCash) * 100,
+                        currentAnomalyPct = (currentAnomalyCapital / totalCash) * 100.0,
                         maxAnomalyPct = 20.0,
                     )
                 } else {
@@ -157,7 +157,7 @@ class SharedPositionTracker {
                     CapitalAllocationCheck(
                         allowed = false,
                         reason = "STABLE_CAPITAL_EXCEEDED",
-                        currentStablePct = (currentStableCapital / totalCash) * 100,
+                        currentStablePct = (currentStableCapital / totalCash) * 100.0,
                         maxStablePct = 80.0,
                     )
                 } else {
@@ -168,44 +168,34 @@ class SharedPositionTracker {
     }
 }
 
-enum class PositionStrategy {
-    ANOMALY,  // 20% capital - chase pumps, high risk high reward
-    STABLE,   // 80% capital - steady trading, lower risk
-}
-
-enum class PositionStatus {
-    OPEN,
-    CLOSED,
-}
-
 data class SharedPosition(
     val pair: String,
-    val entryPrice: Double,
-    val quantity: Double,
-    val entryFeeIdr: Double,
-    val capitalUsedIdr: Double,
+    val entryPrice: DecimalValue,
+    val quantity: DecimalValue,
+    val entryFeeIdr: DecimalValue,
+    val capitalUsedIdr: DecimalValue,
     val strategy: PositionStrategy,
     val openedAt: Instant,
     var status: PositionStatus,
-    var exitPrice: Double? = null,
-    var netProfitIdr: Double? = null,
-    var totalFeeIdr: Double? = null,
+    var exitPrice: DecimalValue? = null,
+    var netProfitIdr: DecimalValue? = null,
+    var totalFeeIdr: DecimalValue? = null,
 )
 
 data class PositionBroadcast(
     val action: String,  // POSITION_OPENED or POSITION_CLOSED
     val pair: String,
-    val entryPrice: Double = 0.0,
-    val exitPrice: Double? = null,
-    val quantity: Double = 0.0,
-    val entryFeeIdr: Double = 0.0,
-    val capitalUsedIdr: Double = 0.0,
+    val entryPrice: DecimalValue = DecimalValue.Zero,
+    val exitPrice: DecimalValue? = null,
+    val quantity: DecimalValue = DecimalValue.Zero,
+    val entryFeeIdr: DecimalValue = DecimalValue.Zero,
+    val capitalUsedIdr: DecimalValue = DecimalValue.Zero,
     val strategy: String = "",
     val targetProfitPct: Double = 0.0,
     val stopLossPct: Double = 0.0,
-    val netProfitIdr: Double? = null,
-    val netProfitPct: Double? = null,
-    val totalFeeIdr: Double? = null,
+    val netProfitIdr: DecimalValue? = null,
+    val netProfitPct: DecimalValue? = null,
+    val totalFeeIdr: DecimalValue? = null,
     val holdMinutes: Double? = null,
     val reason: String = "",
 )

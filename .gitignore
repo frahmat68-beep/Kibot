@@ -40,3 +40,7 @@ SUPABASE_MIGRATION_GUIDE.md
 .tmp-kidax-last6m.log
 logs.zip
 push_fix.sh
+gradle_home/
+build_log.txt
+state/
+simulation_report.json

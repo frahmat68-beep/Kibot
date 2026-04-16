@@ -2,18 +2,19 @@ package com.kibot.core
 
 import com.kibot.shared.models.BotMode
 import com.kibot.shared.models.DailyRiskSnapshot
+import com.kibot.shared.models.DecimalValue
 import com.kibot.shared.models.EngineHealthSnapshot
 import com.kibot.shared.models.PortfolioSnapshot
 import com.kibot.shared.models.PositionState
 import com.kibot.shared.models.ProfitProtectionStatus
 import com.kibot.shared.models.RiskLadderLevel
-import kotlin.math.absoluteValue
+import kotlin.math.abs
 
 data class RiskDecision(
     val allowNewEntries: Boolean,
     val hardStopTriggered: Boolean,
     val maxAllowedAdditionalPositions: Int,
-    val suggestedPerPositionBudgetIdr: Double,
+    val suggestedPerPositionBudgetIdr: DecimalValue,
     val riskLadderLevel: RiskLadderLevel,
     val suggestedModeFloor: BotMode,
     val profitProtectionStatus: ProfitProtectionStatus,
@@ -34,10 +35,10 @@ class RiskEngine(
     ): RiskDecision {
         val reasons = mutableListOf<String>()
         val openPositions = portfolio.positions.count { it.state != PositionState.CLOSED }
-        val currentEquity = portfolio.totalEquityIdr.toDoubleOrZero()
+        val currentEquity = portfolio.totalEquityIdr
         val heat = derivePortfolioHeat(portfolio, currentEquity)
         val ladderLevel = deriveRiskLadder(dailyRisk)
-        val realizedLoss = (-dailyRisk.realizedPnlIdr.toDoubleOrZero()).coerceAtLeast(0.0)
+        val realizedLoss = dailyRisk.realizedPnlIdr * -1.0
         val dailyTradeCount = dailyRisk.dailyTradeCount.coerceAtLeast(0)
         val dailyRoundTripCount = dailyRisk.dailyRoundTripCount.coerceAtLeast(0)
         val realizedLossTriggered = realizedLoss >= config.hardRealizedLossLimitIdr
@@ -102,9 +103,6 @@ class RiskEngine(
             realizedLossTriggered -> false
             dailyRisk.rebasePending -> false
             dailyProfitLockActive -> false
-            // FIX: DEGRADED MODE - Supabase down TIDAK boleh block entry!
-            // Bot tetap trade meskipun control plane unreachable
-            // OLD: !health.exchangeReachable || !health.supabaseReachable -> false
             !health.exchangeReachable -> false  // Only block if EXCHANGE down
             health.syncHealth == com.kibot.shared.models.SyncHealth.BROKEN -> false
             dailyTradeCount >= config.maxDailyTradeActions -> false
@@ -119,7 +117,7 @@ class RiskEngine(
                 config.defensiveCashReservePct
             else -> config.minimumCashReservePct
         }
-        val availableBudget = (currentEquity * (1.0 - reservePct)).coerceAtLeast(0.0)
+        val availableBudget = currentEquity * (1.0 - reservePct)
         val riskSizeMultiplier = when (ladderLevel) {
             RiskLadderLevel.NORMAL,
             RiskLadderLevel.WARNING,
@@ -148,16 +146,19 @@ class RiskEngine(
         val deploymentMultiplier = (riskSizeMultiplier * profitProtection.aggressionMultiplier * portfolioPenalty)
             .coerceIn(0.0, 1.0)
         val safetyAdditionalPositionsCeiling = (config.maxConcurrentPositions - openPositions).coerceAtLeast(0)
-        val suggestedBudget = minOf(
-            availableBudget,
-            availableBudget * config.maxPerPositionBudgetPct * sizeMultiplier,
-        ).coerceAtLeast(0.0)
+        
+        val maxPerPosBudget = currentEquity * config.maxPerPositionBudgetPct * sizeMultiplier
+        val suggestedBudget = if (availableBudget > maxPerPosBudget) {
+            maxPerPosBudget
+        } else {
+            availableBudget
+        }
 
         return RiskDecision(
             allowNewEntries = allowNewEntries,
             hardStopTriggered = hardStopTriggered,
             maxAllowedAdditionalPositions = if (allowNewEntries) safetyAdditionalPositionsCeiling else 0,
-            suggestedPerPositionBudgetIdr = if (allowNewEntries) suggestedBudget else 0.0,
+            suggestedPerPositionBudgetIdr = if (allowNewEntries) suggestedBudget else DecimalValue.Zero,
             riskLadderLevel = ladderLevel,
             suggestedModeFloor = deriveModeFloor(ladderLevel, allowNewEntries, profitProtection.status),
             profitProtectionStatus = profitProtection.status,
@@ -170,32 +171,34 @@ class RiskEngine(
 
     private fun derivePortfolioHeat(
         portfolio: PortfolioSnapshot,
-        currentEquity: Double,
+        currentEquity: DecimalValue,
     ): PortfolioHeat {
-        if (currentEquity <= 0.0) return PortfolioHeat()
+        if (currentEquity <= DecimalValue.Zero) return PortfolioHeat()
         val openPositions = portfolio.positions.filter { it.state != PositionState.CLOSED }
         if (openPositions.isEmpty()) return PortfolioHeat()
         val positionValues = openPositions.map { position ->
-            val currentValue = (
-                (position.quantity.toDoubleOrZero() * position.averageEntryPrice.toDoubleOrZero()) +
-                    position.unrealizedPnlIdr.toDoubleOrZero()
-                ).coerceAtLeast(0.0)
+            val currentValue = (position.quantity * position.averageEntryPrice) + position.unrealizedPnlIdr
             PositionHeatValue(
-                currentValueIdr = currentValue,
-                unrealizedPnlIdr = position.unrealizedPnlIdr.toDoubleOrZero(),
+                currentValueIdr = if (currentValue > DecimalValue.Zero) currentValue else DecimalValue.Zero,
+                unrealizedPnlIdr = position.unrealizedPnlIdr,
             )
         }
-        val winnerHeat = positionValues
-            .sumOf { value -> value.unrealizedPnlIdr.takeIf { it > 0.0 } ?: 0.0 }
-            .absoluteValue / currentEquity
-        val loserHeat = positionValues
-            .sumOf { value -> value.unrealizedPnlIdr.takeIf { it < 0.0 }?.absoluteValue ?: 0.0 } / currentEquity
+        val winnerHeat = (positionValues
+            .filter { it.unrealizedPnlIdr > DecimalValue.Zero }
+            .fold(DecimalValue.Zero) { acc, value -> acc + value.unrealizedPnlIdr } / currentEquity)
+            .toDouble().coerceIn(0.0, 1.0)
+            
+        val loserHeat = (positionValues
+            .filter { it.unrealizedPnlIdr < DecimalValue.Zero }
+            .fold(DecimalValue.Zero) { acc, value -> acc + (value.unrealizedPnlIdr * -1.0) } / currentEquity)
+            .toDouble().coerceIn(0.0, 1.0)
+            
         val sortedValues = positionValues.map { it.currentValueIdr }.sortedDescending()
         return PortfolioHeat(
             winnerHeatPct = winnerHeat,
             loserHeatPct = loserHeat,
-            top1ConcentrationPct = sortedValues.firstOrNull().orZero() / currentEquity,
-            top2ConcentrationPct = sortedValues.take(2).sum() / currentEquity,
+            top1ConcentrationPct = ((sortedValues.firstOrNull() ?: DecimalValue.Zero) / currentEquity).toDouble().coerceIn(0.0, 1.0),
+            top2ConcentrationPct = (sortedValues.take(2).fold(DecimalValue.Zero) { acc, v -> acc + v } / currentEquity).toDouble().coerceIn(0.0, 1.0),
         )
     }
 
@@ -234,15 +237,15 @@ class RiskEngine(
     }
 
     private fun dailyNetProfitPct(dailyRisk: DailyRiskSnapshot): Double {
-        val opening = dailyRisk.openingEquityIdr.toDoubleOrZero().coerceAtLeast(1.0)
-        val current = dailyRisk.currentEquityIdr.toDoubleOrZero().coerceAtLeast(0.0)
-        return ((current - opening) / opening).coerceAtLeast(-1.0)
+        val opening = dailyRisk.openingEquityIdr.toScaledLong().takeIf { it > 0 }?.let { dailyRisk.openingEquityIdr } ?: DecimalValue("1")
+        val current = dailyRisk.currentEquityIdr
+        return ((current - opening) / opening).toDouble().coerceAtLeast(-1.0)
     }
 }
 
 private data class PositionHeatValue(
-    val currentValueIdr: Double,
-    val unrealizedPnlIdr: Double,
+    val currentValueIdr: DecimalValue,
+    val unrealizedPnlIdr: DecimalValue,
 )
 
 private data class PortfolioHeat(
