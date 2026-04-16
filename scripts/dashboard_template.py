@@ -4,7 +4,7 @@ DASHBOARD_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KiCryp Trinity v6.0 | Command Center</title>
+    <title>KiCryp Trinity v7.0 | Command Center</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -284,7 +284,7 @@ DASHBOARD_HTML = """
         <header>
             <div class="logo-area">
                 <h1>KICRYP TRINITY</h1>
-                <span>Enterprise Trading Engine v6.0</span>
+                <span>Enterprise Trading Engine v7.0</span>
             </div>
             <div class="system-status">
                 <div id="math-badge" class="badge">
@@ -359,7 +359,7 @@ DASHBOARD_HTML = """
         </div>
 
         <div class="footer">
-            KiCryp Trinity v6.0 © 2026 | Local Engine: <span id="local-time">--:--:--</span>
+            KiCryp Trinity v7.0 © 2026 | Local Engine: <span id="local-time">--:--:--</span>
         </div>
     </div>
 
