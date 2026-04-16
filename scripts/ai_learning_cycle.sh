@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
-API_BASE="${KICRYP_API_BASE:-http://127.0.0.1:8787}"
-OUT_BASE="${KICRYP_AI_AUDIT_DIR:-${ROOT_DIR}/.tmp/ai-audits}"
+API_BASE="${KIBOT_API_BASE:-http://127.0.0.1:8787}"
+OUT_BASE="${KIBOT_AI_AUDIT_DIR:-${ROOT_DIR}/.tmp/ai-audits}"
 TS="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="${OUT_BASE}/${TS}"
 INPUT_JSON="${RUN_DIR}/rolling_6h_input.json"

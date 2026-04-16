@@ -8,10 +8,10 @@ import websockets
 from datetime import datetime
 
 # === CONFIGURATION ===
-KICRYP_WS_URL = "wss://stream.crypto.com/v2/market"
-# Target the same port as Kinance for shared signal processing
-MANAGER_UDP_HOST = os.getenv("KICRYP_MANAGER_HOST", "127.0.0.1")
-MANAGER_UDP_PORT = int(os.getenv("KICRYP_MANAGER_PORT", "9999"))
+KIBOT_WS_URL = "wss://stream.crypto.com/v2/market"
+# Target the same port as KiNance for shared signal processing
+MANAGER_UDP_HOST = os.getenv("KIBOT_MANAGER_HOST", "127.0.0.1")
+MANAGER_UDP_PORT = int(os.getenv("KIBOT_MANAGER_PORT", "9999"))
 
 # Default top-50 volume pairs on Crypto.com (can be expanded)
 DEFAULT_PAIRS = [
@@ -19,14 +19,14 @@ DEFAULT_PAIRS = [
     "XRP_USDT", "ADA_USDT", "AVAX_USDT", "DOT_USDT", "LINK_USDT"
 ]
 
-class KiCrypRadar:
+class KiBotRadar:
     def __init__(self, pairs=None):
         self.pairs = pairs or DEFAULT_PAIRS
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.last_heartbeat = 0
 
     def broadcast_to_whiteboard(self, symbol, price, vol_24h):
-        """Send price update to the KiCryp Manager's whiteboard."""
+        """Send price update to the KiBot Manager's whiteboard."""
         msg = {
             "source": "CRYPTOCOM",
             "type": "TICKER_UPDATE",
@@ -38,7 +38,7 @@ class KiCrypRadar:
         try:
             self.sock.sendto(json.dumps(msg).encode(), (MANAGER_UDP_HOST, MANAGER_UDP_PORT))
         except Exception as e:
-            print(f"[KICRYP][UDP-ERR] {e}", flush=True)
+            print(f"[KIBOT][UDP-ERR] {e}", flush=True)
 
     async def handle_heartbeat(self, ws, msg_id):
         """Respond to Crypto.com heartbeat to keep connection alive."""
@@ -47,7 +47,7 @@ class KiCrypRadar:
             "method": "public/respond-heartbeat"
         }
         await ws.send(json.dumps(response))
-        # print(f"[KICRYP][HEARTBEAT] Responded to {msg_id}", flush=True)
+        # print(f"[KIBOT][HEARTBEAT] Responded to {msg_id}", flush=True)
 
     async def run_regime_scanner(self):
         """Periodic scan of BTC/ETH to determine global market regime."""
@@ -58,16 +58,16 @@ class KiCrypRadar:
                 # logic for regime detection:
                 pass
             except Exception as e:
-                print(f"[KICRYP][REGIME-ERR] {e}")
+                print(f"[KIBOT][REGIME-ERR] {e}")
             await asyncio.sleep(60)
 
     async def run(self):
-        print(f"[KICRYP] Connecting to {KICRYP_WS_URL}...", flush=True)
+        print(f"[KIBOT] Connecting to {KIBOT_WS_URL}...", flush=True)
         
         # Broadcast initial regime
         self.broadcast_regime("SIDEWAYS")
         
-        async for ws in websockets.connect(KICRYP_WS_URL):
+        async for ws in websockets.connect(KIBOT_WS_URL):
             try:
                 # 1. Subscribe to Tickers
                 sub_msg = {
@@ -78,7 +78,7 @@ class KiCrypRadar:
                     }
                 }
                 await ws.send(json.dumps(sub_msg))
-                print(f"[KICRYP] Subscribed to {len(self.pairs)} pairs", flush=True)
+                print(f"[KIBOT] Subscribed to {len(self.pairs)} pairs", flush=True)
 
                 # 2. Process Messages
                 async for message in ws:
@@ -108,16 +108,16 @@ class KiCrypRadar:
                                 pass
 
             except websockets.ConnectionClosed:
-                print("[KICRYP] Connection closed. Reconnecting...", flush=True)
+                print("[KIBOT] Connection closed. Reconnecting...", flush=True)
                 continue
             except Exception as e:
-                print(f"[KICRYP][ERR] {e}", flush=True)
+                print(f"[KIBOT][ERR] {e}", flush=True)
                 await asyncio.sleep(5)
 
     def broadcast_regime(self, regime: str):
         """Broadcast global market regime to manager."""
         msg = {
-            "source": "KICRYP_RADAR",
+            "source": "KIBOT_RADAR",
             "type": "REGIME_UPDATE",
             "regime": regime,
             "timestamp": time.time()
@@ -129,8 +129,8 @@ class KiCrypRadar:
 
 if __name__ == "__main__":
     # Expand to all USDT pairs if possible, or a large subset
-    radar = KiCrypRadar()
+    radar = KiBotRadar()
     try:
         asyncio.run(radar.run())
     except KeyboardInterrupt:
-        print("[KICRYP] Stopped by user.", flush=True)
+        print("[KIBOT] Stopped by user.", flush=True)

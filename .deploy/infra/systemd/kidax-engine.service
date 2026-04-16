@@ -11,23 +11,23 @@ WorkingDirectory=/home/ubuntu/KiDax
 EnvironmentFile=-/home/ubuntu/KiDax/.env.kidax
 Environment=BOT_ID=main
 Environment=BOT_PROFILE_KEY=indodax
-Environment=KICRYP_EXCHANGE_KIND=INDODAX
+Environment=KIBOT_EXCHANGE_KIND=INDODAX
 Environment=DEVICE_ID=kidax-oracle-sg
 Environment=DEVICE_DISPLAY_NAME="KiDax Oracle Singapore"
 Environment=DEVICE_ROLE=PRIMARY
-Environment=KICRYP_RUNTIME_ROOT=/home/ubuntu/KiDax
-Environment=KICRYP_SERVICE_NAME=kidax-engine
-Environment=KICRYP_DASHBOARD_PORT=8787
-Environment=KICRYP_ENV_FILE=/home/ubuntu/KiDax/.env.kidax
+Environment=KIBOT_RUNTIME_ROOT=/home/ubuntu/KiDax
+Environment=KIBOT_SERVICE_NAME=kidax-engine
+Environment=KIBOT_DASHBOARD_PORT=8787
+Environment=KIBOT_ENV_FILE=/home/ubuntu/KiDax/.env.kidax
 Environment=MAC_ENGINE_BIND_HOST=0.0.0.0
 Environment=MAC_ENGINE_PORT=8787
 Environment=MAC_ENGINE_ENABLE_LAN_ADVERTISE=false
-Environment=KICRYP_LOCAL_POSITION_STATE_ENABLED=true
-Environment=KICRYP_LEAD_LAG_UDP_ENABLED=true
-Environment=KICRYP_LEAD_LAG_UDP_HEARTBEAT_ENABLED=true
-Environment=KICRYP_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=100
-Environment=KICRYP_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=500
-Environment=KICRYP_HIVE_EXPECTED_BOT_IDS=kinance,kicryp
+Environment=KIBOT_LOCAL_POSITION_STATE_ENABLED=true
+Environment=KIBOT_LEAD_LAG_UDP_ENABLED=true
+Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_ENABLED=true
+Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=100
+Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=500
+Environment=KIBOT_HIVE_EXPECTED_BOT_IDS=kinance,kicryp
 Environment="JAVA_OPTS=-XX:+UseSerialGC -Xms128m -Xmx300m -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
 ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/KiDax/server/mac-engine-all.jar
 ExecStartPre=-/usr/bin/fuser -k 8787/tcp

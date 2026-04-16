@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KiCryp Trinity - Telegram Command Listener
+KiBot Trinity - Telegram Command Listener
 =========================================
 Listens for Telegram commands via webhook and routes to command handlers.
 """
@@ -8,7 +8,7 @@ Listens for Telegram commands via webhook and routes to command handlers.
 import asyncio
 import logging
 from aiohttp import web
-from kicryp_command_handler import CommandHandler
+from kibot_command_handler import CommandHandler
 
 # ============================================================================
 # CONFIGURATION
@@ -30,7 +30,7 @@ logging.basicConfig(
     format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger("KiCryp.CommandListener")
+logger = logging.getLogger("KiBot.CommandListener")
 
 # ============================================================================
 # GLOBALS
@@ -119,7 +119,7 @@ async def main():
     """Start the webhook server."""
     
     logger.info("=" * 60)
-    logger.info("  KiCryp Trinity - Telegram Command Listener")
+    logger.info("  KiBot Trinity - Telegram Command Listener")
     logger.info("=" * 60)
     
     app = await setup_app()

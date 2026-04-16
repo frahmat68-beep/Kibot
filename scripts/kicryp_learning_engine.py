@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-STATE_PATH = Path(os.getenv("KICRYP_LEARNING_STATE_PATH", "state/learning_state.json"))
+STATE_PATH = Path(os.getenv("KIBOT_LEARNING_STATE_PATH", "state/learning_state.json"))
 INDODAX_TAKER_FEE = 0.003
 INDODAX_MAKER_FEE = 0.0015
 ROUND_TRIP_TAKER = INDODAX_TAKER_FEE * 2

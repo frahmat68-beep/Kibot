@@ -83,7 +83,7 @@ def _on_kinance_heartbeat_received():
     global _last_kinance_heartbeat_at, _kinance_healthy
     _last_kinance_heartbeat_at = time.time()
     if not _kinance_healthy:
-        print("[KICRYP][RECOVERY] KINANCE heartbeat restored!", flush=True)
+        print("[KIBOT][RECOVERY] KINANCE heartbeat restored!", flush=True)
     _kinance_healthy = True
 
 def _check_kinance_health() -> bool:
@@ -95,7 +95,7 @@ def _check_kinance_health() -> bool:
     
     if (now - _last_kinance_heartbeat_at) > KINANCE_HEARTBEAT_TIMEOUT_SEC:
         if _kinance_healthy:
-            print(f"[KICRYP][CRITICAL] KINANCE HEARTBEAT LOST! Last seen {now - _last_kinance_heartbeat_at:.1f}s ago", flush=True)
+            print(f"[KIBOT][CRITICAL] KINANCE HEARTBEAT LOST! Last seen {now - _last_kinance_heartbeat_at:.1f}s ago", flush=True)
             _kinance_healthy = False
         return False
     return True
@@ -109,7 +109,7 @@ def _process_signal(msg: dict) -> None:
         msg_type = msg.get("msgType", "")
         # Only allow EXIT signals when Kinance unhealthy
         if msg_type not in {"SELL_WALL_SURGE", "MOMENTUM_LOSS", "TRAILING_STOP_HIT"}:
-            print(f"[KICRYP][BLOCK] Blocking {msg_type} - KINANCE unhealthy", flush=True)
+            print(f"[KIBOT][BLOCK] Blocking {msg_type} - KINANCE unhealthy", flush=True)
             return
     
     # ... rest of existing code

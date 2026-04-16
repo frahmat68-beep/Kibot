@@ -1,4 +1,4 @@
-# KICRYP TRINITY v7.0
+# KIBOT TRINITY v7.0
 # Dual Bucket: 50% Global Lead-Lag + 50% Local Indodax-Only
 # Modal: adaptive dari equity aktual setiap hari
 # Filosofi: Profit sedikit demi sedikit lama lama jadi bukit
@@ -19,7 +19,7 @@
 
 ## ARCHITECTURE
 KINANCE (port 8788, Binance) ─┐
-├─ AND gate → KICRYP MANAGER (port 9998) → KIDAX (port 8787) → Indodax
+├─ AND gate → KIBOT MANAGER (port 9998) → KIDAX (port 8787) → Indodax
 KICOM (Crypto.com REST API)  ─┘
 Bucket A (50%): Global Lead-Lag
 

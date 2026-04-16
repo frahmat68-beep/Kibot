@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_LOCAL="${ROOT_DIR}/.env"
 SSH_KEY="${ROOT_DIR}/ssh-key-2026-03-22.key"
-HOST="${KICRYP_SSH_HOST:-213.35.118.26}"
-USER_NAME="${KICRYP_SSH_USER:-ubuntu}"
+HOST="${KIBOT_SSH_HOST:-213.35.118.26}"
+USER_NAME="${KIBOT_SSH_USER:-ubuntu}"
 REMOTE_ENV="/home/ubuntu/KiDax/.env.kidax"
 
 if [[ ! -f "${ENV_LOCAL}" ]]; then
@@ -53,7 +53,7 @@ for k in keys:
         print(f'{k}="{safe}"')
 PY
 
-scp -i "${SSH_KEY}" "${tmp_file}" "${USER_NAME}@${HOST}:/tmp/kicryp-env-sync.tmp" >/dev/null
+scp -i "${SSH_KEY}" "${tmp_file}" "${USER_NAME}@${HOST}:/tmp/kibot-env-sync.tmp" >/dev/null
 
 ssh -i "${SSH_KEY}" "${USER_NAME}@${HOST}" "
 set -euo pipefail
@@ -62,8 +62,8 @@ while IFS= read -r line; do
   key=\${line%%=*}
   sed -i \"/^\${key}=.*/d\" '${REMOTE_ENV}'
   printf '%s\n' \"\$line\" >> '${REMOTE_ENV}'
-done < /tmp/kicryp-env-sync.tmp
-rm -f /tmp/kicryp-env-sync.tmp
+done < /tmp/kibot-env-sync.tmp
+rm -f /tmp/kibot-env-sync.tmp
 sudo systemctl restart kidax-engine
 sleep 4
 systemctl is-active kidax-engine

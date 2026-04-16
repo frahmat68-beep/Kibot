@@ -2,15 +2,15 @@
 
 set -euo pipefail
 
-RUNTIME_ROOT="${KICRYP_RUNTIME_ROOT:-/home/ubuntu/KiDax}"
-SERVICE_NAME="${KICRYP_SERVICE_NAME:-kidax-engine}"
-DASHBOARD_PORT="${KICRYP_DASHBOARD_PORT:-8787}"
-LOG_FILE="${KICRYP_RECOVERY_LOG_FILE:-${RUNTIME_ROOT}/kicryp-recovery.log}"
+RUNTIME_ROOT="${KIBOT_RUNTIME_ROOT:-/home/ubuntu/KiDax}"
+SERVICE_NAME="${KIBOT_SERVICE_NAME:-kidax-engine}"
+DASHBOARD_PORT="${KIBOT_DASHBOARD_PORT:-8787}"
+LOG_FILE="${KIBOT_RECOVERY_LOG_FILE:-${RUNTIME_ROOT}/kibot-recovery.log}"
 HEALTH_URL="http://127.0.0.1:${DASHBOARD_PORT}/api/state"
 ROOT_URL="http://127.0.0.1:${DASHBOARD_PORT}/"
 LOGS_URL="http://127.0.0.1:${DASHBOARD_PORT}/api/logs"
 JAR_PATH="${RUNTIME_ROOT}/server/mac-engine-all.jar"
-ENV_FILE="${KICRYP_ENV_FILE:-}"
+ENV_FILE="${KIBOT_ENV_FILE:-}"
 
 if [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]]; then
   set -a

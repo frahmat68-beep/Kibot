@@ -1,4 +1,4 @@
-# KiCryp Trinity — Changelog
+# KiBot Trinity — Changelog
 
 ## v7.0 — 2026-04 (Current)
 - New: Dual Bucket Strategy (50% Lead-Lag + 50% Local)

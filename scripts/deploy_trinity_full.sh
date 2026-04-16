@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "[1/4] Bootstrap local runtime files"
 bash "${ROOT_DIR}/scripts/bootstrap_local.sh"
 
-echo "[2/4] Full shadow deploy to Kinance + KiDax"
+echo "[2/4] Full shadow deploy to KiNance + KiDax"
 bash "${ROOT_DIR}/infra/scripts/deploy_shadow_mode_oracle.sh"
 
 echo "[3/4] Verify Trinity smoke state"

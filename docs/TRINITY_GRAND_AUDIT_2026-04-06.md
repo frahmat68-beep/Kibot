@@ -12,7 +12,7 @@
 Trinity adalah **High-Frequency Trading Engine** yang terdiri dari 3 node:
 - **KINANCE** (152.69.218.198) — Binance Radar, Lead-Lag Signal Generator
 - **KIDAX** (213.35.118.26) — Indodax Executor, Trade Execution
-- **KICRYP MANAGER** (213.35.118.26) — Brain, Veto Manager, AI Router
+- **KIBOT MANAGER** (213.35.118.26) — Brain, Veto Manager, AI Router
 
 ### Overall System Health: ⚠️ MODERATE CONCERN
 
@@ -212,7 +212,7 @@ KINANCE (152.69.218.198:9999)
     │
     │ UDP Signal (Lead-Lag, Anomaly Detection)
     ▼
-KICRYP MANAGER (213.35.118.26:9998)
+KIBOT MANAGER (213.35.118.26:9998)
     │
     │ UDP Veto Decision (APPROVED/REJECTED)
     ▼
@@ -225,19 +225,19 @@ KIDAX (213.35.118.26:8787)
 
 | Metric | Status | Evidence |
 |--------|--------|----------|
-| UDP Heartbeat | ⚠️ PARTIAL | KINANCE sends heartbeat, KICRYP MANAGER does NOT monitor |
-| Heartbeat Interval | ✅ 250ms | `KICRYP_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=250` |
-| Heartbeat Timeout | ✅ 5000ms | `KICRYP_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000` |
+| UDP Heartbeat | ⚠️ PARTIAL | KINANCE sends heartbeat, KIBOT MANAGER does NOT monitor |
+| Heartbeat Interval | ✅ 250ms | `KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=250` |
+| Heartbeat Timeout | ✅ 5000ms | `KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000` |
 | Memory (KiDax) | ✅ 164MB peak | Within 220MB limit |
 | Memory (Kinance) | ✅ 280MB peak | Borderline, 200MB limit set |
 | OOM Protection | ✅ EXISTS | `OOMPolicy=restart` (systemd) |
 
 #### Issues Found
 
-1. **KICRYP MANAGER tidak monitor heartbeat dari KINANCE**
+1. **KIBOT MANAGER tidak monitor heartbeat dari KINANCE**
    - File: `scripts/kicryp_manager.py`
    - Hanya emit heartbeat, tidak receive/validate
-   - **Risk:** Jika KINANCE crash, KICRYP masih terima sinyal basi
+   - **Risk:** Jika KINANCE crash, KIBOT masih terima sinyal basi
 
 2. **Memory pressure di Kinance**
    - Peak 280MB, limit 200MB
@@ -264,7 +264,7 @@ def _check_kinance_health():
     now = time.time()
     if (now - _last_kinance_heartbeat_at) > KINANCE_HEARTBEAT_TIMEOUT_SEC:
         if _kinance_healthy:
-            print("[KICRYP][CRITICAL] KINANCE HEARTBEAT LOST", flush=True)
+            print("[KIBOT][CRITICAL] KINANCE HEARTBEAT LOST", flush=True)
             _kinance_healthy = False
         return False
     return True

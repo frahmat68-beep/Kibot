@@ -1,4 +1,4 @@
--- KiCryp Trinity v7.0 — Complete Schema
+-- KiBot Trinity v7.0 — Complete Schema
 -- Project: vptlelbgyxwieyfdpuja.supabase.co
 
 CREATE TABLE IF NOT EXISTS trade_history (

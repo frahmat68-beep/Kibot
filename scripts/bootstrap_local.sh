@@ -30,13 +30,13 @@ PY
 }
 
 ensure_local_env() {
-  local supabase_url="${KICRYP_SUPABASE_URL:-https://your-project.supabase.co}"
-  local supabase_anon_key="${KICRYP_SUPABASE_ANON_KEY:-your-publishable-or-anon-key}"
-  local supabase_user_email="${KICRYP_SUPABASE_USER_EMAIL:-__SET_OWNER_EMAIL__}"
-  local supabase_user_password="${KICRYP_SUPABASE_USER_PASSWORD:-$(random_secret)}"
-  local device_display_name="${KICRYP_DEVICE_DISPLAY_NAME:-Android Device}"
-  local indodax_api_key="${KICRYP_INDODAX_API_KEY:-replace-with-trade-only-api-key}"
-  local indodax_api_secret="${KICRYP_INDODAX_API_SECRET:-replace-with-trade-only-api-secret}"
+  local supabase_url="${KIBOT_SUPABASE_URL:-https://your-project.supabase.co}"
+  local supabase_anon_key="${KIBOT_SUPABASE_ANON_KEY:-your-publishable-or-anon-key}"
+  local supabase_user_email="${KIBOT_SUPABASE_USER_EMAIL:-__SET_OWNER_EMAIL__}"
+  local supabase_user_password="${KIBOT_SUPABASE_USER_PASSWORD:-$(random_secret)}"
+  local device_display_name="${KIBOT_DEVICE_DISPLAY_NAME:-Android Device}"
+  local indodax_api_key="${KIBOT_INDODAX_API_KEY:-replace-with-trade-only-api-key}"
+  local indodax_api_secret="${KIBOT_INDODAX_API_SECRET:-replace-with-trade-only-api-secret}"
   local e2ee_passphrase
 
   if [[ -f "${PASSFILE}" ]]; then
@@ -91,7 +91,7 @@ EOF
   chmod 600 "${MAC_ENV}"
 
   cat > "${REPORT_FILE}" <<EOF
-KiCryp local bootstrap finished at $(date '+%Y-%m-%d %H:%M:%S %Z')
+KiBot local bootstrap finished at $(date '+%Y-%m-%d %H:%M:%S %Z')
 
 Created:
 - ${ROOT_ENV}

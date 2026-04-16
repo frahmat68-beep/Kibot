@@ -11,7 +11,7 @@ plugins {
 }
 
 subprojects {
-    group = "com.kicryp"
+    group = "com.kibot"
     version = "0.1.0"
 }
 

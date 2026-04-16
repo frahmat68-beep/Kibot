@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KiCryp Trinity - Telegram Command Handler
+KiBot Trinity - Telegram Command Handler
 ========================================
 Handles user commands for querying bot status, trades, positions, and performance.
 Integrates with AlertManager for real-time alerts.
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 # Import AlertManager
 try:
-    from kicryp_alert_manager import AlertManager, AlertType, AlertSeverity, create_alert_manager
+    from kibot_alert_manager import AlertManager, AlertType, AlertSeverity, create_alert_manager
 except ImportError:
     # Fallback if import fails
     AlertManager = None
@@ -50,7 +50,7 @@ logging.basicConfig(
     format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger("KiCryp.CommandHandler")
+logger = logging.getLogger("KiBot.CommandHandler")
 
 # ============================================================================
 # ICONS & FORMATTING
@@ -216,9 +216,9 @@ class CommandHandler:
         
         # Bot health
         msg += "<b>🤖 Bot Status:</b>\n"
-        msg += f"  {ICONS['status']} KiCryp Manager: <b>ONLINE</b>\n"
+        msg += f"  {ICONS['status']} KiBot Manager: <b>ONLINE</b>\n"
         msg += f"  {ICONS['status']} KiDax: <b>ONLINE</b>\n"
-        msg += f"  {ICONS['status']} Kinance: <b>ONLINE</b>\n\n"
+        msg += f"  {ICONS['status']} KiNance: <b>ONLINE</b>\n\n"
         
         # Balance snapshot
         balance = _get_balance()
@@ -409,9 +409,9 @@ class CommandHandler:
         msg += make_separator() + "\n\n"
         
         msg += "<b>Bot Status:</b>\n"
-        msg += f"  {ICONS['status']} KiCryp Manager: ONLINE\n"
+        msg += f"  {ICONS['status']} KiBot Manager: ONLINE\n"
         msg += f"  {ICONS['status']} KiDax: ONLINE\n"
-        msg += f"  {ICONS['status']} Kinance: ONLINE\n\n"
+        msg += f"  {ICONS['status']} KiNance: ONLINE\n\n"
         
         msg += "<b>Network Latency:</b>\n"
         msg += f"  🌐 Binance: 45ms ✅\n"
@@ -686,7 +686,7 @@ async def demo():
     ]
     
     print("=" * 60)
-    print("  KiCryp Trinity - Telegram Command Handler Demo")
+    print("  KiBot Trinity - Telegram Command Handler Demo")
     print("=" * 60)
     
     for cmd in commands:

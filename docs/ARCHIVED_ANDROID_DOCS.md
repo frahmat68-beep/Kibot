@@ -23,7 +23,7 @@ The following documents reference the old Android+Mac architecture and are **arc
 - `safe-rollout.md` - Old rollout procedures
 - `access-and-secrets.md` - Old credential management
 - `test-plan.md` - Old test scenarios
-- `KICRYP_CONTRACT.md` - Old system contract
+- `KIBOT_CONTRACT.md` - Old system contract
 
 ## Migration Notes
 

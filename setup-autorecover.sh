@@ -1,85 +1,85 @@
 #!/bin/bash
 
-# Setup automatic recovery for KiCryp
+# Setup automatic recovery for KiBot
 # Run this script after server is online
 
 set -e
 
-echo "Setting up KiCryp automatic recovery..."
+echo "Setting up KiBot automatic recovery..."
 
-mkdir -p /home/ubuntu/KiCryp/server
+mkdir -p /home/ubuntu/KiBot/server
 
 # Copy service file
-sudo cp /home/ubuntu/KiCryp/kicryp-engine.service /etc/systemd/system/
-sudo chmod 644 /etc/systemd/system/kicryp-engine.service
+sudo cp /home/ubuntu/KiBot/kibot-engine.service /etc/systemd/system/
+sudo chmod 644 /etc/systemd/system/kibot-engine.service
 
 # Reload systemd
 sudo systemctl daemon-reload
 
 # Enable and start service
-sudo systemctl enable kicryp-engine
-sudo systemctl stop kicryp.service || true
-sudo systemctl disable kicryp.service || true
-sudo rm -f /etc/systemd/system/kicryp.service
-sudo systemctl stop kicryp-engine || true
+sudo systemctl enable kibot-engine
+sudo systemctl stop kibot.service || true
+sudo systemctl disable kibot.service || true
+sudo rm -f /etc/systemd/system/kibot.service
+sudo systemctl stop kibot-engine || true
 sudo pkill -f 'gradle.*:apps:mac-engine:run' || true
-sudo pkill -f '/home/ubuntu/KiCryp/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar' || true
+sudo pkill -f '/home/ubuntu/KiBot/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar' || true
 sudo pkill -f '/home/ubuntu/mac-engine-0.1.0-all.jar' || true
-sudo pkill -f '/home/ubuntu/KiCryp/server/mac-engine-all.jar' || true
-sudo fuser -k "${KICRYP_PORT:-8789}"/tcp || true
+sudo pkill -f '/home/ubuntu/KiBot/server/mac-engine-all.jar' || true
+sudo fuser -k "${KIBOT_PORT:-8789}"/tcp || true
 sudo systemctl daemon-reload
-sudo systemctl start kicryp-engine
+sudo systemctl start kibot-engine
 
 # Check service status
-sudo systemctl status kicryp-engine --no-pager
+sudo systemctl status kibot-engine --no-pager
 
-sudo tee /etc/systemd/system/kicryp-recovery.service >/dev/null <<'EOF'
+sudo tee /etc/systemd/system/kibot-recovery.service >/dev/null <<'EOF'
 [Unit]
-Description=KiCryp recovery watchdog
-After=network-online.target kicryp-engine.service
-Wants=network-online.target kicryp-engine.service
+Description=KiBot recovery watchdog
+After=network-online.target kibot-engine.service
+Wants=network-online.target kibot-engine.service
 
 [Service]
 Type=oneshot
-Environment=KICRYP_RUNTIME_ROOT=/home/ubuntu/KiCryp
-Environment=KICRYP_SERVICE_NAME=kicryp-engine
-Environment=KICRYP_DASHBOARD_PORT=8789
-Environment=KICRYP_ENV_FILE=/home/ubuntu/KiCryp/.env.kicryp
-Environment=KICRYP_EXPECT_LIVE_EXECUTION=true
-ExecStart=/home/ubuntu/KiCryp/kicryp-recovery.sh
+Environment=KIBOT_RUNTIME_ROOT=/home/ubuntu/KiBot
+Environment=KIBOT_SERVICE_NAME=kibot-engine
+Environment=KIBOT_DASHBOARD_PORT=8789
+Environment=KIBOT_ENV_FILE=/home/ubuntu/KiBot/.env.kibot
+Environment=KIBOT_EXPECT_LIVE_EXECUTION=true
+ExecStart=/home/ubuntu/KiBot/kibot-recovery.sh
 EOF
 
-sudo tee /etc/systemd/system/kicryp-recovery.timer >/dev/null <<'EOF'
+sudo tee /etc/systemd/system/kibot-recovery.timer >/dev/null <<'EOF'
 [Unit]
-Description=KiCryp recovery watchdog timer
+Description=KiBot recovery watchdog timer
 
 [Timer]
 OnBootSec=20s
 OnUnitActiveSec=45s
 AccuracySec=5s
 Persistent=true
-Unit=kicryp-recovery.service
+Unit=kibot-recovery.service
 
 [Install]
 WantedBy=timers.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now kicryp-recovery.timer
+sudo systemctl enable --now kibot-recovery.timer
 
-if crontab -l 2>/dev/null | grep -vF "/home/ubuntu/KiCryp/kicryp-recovery.sh" | sed '/^$/d' | crontab - 2>/dev/null; then
+if crontab -l 2>/dev/null | grep -vF "/home/ubuntu/KiBot/kibot-recovery.sh" | sed '/^$/d' | crontab - 2>/dev/null; then
   echo "Legacy recovery cron removed"
 else
   echo "No legacy recovery cron found"
 fi
 
-AI_CRON_JOB="5 * * * * /home/ubuntu/KiCryp/scripts/ai_learning_cycle.sh"
+AI_CRON_JOB="5 * * * * /home/ubuntu/KiBot/scripts/ai_learning_cycle.sh"
 (crontab -l 2>/dev/null; echo "$AI_CRON_JOB") | awk '!seen[$0]++' | crontab -
 
 # Make recovery script executable
-chmod +x /home/ubuntu/KiCryp/kicryp-recovery.sh
-chmod +x /home/ubuntu/KiCryp/setup-autorecover.sh
-chmod +x /home/ubuntu/KiCryp/scripts/ai_learning_cycle.sh
+chmod +x /home/ubuntu/KiBot/kibot-recovery.sh
+chmod +x /home/ubuntu/KiBot/setup-autorecover.sh
+chmod +x /home/ubuntu/KiBot/scripts/ai_learning_cycle.sh
 
-echo "Setup complete! KiCryp will auto-restart if it crashes."
+echo "Setup complete! KiBot will auto-restart if it crashes."
 echo "Dashboard should be available at http://<oracle-ip>:8787"

@@ -17,7 +17,7 @@ Trinity adalah sistem High-Frequency Trading (HFT) otomatis berbasis Microservic
    - Menghitung slippage, optimalisasi fee (Maker/Taker)
    - Trailing Stop dengan adaptive threshold untuk micro-caps
 
-3. **KICRYP Manager (The Brain)** — Indodax Server (Python)
+3. **KIBOT Manager (The Brain)** — Indodax Server (Python)
    - Manajer stabilitas, capital rotation, dan VETO eksekusi
    - AI-powered approval via Groq/OpenRouter/Cohere/Gemini
    - Post-mortem learning untuk continuous improvement

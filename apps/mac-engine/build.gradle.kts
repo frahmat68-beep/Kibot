@@ -10,7 +10,7 @@ kotlin {
 }
 
 application {
-    mainClass = "com.kicryp.macengine.MainKt"
+    mainClass = "com.kibot.macengine.MainKt"
 }
 
 dependencies {
@@ -52,7 +52,7 @@ tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJ
         attributes(
             "Implementation-Title" to "KiCryp Mac Engine",
             "Implementation-Version" to project.version,
-            "Main-Class" to "com.kicryp.macengine.MainKt",
+            "Main-Class" to "com.kibot.macengine.MainKt",
         )
     }
 }

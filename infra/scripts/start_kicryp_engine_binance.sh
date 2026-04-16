@@ -2,17 +2,17 @@
 set -euo pipefail
 
 if [[ "${EUID}" -ne 0 ]]; then
-  echo "Jalankan sebagai root: sudo bash start_kicryp_engine_binance.sh"
+  echo "Jalankan sebagai root: sudo bash start_kibot_engine_binance.sh"
   exit 1
 fi
 
-KINANCE_ENV="/home/ubuntu/Kinance/.env.kinance"
-KICRYP_ENV="/home/ubuntu/KiCryp/.env.kicryp"
-KICRYP_MANAGER_ENV="/home/ubuntu/KiCryp/.env.kicryp_manager"
-DROPIN_DIR="/etc/systemd/system/kicryp-engine.service.d"
+KINANCE_ENV="/home/ubuntu/KiNance/.env.kinance"
+KIBOT_ENV="/home/ubuntu/KiBot/.env.kibot"
+KIBOT_MANAGER_ENV="/home/ubuntu/KiBot/.env.kibot_manager"
+DROPIN_DIR="/etc/systemd/system/kibot-engine.service.d"
 DROPIN_FILE="${DROPIN_DIR}/binance-relocation.conf"
 KINANCE_DROPIN_DIR="/etc/systemd/system/kinance-engine.service.d"
-KINANCE_DROPIN_FILE="${KINANCE_DROPIN_DIR}/kicryp-local-routing.conf"
+KINANCE_DROPIN_FILE="${KINANCE_DROPIN_DIR}/kibot-local-routing.conf"
 ORACLE_HOST="213.35.118.26"
 KINANCE_LOCAL_UDP_PORT="10098"
 MANAGER_UDP_PORT="9998"
@@ -49,37 +49,37 @@ path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 PY
 }
 
-echo "[1/5] Redirect Kinance -> localhost KiCryp -> Oracle KiDax..."
-upsert_env "$KINANCE_ENV" "KICRYP_LEAD_LAG_UDP_LISTEN_PORT" "${KINANCE_LOCAL_UDP_PORT}"
-upsert_env "$KINANCE_ENV" "KICRYP_LEAD_LAG_UDP_TARGET_HOST" "127.0.0.1"
-upsert_env "$KINANCE_ENV" "KICRYP_LEAD_LAG_UDP_TARGET_PORT" "${MANAGER_UDP_PORT}"
-upsert_env "$KINANCE_ENV" "KICRYP_HIVE_UDP_PEERS" "${ORACLE_HOST}:9997"
-upsert_env "$KINANCE_ENV" "KICRYP_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS" "1000"
-upsert_env "$KINANCE_ENV" "KICRYP_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS" "5000"
+echo "[1/5] Redirect KiNance -> localhost KiBot -> Oracle KiDax..."
+upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_LISTEN_PORT" "${KINANCE_LOCAL_UDP_PORT}"
+upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_HOST" "127.0.0.1"
+upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_PORT" "${MANAGER_UDP_PORT}"
+upsert_env "$KINANCE_ENV" "KIBOT_HIVE_UDP_PEERS" "${ORACLE_HOST}:9997"
+upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS" "1000"
+upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS" "5000"
 
-echo "[2/5] Sinkronkan target manager ke port UDP Kinance yang unik..."
-upsert_env "$KICRYP_MANAGER_ENV" "KINANCE_UDP_HOST" "127.0.0.1"
-upsert_env "$KICRYP_MANAGER_ENV" "KINANCE_UDP_PORT" "${KINANCE_LOCAL_UDP_PORT}"
+echo "[2/5] Sinkronkan target manager ke port UDP KiNance yang unik..."
+upsert_env "$KIBOT_MANAGER_ENV" "KINANCE_UDP_HOST" "127.0.0.1"
+upsert_env "$KIBOT_MANAGER_ENV" "KINANCE_UDP_PORT" "${KINANCE_LOCAL_UDP_PORT}"
 
-echo "[3/5] Set KiCryp Binance output ke KiDax Oracle..."
-upsert_env "$KICRYP_ENV" "KICRYP_LEAD_LAG_UDP_ENABLED" "true"
-upsert_env "$KICRYP_ENV" "KICRYP_LEAD_LAG_UDP_LISTEN_PORT" "9999"
-upsert_env "$KICRYP_ENV" "KICRYP_LEAD_LAG_UDP_TARGET_HOST" "$ORACLE_HOST"
-upsert_env "$KICRYP_ENV" "KICRYP_LEAD_LAG_UDP_TARGET_PORT" "9997"
-upsert_env "$KICRYP_ENV" "KICRYP_HIVE_UDP_PEERS" "127.0.0.1:${KINANCE_LOCAL_UDP_PORT},${ORACLE_HOST}:9997"
-upsert_env "$KICRYP_ENV" "KICRYP_HIVE_EXPECTED_BOT_IDS" "kinance,kidax"
-upsert_env "$KICRYP_ENV" "KICRYP_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS" "1000"
-upsert_env "$KICRYP_ENV" "KICRYP_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS" "5000"
+echo "[3/5] Set KiBot Binance output ke KiDax Oracle..."
+upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_ENABLED" "true"
+upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_LISTEN_PORT" "9999"
+upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_HOST" "$ORACLE_HOST"
+upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_PORT" "9997"
+upsert_env "$KIBOT_ENV" "KIBOT_HIVE_UDP_PEERS" "127.0.0.1:${KINANCE_LOCAL_UDP_PORT},${ORACLE_HOST}:9997"
+upsert_env "$KIBOT_ENV" "KIBOT_HIVE_EXPECTED_BOT_IDS" "kinance,kidax"
+upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS" "1000"
+upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS" "5000"
 
-echo "[4/5] Pasang throttling + JVM cap KiCryp..."
+echo "[4/5] Pasang throttling + JVM cap KiBot..."
 mkdir -p "$DROPIN_DIR"
 cat > "$DROPIN_FILE" <<'EOF'
 [Service]
-Environment=DEVICE_ID=kicryp-binance-sg
-Environment="DEVICE_DISPLAY_NAME=KiCryp Binance Singapore"
+Environment=DEVICE_ID=kibot-binance-sg
+Environment="DEVICE_DISPLAY_NAME=KiBot Binance Singapore"
 Environment=DEVICE_ROLE=PRIMARY
-Environment=KICRYP_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=1000
-Environment=KICRYP_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000
+Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=1000
+Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000
 Environment=BOT_POLL_INTERVAL_MS=8000
 Environment=BOT_EXCHANGE_PING_REFRESH_INTERVAL_MS=8000
 Environment=BOT_BALANCE_REFRESH_INTERVAL_MS=8000
@@ -97,19 +97,19 @@ EOF
 mkdir -p "$KINANCE_DROPIN_DIR"
 cat > "$KINANCE_DROPIN_FILE" <<'EOF'
 [Service]
-Environment=KICRYP_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=1000
-Environment=KICRYP_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000
+Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=1000
+Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000
 EOF
 
 echo "[5/5] Reload + start services..."
 systemctl daemon-reload
-systemctl enable kicryp-engine kinance-engine kicryp-manager
-systemctl restart kicryp-manager kicryp-engine kinance-engine
+systemctl enable kibot-engine kinance-engine kibot-manager
+systemctl restart kibot-manager kibot-engine kinance-engine
 
 echo "[6/6] Verifikasi..."
 echo "--- kinance-engine ---"
 systemctl is-active kinance-engine
-echo "--- kicryp-engine ---"
-systemctl is-active kicryp-engine
+echo "--- kibot-engine ---"
+systemctl is-active kibot-engine
 echo "--- memory ---"
 free -h

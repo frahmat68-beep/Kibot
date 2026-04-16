@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">KiCryp</string>
+    <string name="app_name">KiBot</string>
     <string name="start_trading">Start Trading</string>
     <string name="stop_trading">STOP Trading</string>
     <string name="refresh">Refresh</string>
@@ -19,8 +19,8 @@
     <string name="aggressive">Aggressive</string>
     
     <!-- Widget -->
-    <string name="widget_name">KiCryp Status</string>
-    <string name="widget_description">Shows KiCryp trading status, balance, and PnL</string>
+    <string name="widget_name">KiBot Status</string>
+    <string name="widget_description">Shows KiBot trading status, balance, and PnL</string>
     
     <!-- Navigation -->
     <string name="nav_dashboard">Dashboard</string>
@@ -33,7 +33,7 @@
     <string name="status_connecting">Connecting…</string>
     
     <!-- Bot Names -->
-    <string name="bot_kicryp_manager">KiCryp Manager</string>
+    <string name="bot_kibot_manager">KiBot Manager</string>
     <string name="bot_kinance">Kinance (Binance)</string>
     <string name="bot_kidax">KiDax (Indodax)</string>
 </resources>
