@@ -42,6 +42,19 @@ jobs:
           java-version: "21"
           distribution: temurin
 
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Validate Python Syntax
+        run: |
+          python3 -m py_compile scripts/*.py
+
+      - name: Logic Regression Tests
+        run: |
+          python3 scripts/test_v7_logic.py
+
       - name: Build Runtime Jar
         run: |
           chmod +x gradlew
@@ -49,7 +62,15 @@ jobs:
 
       - name: Check Build Output
         run: |
-          test -f apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar
+          JAR_PATH=$(find apps/mac-engine/build/libs -name "*-all.jar" | head -n 1)
+          if [ -z "$JAR_PATH" ]; then
+            echo "❌ Build output JAR not found!"
+            exit 1
+          fi
+          echo "JAR_PATH=$JAR_PATH" >> $GITHUB_ENV
+          mkdir -p .deploy/infra/systemd .deploy/scripts
+          cp "$JAR_PATH" .deploy/mac-engine-all.jar
+          cp "$SERVICE_FILE" .deploy/infra/systemd/
 
       - name: Validate Deploy Secrets
         run: |

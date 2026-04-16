@@ -12,14 +12,14 @@ echo "========================================================="
 
 # 1. CORE FILES CHECK
 echo -n "[CORE] DualBucketManager.kt... "
-if [ -f "packages/core/src/commonMain/kotlin/com/kibot/core/DualBucketManager.kt" ]; then
+if [ -f "packages/core/src/commonMain/kotlin/com/kicryp/core/DualBucketManager.kt" ]; then
     echo -e "${GREEN}PASSED${NC}"
 else
     echo -e "${RED}FAILED (Missing)${NC}"
 fi
 
 echo -n "[CORE] TradeLogger.kt... "
-if [ -f "packages/core/src/commonMain/kotlin/com/kibot/core/TradeLogger.kt" ]; then
+if [ -f "packages/core/src/commonMain/kotlin/com/kicryp/core/TradeLogger.kt" ]; then
     echo -e "${GREEN}PASSED${NC}"
 else
     echo -e "${RED}FAILED (Missing)${NC}"
@@ -27,14 +27,14 @@ fi
 
 # 2. LOGIC INJECTION CHECK
 echo -n "[DAEMON] CascadeLossGuard logic... "
-if grep -q "cascadeLevel" apps/mac-engine/src/main/kotlin/com/kibot/macengine/runtime/MacEngineDaemon.kt 2>/dev/null; then
+if grep -q "cascadeLevel" apps/mac-engine/src/main/kotlin/com/kicryp/macengine/runtime/MacEngineDaemon.kt 2>/dev/null; then
     echo -e "${GREEN}PASSED${NC}"
 else
     echo -e "${RED}FAILED (Not Injected)${NC}"
 fi
 
 echo -n "[DAEMON] DualBucket integration... "
-if grep -q "dualBucketManager" apps/mac-engine/src/main/kotlin/com/kibot/macengine/runtime/MacEngineDaemon.kt 2>/dev/null; then
+if grep -q "dualBucketManager" apps/mac-engine/src/main/kotlin/com/kicryp/macengine/runtime/MacEngineDaemon.kt 2>/dev/null; then
     echo -e "${GREEN}PASSED${NC}"
 else
     echo -e "${RED}FAILED (Not Injected)${NC}"
@@ -78,12 +78,19 @@ else
     echo -e "${RED}FAILED (Incorrect Naming)${NC}"
 fi
 
-# 6. REBRANDING CHECK
-echo -n "[REBRAND] Legacy KiBot strings in README... "
-if grep -qi "KiBot" README.md 2>/dev/null; then
-    echo -e "${RED}WARN (Found KiBot in README)${NC}"
+# 7. ENV & PERMISSIONS CHECK
+echo -n "[RUNTIME] state/ directory... "
+if [ -d "state" ] && [ -w "state" ]; then
+    echo -e "${GREEN}PASSED${NC}"
 else
-    echo -e "${GREEN}CLEAN${NC}"
+    echo -e "${RED}FAILED (state/ not writable)${NC}"
+fi
+
+echo -n "[ENV] SUPABASE_URL presence... "
+if [ -n "${SUPABASE_URL:-}" ] || grep -q "SUPABASE_URL=" .env.kicryp 2>/dev/null; then
+    echo -e "${GREEN}PASSED${NC}"
+else
+    echo -e "${RED}FAILED (Missing)${NC}"
 fi
 
 echo "========================================================="
