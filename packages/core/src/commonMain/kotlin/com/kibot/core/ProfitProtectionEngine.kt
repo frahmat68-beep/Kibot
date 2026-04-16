@@ -9,13 +9,14 @@ class ProfitProtectionEngine(
     private val config: ProfitProtectionConfig = ProfitProtectionConfig(),
 ) {
     fun evaluate(dailyRisk: DailyRiskSnapshot): ProfitProtectionSnapshot {
-        val opening = dailyRisk.openingEquityIdr.toDoubleOrZero().coerceAtLeast(1.0)
-        val current = dailyRisk.currentEquityIdr.toDoubleOrZero()
-        val highWatermark = maxOf(
-            dailyRisk.highWatermarkEquityIdr.toDoubleOrZero(),
-            current,
-            opening,
-        )
+        val opening = dailyRisk.openingEquityIdr.toScaledLong().takeIf { it > 0 }?.let { dailyRisk.openingEquityIdr } ?: DecimalValue("1")
+        val current = dailyRisk.currentEquityIdr
+        val highWatermark = if (dailyRisk.highWatermarkEquityIdr > current) {
+             if (dailyRisk.highWatermarkEquityIdr > opening) dailyRisk.highWatermarkEquityIdr else opening
+        } else {
+             if (current > opening) current else opening
+        }
+        
         val weeklyProfitPct = ((highWatermark - opening) / opening).coerceAtLeast(0.0)
         val givebackPct = when {
             highWatermark <= opening -> 0.0
@@ -61,7 +62,7 @@ class ProfitProtectionEngine(
 
         return ProfitProtectionSnapshot(
             status = status,
-            highWatermarkEquityIdr = DecimalValue.fromDouble(highWatermark),
+            highWatermarkEquityIdr = highWatermark,
             givebackPct = givebackPct,
             weeklyProfitPct = weeklyProfitPct,
             aggressionMultiplier = aggressionMultiplier,

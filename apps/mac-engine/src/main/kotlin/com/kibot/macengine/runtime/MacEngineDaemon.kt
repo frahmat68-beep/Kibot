@@ -4,6 +4,7 @@ import com.kibot.aisupport.GeminiSupportCoordinator
 import com.kibot.aisupport.HoldingResearchAction
 import com.kibot.aisupport.HoldingResearchRequest
 import com.kibot.aisupport.MultiAIClient
+import com.kibot.core.agents.InfrasGuardian
 import com.kibot.core.CapitalAllocationManager
 import com.kibot.core.CapitalDeploymentEngine
 import com.kibot.core.ChartAnalyzer
@@ -14,6 +15,11 @@ import com.kibot.core.TradeLedger
 import com.kibot.core.TrinityHeartbeatMonitor
 import com.kibot.core.DualBucketManager
 import com.kibot.core.DualEngineConfig
+import com.kibot.core.agents.EngineAuditor
+import com.kibot.core.agents.SystemAnalyst
+import com.kibot.core.agents.DefaultEngineAuditor
+import com.kibot.core.agents.DefaultSystemAnalyst
+import java.util.concurrent.ConcurrentHashMap
 import com.kibot.core.DualEngineCoordinator
 import com.kibot.core.EngineSignalDecision
 import com.kibot.core.KinanceSignal
@@ -21,8 +27,9 @@ import com.kibot.core.LatePumpEntryStrategy
 import com.kibot.core.PositionStrategy
 import com.kibot.core.ControlPlaneGateway
 import com.kibot.core.ExchangeGateway
-import com.kibot.core.logging.TradeLogger
-import com.kibot.core.logging.TradeRecord
+import com.kibot.core.TradeLedger
+import com.kibot.core.TradeLogger
+import com.kibot.core.TradeResult
 import com.kibot.core.MarketBuyImpactEstimate
 import com.kibot.core.HealthAdvisor
 import com.kibot.core.LeaseCoordinator
@@ -285,10 +292,12 @@ class MacEngineDaemon(
     private val liveLearningReviewBuilder: LiveLearningReviewBuilder = LiveLearningReviewBuilder(),
     private val liveRolloutGuard: LiveRolloutGuard = LiveRolloutGuard(),
     private val liveExecutionCoordinator: LiveExecutionCoordinator = LiveExecutionCoordinator(),
-    private val situationalLearningEngine: SituationalLearningEngine = SituationalLearningEngine(),
-    private val tradeAutomationCoordinator: TradeAutomationCoordinator = buildTradeAutomationCoordinator(config.exchangeKind),
     private val aiSupportCoordinator: GeminiSupportCoordinator? = null,
     private val multiAiCoordinator: MultiAIClient? = MultiAIClient(),
+    private val infrasGuardian: InfrasGuardian = com.kibot.core.agents.JvmInfrasGuardian(),
+    private val auditor: EngineAuditor = DefaultEngineAuditor(),
+    private val analyst: SystemAnalyst = DefaultSystemAnalyst(),
+    private val tradeLogger: TradeLogger,
 ) {
     private val chartAnalyzer = ChartAnalyzer()
     private val pumpDetector = PumpDetector()  // NEW: Pump detection for 100%+ moves
@@ -334,6 +343,7 @@ class MacEngineDaemon(
     // [CAPITAL ALLOCATION] Track which bucket (STABLE/AGGRESSIVE) was used for each position
     private val positionBucketTypeByPair = java.util.concurrent.ConcurrentHashMap<String, String>()  // "STABLE" or "AGGRESSIVE"
     private val positionEntryCapitalByPair = java.util.concurrent.ConcurrentHashMap<String, Double>()  // Track capital deployed
+    private val positionTradeIdByPair = ConcurrentHashMap<String, String>() // NEW: Map pair to unique trade ID (UUID)
     // [TELEGRAM NOTIFIER] Send profit alerts to Telegram (safe-fail if not configured)
     private val telegramNotifier = TelegramNotifier.fromEnv()
     private val telegramCommandPoller = config.telegramBotToken?.takeIf { it.isNotBlank() }
@@ -4125,6 +4135,14 @@ class MacEngineDaemon(
 
     suspend fun syncOnce() = coroutineScope {
         val cycleStartedAt = clock.now()
+        
+        // [INFRAS GUARDIAN] Check system health before starting sync
+        val health = infrasGuardian.checkHealth()
+        if (health.healthStatus != InfrasGuardian.HealthStatusLevel.OPTIMAL) {
+            logger.warn("InfrasGuardian: System health is ${health.healthStatus}. Triggering self-healing...")
+            infrasGuardian.performSelfHealing(health)
+        }
+
         markPipelineStage("MARKER: ENTER_SYNC_LOOP")
         try {
             // [TRINITY HEARTBEAT] Record this bot's heartbeat
@@ -4460,15 +4478,15 @@ class MacEngineDaemon(
 	                    ?.free?.toDoubleOrZero()
 	                    ?: 0.0
 	                val activeEngineDecision = activeEngineDecisionForCallout(now = now, freeIdr = freeQuoteBalance)
-                val allTrades = com.kibot.core.logging.TradeLogger.readAll()
-                val globalHistoricalWinRate = allTrades.groupBy { it.pair.lowercase() }
+                val allTrades = tradeLogger.readAll()
+                val globalHistoricalWinRate = allTrades.groupBy { it.pairId.lowercase() }
                     .mapValues { (_, trades) -> 
-                        val wins = trades.count { it.netPnlPct > 0 }
-                        val loss = trades.count { it.netPnlPct <= 0 }
+                        val wins = trades.count { it.pnlPct > com.kibot.shared.models.DecimalValue.ZERO }
+                        val loss = trades.count { it.pnlPct <= com.kibot.shared.models.DecimalValue.ZERO }
                         wins.toDouble() / maxOf(1, wins + loss).toDouble() 
                     }
-                val globalHistoricalLossCount = allTrades.groupBy { it.pair.lowercase() }
-                    .mapValues { (_, trades) -> trades.count { it.netPnlPct <= 0 } }
+                val globalHistoricalLossCount = allTrades.groupBy { it.pairId.lowercase() }
+                    .mapValues { (_, trades) -> trades.count { it.pnlPct <= com.kibot.shared.models.DecimalValue.ZERO } }
 
                 val strategyCycle = if (resolvedMarketQuotes.isNotEmpty()) {
                     val baseCycle = strategyOrchestrator.analyzeWithContext(
@@ -7340,34 +7358,16 @@ class MacEngineDaemon(
                         timestamp = kotlinx.datetime.Clock.System.now(),
                     )
 
-                    // [KiBot v7.0] NEW HIGH-FIDELITY TRADE LOGGER
-                    TradeLogger.record(
-                        TradeRecord(
-                            id = java.util.UUID.randomUUID().toString(),
-                            timestampUtc = java.time.Instant.now().toString(),
-                            pair = pairKey,
-                            side = "SELL",
-                            orderType = smartRoutedExitPlan.orderType.name,
-                            requestedPrice = exitExpectedPrice,
-                            filledPrice = sellPrice ?: 0.0,
-                            filledBaseAmount = sellQty ?: 0.0,
-                            filledIdr = (sellPrice ?: 0.0) * (sellQty ?: 0.0),
-                            feeIdr = estimatedFees / 2.0,
-                            feeType = if (smartRoutedExitPlan.orderType.name == "LIMIT") "MAKER" else "TAKER",
-                            grossPnlPct = (sellPnlPct ?: 0.0) + 0.003, // estimate gross
-                            netPnlPct = sellPnlPct ?: 0.0,
-                            netPnlIdr = netProfit,
-                            holdingDurationMs = (exitAt.toEpochMilliseconds() - filteredExitDecision.position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L),
+                    // [KiBot Trinity v8.0] HIGH-PRECISION TRADE LOGGING (EXIT) & ANALYSIS
+                    val activeTradeId = positionTradeIdByPair[pairKey]
+                    if (activeTradeId != null) {
+                        tradeLogger.recordExit(
+                            tradeId = activeTradeId,
+                            exitPrice = com.kibot.shared.models.DecimalValue.from(sellPrice ?: 0.0),
                             exitReason = filteredExitDecision.message,
-                            signalSource = filteredExitDecision.position.signalSource,
-                            bucket = positionBucketTypeByPair[pairKey] ?: "BUCKET_A",
-                            entryConvictionScore = 1.0, // default for now
-                            entryKellyFraction = 0.08, // default for now
-                            balanceAfterIdr = currentBalanceIdr,
-                            marketRegimeAtEntry = currentRegime?.name ?: "UNKNOWN",
-                            btcChange1hAtEntry = 0.0 // placeholder
+                            orderTypeExit = smartRoutedExitPlan.orderType.name
                         )
-                    )
+                    }
 
                     localLearningMemoryStore.recordTrade(
                         LearningTradeEvent(
@@ -7398,29 +7398,6 @@ class MacEngineDaemon(
                     )
                     val executionFillQty = sellQty ?: requestedSellQty.coerceAtLeast(0.0)
                     
-                    com.kibot.core.logging.TradeLogger.record(com.kibot.core.logging.TradeRecord(
-                        id = java.util.UUID.randomUUID().toString(),
-                        timestampUtc = now.toString(),
-                        pair = pairKey,
-                        side = "SELL",
-                        orderType = smartRoutedExitPlan.orderType.name,
-                        requestedPrice = exitExpectedPrice,
-                        filledPrice = sellPrice ?: exitExpectedPrice,
-                        filledBaseAmount = executionFillQty,
-                        filledIdr = (sellPrice ?: exitExpectedPrice) * executionFillQty,
-                        feeIdr = estimatedFees / 2.0,
-                        feeType = if (smartRoutedExitPlan.orderType.name == "LIMIT") "MAKER" else "TAKER",
-                        grossPnlPct = (sellPnlPct ?: 0.0) / 100.0,
-                        netPnlPct = netProfit / maxOf(1.0, (entryExpectedPrice * executionFillQty)),
-                        netPnlIdr = netProfit,
-                        holdingDurationMs = ((exitAt.toEpochMilliseconds() - filteredExitDecision.position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L)),
-                        exitReason = filteredExitDecision.message,
-                        signalSource = "EXIT",
-                        bucket = if (wasAggressiveTrade) "BUCKET_A" else "BUCKET_B",
-                        entryConvictionScore = 0.0,
-                        balanceAfterIdr = 0.0,
-                        marketRegimeAtEntry = "UNKNOWN"
-                    ))
                     
                     notifyManagerExecutionFilled(
                         pairId = pairKey,
@@ -7437,6 +7414,7 @@ class MacEngineDaemon(
                     // Cleanup tracking
                     positionBucketTypeByPair.remove(pairKey)
                     positionEntryCapitalByPair.remove(pairKey)
+                    positionTradeIdByPair.remove(pairKey)
                 } else if (isPartialExit) {
                     logger.info("[CAPITAL_DEPOSIT] ${pairKey}: partial exit, profit deposit deferred until full close")
                 }
@@ -8179,35 +8157,18 @@ class MacEngineDaemon(
                     result.message,
                 )
                 
-                // [KiBot v7.0] NEW CORE TRADE LOGGER (ENTRY)
-                val pairKey = effectiveExecutionPlan.signal.pairId.value.lowercase()
-                TradeLogger.record(
-                    TradeRecord(
-                        id = java.util.UUID.randomUUID().toString(),
-                        timestampUtc = now.toString(),
-                        pair = pairKey,
-                        side = "BUY",
-                        orderType = finalExecutionPlan.orderType.name,
-                        requestedPrice = finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0,
-                        filledPrice = result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0,
-                        filledBaseAmount = finalQuantity,
-                        filledIdr = (result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0) * finalQuantity,
-                        feeIdr = 0.0, // entry fee estimate
-                        feeType = if (finalExecutionPlan.orderType.name == "LIMIT") "MAKER" else "TAKER",
-                        grossPnlPct = 0.0,
-                        netPnlPct = 0.0,
-                        netPnlIdr = 0.0,
-                        holdingDurationMs = 0L,
-                        exitReason = "",
-                        signalSource = effectiveExecutionPlan.signal.setupType.name,
-                        bucket = if (wasAggressiveTrade) "BUCKET_B" else "BUCKET_A",
-                        entryConvictionScore = 1.0, 
-                        entryKellyFraction = 0.0, 
-                        balanceAfterIdr = currentBalanceIdr,
-                        marketRegimeAtEntry = currentRegime?.name ?: "UNKNOWN",
-                        btcChange1hAtEntry = 0.0
-                    )
+                // [KiBot Trinity v8.0] HIGH-PRECISION TRADE LOGGING (ENTRY)
+                val tradeId = tradeLogger.recordEntry(
+                    pairId = pairKey,
+                    entryPrice = result.order?.price ?: finalExecutionPlan.limitPrice ?: com.kibot.shared.models.DecimalValue.ZERO,
+                    budgetIdr = com.kibot.shared.models.DecimalValue.from(allocResult.allocatedIdr),
+                    category = "TRINITY_V8",
+                    pumpPhase = "N/A",
+                    pumpScore = 0.0,
+                    orderType = finalExecutionPlan.orderType.name,
+                    bucketType = if (isAnomalyCoin) "AGGRESSIVE" else "STABLE"
                 )
+                positionTradeIdByPair[pairKey] = tradeId
 
                 // [CAPITAL ALLOCATION] Track bucket type for this position
                 val bucketType = if (isAnomalyCoin) "AGGRESSIVE" else "STABLE"

@@ -1,5 +1,6 @@
 package com.kibot.core
 
+import com.kibot.shared.models.DecimalValue
 import com.kibot.shared.models.MarketQuote
 import com.kibot.shared.models.PairId
 import com.kibot.shared.models.PairScore
@@ -59,13 +60,14 @@ class PairSelector(
         val lenientCandidates = eligibleQuotes.asSequence()
             .filter { quote ->
                 val entry = CoinUniverse.byIndodax[quote.pairId.value.lowercase()]
-                val minVol = entry?.minVolumeIdr?.toDouble() ?: policy.minDailyQuoteVolumeIdr
+                val minVol = entry?.let { DecimalValue.fromDouble(it.minVolumeIdr.toDouble()) }
+                    ?: DecimalValue.fromDouble(policy.minDailyQuoteVolumeIdr)
                 val maxSpread = entry?.maxSpreadPct ?: policy.maxSpreadPct
                 
                 passesPriceBandGate(quote, context) &&
                 quote.spreadPct <= context.maxSpreadPct.coerceAtLeast(0.0) &&
                 (
-                    quote.quoteVolume24h.toDoubleOrZero() >= minVol * 0.50 ||
+                    quote.quoteVolume24h >= minVol * 0.50 ||
                         isSmallCapitalOverrideEligible(
                             quote = quote,
                             stabilityScore = quote.orderBookStabilityScore.coerceIn(0.0, 1.0),
@@ -204,9 +206,9 @@ class PairSelector(
                 )
         val urgentEntryBias = if (context.urgentEntryMode && priceBandAllowed) {
             val band = capitalBandIdr
-            val nominalPrice = quote.midPrice.toDoubleOrZero().coerceAtLeast(0.0)
-            if (band > 0.0 && nominalPrice > 0.0) {
-                val affordability = (1.0 - (nominalPrice / band).coerceIn(0.0, 1.0)) * 0.10
+            val nominalPrice = quote.midPrice
+            if (band.compareTo(DecimalValue.Zero) > 0 && nominalPrice.compareTo(DecimalValue.Zero) > 0) {
+                val affordability = (1.0 - (nominalPrice.divide(band)).toDouble().coerceIn(0.0, 1.0)) * 0.10
                 affordability + if (quote.spreadPct <= spreadGuardPct) 0.04 else 0.0
             } else {
                 0.0
@@ -214,11 +216,11 @@ class PairSelector(
         } else {
             0.0
         }
-        val lowPriceBias = if (context.userBalanceIdr > 0.0 && priceBandAllowed) {
+        val lowPriceBias = if (context.userBalanceIdr.compareTo(DecimalValue.Zero) > 0 && priceBandAllowed) {
             val band = capitalBandIdr
-            val nominalPrice = quote.midPrice.toDoubleOrZero().coerceAtLeast(0.0)
-            if (band > 0.0 && nominalPrice > 0.0) {
-                (1.0 - (nominalPrice / band).coerceIn(0.0, 1.0)) * if (context.urgentEntryMode) 0.28 else 0.18
+            val nominalPrice = quote.midPrice
+            if (band.compareTo(DecimalValue.Zero) > 0 && nominalPrice.compareTo(DecimalValue.Zero) > 0) {
+                (1.0 - (nominalPrice.divide(band)).toDouble().coerceIn(0.0, 1.0)) * if (context.urgentEntryMode) 0.28 else 0.18
             } else {
                 0.0
             }
@@ -450,18 +452,18 @@ class PairSelector(
         quote: MarketQuote,
         context: PairSelectionContext,
     ): Boolean {
-        val price = quote.midPrice.toDoubleOrZero()
-        if (price <= 0.0) return false
+        val price = quote.midPrice
+        if (price.compareTo(DecimalValue.Zero) <= 0) return false
         val balanceBand = capitalBandIdr(context)
-        return balanceBand <= 0.0 || price <= balanceBand
+        return balanceBand.compareTo(DecimalValue.Zero) <= 0 || price.compareTo(balanceBand) <= 0
     }
 
-    private fun capitalBandIdr(context: PairSelectionContext): Double {
-        val freeCash = context.availableCashIdr.takeIf { it > 0.0 } ?: 0.0
-        val cashIsExecutable = freeCash >= context.minimumExecutableNotionalIdr
+    private fun capitalBandIdr(context: PairSelectionContext): DecimalValue {
+        val freeCash = if (context.availableCashIdr.compareTo(DecimalValue.Zero) > 0) context.availableCashIdr else DecimalValue.Zero
+        val cashIsExecutable = freeCash.compareTo(context.minimumExecutableNotionalIdr) >= 0
         val base = when {
             cashIsExecutable -> freeCash
-            context.userBalanceIdr > 0.0 -> context.userBalanceIdr
+            context.userBalanceIdr.compareTo(DecimalValue.Zero) > 0 -> context.userBalanceIdr
             else -> freeCash
         }
         return base / context.basketCount.coerceAtLeast(1).toDouble()

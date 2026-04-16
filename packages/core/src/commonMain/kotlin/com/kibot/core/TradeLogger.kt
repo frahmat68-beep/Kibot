@@ -1,5 +1,6 @@
 package com.kibot.core
 
+import com.kibot.shared.models.*
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.serialization.Serializable
@@ -38,8 +39,8 @@ class TradeLogger(
         val tradeId: String,
         val pairId: String,
         val category: String,
-        val entryPrice: Double,
-        val budgetIdr: Double,
+        val entryPrice: DecimalValue,
+        val budgetIdr: DecimalValue,
         val pumpPhase: String,
         val pumpScore: Double,
         val orderTypeEntry: String,
@@ -53,11 +54,11 @@ class TradeLogger(
         val tradeId: String,
         val pairId: String,
         val category: String,
-        val entryPrice: Double,
-        val exitPrice: Double,
-        val budgetIdr: Double,
-        val pnlIdr: Double,
-        val pnlPct: Double,
+        val entryPrice: DecimalValue,
+        val exitPrice: DecimalValue,
+        val budgetIdr: DecimalValue,
+        val pnlIdr: DecimalValue,
+        val pnlPct: DecimalValue,
         val pumpPhase: String,
         val pumpScore: Double,
         val orderTypeEntry: String,
@@ -73,8 +74,8 @@ class TradeLogger(
 
     fun recordEntry(
         pairId: String,
-        entryPrice: Double,
-        budgetIdr: Double,
+        entryPrice: DecimalValue,
+        budgetIdr: DecimalValue,
         category: String,
         pumpPhase: String,
         pumpScore: Double,
@@ -103,7 +104,7 @@ class TradeLogger(
 
     fun recordExit(
         tradeId: String,
-        exitPrice: Double,
+        exitPrice: DecimalValue,
         exitReason: String,
         orderTypeExit: String = "LIMIT"
     ) {
@@ -114,9 +115,9 @@ class TradeLogger(
                     return@launch
                 }
 
-                val pnlPct = (exitPrice - openRecord.entryPrice) / openRecord.entryPrice
+                val pnlGains = (exitPrice - openRecord.entryPrice) / openRecord.entryPrice
                 val feeCost = 0.007 // Round-trip fee estimate (~0.7%)
-                val netPct = pnlPct - feeCost
+                val netPct = pnlGains - feeCost
                 val pnlIdr = openRecord.budgetIdr * netPct
                 
                 val entryAt = Instant.parse(openRecord.entryAt)
@@ -131,13 +132,13 @@ class TradeLogger(
                     exitPrice = exitPrice,
                     budgetIdr = openRecord.budgetIdr,
                     pnlIdr = pnlIdr,
-                    pnlPct = netPct,
+                    pnlPct = DecimalValue.fromDouble(netPct),
                     pumpPhase = openRecord.pumpPhase,
                     pumpScore = openRecord.pumpScore,
                     orderTypeEntry = openRecord.orderTypeEntry,
                     orderTypeExit = orderTypeExit,
                     holdMinutes = holdMinutes,
-                    win = pnlIdr > 0,
+                    win = pnlIdr > 0.0,
                     exitReason = exitReason,
                     bucketType = openRecord.bucketType,
                     entryAt = openRecord.entryAt,
@@ -145,12 +146,19 @@ class TradeLogger(
                 )
 
                 appendToFile(json.encodeToString(exitRecord))
-                println("[TRADELOG] EXIT ${openRecord.pairId} PnL=Rp${String.format("%,.0f", pnlIdr)} (${String.format("%.2f", netPct * 100)}%) reason=$exitReason [$tradeId]")
+                println("[TRADELOG] EXIT ${openRecord.pairId} PnL=Rp${pnlIdr.toFormattedString(0)} (${(netPct * 100.0).toFormattedString(2)}%) reason=$exitReason [$tradeId]")
                 
                 syncToSupabase(exitRecord)
             } catch (e: Exception) {
                 println("[TRADELOG][ERR] Failed to record exit: ${e.message}")
             }
+        }
+    }
+
+    fun readAll(): List<TradeExitRecord> {
+        if (!logFile.exists()) return emptyList()
+        return logFile.readLines().mapNotNull { line ->
+            runCatching { json.decodeFromString<TradeExitRecord>(line) }.getOrNull()
         }
     }
 

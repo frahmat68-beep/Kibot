@@ -93,7 +93,7 @@ data class CapitalDeploymentPlan(
     val allowNewEntries: Boolean,
     val allowRotation: Boolean,
     val maxActivePositions: Int,
-    val suggestedPerPositionBudgetIdr: Double,
+    val suggestedPerPositionBudgetIdr: DecimalValue,
     val targetCashReservePct: Double,
     val capitalUtilizationTargetPct: Double,
     val preferredHorizon: TradingHorizon?,

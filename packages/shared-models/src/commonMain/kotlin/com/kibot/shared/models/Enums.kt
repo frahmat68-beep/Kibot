@@ -233,3 +233,15 @@ enum class DistrustLabel {
     EDGE_CONFIDENCE_LOW,
     RISK_LADDER_BLOCKED,
 }
+
+@Serializable
+enum class PositionStrategy {
+    ANOMALY,  // 20% capital - chase pumps, high risk high reward
+    STABLE,   // 80% capital - steady trading, lower risk
+}
+
+@Serializable
+enum class PositionStatus {
+    OPEN,
+    CLOSED,
+}
