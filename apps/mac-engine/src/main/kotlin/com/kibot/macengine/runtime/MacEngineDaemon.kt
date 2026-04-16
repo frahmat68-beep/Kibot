@@ -6832,10 +6832,14 @@ class MacEngineDaemon(
         marketQuotes: List<com.kibot.shared.models.MarketQuote>,
         recentOrders: List<com.kibot.shared.models.OrderSnapshot>,
         aiSoftAuditOnly: Boolean = false,
-        currentRegime: com.kibot.shared.models.MarketRegime?,
-        currentBalanceIdr: Double,
-        wasAggressiveTrade: Boolean,
+        currentRegime: com.kibot.shared.models.MarketRegime? = null,
+        currentBalanceIdr: Double = 0.0,
+        wasAggressiveTrade: Boolean = false,
     ) {
+        if (cycle == null) {
+            logger.warn("SYNC_ONCE_ABORTED: strategy cycle is null, skipping live trading management")
+            return
+        }
         val botId = config.controlPlane.botId.value.trim().lowercase()
         val validBotIds = when (config.exchangeKind) {
             ExchangeKind.INDODAX -> listOf("main", "kidax", "kibot")
