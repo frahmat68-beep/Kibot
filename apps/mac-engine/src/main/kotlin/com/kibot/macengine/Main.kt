@@ -14,9 +14,6 @@ import com.kibot.macengine.runtime.PassiveExchangeGateway
 import com.kibot.macengine.server.LocalDashboardServer
 import com.kibot.macengine.state.MacCommand
 import com.kibot.macengine.state.MacStateRepository
-import com.kibot.aisupport.AiLegionFactory
-import com.kibot.aisupport.createPlatformHttpClient
-import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
@@ -62,22 +59,13 @@ fun main(args: Array<String>) {
     )
 
     if (args.isNotEmpty()) {
-        val multiAiHttpClient = createPlatformHttpClient(Json { ignoreUnknownKeys = true }, timeoutMillis = 30_000L)
-        val multiAiCoordinator = AiLegionFactory.build(
-            env = System.getenv(),
-            httpClient = multiAiHttpClient,
-            json = Json { ignoreUnknownKeys = true; isLenient = true }
-        )
-
         val daemon = MacEngineDaemon(
             repository = repository,
             controlPlane = controlPlane,
             exchange = exchange,
             config = config,
             aiSupportCoordinator = config.aiSupportConfig?.let { GeminiSupportCoordinator(it, GeminiSupportClient(it)) },
-            multiAiCoordinator = multiAiCoordinator,
         )
-
         handleCliCommand(args.first(), repository, daemon, dispatcher, logger)
         return
     }
@@ -104,20 +92,12 @@ fun main(args: Array<String>) {
 
     server.start()
     scope.launch {
-        val multiAiHttpClient = createPlatformHttpClient(Json { ignoreUnknownKeys = true }, timeoutMillis = 30_000L)
-        val multiAiCoordinator = AiLegionFactory.build(
-            env = System.getenv(),
-            httpClient = multiAiHttpClient,
-            json = Json { ignoreUnknownKeys = true; isLenient = true }
-        )
-
         val daemon = MacEngineDaemon(
             repository = repository,
             controlPlane = controlPlane,
             exchange = exchange,
             config = config,
             aiSupportCoordinator = config.aiSupportConfig?.let { GeminiSupportCoordinator(it, GeminiSupportClient(it)) },
-            multiAiCoordinator = multiAiCoordinator,
         )
         daemonRef.set(daemon)
         daemon.run()

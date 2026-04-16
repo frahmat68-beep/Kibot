@@ -777,7 +777,7 @@ class KiBotWebSocketClient(
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             Log.w(TAG, "❌ WebSocket closed: $code - $reason")
-            this@KiCrypWebSocketClient.webSocket = null
+            this@KiBotWebSocketClient.webSocket = null
             watchdogJob?.cancel()
             _connectionStatus.value = ConnectionStatus.DISCONNECTED
             updateBotState { it.copy(isConnected = false) }
@@ -790,7 +790,7 @@ class KiBotWebSocketClient(
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
             Log.e(TAG, "🚨 WebSocket FAILURE: ${t.message}", t)
             isConnecting = false
-            this@KiCrypWebSocketClient.webSocket = null
+            this@KiBotWebSocketClient.webSocket = null
             watchdogJob?.cancel()
             _connectionStatus.value = ConnectionStatus.ERROR
             updateBotState { it.copy(isConnected = false) }
