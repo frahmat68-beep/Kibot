@@ -15,6 +15,8 @@ from pathlib import Path
 
 ROOT = Path(os.getenv("KIBOT_RUNTIME_ROOT", Path(__file__).resolve().parent.parent))
 os.environ["KIBOT_RUNTIME_ROOT"] = str(ROOT)
+os.environ.setdefault("KIBOT_STATE_DIR", str(ROOT / "state"))
+os.environ.setdefault("KIBOT_DATA_DIR", str(ROOT / "data"))
 API_BASE = os.getenv("KIBOT_API_BASE", "http://127.0.0.1:8787")
 MANAGER_PORT = int(os.getenv("KIBOT_MANAGER_PORT", "9998"))
 
