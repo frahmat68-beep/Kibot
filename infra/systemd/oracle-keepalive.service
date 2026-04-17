@@ -1,0 +1,17 @@
+[Unit]
+Description=KiBot Oracle Keep-Alive
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/KiBot
+ExecStart=/bin/bash /home/ubuntu/KiBot/scripts/oracle-keepalive.sh
+Restart=always
+RestartSec=30
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=kibot-keepalive
+
+[Install]
+WantedBy=multi-user.target
