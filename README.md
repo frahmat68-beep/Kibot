@@ -1,32 +1,69 @@
-# KiBot Trinity v7.0
+# KiBot: Trinity v7.1 Autonomous HFT System
 
-Dual Bucket autonomous trading — Indodax + Binance lead-lag + Crypto.com confirmation.
+Autonomous, self-healing High-Frequency Trading (HFT) infrastructure build with a Math-First Core.
 
-**Filosofi:** Profit sedikit demi sedikit lama lama jadi bukit
-**Motto:** Minimalisir kerugian, maksimalkan probabilitas keuntungan
-**Modal:** Adaptive dari equity aktual (dimulai Rp 60,000)
+## 🚀 Trinity v7.1 Upgrade Summary (Math-First)
 
-## Strategy
-*   **Bucket A (50%) — Global Lead-Lag**: Kinance (Binance) AND KiCom (Crypto.com) harus setuju. Target: +1-3% per trade, Stop: -1.5%, Max 3 posisi.
-*   **Bucket B (50%) — Local Indodax-Only**: ConvictionScore 7-layer ≥ 0.85 (pure math, no AI). Target: +3-8% per trade, Stop: -3%, Max 2 posisi.
+Trinity v7.1 shifts the decision-making authority from AI-heavy logic to a deterministic **Math-First Core**. AI has been moved to an advisory layer (Watchdogs/News), ensuring the system remains responsive and profitable even when AI latency occurs or API quotas are exhausted.
 
-## Architecture
-KINANCE (Binance radar, 8788) ───┬─── AND ────→ KIBOT MANAGER (9998) ────→ KIDAX (8787) → Indodax
-KICOM (Crypto.com REST API)      ───┘
+### 🛡️ Core Infrastructure & Watchdogs
+1.  **News Watchdog (5m cycle)**: Monitored held coins for critical sentiment shifts. Automated emergency sell if bearish consensus is detected by the AI Legion.
+2.  **PnL Audit Watchdog (10m cycle)**:
+    -   **Daily Hard Stop**: Enforces a total equity draw-down limit (default -2.5%). If hit, the system suspends all entries until midnight WIB.
+    -   **Coin Rotation**: Identifies "Dead Weight" positions (stagnant for >30 minutes) and sells them at market to free up capital for high-conviction signals.
+3.  **Log Maintenance (6h cycle)**: Aggressively manages storage on Oracle Micro (50GB limit).
+    -   Auto-purges logs older than 3 days.
+    -   Triggers emergency cleanup if disk usage > 80%.
 
-## Servers
-- Indodax: ubuntu@213.35.118.26
-- Binance: ubuntu@152.69.218.198
-- Supabase: vptlelbgyxwieyfdpuja.supabase.co
+### 📈 Trading Logic: Math-First Core
+-   **Conviction Score (Deterministic)**: Entry signals are scored based on raw orderbook depth, breakout momentum, and volume spike intensity *before* AI is consulted.
+-   **AI Advisory (Fallback Layer)**: AI serves to *boost* conviction or provide "What-If" simulations. If AI APIs fail, the Math Core continues to operate based on calculated Risk-Reward ratios.
+-   **Trailing Stop Profit (TSP)**: Implements dynamic trailing stops based on the "Pump Phase" (Early, Mid, Late) of the coin.
 
-## Files
-- `scripts/kibot_engine_v2.py` — Engine utama (TradeLogger, ConvictionScore, dll)
-- `scripts/kibot_manager.py` — Python brain + integration
-- `packages/core/` — Kotlin business logic
-- `state/` — Runtime state (posisi, cascade, trade log)
-- `infra/supabase/` — SQL schema
+---
 
-## Services
-```bash
-sudo systemctl status kidax-engine kinance-engine kibot-manager oracle-keepalive
-```
+## 🏗️ System Components
+
+### 1. Unified Manager (`scripts/kibot_manager.py`)
+The central nervous system. Manages state, coordinates UDP communication between sub-systems, and hosts the watchdog loops.
+
+### 2. Trading Engine (`scripts/kibot_engine_v2.py`)
+Handles execution logic, portfolio tracking, and mathematical conviction scoring.
+
+### 3. AI Legion (`scripts/kibot_ai_coordinator.py`)
+A load-balanced, failover-ready pool of LLM providers (Groq, Gemini, OpenRouter, Cohere, Nvidia NIM). Used for:
+-   News Sentiment Analysis.
+-   Multi-agent consensus on discovery.
+-   What-if scenario analysis.
+
+### 4. Audit & Discovery (`scripts/audit_trading_30m_ai.py`)
+Runs every 30 minutes to analyze trade logs and suggest policy tweaks to the Math Core.
+
+---
+
+## 🛠️ Automated Maintenance & Health
+
+| Feature | Interval | Action |
+| :--- | :--- | :--- |
+| **PnL Check** | 10m | Check -2.5% stop; rotate stagnant coins. |
+| **News Scan** | 5m | Check news for held positions; exit on panic. |
+| **Log Cleanup** | 6h | Delete old logs; maintain <80% disk usage. |
+| **Math Review** | 30m | Analyze profit factor and EV per trade. |
+
+---
+
+## 📋 Initialization & Deployment
+
+1.  **Environment Setup**: Ensure `.env` contains all necessary API keys (Supabase, Telegram, AI Providers).
+2.  **Validation**: Run the smoke test suite:
+    ```bash
+    ./scripts/smoke_test_trinity.sh
+    ```
+3.  **Launch**:
+    ```bash
+    python3 scripts/kibot_manager.py
+    ```
+
+---
+
+*Note: Trinity v7.1 is optimized for Oracle 1GB/1OCPU Micro instances. Avoid heavy Docker usage; use native python processes to minimize CPU wakeups.*
