@@ -1,6 +1,5 @@
 package com.kibot.core
 
-import com.kibot.shared.models.*
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 
@@ -28,14 +27,14 @@ class TradeLedger {
     fun recordTrade(
         pair: String,
         strategy: PositionStrategy,
-        entryPrice: DecimalValue,
-        exitPrice: DecimalValue,
-        quantity: DecimalValue,
-        entryFeeIdr: DecimalValue,
-        exitFeeIdr: DecimalValue,
-        slippageIdr: DecimalValue,
-        netProfitIdr: DecimalValue,
-        netProfitPct: DecimalValue,
+        entryPrice: Double,
+        exitPrice: Double,
+        quantity: Double,
+        entryFeeIdr: Double,
+        exitFeeIdr: Double,
+        slippageIdr: Double,
+        netProfitIdr: Double,
+        netProfitPct: Double,
         holdMinutes: Double,
         exitReason: String,
         timestamp: Instant = Clock.System.now(),
@@ -80,11 +79,11 @@ class TradeLedger {
                 totalTrades = 0,
                 winCount = 0,
                 lossCount = 0,
-                totalProfitIdr = DecimalValue.Zero,
-                totalFeesPaid = DecimalValue.Zero,
-                avgSlippageIdr = DecimalValue.Zero,
+                totalProfitIdr = 0.0,
+                totalFeesPaid = 0.0,
+                avgSlippageIdr = 0.0,
                 winRate = 0.0,
-                avgProfitPct = DecimalValue.Zero,
+                avgProfitPct = 0.0,
             )
         }
         
@@ -92,20 +91,23 @@ class TradeLedger {
         stats.totalProfitIdr += trade.netProfitIdr
         stats.totalFeesPaid += trade.totalFeeIdr
         
-        if (trade.netProfitIdr > DecimalValue.Zero) {
+        if (trade.netProfitIdr > 0) {
             stats.winCount++
-        } else if (trade.netProfitIdr < DecimalValue.Zero) {
+        } else if (trade.netProfitIdr < 0) {
             stats.lossCount++
         }
         
         // Update averages
         stats.winRate = (stats.winCount.toDouble() / stats.totalTrades) * 100.0
+        stats.avgProfitPct = trades
+            .filter { it.pair == trade.pair }
+            .map { it.netProfitPct }
+            .average()
         
-        val pairTrades = trades.filter { it.pair == trade.pair }
-        if (pairTrades.isNotEmpty()) {
-            stats.avgProfitPct = pairTrades.fold(DecimalValue.Zero) { acc, t -> acc + t.netProfitPct } / pairTrades.size.toDouble()
-            stats.avgSlippageIdr = pairTrades.fold(DecimalValue.Zero) { acc, t -> acc + t.slippageIdr } / pairTrades.size.toDouble()
-        }
+        stats.avgSlippageIdr = trades
+            .filter { it.pair == trade.pair }
+            .map { it.slippageIdr }
+            .average()
     }
     
     /**
@@ -120,7 +122,7 @@ class TradeLedger {
             .forEach { stats ->
                 insights.add(LearningInsight(
                     type = InsightType.BAD_PAIR,
-                    message = "${stats.pair} has ${stats.winRate.toFormattedString(1)}% win rate - avoid trading this!",
+                    message = "${stats.pair} has ${stats.winRate.format(1)}% win rate - avoid trading this!",
                     pair = stats.pair,
                     severity = InsightSeverity.HIGH,
                     data = mapOf(
@@ -132,11 +134,11 @@ class TradeLedger {
         
         // Find pairs with high fees/slippage
         pairStats.values
-            .filter { it.avgSlippageIdr > DecimalValue("1000") }  // More than Rp1000 avg slippage
+            .filter { it.avgSlippageIdr > 1000.0 }  // More than Rp1000 avg slippage
             .forEach { stats ->
                 insights.add(LearningInsight(
                     type = InsightType.HIGH_SLIPPAGE,
-                    message = "${stats.pair} has Rp${stats.avgSlippageIdr.toFormattedString(0)} avg slippage - very costly!",
+                    message = "${stats.pair} has Rp${stats.avgSlippageIdr.format(0)} avg slippage - very costly!",
                     pair = stats.pair,
                     severity = InsightSeverity.MEDIUM,
                     data = mapOf(
@@ -149,18 +151,18 @@ class TradeLedger {
         val strategyPerformance = trades
             .groupBy { it.strategy }
             .mapValues { (_, trades) ->
-                val totalProfit = trades.fold(DecimalValue.Zero) { acc, t -> acc + t.netProfitIdr }
-                val avgProfit = trades.fold(DecimalValue.Zero) { acc, t -> acc + t.netProfitPct } / trades.size.toDouble()
+                val totalProfit = trades.sumOf { it.netProfitIdr }
+                val avgProfit = trades.map { it.netProfitPct }.average()
                 totalProfit to avgProfit
             }
         
         strategyPerformance.forEach { (strategy, performance) ->
             val (totalProfit, avgProfit) = performance
             
-            if (totalProfit < DecimalValue("-50000")) {  // Lost > Rp50k
+            if (totalProfit < -50000.0) {  // Lost > Rp50k
                 insights.add(LearningInsight(
                     type = InsightType.BAD_STRATEGY,
-                    message = "$strategy strategy lost Rp${totalProfit.toFormattedString(0)} total - reconsider this!",
+                    message = "$strategy strategy lost Rp${totalProfit.format(0)} total - reconsider this!",
                     severity = InsightSeverity.HIGH,
                     data = mapOf(
                         "strategy" to strategy.name,
@@ -174,12 +176,12 @@ class TradeLedger {
         // Find best performing pairs
         pairStats.values
             .filter { it.totalTrades >= 3 && it.winRate >= 60.0 }
-            .sortedByDescending { it.avgProfitPct.toDoubleOrZero() }
+            .sortedByDescending { it.avgProfitPct }
             .take(3)
             .forEach { stats ->
                 insights.add(LearningInsight(
                     type = InsightType.GOOD_PAIR,
-                    message = "${stats.pair} is performing well: ${stats.winRate.toFormattedString(1)}% win rate, ${stats.avgProfitPct.toFormattedString(2)}% avg profit",
+                    message = "${stats.pair} is performing well: ${stats.winRate.format(1)}% win rate, ${stats.avgProfitPct.format(2)}% avg profit",
                     pair = stats.pair,
                     severity = InsightSeverity.INFO,
                     data = mapOf(
@@ -210,10 +212,10 @@ class TradeLedger {
      * Get overall performance
      */
     fun getOverallPerformance(): PerformanceSummary {
-        val totalProfit = trades.fold(DecimalValue.Zero) { acc, t -> acc + t.netProfitIdr }
-        val totalFees = trades.fold(DecimalValue.Zero) { acc, t -> acc + t.totalFeeIdr }
-        val winCount = trades.count { it.netProfitIdr > DecimalValue.Zero }
-        val lossCount = trades.count { it.netProfitIdr < DecimalValue.Zero }
+        val totalProfit = trades.sumOf { it.netProfitIdr }
+        val totalFees = trades.sumOf { it.totalFeeIdr }
+        val winCount = trades.count { it.netProfitIdr > 0 }
+        val lossCount = trades.count { it.netProfitIdr < 0 }
         val winRate = if (trades.isNotEmpty()) {
             (winCount.toDouble() / trades.size) * 100.0
         } else 0.0
@@ -225,8 +227,12 @@ class TradeLedger {
             winCount = winCount,
             lossCount = lossCount,
             winRate = winRate,
-            avgProfitPerTrade = if (trades.isNotEmpty()) totalProfit / trades.size.toDouble() else DecimalValue.Zero,
+            avgProfitPerTrade = if (trades.isNotEmpty()) totalProfit / trades.size else 0.0,
         )
+    }
+    
+    private fun Double.format(decimals: Int): String {
+        return "%.${decimals}f".format(this)
     }
 }
 
@@ -235,16 +241,16 @@ data class TradeRecord(
     val timestamp: Instant,
     val pair: String,
     val strategy: PositionStrategy,
-    val entryPrice: DecimalValue,
-    val exitPrice: DecimalValue,
-    val quantity: DecimalValue,
-    val entryFeeIdr: DecimalValue,
-    val exitFeeIdr: DecimalValue,
-    val totalFeeIdr: DecimalValue,
-    val slippageIdr: DecimalValue,
-    val totalCostIdr: DecimalValue,
-    val netProfitIdr: DecimalValue,
-    val netProfitPct: DecimalValue,
+    val entryPrice: Double,
+    val exitPrice: Double,
+    val quantity: Double,
+    val entryFeeIdr: Double,
+    val exitFeeIdr: Double,
+    val totalFeeIdr: Double,
+    val slippageIdr: Double,
+    val totalCostIdr: Double,
+    val netProfitIdr: Double,
+    val netProfitPct: Double,
     val holdMinutes: Double,
     val exitReason: String,
 )
@@ -254,11 +260,11 @@ data class PairStatistics(
     var totalTrades: Int,
     var winCount: Int,
     var lossCount: Int,
-    var totalProfitIdr: DecimalValue,
-    var totalFeesPaid: DecimalValue,
-    var avgSlippageIdr: DecimalValue,
+    var totalProfitIdr: Double,
+    var totalFeesPaid: Double,
+    var avgSlippageIdr: Double,
     var winRate: Double,
-    var avgProfitPct: DecimalValue,
+    var avgProfitPct: Double,
 )
 
 data class LearningInsight(
@@ -285,10 +291,10 @@ enum class InsightSeverity {
 
 data class PerformanceSummary(
     val totalTrades: Int,
-    val totalProfitIdr: DecimalValue,
-    val totalFeesIdr: DecimalValue,
+    val totalProfitIdr: Double,
+    val totalFeesIdr: Double,
     val winCount: Int,
     val lossCount: Int,
     val winRate: Double,
-    val avgProfitPerTrade: DecimalValue,
+    val avgProfitPerTrade: Double,
 )

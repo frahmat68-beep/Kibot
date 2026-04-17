@@ -24,12 +24,11 @@ import com.kibot.shared.models.PairScore
 import com.kibot.shared.models.PositionSnapshot
 import com.kibot.shared.models.RuntimeIntelligenceUpdate
 import com.kibot.shared.models.WeeklyLearningSummary
-import com.kibot.shared.models.DecimalValue
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.Instant
 
 data class KingDashboardSnapshot(
-    val totalBalanceIdr: DecimalValue,
+    val totalBalanceIdr: Double,
     val currentPingMs: Long?,
     val activeLivePairs: List<String>,
     val latestManagerLog: String?,
@@ -37,8 +36,8 @@ data class KingDashboardSnapshot(
     val kidaxPingMs: Long? = null,
     val kinancePingMs: Long? = null,
     val targetProgressPct: Double? = null,
-    val kidaxBalanceIdr: DecimalValue? = null,
-    val kinanceBalanceIdr: DecimalValue? = null,
+    val kidaxBalanceIdr: Double? = null,
+    val kinanceBalanceIdr: Double? = null,
     val kidaxPnlTodayPct: Double? = null,
     val kinancePnlTodayPct: Double? = null,
     val kidaxPairActive: String? = null,
@@ -57,11 +56,11 @@ data class TradeLogSubmission(
     val tradeId: String,
     val pairId: String,
     val category: String,
-    val entryPrice: DecimalValue,
-    val exitPrice: DecimalValue,
-    val budgetIdr: DecimalValue,
-    val pnlIdr: DecimalValue,
-    val pnlPct: DecimalValue,
+    val entryPrice: Double,
+    val exitPrice: Double,
+    val budgetIdr: Double,
+    val pnlIdr: Double,
+    val pnlPct: Double,
     val orderTypeEntry: String,
     val orderTypeExit: String,
     val pumpPhase: String,
@@ -156,7 +155,7 @@ interface ControlPlaneGateway {
     suspend fun appendLog(botId: BotId, record: AuditLogRecord)
 
     suspend fun upsertKingDashboardFastTelemetry(
-        totalBalanceIdr: DecimalValue,
+        totalBalanceIdr: Double,
         currentPingMs: Long?,
         activeLivePairs: List<String>,
     )
@@ -185,19 +184,4 @@ interface ControlPlaneGateway {
     suspend fun upsertEncryptedCredentialBundle(bundle: EncryptedCredentialBundle)
 
     suspend fun fetchEncryptedCredentialBundle(botId: BotId): EncryptedCredentialBundle?
-
-    /**
-     * [KiBot Trinity v8.0] - Checks if the cloud state matches the exchange reality.
-     */
-    suspend fun isExchangeBalanceSynced(): Boolean
-
-    /**
-     * [KiBot Trinity v8.0] - Submits a strategy efficacy review from the SystemAnalyst.
-     */
-    suspend fun submitAnalysisReport(botId: BotId, report: String)
-
-    /**
-     * [KiBot Trinity v8.0] - Publishes an emergency audit alert if discrepancies are found.
-     */
-    suspend fun publishAuditAlert(botId: BotId, alert: String)
 }

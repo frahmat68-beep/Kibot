@@ -517,7 +517,7 @@ class SupabaseControlPlaneClient internal constructor(
     }
 
     override suspend fun upsertKingDashboardFastTelemetry(
-        totalBalanceIdr: DecimalValue,
+        totalBalanceIdr: Double,
         currentPingMs: Long?,
         activeLivePairs: List<String>,
     ) {
@@ -525,7 +525,7 @@ class SupabaseControlPlaneClient internal constructor(
             table = "king_dashboard",
             body = buildJsonObject {
                 put("id", 1)
-                put("total_balance_idr", decimalJson(totalBalanceIdr))
+                put("total_balance_idr", totalBalanceIdr)
                 put("current_ping_ms", currentPingMs)
                 put(
                     "active_live_pairs",
@@ -545,7 +545,7 @@ class SupabaseControlPlaneClient internal constructor(
             filters = mapOf("id" to "eq.1"),
         ) ?: return null
         return KingDashboardSnapshot(
-            totalBalanceIdr = row.totalBalanceIdr?.toDecimalValue() ?: DecimalValue.Zero,
+            totalBalanceIdr = row.totalBalanceIdr,
             currentPingMs = row.currentPingMs,
             activeLivePairs = row.activeLivePairs?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty(),
             latestManagerLog = row.latestManagerLog,
@@ -553,8 +553,8 @@ class SupabaseControlPlaneClient internal constructor(
             kidaxPingMs = row.kidaxPingMs,
             kinancePingMs = row.kinancePingMs,
             targetProgressPct = row.targetProgressPct,
-            kidaxBalanceIdr = row.kidaxBalanceIdr?.toDecimalValue() ?: DecimalValue.Zero,
-            kinanceBalanceIdr = row.kinanceBalanceIdr?.toDecimalValue() ?: DecimalValue.Zero,
+            kidaxBalanceIdr = row.kidaxBalanceIdr,
+            kinanceBalanceIdr = row.kinanceBalanceIdr,
             kidaxPnlTodayPct = row.kidaxPnlTodayPct,
             kinancePnlTodayPct = row.kinancePnlTodayPct,
             kidaxPairActive = row.kidaxPairActive,
@@ -586,11 +586,11 @@ class SupabaseControlPlaneClient internal constructor(
             put("pair_id", record.pairId)
             put("bucket", normalizeTradeBucket(record.bucketType))
             put("category", record.category)
-            put("entry_price", decimalJson(record.entryPrice))
-            put("exit_price", decimalJson(record.exitPrice))
-            put("budget_idr", decimalJson(record.budgetIdr))
-            put("pnl_idr", decimalJson(record.pnlIdr))
-            put("pnl_pct", decimalJson(record.pnlPct))
+            put("entry_price", record.entryPrice)
+            put("exit_price", record.exitPrice)
+            put("budget_idr", record.budgetIdr)
+            put("pnl_idr", record.pnlIdr)
+            put("pnl_pct", record.pnlPct)
             put("order_type_entry", record.orderTypeEntry)
             put("order_type_exit", record.orderTypeExit)
             put("pump_phase", record.pumpPhase)
@@ -602,46 +602,32 @@ class SupabaseControlPlaneClient internal constructor(
             put("exit_at", record.exitAt.toString())
         }
 
-        runCatching {
+        val fallbackBody = buildJsonObject {
+            put("pair_id", record.pairId)
+            put("entry_price", record.entryPrice)
+            put("exit_price", record.exitPrice)
+            put("budget_idr", record.budgetIdr)
+            put("pnl_idr", record.pnlIdr)
+            put("pnl_pct", record.pnlPct)
+            put("order_type", record.orderTypeExit.ifBlank { record.orderTypeEntry })
+            put("pump_phase", record.pumpPhase)
+            put("pump_score", record.pumpScore)
+            put("hold_minutes", record.holdMinutes)
+            put("win", record.win)
+            put("entry_at", record.entryAt.toString())
+        }
+
+        val inserted = runCatching {
             upsertTable(
                 table = "trade_history",
                 body = primaryBody,
                 onConflict = "trade_id",
             )
+        }.isSuccess
+
+        if (!inserted) {
+            insertIntoTable(table = "trade_history", body = fallbackBody)
         }
-    }
-
-    override suspend fun isExchangeBalanceSynced(): Boolean = runCatching {
-        val row = selectSingle<KingDashboardRow>(
-            table = "king_dashboard",
-            filters = mapOf("id" to "eq.1"),
-        ) ?: return false
-        val updatedAt = row.updatedAt ?: return false
-        val diff = Clock.System.now() - updatedAt
-        diff.inWholeMinutes < 5 // Consider synced if updated in the last 5 minutes
-    }.getOrDefault(false)
-
-    override suspend fun submitAnalysisReport(botId: BotId, report: String) {
-        insertIntoTable(
-            table = "strategy_efficacy_reviews",
-            body = buildJsonObject {
-                put("bot_id", botId.value)
-                put("review_content", report)
-                put("created_at", Clock.System.now().toString())
-            },
-        )
-    }
-
-    override suspend fun publishAuditAlert(botId: BotId, alert: String) {
-        insertIntoTable(
-            table = "system_audit_alerts",
-            body = buildJsonObject {
-                put("bot_id", botId.value)
-                put("alert_message", alert)
-                put("severity", "CRITICAL")
-                put("created_at", Clock.System.now().toString())
-            },
-        )
     }
 
     override suspend fun fetchRecentLogs(botId: BotId, limit: Int): List<AuditLogRecord> {
@@ -1446,7 +1432,7 @@ private fun EncryptedCredentialRow.toEncryptedCredentialBundle(): EncryptedCrede
 @Serializable
 private data class KingDashboardRow(
     val id: Int,
-    @SerialName("total_balance_idr") val totalBalanceIdr: JsonElement? = null,
+    @SerialName("total_balance_idr") val totalBalanceIdr: Double = 0.0,
     @SerialName("current_ping_ms") val currentPingMs: Long? = null,
     @SerialName("active_live_pairs") val activeLivePairs: JsonArray? = null,
     @SerialName("latest_manager_log") val latestManagerLog: String? = null,
@@ -1454,13 +1440,12 @@ private data class KingDashboardRow(
     @SerialName("kidax_ping_ms") val kidaxPingMs: Long? = null,
     @SerialName("kinance_ping_ms") val kinancePingMs: Long? = null,
     @SerialName("target_progress_pct") val targetProgressPct: Double? = null,
-    @SerialName("kidax_balance_idr") val kidaxBalanceIdr: JsonElement? = null,
-    @SerialName("kinance_balance_idr") val kinanceBalanceIdr: JsonElement? = null,
+    @SerialName("kidax_balance_idr") val kidaxBalanceIdr: Double? = null,
+    @SerialName("kinance_balance_idr") val kinanceBalanceIdr: Double? = null,
     @SerialName("kidax_pnl_today_pct") val kidaxPnlTodayPct: Double? = null,
     @SerialName("kinance_pnl_today_pct") val kinancePnlTodayPct: Double? = null,
     @SerialName("kidax_pair_active") val kidaxPairActive: String? = null,
     @SerialName("kinance_pair_active") val kinancePairActive: String? = null,
-    @SerialName("updated_at") val updatedAt: Instant? = null,
 )
 
 @Serializable

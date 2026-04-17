@@ -36,7 +36,7 @@ class DualBucketManager(
     companion object {
         const val MIN_ORDER_IDR = 10_000.0
         const val MAX_SINGLE_POSITION_PCT = 0.20
-        const val BUCKET_B_CONVICTION_THRESHOLD = 0.85
+        const val BUCKET_B_CONVICTION_THRESHOLD = 7.0
     }
 
     data class AllocationResult(

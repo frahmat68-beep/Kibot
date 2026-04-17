@@ -89,7 +89,7 @@ class StubControlPlaneGateway : ControlPlaneGateway {
     override suspend fun completeExecutionAction(actionId: ExecutionActionId, deviceId: DeviceId, status: String) {}
     override suspend fun markConflictSafeMode(botId: BotId, reason: String) {}
     override suspend fun appendLog(botId: BotId, record: AuditLogRecord) {}
-    override suspend fun upsertKingDashboardFastTelemetry(totalBalanceIdr: DecimalValue, currentPingMs: Long?, activeLivePairs: List<String>) {}
+    override suspend fun upsertKingDashboardFastTelemetry(totalBalanceIdr: Double, currentPingMs: Long?, activeLivePairs: List<String>) {}
     override suspend fun fetchKingDashboardSnapshot(): KingDashboardSnapshot? = null
     override suspend fun fetchTradeHistory(limit: Int, offset: Int): List<TradeHistoryRecord> = emptyList()
     override suspend fun submitTradeLog(record: TradeLogSubmission) {}
@@ -100,7 +100,4 @@ class StubControlPlaneGateway : ControlPlaneGateway {
     override suspend fun upsertOrderSnapshot(botId: BotId, term: Long, deviceId: DeviceId, order: OrderSnapshot) {}
     override suspend fun upsertEncryptedCredentialBundle(bundle: EncryptedCredentialBundle) {}
     override suspend fun fetchEncryptedCredentialBundle(botId: BotId): EncryptedCredentialBundle? = null
-    override suspend fun isExchangeBalanceSynced(): Boolean = true
-    override suspend fun submitAnalysisReport(botId: BotId, report: String) {}
-    override suspend fun publishAuditAlert(botId: BotId, alert: String) {}
 }

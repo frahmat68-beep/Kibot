@@ -1,6 +1,4 @@
 package com.kibot.core
- 
-import com.kibot.shared.models.DecimalValue
 
 data class LeaseProtocolConfig(
     val heartbeatIntervalSeconds: Int = 10,
@@ -60,9 +58,9 @@ data class PairSelectionPolicy(
 )
 
 data class PairSelectionContext(
-    val userBalanceIdr: DecimalValue = DecimalValue.Zero,
-    val availableCashIdr: DecimalValue = DecimalValue.Zero,
-    val minimumExecutableNotionalIdr: DecimalValue = DecimalValue("10000"),
+    val userBalanceIdr: Double = 0.0,
+    val availableCashIdr: Double = 0.0,
+    val minimumExecutableNotionalIdr: Double = 10_000.0,
     val basketCount: Int = 1,
     val maxSpreadPct: Double = 2.0,
     val leadSectorFamily: String? = null,
@@ -84,7 +82,7 @@ data class PairSelectionContext(
 data class RiskConfig(
     // MICRO-CAP: Tighter loss limits for protection
     val hardDailyLossLimitPct: Double = 0.03,
-    val hardRealizedLossLimitIdr: DecimalValue = DecimalValue("10000"),
+    val hardRealizedLossLimitIdr: Double = 10_000.0,
     val maxDailyTradeActions: Int = 24,  // RESTORED: Prevents over-trading during volatility
     val maxDailyRoundTrips: Int = 12,    // RESTORED
     val dailyProfitLockPct: Double = 0.010,  // RESTORED: Lock in 1% daily profit
@@ -102,7 +100,7 @@ data class RiskConfig(
     val attackCashReservePct: Double = 0.02,
     val maxPerPositionBudgetPct: Double = 0.98,
     // MICRO-CAP: Lower minimum position sizes
-    val targetMinPositionBudgetIdr: DecimalValue = DecimalValue("20000"),
+    val targetMinPositionBudgetIdr: Double = 20_000.0,
     val minSecondSlotRankingScore: Double = 0.66,
     val minSecondSlotOpportunityScore: Double = 0.56,
     val singlePositionBudgetBoostMultiplier: Double = 1.55,
@@ -124,7 +122,7 @@ data class RiskConfig(
     val rotationRankingGapMin: Double = 0.05,
     val rotationMinNetUpgradePct: Double = 1.20,
     val rotationMinClearProfitPct: Double = 0.60,
-    val rotationMinClearProfitIdr: DecimalValue = DecimalValue("80"),
+    val rotationMinClearProfitIdr: Double = 80.0,
     val blockEntriesBelowBatteryPct: Int = 18,
     val suggestTakeoverBelowBatteryPct: Int = 30,
 )
@@ -169,7 +167,7 @@ data class WeeklyLearningConfig(
 
 data class StrategyExecutionConfig(
     val referenceQuoteAsset: String = "idr",
-    val minOrderNotionalIdr: DecimalValue = DecimalValue("20000"),
+    val minOrderNotionalIdr: Double = 20_000.0,
     val entrySpendBufferPct: Double = 0.002,
     // ANTI-PENAKUT FIX: Turunkan threshold entry agar bot lebih berani masuk
     val growthMinRankingScore: Double = 0.50,      // Was 0.63 - terlalu tinggi, banyak peluang terlewat
@@ -180,10 +178,10 @@ data class StrategyExecutionConfig(
     val maxExecutableEntriesPerCycle: Int = 4,
     val productiveIdleRankingDelta: Double = 0.09,
     val productiveIdleOpportunityDelta: Double = 0.08,
-    val minExpectedNetProfitIdr: DecimalValue = DecimalValue("100"),  // FIX: Turun dari 200 → 100 untuk account kecil
-    val minExpectedNetProfitIdrSpeculative: DecimalValue = DecimalValue("120"),  // FIX: Turun dari 220 → 120
+    val minExpectedNetProfitIdr: Double = 100.0,  // FIX: Turun dari 200 → 100 untuk account kecil
+    val minExpectedNetProfitIdrSpeculative: Double = 120.0,  // FIX: Turun dari 220 → 120
     val minProfitToCostMultiplier: Double = 1.10,
-    val minProfitAfterFeesBufferIdr: DecimalValue = DecimalValue("55"),
+    val minProfitAfterFeesBufferIdr: Double = 55.0,
     val minNetEdgeAfterCostsBufferPct: Double = 0.0,
     val liquidityImpactReducerEnabled: Boolean = true,
     val liquidityImpactDepthCoverageRatio: Double = 0.45,
@@ -258,10 +256,10 @@ data class DualEngineConfig(
  */
 data class MicroAccountConfig(
     /** Threshold below which micro-mode activates */
-    val microAccountThresholdIdr: DecimalValue = DecimalValue("500000"),
+    val microAccountThresholdIdr: Double = 500_000.0,
     
     /** Indodax minimum order size */
-    val minOrderIndodaxIdr: DecimalValue = DecimalValue("20000"),
+    val minOrderIndodaxIdr: Double = 20_000.0,
     
     /** Percentage of capital to deploy (keep 10% for fees) */
     val deployableCapitalPct: Double = 0.90,

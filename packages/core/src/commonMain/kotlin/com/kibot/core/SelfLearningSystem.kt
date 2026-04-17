@@ -1,6 +1,4 @@
 package com.kibot.core
- 
-import com.kibot.shared.models.DecimalValue
 
 /**
  * SelfLearningSystem - AI-powered learning from trade outcomes
@@ -9,8 +7,8 @@ class SelfLearningSystem {
     
     data class TradeOutcome(
         val pairId: String,
-        val entryPrice: DecimalValue,
-        val exitPrice: DecimalValue,
+        val entryPrice: Double,
+        val exitPrice: Double,
         val profitPercent: Double,
         val fee: Double,
         val pattern: ChartPatternRecognizer.PatternType,

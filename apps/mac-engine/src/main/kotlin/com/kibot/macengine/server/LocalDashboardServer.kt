@@ -5,7 +5,6 @@ import com.kibot.macengine.state.MacDashboardState
 import com.kibot.macengine.state.MacCommand
 import com.kibot.macengine.state.MacStateRepository
 import com.kibot.macengine.runtime.MacEngineDaemon
-import com.kibot.core.TradeLogger
 import com.kibot.shared.models.BotId
 import com.kibot.shared.models.BotDesiredState
 import com.kibot.shared.models.CommandCenterCommandReply
@@ -92,7 +91,6 @@ class LocalDashboardServer(
     private val enableLanAdvertising: Boolean = true,
     private val statePollIntervalMillis: Long = 2_000L,
     private val logPollIntervalMillis: Long = 5_000L,
-    private val tradeLogger: TradeLogger? = null,
 ) {
     @Serializable
     private data class MobileStateResponse(
@@ -110,14 +108,7 @@ class LocalDashboardServer(
     private data class DashboardConnections(val kidax: DashboardConnectionStatus, val kinance: DashboardConnectionStatus)
 
     @Serializable
-    private data class ActivePositionState(
-        val pair: String,
-        val currentPrice: String,
-        val pnlPct: String,
-        val pnlIdr: String,
-        val size: String,
-        val signalSource: String = "UNKNOWN",
-    )
+    private data class ActivePositionState(val pair: String, val currentPrice: String, val pnlPct: String, val pnlIdr: String, val size: String)
 
     @Serializable
     private data class PairScoreState(val pair: String)
@@ -157,12 +148,7 @@ class LocalDashboardServer(
         val learningState: JsonObject,
         val whatIfSimulation: JsonElement,
         val tradeHistory: JsonElement,
-        val globalCircuitBreakerActive: Boolean = false,
-        val bucketAAllocationPct: Double = 50.0,
-        val bucketBAllocationPct: Double = 50.0,
-        val bucketAUsageIdr: Double = 0.0,
-        val bucketBUsageIdr: Double = 0.0,
-        val lastLossTimestampEpochMs: Long = 0L,
+        val rawState: JsonElement,
         val stale: Boolean = false,
         val cacheAgeMs: Long = 0L,
     )
@@ -263,17 +249,17 @@ class LocalDashboardServer(
                 applyDashboardSecurityHeaders(call)
                 val days = call.request.queryParameters["days"]?.toIntOrNull() ?: 7
                 val trades = when (days) {
-                    1 -> tradeLogger?.getTodayTrades() ?: emptyList()
-                    7 -> tradeLogger?.getLast7DaysTrades() ?: emptyList()
-                    20, 30 -> tradeLogger?.getLast30DaysTrades() ?: emptyList()
-                    else -> tradeLogger?.getLast7DaysTrades() ?: emptyList()
+                    1 -> com.kibot.macengine.logging.TradeLogger.getTodayTrades()
+                    7 -> com.kibot.macengine.logging.TradeLogger.getLast7DaysTrades()
+                    20, 30 -> com.kibot.macengine.logging.TradeLogger.getLast30DaysTrades()
+                    else -> com.kibot.macengine.logging.TradeLogger.getLast7DaysTrades()
                 }
                 call.respond(trades)
             }
 
             get("/api/trade-history/today") {
                 applyDashboardSecurityHeaders(call)
-                val trades = tradeLogger?.getTodayTrades() ?: emptyList()
+                val trades = com.kibot.macengine.logging.TradeLogger.getTodayTrades()
                 call.respond(trades)
             }
             
@@ -515,18 +501,13 @@ class LocalDashboardServer(
                 kinance = DashboardConnectionStatus(state.kinanceNodeStatus, 150),
             ),
             activePositions = state.holdingsDetailed.map { h ->
-                ActivePositionState(h.assetCode, h.currentPriceLabel, h.pnlPctLabel, h.pnlIdrLabel, h.quantityLabel, h.signalSource)
+                ActivePositionState(h.assetCode, h.currentPriceLabel, h.pnlPctLabel, h.pnlIdrLabel, h.quantityLabel)
             },
             pairScores = state.radarPairs.map { p -> PairScoreState(p) },
             learningState = JsonObject(emptyMap()),
             whatIfSimulation = whatIfJson,
             tradeHistory = tradeSummaryJson,
-            globalCircuitBreakerActive = state.globalCircuitBreakerActive,
-            bucketAAllocationPct = state.bucketAAllocationPct,
-            bucketBAllocationPct = state.bucketBAllocationPct,
-            bucketAUsageIdr = state.bucketAUsageIdr,
-            bucketBUsageIdr = state.bucketBUsageIdr,
-            lastLossTimestampEpochMs = state.lastLossTimestampEpochMs,
+            rawState = Json.encodeToJsonElement(MacDashboardState.serializer(), state),
         )
     }
 
@@ -807,7 +788,6 @@ private fun MacDashboardState.toLiveSnapshot(
                 currentPriceLabel = it.currentPriceLabel,
                 pnlIdrLabel = it.pnlIdrLabel,
                 pnlPctLabel = it.pnlPctLabel,
-                signalSource = it.signalSource,
             )
         },
         recentOrders = recentOrders.map {
@@ -842,7 +822,6 @@ private fun MacDashboardState.toLiveSnapshot(
             )
         },
         whatIfSimulation = whatIfSimulation,
-        lastLossTimestampEpochMs = lastLossTimestampEpochMs,
         updatedAtEpochMs = lastUpdatedEpochMs,
     )
 }

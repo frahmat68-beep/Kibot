@@ -23,7 +23,7 @@ import kotlin.math.abs
 import kotlin.math.max
 
 data class TradeAutomationConfig(
-    val minTrackedPositionValueIdr: DecimalValue = DecimalValue("12000"),
+    val minTrackedPositionValueIdr: Double = 12_000.0,
     val thesisInvalidRankingFloor: Double = 0.46,
     val thesisInvalidAgeHours: Double = 2.0,
     val timeExitGraceMultiplier: Double = 1.25,
@@ -48,7 +48,7 @@ data class TradeAutomationConfig(
     val breakoutWinnerRunMinHealthScore: Double = 0.58,
     val breakoutWinnerRunMinOpportunityScore: Double = 0.58,
     val minMeaningfulNonEmergencyExitProfitPct: Double = 0.75,
-    val minMeaningfulNonEmergencyExitProfitIdr: DecimalValue = DecimalValue("120"),
+    val minMeaningfulNonEmergencyExitProfitIdr: Double = 120.0,
     val loserRotationMinAgeHours: Double = 0.35,
     val loserRotationMinLossPct: Double = -0.10,
     val loserRotationMinTopCandidateRanking: Double = 0.56,
@@ -79,9 +79,9 @@ data class TradeAutomationConfig(
     val partialTakeProfitEnabled: Boolean = true,
     val partialTakeProfitMinPnlPct: Double = 2.2,
     val partialTakeProfitSellRatio: Double = 0.45,
-    val partialTakeProfitMinRemainingNotionalIdr: DecimalValue = DecimalValue("16000"),
-    val partialTakeProfitMinPositionNotionalIdr: DecimalValue = DecimalValue("26000"),
-    val partialTakeProfitMinNetSurplusIdr: DecimalValue = DecimalValue("300"),
+    val partialTakeProfitMinRemainingNotionalIdr: Double = 16_000.0,
+    val partialTakeProfitMinPositionNotionalIdr: Double = 26_000.0,
+    val partialTakeProfitMinNetSurplusIdr: Double = 300.0,
 )
 
 data class ManagedPosition(
@@ -99,7 +99,6 @@ data class ManagedPosition(
     val updatedAt: Instant,
     val horizon: TradingHorizon,
     val setupType: SetupType,
-    val signalSource: String = "UNKNOWN",
     val pairTier: com.kibot.shared.models.PairTier,
     val speculativePocket: Boolean,
     val bucketType: String? = null, // "STABLE" or "AGGRESSIVE"
@@ -239,7 +238,7 @@ class TradeAutomationCoordinator(
             val quote = quoteByPair[pairId] ?: return@mapNotNull null
             val quoteAssetPriceIdr = quoteAssetReferencePrice(pairId.assets().quoteAsset, marketQuotes) ?: return@mapNotNull null
             val valueIdr = balanceQuantity * quote.bestBid.toDoubleOrZero() * quoteAssetPriceIdr
-            if (valueIdr < config.minTrackedPositionValueIdr.toDoubleOrZero()) return@mapNotNull null
+            if (valueIdr < config.minTrackedPositionValueIdr) return@mapNotNull null
 
             val pairOrders = ordersByPair[pairId].orEmpty()
             val rankedPair = rankedByPair[pairId]
@@ -341,12 +340,6 @@ class TradeAutomationCoordinator(
                     horizon == TradingHorizon.SWING -> SetupType.SWING_TREND_CONTINUATION
                     quote.shortTermReturnPct < 0.0 -> SetupType.HEALTHY_SHORT_TERM_PULLBACK
                     else -> SetupType.LIGHT_BREAKOUT_CONTINUATION
-                },
-                signalSource = when {
-                    speculativePocket -> "SPECULATIVE"
-                    horizon == TradingHorizon.SWING -> "SWING_TREND"
-                    quote.shortTermReturnPct < 0.0 -> "PULLBACK"
-                    else -> "BREAKOUT"
                 },
                 pairTier = rankedPair?.pairTier ?: com.kibot.shared.models.PairTier.TIER_B,
                 speculativePocket = speculativePocket,
@@ -527,12 +520,12 @@ class TradeAutomationCoordinator(
                 ExitReason.PROFIT_PROTECTION_EXIT,
             ) &&
             position.unrealizedPnlPct < config.minMeaningfulNonEmergencyExitProfitPct &&
-            position.unrealizedPnlIdr < config.minMeaningfulNonEmergencyExitProfitIdr
+            position.unrealizedPnlIdr.toDoubleOrZero() < config.minMeaningfulNonEmergencyExitProfitIdr
         if (nonEmergencyExitTooSmall) {
             return null
         }
 
-        val currentNotionalIdr = position.currentValueIdr
+        val currentNotionalIdr = position.currentValueIdr.toDoubleOrZero()
         val plannedQuantity = resolveExitQuantity(
             position = position,
             exitReason = exitReason,
@@ -615,7 +608,7 @@ class TradeAutomationCoordinator(
         val plannedQuantity = resolveExitQuantity(
             position = position,
             exitReason = ExitReason.THESIS_INVALID_EXIT,
-            currentNotionalIdr = position.currentValueIdr,
+            currentNotionalIdr = position.currentValueIdr.toDoubleOrZero(),
         )
         val telemetryMessage = buildExitTelemetryMessage(
             reason = ExitReason.THESIS_INVALID_EXIT,
@@ -902,15 +895,15 @@ class TradeAutomationCoordinator(
     private fun resolveExitQuantity(
         position: ManagedPosition,
         exitReason: ExitReason,
-        currentNotionalIdr: DecimalValue,
+        currentNotionalIdr: Double,
     ): DecimalValue {
         if (!config.partialTakeProfitEnabled) return position.quantity
         if (exitReason != ExitReason.PROFIT_EXIT) return position.quantity
         if (position.unrealizedPnlPct < config.partialTakeProfitMinPnlPct) return position.quantity
-        if (currentNotionalIdr < DecimalValue.maxOf(config.partialTakeProfitMinPositionNotionalIdr, executionConfig.minOrderNotionalIdr)) {
+        if (currentNotionalIdr < max(config.partialTakeProfitMinPositionNotionalIdr, executionConfig.minOrderNotionalIdr)) {
             return position.quantity
         }
-        if (position.unrealizedPnlIdr < config.partialTakeProfitMinNetSurplusIdr) {
+        if (position.unrealizedPnlIdr.toDoubleOrZero() < config.partialTakeProfitMinNetSurplusIdr) {
             return position.quantity
         }
 
@@ -922,7 +915,7 @@ class TradeAutomationCoordinator(
 
         val remainingRatio = 1.0 - config.partialTakeProfitSellRatio
         val remainingNotionalIdr = currentNotionalIdr * remainingRatio
-        if (remainingNotionalIdr < DecimalValue.maxOf(config.partialTakeProfitMinRemainingNotionalIdr, executionConfig.minOrderNotionalIdr)) {
+        if (remainingNotionalIdr < max(config.partialTakeProfitMinRemainingNotionalIdr, executionConfig.minOrderNotionalIdr)) {
             return position.quantity
         }
         return DecimalValue.fromDouble(partialQty)

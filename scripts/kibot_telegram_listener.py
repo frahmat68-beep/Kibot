@@ -7,6 +7,7 @@ Listens for Telegram commands via webhook and routes to command handlers.
 
 import asyncio
 import logging
+import os
 from aiohttp import web
 from kibot_command_handler import CommandHandler
 
@@ -14,12 +15,12 @@ from kibot_command_handler import CommandHandler
 # CONFIGURATION
 # ============================================================================
 
-TELEGRAM_BOT_TOKEN = "8583424689:AAHRe8drD2hmuyN48RoFv9Me0oXwcXnSoSE"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 # Server config
 WEBHOOK_PORT = 8889
-WEBHOOK_PATH = f"/telegram/{TELEGRAM_BOT_TOKEN}"
+WEBHOOK_PATH = f"/telegram/{TELEGRAM_BOT_TOKEN}" if TELEGRAM_BOT_TOKEN else "/telegram/unconfigured"
 
 # ============================================================================
 # LOGGING

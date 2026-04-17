@@ -41,6 +41,15 @@ SUPABASE_MIGRATION_GUIDE.md
 logs.zip
 push_fix.sh
 gradle_home/
+.gradle_home/
 build_log.txt
 state/
 simulation_report.json
+logs/
+state/trade_log.jsonl
+state/*.tmp
+*.tmp.*
+state/backups/
+state/learning_state.json
+*.jar
+npm-cache/_logs/

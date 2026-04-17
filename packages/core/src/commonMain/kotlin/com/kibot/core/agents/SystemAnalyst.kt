@@ -44,7 +44,7 @@ class DefaultSystemAnalyst : SystemAnalyst {
         botId: BotId
     ): SystemAnalyst.SituationalReport {
         reportCount++
-        val pnlPct = record.pnlPct.toDoubleOrZero()
+        val pnlPct = record.pnlPct
         
         val (sentiment, attribution) = when {
             pnlPct >= 5.0 -> "EXTREME_BULLISH" to "Strategy perfectly captured the $regime pump. Excellent execution."

@@ -1,6 +1,5 @@
 package com.kibot.core
 
-import com.kibot.shared.models.DecimalValue
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlin.math.abs
@@ -47,12 +46,12 @@ class KiBotVetoSystem(
      */
     fun evaluateBuyOrder(
         pairId: String,
-        price: DecimalValue,
-        quantity: DecimalValue,
-        costIdr: DecimalValue,
-        currentEquityIdr: DecimalValue,
+        price: Double,
+        quantity: Double,
+        costIdr: Double,
+        currentEquityIdr: Double,
         currentLossPct: Double,
-        capitalAvailableIdr: DecimalValue,
+        capitalAvailableIdr: Double,
         positionStrategy: PositionStrategy,
         spreadPercent: Double = 0.01,
         volumeScore: Double = 0.5,
@@ -116,10 +115,7 @@ class KiBotVetoSystem(
         }
         
         // Rule 4: Risk concentration
-        val concentrationRatio = if (currentEquityIdr > DecimalValue.Zero) {
-            costIdr / currentEquityIdr
-        } else 1.0
-        
+        val concentrationRatio = costIdr / currentEquityIdr
         if (concentrationRatio > 0.15 && positionStrategy == PositionStrategy.STABLE) {
             return BuyApproval(
                 approved = false,
@@ -208,8 +204,8 @@ class KiBotVetoSystem(
      */
     fun recordTradeCompletion(
         pairId: String,
-        entryPrice: DecimalValue,
-        exitPrice: DecimalValue,
+        entryPrice: Double,
+        exitPrice: Double,
         fee: Double,
         profitPercent: Double,
         pattern: ChartPatternRecognizer.PatternType,
@@ -330,13 +326,13 @@ class KiBotVetoSystem(
         val recommendedOrderType: String = "UNKNOWN",
         val recommendedProfitTargetPercent: Double = 1.5,
         val recommendedStopLossPercent: Double = 1.0,
-        val allocatedCapitalIdr: DecimalValue = DecimalValue.Zero,
+        val allocatedCapitalIdr: Double = 0.0,
         val sizeAdjustmentMultiplier: Float = 1.0f,
     )
     
     data class TradeApproval(
         val pair: String,
-        val price: DecimalValue,
+        val price: Double,
         val won: Boolean,
         val timestamp: Long = System.currentTimeMillis(),
     )

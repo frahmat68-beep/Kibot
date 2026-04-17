@@ -1,0 +1,19 @@
+[Unit]
+Description=KiBot Server Guardian
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/KiBot
+ExecStart=/usr/bin/python3 scripts/kibot_guardian.py
+Restart=always
+RestartSec=30
+MemoryMax=40M
+OOMPolicy=kill
+
+[Install]
+WantedBy=multi-user.target
