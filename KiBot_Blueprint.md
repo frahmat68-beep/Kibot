@@ -56,14 +56,17 @@ The system is "PnL-Aware":
 *   **Profit Lock**: Hard-locks gains when targets are reached.
 *   **Trailing Stop**: Dynamic exit that follows price rallies to squeeze maximum profit.
 *   **Rotation**: Automatically closes stagnant positions (>4h hold, ~4% profit) to pivot capital into newer, higher-confidence signals.
-*   **Daily Reporting**: Automated sub-system that broadcasts a comprehensive PnL and Learning overview to Telegram every midnight (00:00 WIB). It tracks daily/weekly growth and the number of losses prevented by the AI.
+*   **Daily Reporting**: Automated sub-system that broadcasts a comprehensive PnL and Learning overview to Telegram every midnight (00:00 WIB). It tracks daily/weekly growth and the number of losses prevented by the AI (Gate Blocks and What-If Skips), providing a clear mathematical ledger of autonomous performance.
 
 ### **Pillar 5: Mathematical Scanning (Confidence 0.85)**
 Scanning is a consensus of:
 *   **Chart**: Price action and Bollinger Band squeeze.
 *   **Volume**: Genuine buying pressure vs. wash trading.
 *   **Order Book**: Depth imbalance (Bid > Ask ratio).
-*   **Score**: Only signals with a **Conviction Score ≥ 0.85** reach the engine.
+*   **Score**: Only signals with a **Conviction Score ≥ 0.85** reach the engine (Threshold reduced to **0.55** for speculative Bucket B).
+*   **Global Whiteboard (Consensus Engine)**: A real-time data terminal where Binance, Crypto.com, and CoinGecko "cross-fire" their data. 
+    *   **Price Consensus**: Mandates an AND-gate check between Binance and Crypto.com price action to kill "fake pumps" (spread > 1.5% leads to instant rejection).
+    *   **Sentiment Consensus**: Integrates CoinGecko Trending Data to apply a **+15% Confidence Bonus** to popular assets, ensuring the bot follows genuine market momentum.
 
 ### **Pillar 6: AI-Residency (NVIDIA/Gemini Audit)**
 AI is used as a **Strategic Auditor**. 
@@ -73,9 +76,10 @@ AI is used as a **Strategic Auditor**.
 
 ### **Pillar 7: The Learning Loop (Experience-Based AI)**
 The Brain learns via **Deterministic Experience**:
-*   **Blacklist Logic**: Every "Hard Stop" or loss is recorded. The system blacklists that specific pair/pattern for a cooldown period to prevent repetitive losses.
-*   **What-If Simulation**: The manager simulates trade outcomes locally before deployment.
-*   **Success Tracking**: High-win patterns are assigned higher weights in future scanning cycles.
+*   **Blacklist Logic (The Cooldown)**: Every "Hard Stop" or loss triggers an automatic cooling-off period (30-120 minutes) for that specific pair to prevent "revenge trading" or repetitive losses on failing assets.
+*   **Dynamic Kelly Scaling**: The system adjusts position sizes based on historical win rates. High-performing pairs earn larger capital allocations, while underperformers are restricted.
+*   **What-If Simulation**: Every entry is simulated locally before deployment. If the math doesn't "make sense" (spread > potential gain), the AI blocks the trade, recording it as a **"What-If Skip"** in the performance report.
+*   **Periodic Math Review (30m Cycle)**: Every 30 minutes, the manager conducts a self-audit of all open and closed positions, adjusting the global "Risk Regime" (GROWTH, CAUTION, DEFENSIVE) based on recent PnL trajectory.
 
 ---
 
