@@ -54,4 +54,20 @@ class BinanceGatewayTest {
 
         assertContentEquals(listOf("FUNUSDT"), result)
     }
+
+    @Test
+    fun `single symbol invalid response maps back to that symbol`() {
+        val batch = """["FUNUSDT"]"""
+
+        val result = extractInvalidSymbols(
+            BinanceTickerBatchException(
+                message = """{"code":-1121,"msg":"Invalid symbol."}""",
+                symbols = decodeTickerSymbols(batch),
+                code = -1121,
+            ),
+            batch,
+        )
+
+        assertContentEquals(listOf("FUNUSDT"), result)
+    }
 }

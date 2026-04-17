@@ -552,6 +552,7 @@ internal fun decodeTickerSymbols(payload: String): List<String> =
     runCatching { Json.decodeFromString(ListSerializer(String.serializer()), payload) }.getOrDefault(emptyList())
 
 internal fun extractInvalidSymbols(error: Throwable, fallbackBatchPayload: String): List<String> {
+    val fallbackSymbols = decodeTickerSymbols(fallbackBatchPayload)
     val explicitSymbols = (error as? BinanceTickerBatchException)?.symbols.orEmpty()
     val message = buildString {
         append(error.message.orEmpty())
@@ -568,6 +569,9 @@ internal fun extractInvalidSymbols(error: Throwable, fallbackBatchPayload: Strin
         ?.getOrNull(1)
         ?.takeIf { it.isNotBlank() }
     if (invalidSymbol != null) return listOf(invalidSymbol)
+    if (fallbackSymbols.size == 1 && message.contains("Invalid symbol", ignoreCase = true)) {
+        return fallbackSymbols
+    }
     return emptyList()
 }
 
