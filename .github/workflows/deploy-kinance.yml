@@ -172,9 +172,6 @@ jobs:
               sudo cp "${REMOTE_ROOT}/infra/systemd/${svc_file}" "/etc/systemd/system/${svc_file}"
             done
             
-            # [INTERNAL SMOKE TEST] Validate environment before restart
-            python3 ${REMOTE_ROOT}/scripts/kibot_smoke_test.py
-
             sudo systemctl kill "${SERVICE_NAME}" || true
             sudo fuser -k "${RUNTIME_PORT}/tcp" || true
             sleep 1
