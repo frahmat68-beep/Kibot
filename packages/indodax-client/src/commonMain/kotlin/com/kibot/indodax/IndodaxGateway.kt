@@ -166,7 +166,7 @@ class IndodaxGateway internal constructor(
                 historicalExpectancyScore = historicalExpectancyScore,
                 fillQualityScore = fillQualityScore,
                 holdabilityScore = holdabilityScore,
-                capturedAt = ticker.serverTime?.let(Instant::fromEpochSeconds) ?: Clock.System.now(),
+                capturedAt = ticker.serverTime?.toCapturedAtInstant() ?: Clock.System.now(),
             )
         }
     }
@@ -979,6 +979,13 @@ private fun weightedFillPrice(fills: List<FillSnapshot>): Double? {
     if (quantity <= 0.0) return null
     return fills.sumOf { it.price.toDoubleOrZero() * it.quantity.toDoubleOrZero() } / quantity
 }
+
+internal fun Long.toCapturedAtInstant(): Instant =
+    if (this >= 1_000_000_000_000L) {
+        Instant.fromEpochMilliseconds(this)
+    } else {
+        Instant.fromEpochSeconds(this)
+    }
 
 private fun String.toEpochSecondsInstant(): Instant = Instant.fromEpochSeconds(toLong())
 

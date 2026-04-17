@@ -1,5 +1,6 @@
 package com.kibot.indodax
 
+import kotlinx.datetime.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -36,5 +37,17 @@ class IndodaxPrivateRequestFactoryTest {
         assertEquals("24588", normalizeIndodaxTradeAmount("24588.000000"))
         assertEquals("12345", normalizeIndodaxTradeAmount("1.2345e4"))
         assertEquals(null, normalizeIndodaxTradeAmount("0.001"))
+    }
+
+    @Test
+    fun `normalizes indodax server time as milliseconds when needed`() {
+        assertEquals(
+            Instant.fromEpochMilliseconds(1_713_400_000_123L),
+            1_713_400_000_123L.toCapturedAtInstant(),
+        )
+        assertEquals(
+            Instant.fromEpochSeconds(1_713_400_000L),
+            1_713_400_000L.toCapturedAtInstant(),
+        )
     }
 }
