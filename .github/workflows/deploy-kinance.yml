@@ -31,6 +31,8 @@ jobs:
       BOT_PROFILE_KEY: kinance
       EXCHANGE_KIND: BINANCE_SPOT
       EXPECTED_BOT_IDS: "main,kibot"
+      KIDAX_UDP_HOST: "213.35.118.26"
+      KINANCE_UDP_HOST: "152.69.218.198"
       DEVICE_ID: kibot-oracle-binance
       DEVICE_DISPLAY_NAME: KiBot Oracle Binance
     steps:
@@ -106,8 +108,11 @@ jobs:
             set -euo pipefail
             mkdir -p "${REMOTE_ROOT}/server" "${REMOTE_ROOT}/scripts" "${REMOTE_ROOT}/infra/systemd" "${REMOTE_ROOT}/.tmp"
             touch "${REMOTE_ROOT}/${ENV_FILE}"
+            touch "${REMOTE_ROOT}/.env.server"
+            touch "${REMOTE_ROOT}/.env.kibot_manager"
             chmod 700 "${REMOTE_ROOT}"
             chmod 600 "${REMOTE_ROOT}/${ENV_FILE}"
+            chmod 600 "${REMOTE_ROOT}/.env.server" "${REMOTE_ROOT}/.env.kibot_manager"
 
       - name: Sync Runtime Bundle via rsync
         run: |
@@ -126,36 +131,40 @@ jobs:
           port: ${{ env.DEPLOY_PORT }}
           username: ${{ env.DEPLOY_USER }}
           key: ${{ env.DEPLOY_KEY }}
-          envs: REMOTE_ROOT,SERVICE_NAME,RUNTIME_PORT,ENV_FILE,BOT_ID,BOT_PROFILE_KEY,EXCHANGE_KIND,EXPECTED_BOT_IDS,DEVICE_ID,DEVICE_DISPLAY_NAME
+          envs: REMOTE_ROOT,SERVICE_NAME,RUNTIME_PORT,ENV_FILE,BOT_ID,BOT_PROFILE_KEY,EXCHANGE_KIND,EXPECTED_BOT_IDS,KIDAX_UDP_HOST,KINANCE_UDP_HOST,DEVICE_ID,DEVICE_DISPLAY_NAME
           script: |
             set -euo pipefail
             RELEASE_LABEL="#${{ github.run_number }}"
             RECOVERY_TIMER="${SERVICE_NAME}-recovery.timer"
             RECOVERY_SERVICE="${SERVICE_NAME}-recovery.service"
-            BULKHEAD_SERVICES="kibot-guardian kibot-auditor kibot-notifier kibot-orchestrator kibot-security kibot-analyst"
+            BULKHEAD_SERVICES="kibot-manager kibot-guardian kibot-auditor kibot-notifier kibot-orchestrator kibot-security kibot-analyst"
 
-            ensure_env() {
-              local key="$1"
-              local value="$2"
-              if grep -q "^${key}=" "${REMOTE_ROOT}/${ENV_FILE}"; then
-                sed -i "s|^${key}=.*|${key}=${value}|" "${REMOTE_ROOT}/${ENV_FILE}"
+            ensure_env_in() {
+              local file="$1"
+              local key="$2"
+              local value="$3"
+              if grep -q "^${key}=" "${file}"; then
+                sed -i "s|^${key}=.*|${key}=${value}|" "${file}"
               else
-                echo "${key}=${value}" >> "${REMOTE_ROOT}/${ENV_FILE}"
+                echo "${key}=${value}" >> "${file}"
               fi
             }
 
-            ensure_env KIBOT_RELEASE_LABEL "${RELEASE_LABEL}"
-            ensure_env BOT_ID "${BOT_ID}"
-            ensure_env BOT_PROFILE_KEY "${BOT_PROFILE_KEY}"
-            ensure_env KIBOT_EXCHANGE_KIND "${EXCHANGE_KIND}"
-            ensure_env DEVICE_ID "${DEVICE_ID}"
-            ensure_env DEVICE_DISPLAY_NAME "\"${DEVICE_DISPLAY_NAME}\""
-            ensure_env KIBOT_RUNTIME_ROOT "${REMOTE_ROOT}"
-            ensure_env KIBOT_DASHBOARD_PORT "${RUNTIME_PORT}"
-            ensure_env KIBOT_ENV_FILE "${REMOTE_ROOT}/${ENV_FILE}"
-            ensure_env MAC_ENGINE_PORT "${RUNTIME_PORT}"
-            ensure_env MAC_ENGINE_BIND_HOST 0.0.0.0
-            ensure_env KIBOT_HIVE_EXPECTED_BOT_IDS "${EXPECTED_BOT_IDS}"
+            ensure_env_in "${REMOTE_ROOT}/${ENV_FILE}" KIBOT_RELEASE_LABEL "${RELEASE_LABEL}"
+            ensure_env_in "${REMOTE_ROOT}/${ENV_FILE}" BOT_ID "${BOT_ID}"
+            ensure_env_in "${REMOTE_ROOT}/${ENV_FILE}" BOT_PROFILE_KEY "${BOT_PROFILE_KEY}"
+            ensure_env_in "${REMOTE_ROOT}/${ENV_FILE}" KIBOT_EXCHANGE_KIND "${EXCHANGE_KIND}"
+            ensure_env_in "${REMOTE_ROOT}/${ENV_FILE}" DEVICE_ID "${DEVICE_ID}"
+            ensure_env_in "${REMOTE_ROOT}/${ENV_FILE}" DEVICE_DISPLAY_NAME "\"${DEVICE_DISPLAY_NAME}\""
+            ensure_env_in "${REMOTE_ROOT}/${ENV_FILE}" KIBOT_RUNTIME_ROOT "${REMOTE_ROOT}"
+            ensure_env_in "${REMOTE_ROOT}/${ENV_FILE}" KIBOT_DASHBOARD_PORT "${RUNTIME_PORT}"
+            ensure_env_in "${REMOTE_ROOT}/${ENV_FILE}" KIBOT_ENV_FILE "${REMOTE_ROOT}/${ENV_FILE}"
+            ensure_env_in "${REMOTE_ROOT}/${ENV_FILE}" MAC_ENGINE_PORT "${RUNTIME_PORT}"
+            ensure_env_in "${REMOTE_ROOT}/${ENV_FILE}" MAC_ENGINE_BIND_HOST 0.0.0.0
+            ensure_env_in "${REMOTE_ROOT}/${ENV_FILE}" KIBOT_HIVE_EXPECTED_BOT_IDS "${EXPECTED_BOT_IDS}"
+            ensure_env_in "${REMOTE_ROOT}/.env.server" KIBOT_RUNTIME_ROOT "${REMOTE_ROOT}"
+            ensure_env_in "${REMOTE_ROOT}/.env.server" KIDAX_UDP_HOST "${KIDAX_UDP_HOST}"
+            ensure_env_in "${REMOTE_ROOT}/.env.server" KINANCE_UDP_HOST "${KINANCE_UDP_HOST}"
 
             for unit in ${RECOVERY_TIMER} ${RECOVERY_SERVICE} ${BULKHEAD_SERVICES}; do
               sudo systemctl disable --now "${unit}" || true
@@ -165,6 +174,7 @@ jobs:
             chmod +x "${REMOTE_ROOT}/scripts/verify_kibot_complete.sh" || true
             sudo cp "${REMOTE_ROOT}/infra/systemd/kinance-engine.service" "/etc/systemd/system/${SERVICE_NAME}.service"
             for svc_file in \
+              kibot-manager.service \
               kibot-analyst.service \
               kibot-guardian.service \
               kibot-auditor.service \

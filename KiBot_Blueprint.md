@@ -8,6 +8,10 @@
 ## 2. Infrastructure & Distributed Logic
 **Nodes**: 1GB Oracle VPS (Optimized for low RAM).
 **Keep-Alive**: `stress-ng` active to prevent VPS suspension. `systemd` handles auto-recovery.
+**Live Node Identity**:
+- `Node A` = primary runtime node (`kidax-engine` + `kibot-*` services).
+- `Node B` = market radar node (`kinance-engine` + `kibot-*` services).
+- Physical placement may change; config and service identity must stay aligned with logical node responsibility, not legacy location labels.
 
 ## 3. Capital Allocation (50/50 Split)
 | Bucket | Strategy | Target | Capital Ratio |

@@ -143,8 +143,10 @@ object MacRuntimeConfigLoader {
         val merged = fileValues + System.getenv().filterValues { it.isNotBlank() }
 
         fun optional(name: String): String? {
-            val kibotName = if (name.startsWith("KICRYP_")) name.replaceFirst("KICRYP_", "KIBOT_") else null
-            return (kibotName?.let { merged[it] } ?: merged[name])?.takeIf { it.isNotBlank() }
+            return resolveEnvAliasCandidates(name)
+                .asSequence()
+                .mapNotNull { candidate -> merged[candidate] }
+                .firstOrNull { it.isNotBlank() }
         }
 
         fun required(name: String): String = optional(name)
@@ -547,8 +549,11 @@ object MacRuntimeConfigLoader {
             .flatMap { dir ->
                 buildList {
                     add(dir.resolve(".env"))
+                    add(dir.resolve(".env.kibot"))
+                    add(dir.resolve(".env.server"))
                     hintedSuffix?.let { add(dir.resolve(it)) }
                     add(dir.resolve("apps/mac-engine/.env"))
+                    add(dir.resolve("apps/mac-engine/.env.kibot"))
                     hintedSuffix?.let { add(dir.resolve("apps/mac-engine/$it")) }
                 }
             }
@@ -560,5 +565,15 @@ object MacRuntimeConfigLoader {
         }
             .distinct()
             .filter { Files.exists(it) }
+    }
+
+    internal fun resolveEnvAliasCandidates(name: String): List<String> {
+        val normalized = name.trim()
+        val aliases = linkedSetOf(normalized)
+        when {
+            normalized.startsWith("KICRYP_") -> aliases += normalized.replaceFirst("KICRYP_", "KIBOT_")
+            normalized.startsWith("KIBOT_") -> aliases += normalized.replaceFirst("KIBOT_", "KICRYP_")
+        }
+        return aliases.toList()
     }
 }
