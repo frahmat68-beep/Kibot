@@ -1,6 +1,19 @@
 # 🤖 KiBot Trinity: The Autonomous HFT Infrastructure
 > **Multi-Chain Intelligence | Math-First Execution | 1GB VPS Optimized**
 
+## Start Here (Mandatory)
+
+For current production topology and runtime behavior, read this first:
+
+- `docs/architecture/TWO_SERVER_SYSTEM_GUIDE.md`
+
+This file is the source of truth for:
+- two-server architecture,
+- active services on each node,
+- end-to-end runtime flow,
+- known failure modes and root causes,
+- post-deploy validation procedure.
+
 KiBot Trinity is a next-generation autonomous trading system designed to run on ultra-low resource environments (Oracle Micro 1GB RAM) while maintaining institutional-grade risk management and high-frequency execution.
 
 ---

@@ -1,5 +1,10 @@
 # KiBot Blueprint v7.3.1 - Trinity Autonomous System
 
+## Canonical Architecture Note
+- Detailed, always-updated two-server runtime documentation is maintained at:
+  - `docs/architecture/TWO_SERVER_SYSTEM_GUIDE.md`
+- If any statement in this blueprint conflicts with live architecture behavior, follow `TWO_SERVER_SYSTEM_GUIDE.md`.
+
 ## 1. Vision & Mindset
 **Philosophy**: "Low Profile, High Profit".
 **Goal**: Completely autonomous trading with zero manual intervention unless critical.
