@@ -163,7 +163,6 @@ jobs:
 
             sudo systemctl stop ${SERVICE_NAME} || true
             sudo systemctl kill ${SERVICE_NAME} || true
-            sudo pkill -9 -f mac-engine-all.jar || true
             sudo fuser -k ${RUNTIME_PORT}/tcp || true
             sleep 2
             sudo systemctl daemon-reload
