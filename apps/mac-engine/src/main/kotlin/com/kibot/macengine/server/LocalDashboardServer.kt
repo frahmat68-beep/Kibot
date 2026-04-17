@@ -5,7 +5,7 @@ import com.kibot.macengine.state.MacDashboardState
 import com.kibot.macengine.state.MacCommand
 import com.kibot.macengine.state.MacStateRepository
 import com.kibot.macengine.runtime.MacEngineDaemon
-import com.kibot.core.logging.TradeLogger
+import com.kibot.core.TradeLogger
 import com.kibot.shared.models.BotId
 import com.kibot.shared.models.BotDesiredState
 import com.kibot.shared.models.CommandCenterCommandReply
@@ -92,6 +92,7 @@ class LocalDashboardServer(
     private val enableLanAdvertising: Boolean = true,
     private val statePollIntervalMillis: Long = 2_000L,
     private val logPollIntervalMillis: Long = 5_000L,
+    private val tradeLogger: TradeLogger? = null,
 ) {
     @Serializable
     private data class MobileStateResponse(
@@ -262,17 +263,17 @@ class LocalDashboardServer(
                 applyDashboardSecurityHeaders(call)
                 val days = call.request.queryParameters["days"]?.toIntOrNull() ?: 7
                 val trades = when (days) {
-                    1 -> TradeLogger.getTodayTrades()
-                    7 -> TradeLogger.getLast7DaysTrades()
-                    20, 30 -> TradeLogger.getLast30DaysTrades()
-                    else -> TradeLogger.getLast7DaysTrades()
+                    1 -> tradeLogger?.getTodayTrades() ?: emptyList()
+                    7 -> tradeLogger?.getLast7DaysTrades() ?: emptyList()
+                    20, 30 -> tradeLogger?.getLast30DaysTrades() ?: emptyList()
+                    else -> tradeLogger?.getLast7DaysTrades() ?: emptyList()
                 }
                 call.respond(trades)
             }
 
             get("/api/trade-history/today") {
                 applyDashboardSecurityHeaders(call)
-                val trades = TradeLogger.getTodayTrades()
+                val trades = tradeLogger?.getTodayTrades() ?: emptyList()
                 call.respond(trades)
             }
             

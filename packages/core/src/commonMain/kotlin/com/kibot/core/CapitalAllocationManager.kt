@@ -21,11 +21,11 @@ import kotlin.math.floor
  */
 class CapitalAllocationManager(
     private var totalCapitalIdr: DecimalValue = DecimalValue("60000"),
-    private val stableRotationPercent: Double = 0.50,
-    private val aggressivePercent: Double = 0.50,
-    private val bucketBSpendablePercent: Double = 0.60,
-    private val globalCashReservePercent: Double = 0.20,
-    private val rebalanceDriftThreshold: Double = 0.05,
+    private val stableRotationPercent: DecimalValue = DecimalValue("0.50"),
+    private val aggressivePercent: DecimalValue = DecimalValue("0.50"),
+    private val bucketBSpendablePercent: DecimalValue = DecimalValue("0.60"),
+    private val globalCashReservePercent: DecimalValue = DecimalValue("0.20"),
+    private val rebalanceDriftThreshold: DecimalValue = DecimalValue("0.05"),
 ) {
     private val bucketAPercent = aggressivePercent
     private val bucketBPercent = stableRotationPercent
@@ -35,8 +35,8 @@ class CapitalAllocationManager(
     private var currentTotalEquityIdr = totalCapitalIdr
     
     // Bucket tracking
-    private var availableAIdr = totalCapitalIdr * (1.0 - globalCashReservePercent) * bucketAPercent
-    private var availableBIdr = totalCapitalIdr * (1.0 - globalCashReservePercent) * bucketBPercent * bucketBSpendablePercent
+    private var availableAIdr = totalCapitalIdr * (DecimalValue("1.0") - globalCashReservePercent) * bucketAPercent
+    private var availableBIdr = totalCapitalIdr * (DecimalValue("1.0") - globalCashReservePercent) * bucketBPercent * bucketBSpendablePercent
     
     private var deployedAIdr = DecimalValue.Zero
     private var deployedBIdr = DecimalValue.Zero
@@ -44,12 +44,12 @@ class CapitalAllocationManager(
     companion object {
         val MICRO_ACCOUNT_THRESHOLD_IDR = DecimalValue("500000")
         val MIN_ORDER_INDODAX_IDR = DecimalValue("10000")
-        const val MAX_SINGLE_POSITION_PCT = 0.25
+        val MAX_SINGLE_POSITION_PCT = DecimalValue("0.25")
         val MULTI_SLOT_TRIGGER_IDR = DecimalValue("25000") // Threshold to allow parallel slots
         
         fun calculateDynamicAdditionalSlots(totalFreeIdr: DecimalValue): Int {
             if (totalFreeIdr < MIN_ORDER_INDODAX_IDR) return 0
-            val count = totalFreeIdr / MIN_ORDER_INDODAX_IDR
+            val count = totalFreeIdr.toScaledLong() / MIN_ORDER_INDODAX_IDR.toScaledLong()
             return count.toInt().coerceAtLeast(1)
         }
     }
@@ -91,9 +91,9 @@ class CapitalAllocationManager(
         val limit = availableAIdr
         
         val amount = if (requestedIdr > DecimalValue.Zero) {
-            minOf(requestedIdr, limit, maxPerCoin)
+            DecimalValue.minOf(requestedIdr, limit, maxPerCoin)
         } else {
-            minOf(limit, maxPerCoin)
+            DecimalValue.minOf(limit, maxPerCoin)
         }
         
         if (amount >= MIN_ORDER_INDODAX_IDR) {
@@ -118,13 +118,12 @@ class CapitalAllocationManager(
         if (checkMicroMode()) return allocateMicro(false)
         
         val maxPerCoin = currentTotalEquityIdr * MAX_SINGLE_POSITION_PCT
-        // Bucket B has 40% reserve within its own allocation
         val limit = availableBIdr
         
         val amount = if (requestedIdr > DecimalValue.Zero) {
-            minOf(requestedIdr, limit, maxPerCoin)
+            DecimalValue.minOf(requestedIdr, limit, maxPerCoin)
         } else {
-            minOf(limit, maxPerCoin)
+            DecimalValue.minOf(limit, maxPerCoin)
         }
         
         if (amount >= MIN_ORDER_INDODAX_IDR) {
@@ -148,9 +147,9 @@ class CapitalAllocationManager(
     }
 
     private fun allocateMicro(isAggressive: Boolean): AllocationResult {
-        val deployable = currentTotalEquityIdr * (1.0 - globalCashReservePercent)
+        val deployable = currentTotalEquityIdr * (DecimalValue("1.0") - globalCashReservePercent)
         val maxPos = calculateMaxPositions(deployable)
-        val perPos = if (maxPos > 0) deployable / maxPos.toDouble() else DecimalValue.Zero
+        val perPos = if (maxPos > 0) deployable.divide(DecimalValue.fromInt(maxPos)) else DecimalValue.Zero
         
         val amount = if (perPos >= MIN_ORDER_INDODAX_IDR) perPos else DecimalValue.Zero
         val role = if (isAggressive) "CHASER" else "HOLDER"
@@ -169,7 +168,7 @@ class CapitalAllocationManager(
 
     fun calculateMaxPositions(totalFreeIdr: DecimalValue): Int {
         if (totalFreeIdr < MIN_ORDER_INDODAX_IDR) return 0
-        return (totalFreeIdr / MIN_ORDER_INDODAX_IDR).toInt()
+        return (totalFreeIdr.toScaledLong() / MIN_ORDER_INDODAX_IDR.toScaledLong()).toInt()
     }
 
     fun updateEquity(totalEquityIdr: DecimalValue, freeIdr: DecimalValue, deployedA: DecimalValue, deployedB: DecimalValue) {
@@ -177,7 +176,7 @@ class CapitalAllocationManager(
         this.deployedAIdr = deployedA
         this.deployedBIdr = deployedB
         
-        val tradeableTotal = totalEquityIdr * (1.0 - globalCashReservePercent)
+        val tradeableTotal = totalEquityIdr * (DecimalValue("1.0") - globalCashReservePercent)
         
         val targetA = tradeableTotal * bucketAPercent
         val targetB = tradeableTotal * bucketBPercent * bucketBSpendablePercent
@@ -188,7 +187,7 @@ class CapitalAllocationManager(
         // Clamp to actual free balance
         val totalUnmet = availableAIdr + availableBIdr
         if (totalUnmet > freeIdr && totalUnmet > DecimalValue.Zero) {
-            val ratio = freeIdr / totalUnmet
+            val ratio = freeIdr.toDouble() / totalUnmet.toDouble()
             availableAIdr *= ratio
             availableBIdr *= ratio
         }
@@ -199,8 +198,8 @@ class CapitalAllocationManager(
         microModeMaxPositions = 0
         currentTotalEquityIdr = totalCapitalIdr
         rebalanceCount = 0
-        availableAIdr = totalCapitalIdr * (1.0 - globalCashReservePercent) * bucketAPercent
-        availableBIdr = totalCapitalIdr * (1.0 - globalCashReservePercent) * bucketBPercent * bucketBSpendablePercent
+        availableAIdr = totalCapitalIdr * (DecimalValue("1.0") - globalCashReservePercent) * bucketAPercent
+        availableBIdr = totalCapitalIdr * (DecimalValue("1.0") - globalCashReservePercent) * bucketBPercent * bucketBSpendablePercent
         deployedAIdr = DecimalValue.Zero
         deployedBIdr = DecimalValue.Zero
     }
@@ -288,8 +287,8 @@ class CapitalAllocationManager(
         aggressiveCapitalIdr = availableAIdr,
         totalDeployedStable = deployedBIdr,
         totalDeployedAggressive = deployedAIdr,
-        stablePercent = bucketBPercent * 100.0,
-        aggressivePercent = bucketAPercent * 100.0,
+        stablePercent = bucketBPercent.toDouble() * 100.0,
+        aggressivePercent = bucketAPercent.toDouble() * 100.0,
         mode = if (isMicroAccount) "MICRO" else "TRINITY_V7",
         driftPercent = currentDriftPercent(),
         rebalanceCount = rebalanceCount,
@@ -297,14 +296,15 @@ class CapitalAllocationManager(
     )
 
     private fun currentDriftPercent(): Double {
-        val tradeableTotal = currentTotalEquityIdr * (1.0 - globalCashReservePercent)
+        val tradeableTotal = currentTotalEquityIdr * (DecimalValue("1.0") - globalCashReservePercent)
         if (tradeableTotal <= DecimalValue.Zero) return 0.0
-        val actualAPct = (deployedAIdr / tradeableTotal).coerceIn(0.0, 1.0)
-        val actualBPct = (deployedBIdr / tradeableTotal).coerceIn(0.0, 1.0)
-        return maxOf(abs(actualAPct - bucketAPercent), abs(actualBPct - (bucketBPercent * bucketBSpendablePercent)))
+        val targetBPct = (bucketBPercent * bucketBSpendablePercent).toDouble()
+        val actualAPct = (deployedAIdr.toScaledLong().toDouble() / tradeableTotal.toScaledLong().toDouble()).coerceIn(0.0, 1.0)
+        val actualBPct = (deployedBIdr.toScaledLong().toDouble() / tradeableTotal.toScaledLong().toDouble()).coerceIn(0.0, 1.0)
+        return maxOf(abs(actualAPct - bucketAPercent.toDouble()), abs(actualBPct - targetBPct))
     }
 
-    private fun requiresRebalance(): Boolean = currentDriftPercent() >= rebalanceDriftThreshold
+    private fun requiresRebalance(): Boolean = DecimalValue.fromDouble(currentDriftPercent()) >= rebalanceDriftThreshold
 
     private fun buildRebalanceMessage(): String =
         if (requiresRebalance()) "Capital bucket drift exceeded threshold" else ""
