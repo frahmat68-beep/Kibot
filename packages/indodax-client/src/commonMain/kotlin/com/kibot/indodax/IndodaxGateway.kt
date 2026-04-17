@@ -81,6 +81,7 @@ class IndodaxGateway internal constructor(
     }
 
     override suspend fun fetchMarketQuotes(): List<MarketQuote> {
+        val fetchedAt = Clock.System.now()
         val response = client.get("${config.publicBaseUrl}/summaries") {
             applyBrowserLikePublicHeaders()
         }.body<SummariesResponse>()
@@ -166,7 +167,7 @@ class IndodaxGateway internal constructor(
                 historicalExpectancyScore = historicalExpectancyScore,
                 fillQualityScore = fillQualityScore,
                 holdabilityScore = holdabilityScore,
-                capturedAt = ticker.serverTime?.toCapturedAtInstant() ?: Clock.System.now(),
+                capturedAt = fetchedAt,
             )
         }
     }

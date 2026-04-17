@@ -14416,7 +14416,11 @@ private data class EntryRoutingDecision(
 )
 
 private const val MIN_VALID_MARKET_EQUITY_IDR = 10_000.0
-private const val MAX_QUOTE_STALENESS_MS = 60_000L
+// Oracle free-tier hosts can occasionally lose CPU slices for tens of seconds.
+// Keep the stale-quote guard strict enough to block genuinely old data, but
+// tolerant enough to avoid false positives during transient host steal.
+private const val MAX_QUOTE_STALENESS_MS = 180_000L
+private const val MAX_QUOTE_FUTURE_SKEW_MS = 10 * 60 * 1000L
 private const val MAX_DEGRADED_BEFORE_PAUSE_MS = 5 * 60 * 1000L
 private const val MAX_DEGRADED_PAUSE_MS = 30_000L
 
@@ -14458,11 +14462,14 @@ internal fun validateMarketData(
             equityIdr = equityIdr,
         )
     }
-    val freshQuotes = marketQuotes.count { (now - it.capturedAt).inWholeMilliseconds in 0 until MAX_QUOTE_STALENESS_MS }
+    val freshQuotes = marketQuotes.count {
+        val ageMs = (now - it.capturedAt).inWholeMilliseconds
+        ageMs in (-MAX_QUOTE_FUTURE_SKEW_MS) until MAX_QUOTE_STALENESS_MS
+    }
     if (freshQuotes == 0) {
         return MarketDataValidation(
             isValid = false,
-            reason = "All ${marketQuotes.size} quotes are stale (>60s old)",
+            reason = "All ${marketQuotes.size} quotes are stale (>${MAX_QUOTE_STALENESS_MS / 1_000}s old)",
             quoteCount = marketQuotes.size,
             equityIdr = equityIdr,
         )
