@@ -12,13 +12,10 @@ User=ubuntu
 PermissionsStartOnly=true
 WorkingDirectory=/home/ubuntu/KiBot
 EnvironmentFile=-/home/ubuntu/KiBot/.env.kibot
-Environment=BOT_ID=main
-Environment=BOT_PROFILE_KEY=indodax
 Environment=KIBOT_EXCHANGE_KIND=INDODAX
 Environment=DEVICE_ID=kibot-oracle-indodax
 Environment=DEVICE_DISPLAY_NAME="KiBot Oracle Indodax"
 Environment=DEVICE_ROLE=PRIMARY
-Environment=KIBOT_RUNTIME_ROOT=/home/ubuntu/KiBot
 Environment=KIBOT_SERVICE_NAME=kibot-indodax
 Environment=MAC_ENGINE_ENABLE_LAN_ADVERTISE=false
 Environment=KIBOT_LOCAL_POSITION_STATE_ENABLED=true

@@ -150,6 +150,18 @@ class LiveExecutionCoordinator(
                     if (message.contains("insufficient balance")) {
                         permanentRejection = true
                     }
+                    if (error is ExchangeRejectedException) {
+                        permanentRejection = true
+                        if (message.contains("already exists") || message.contains("duplicate")) {
+                            placedOrder = reconcileExistingOrder(exchange, clientOrderId)
+                            if (placedOrder != null) {
+                                println(
+                                    "[LIVE_EXECUTION] placeOrder reconciled duplicate clientOrderId pair=${executionPlan.signal.pairId.value} " +
+                                        "clientOrderId=${clientOrderId.value}",
+                                )
+                            }
+                        }
+                    }
                     println(
                         "[LIVE_EXECUTION] placeOrder exception attempt=${attempt + 1} pair=${executionPlan.signal.pairId.value} " +
                             "error=${error.message ?: error::class.simpleName ?: "unknown"}",
@@ -162,6 +174,9 @@ class LiveExecutionCoordinator(
                         "[LIVE_EXECUTION] placeOrder success attempt=${attempt + 1} pair=${executionPlan.signal.pairId.value} " +
                             "clientOrderId=${clientOrderId.value}",
                     )
+                    break
+                }
+                if (placedOrder != null) {
                     break
                 }
                 println(
@@ -382,5 +397,16 @@ class LiveExecutionCoordinator(
             createdAt = now,
             updatedAt = now,
         )
+    }
+
+    private suspend fun reconcileExistingOrder(
+        exchange: ExchangeGateway,
+        clientOrderId: ClientOrderId,
+    ): OrderSnapshot? {
+        return runCatching {
+            withTimeoutOrNull(5_000L) {
+                exchange.fetchOpenOrders().firstOrNull { it.clientOrderId == clientOrderId }
+            }
+        }.getOrNull()
     }
 }

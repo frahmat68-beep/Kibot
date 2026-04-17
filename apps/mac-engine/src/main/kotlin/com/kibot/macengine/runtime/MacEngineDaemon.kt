@@ -4382,6 +4382,9 @@ class MacEngineDaemon(
                     healthWarnings += "Market quote feed kosong."
                 }
                 logger.info("DEAD_ZONE_TRACE: market health resolved feedHealthy={} exchangeReachable={} warnings={}", marketFeedHealthy, exchangeReachable, healthWarnings.size)
+                if (healthWarnings.isNotEmpty()) {
+                    logger.warn("DEAD_ZONE_TRACE: health warnings detail={}", healthWarnings.joinToString(" | "))
+                }
                 val finalHealth = buildLocalHealth(
                     exchangeReachable = exchangeReachable,
                     warnings = healthWarnings,
