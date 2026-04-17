@@ -108,7 +108,7 @@ class MacEngineDaemonTest {
         val lowEquity = validateMarketData(now = now, marketQuotes = listOf(marketQuote("eth_idr", 120_000.0, 0.77)), equityIdr = 459.0)
         val stale = validateMarketData(
             now = now,
-            marketQuotes = listOf(marketQuote("eth_idr", 120_000.0, 0.77).copy(capturedAt = Instant.parse("2026-03-15T00:00:00Z"))),
+            marketQuotes = listOf(marketQuote("eth_idr", 120_000.0, 0.77).copy(capturedAt = Instant.parse("2026-03-14T23:57:00Z"))),
             equityIdr = 75_000.0,
         )
         val healthy = validateMarketData(
