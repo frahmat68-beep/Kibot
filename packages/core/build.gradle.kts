@@ -40,11 +40,3 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 }
-
-tasks.register<JavaExec>("runSimulation") {
-    group = "simulation"
-    description = "Runs the Hydra Stress Simulator"
-    mainClass.set("com.kibot.core.simulation.SimulationRunnerKt")
-    val jvmMain = kotlin.targets.getByName("jvm").compilations.getByName("main")
-    classpath = jvmMain.output.allOutputs + jvmMain.runtimeDependencyFiles
-}

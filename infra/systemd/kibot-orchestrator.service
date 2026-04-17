@@ -1,0 +1,16 @@
+[Unit]
+Description=KiBot Orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/KiBot
+ExecStart=/usr/bin/python3 scripts/kibot_orchestrator.py
+Restart=on-failure
+RestartSec=30
+MemoryMax=30M
+
+[Install]
+WantedBy=multi-user.target

@@ -119,7 +119,7 @@ class StrategyOrchestrator(
             balances = balances,
             openOrders = openOrders,
             positions = syntheticPositions,
-            totalEquityIdr = equity,
+            totalEquityIdr = DecimalValue.fromDouble(equity),
             lastSyncedAt = kotlinx.datetime.Clock.System.now(),
         )
         val resolvedRisk = dailyRisk ?: fallbackDailyRisk(equity)
@@ -140,7 +140,8 @@ class StrategyOrchestrator(
         val referenceQuoteAsset = executionConfig.referenceQuoteAsset
         val freeCashIdr = balances.firstOrNull { it.asset.equals(referenceQuoteAsset, ignoreCase = true) }
             ?.free
-            ?: DecimalValue.Zero
+            ?.toDoubleOrZero()
+            ?: 0.0
         val dynamicAdditionalSlots = if (referenceQuoteAsset.equals("idr", ignoreCase = true)) {
             CapitalAllocationManager.calculateDynamicAdditionalSlots(freeCashIdr)
         } else {
@@ -214,7 +215,7 @@ class StrategyOrchestrator(
                 allowNewEntries = modeSnapshot.tradingAllowed && riskDecision.allowNewEntries,
                 maxActivePositions = dynamicMaxActivePositions,
                 rationale = baseDeploymentPlan.rationale + listOf(
-                    "Free cash ${freeCashIdr.toDouble()} masih cukup untuk slot paralel, jadi kapasitas posisi diperluas dinamis.",
+                    "Free cash ${freeCashIdr.toInt()} masih cukup untuk slot paralel, jadi kapasitas posisi diperluas dinamis.",
                 ),
             )
         } else {
@@ -548,10 +549,9 @@ class StrategyOrchestrator(
             BotMode.ATTACK -> executionConfig.attackMinRankingScore
         }
         val dailyProfitLockActive = dailyRisk?.let { risk ->
-            val opening = risk.openingEquityIdr.coerceAtLeast(DecimalValue("1"))
-            val current = risk.currentEquityIdr
-            val growth = (current - opening) / opening
-            growth.toDouble() * 100.0 >= riskConfig.dailyProfitLockPct * 100.0
+            val opening = risk.openingEquityIdr.toDoubleOrZero().coerceAtLeast(1.0)
+            val current = risk.currentEquityIdr.toDoubleOrZero().coerceAtLeast(0.0)
+            ((current - opening) / opening) * 100.0 >= riskConfig.dailyProfitLockPct * 100.0
         } ?: false
         val productiveIdleBiasActive = heldPairs.isEmpty() &&
             modeSnapshot.mode in setOf(BotMode.GROWTH, BotMode.ATTACK) &&
@@ -626,8 +626,8 @@ class StrategyOrchestrator(
                 marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM &&
                 quote.spreadPct <= 1.0 &&
                 quote.estimatedSlippagePct <= 1.0 &&
-                quote.bidDepthTop5Idr >= DecimalValue("25000") &&
-                quote.askDepthTop5Idr >= DecimalValue("25000") &&
+                quote.bidDepthTop5Idr.toDoubleOrZero() >= 25_000.0 &&
+                quote.askDepthTop5Idr.toDoubleOrZero() >= 25_000.0 &&
                 quote.orderBookStabilityScore >= 0.42 &&
                 pairScore.fillQualityScore >= 0.44 &&
                 pairScore.trendQualityScore >= 0.46 &&
@@ -754,7 +754,7 @@ class StrategyOrchestrator(
         modeSnapshot: BotModeSnapshot,
         setupReadiness: SetupReadiness,
         dominantPairId: PairId?,
-        targetBudgetIdr: DecimalValue,
+        targetBudgetIdr: Double,
         weeklySummary: WeeklyLearningSummary?,
         dailyProfitLockActive: Boolean,
         leadLagSignal: LeadLagSelectionSignal?,
@@ -781,8 +781,8 @@ class StrategyOrchestrator(
                 averageOf(pairScore.trendQualityScore, pairScore.historicalExpectancyScore)
         }
         val dominanceBonus = if (dominantPairId == pairScore.pairId) 0.035 else 0.0
-        val affordableUnits = if (quote.bestAsk > DecimalValue.Zero) {
-            (targetBudgetIdr / quote.bestAsk.toDouble()).toDouble()
+        val affordableUnits = if (quote.bestAsk.toDoubleOrZero() > 0.0) {
+            targetBudgetIdr / quote.bestAsk.toDoubleOrZero()
         } else {
             0.0
         }
@@ -945,9 +945,10 @@ class StrategyOrchestrator(
         val quoteBalanceUnits = balances
             .firstOrNull { it.asset.equals(pairParts.quoteAsset, ignoreCase = true) }
             ?.free
-            ?: DecimalValue.Zero
+            ?.toDoubleOrZero()
+            ?: 0.0
         val availableQuoteBudgetIdr = quoteBalanceUnits * quoteAssetPriceIdr
-        val rawBudgetIdr = DecimalValue.minOf(
+        val rawBudgetIdr = minOf(
             maxOf(deploymentPlan.suggestedPerPositionBudgetIdr, executionConfig.minOrderNotionalIdr),
             availableQuoteBudgetIdr,
         )
@@ -959,14 +960,16 @@ class StrategyOrchestrator(
                 deploymentPlan.suggestedPerPositionBudgetIdr,
                 positions
                     .filter { it.state != PositionState.CLOSED }
-                    .map {
-                        (it.quantity * it.averageEntryPrice + it.unrealizedPnlIdr).coerceAtLeast(DecimalValue.Zero)
+                    .minOfOrNull {
+                        (
+                            (it.quantity.toDoubleOrZero() * it.averageEntryPrice.toDoubleOrZero()) +
+                                it.unrealizedPnlIdr.toDoubleOrZero()
+                            ).coerceAtLeast(0.0)
                     }
-                    .minByOrNull { it }
-                    ?: DecimalValue.Zero
+                    ?: 0.0,
             )
         } else {
-            DecimalValue.Zero
+            0.0
         }
         val rotationFundingActive =
             deploymentPlan.allowRotation &&
@@ -988,7 +991,7 @@ class StrategyOrchestrator(
             quote.estimatedSlippagePct <= executionConfig.marketEntryMaxSlippagePct &&
             quote.recentTradeActivityScore >= executionConfig.marketEntryMinTradeActivityScore &&
             quote.trendQualityScore >= executionConfig.marketEntryMinTrendScore &&
-            quote.quoteVolume24h >= DecimalValue("80000000") &&
+            quote.quoteVolume24h.toDoubleOrZero() >= 80_000_000.0 &&
             (pairScore?.rankingScore ?: 0.0) >= 0.58 &&
             expectedNetProfitabilityPct >= maxOf(executionConfig.marketEntryMinExpectedNetProfitPct, 0.20) &&
             (speculativePocket || modeSnapshot.mode in setOf(BotMode.GROWTH, BotMode.ATTACK))
@@ -1013,25 +1016,25 @@ class StrategyOrchestrator(
         val toxicityBudgetPenalty = pairScore?.toxicityScore?.let { 1.0 - (it.coerceIn(0.0, 1.0) * 0.45) } ?: 1.0
         val portfolioDiversificationPenalty = 1.0 - (portfolioCorrelationPenalty * 0.55)
         val adjustedBudgetIdr = (effectiveRawBudgetIdr * kellySizingMultiplier * toxicityBudgetPenalty * portfolioDiversificationPenalty * (1.0 - executionConfig.entrySpendBufferPct))
-            .coerceAtLeast(DecimalValue.Zero)
-        val bidDepthIdr = quote.bidDepthTop5Idr
+            .coerceAtLeast(0.0)
+        val bidDepthIdr = quote.bidDepthTop5Idr.toDoubleOrZero().coerceAtLeast(0.0)
         val liquidityImpactCapIdr = if (
             executionConfig.liquidityImpactReducerEnabled &&
-            bidDepthIdr > DecimalValue.Zero
+            bidDepthIdr > 0.0
         ) {
             minOf(
                 bidDepthIdr * executionConfig.liquidityImpactDepthCoverageRatio,
                 bidDepthIdr * executionConfig.liquidityImpactMaxBudgetToBidDepthRatio,
             )
         } else {
-            DecimalValue.Infinity
+            Double.POSITIVE_INFINITY
         }
-        val budgetIdr = DecimalValue.minOf(adjustedBudgetIdr, liquidityImpactCapIdr)
+        val budgetIdr = minOf(adjustedBudgetIdr, liquidityImpactCapIdr)
         if (budgetIdr < executionConfig.minOrderNotionalIdr && !marketBuySignalEligible) return fail("budget below min order notional")
 
         val projectedNetProfitIdr = budgetIdr * (expectedNetProfitabilityPct / 100.0)
 
-        val priceInQuoteAsset = entryPrice?.takeIf { it > DecimalValue.Zero } ?: return fail("missing entry price")
+        val priceInQuoteAsset = entryPrice?.toDoubleOrZero()?.takeIf { it > 0.0 } ?: return fail("missing entry price")
         val budgetQuoteUnits = if (pairParts.quoteAsset == executionConfig.referenceQuoteAsset) {
             budgetIdr
         } else {
@@ -1089,9 +1092,9 @@ class StrategyOrchestrator(
                 quote.recentTradeActivityScore >= executionConfig.sidewaysMakerModeMinTradeActivityScore &&
                 confidence >= executionConfig.growthMinRankingScore
         val effectivePriceInQuoteAsset = if (useMarketBuy) {
-            quote.bestAsk.takeIf { it > DecimalValue.Zero } ?: priceInQuoteAsset
+            quote.bestAsk.toDoubleOrZero().takeIf { it > 0.0 } ?: priceInQuoteAsset
         } else if (useSidewaysMakerMode) {
-            quote.bestBid.takeIf { it > DecimalValue.Zero } ?: priceInQuoteAsset
+            quote.bestBid.toDoubleOrZero().takeIf { it > 0.0 } ?: priceInQuoteAsset
         } else {
             priceInQuoteAsset
         }
@@ -1106,7 +1109,7 @@ class StrategyOrchestrator(
         } else {
             executionConfig.minNetEdgeAfterCostsBufferPct
         }
-        val marketBuyBudgetOverride = marketBuySignalEligible && projectedNetProfitIdr >= DecimalValue("150")
+        val marketBuyBudgetOverride = marketBuySignalEligible && projectedNetProfitIdr >= 150.0
         if (netEdgeAfterCostsPct < minimumNetEdgeAfterCostsPct && !marketBuyBudgetOverride) return fail("net edge after costs below floor")
         val estimatedRoundTripCostIdr = budgetIdr * (estimatedRoundTripCostPct / 100.0)
         val minimumProfitToCostMultiplier = if (rotationFundingActive) {
@@ -1119,7 +1122,7 @@ class StrategyOrchestrator(
         } else {
             executionConfig.minProfitAfterFeesBufferIdr
         }
-        val dynamicNetProfitFloorIdr = DecimalValue.maxOf(
+        val dynamicNetProfitFloorIdr = maxOf(
             profitAfterFeesBufferIdr,
             budgetIdr * if (rotationFundingActive) {
                 if (speculativePocket) 0.0062 else 0.0042
@@ -1129,7 +1132,7 @@ class StrategyOrchestrator(
             estimatedRoundTripCostIdr * minimumProfitToCostMultiplier,
         )
         val minimumRequiredNetProfitIdr = if (speculativePocket) {
-            DecimalValue.maxOf(
+            maxOf(
                 if (rotationFundingActive) {
                     executionConfig.minExpectedNetProfitIdrSpeculative * 0.72
                 } else {
@@ -1138,7 +1141,7 @@ class StrategyOrchestrator(
                 dynamicNetProfitFloorIdr,
             )
         } else {
-            DecimalValue.maxOf(
+            maxOf(
                 if (rotationFundingActive) {
                     executionConfig.minExpectedNetProfitIdr * 0.72
                 } else {
@@ -1148,16 +1151,16 @@ class StrategyOrchestrator(
             )
         }
         if (projectedNetProfitIdr < minimumRequiredNetProfitIdr && !marketBuyBudgetOverride) return fail("projected net profit below floor")
-        val quantity = budgetQuoteUnits.divide(effectivePriceInQuoteAsset)
-        if (quantity <= DecimalValue.Zero) return fail("non-positive quantity")
+        val quantity = budgetQuoteUnits / effectivePriceInQuoteAsset
+        if (quantity <= 0.0) return fail("non-positive quantity")
 
         return ExecutionPlan(
             signal = this,
             side = OrderSide.BUY,
             orderType = if (useMarketBuy) OrderType.MARKET else OrderType.LIMIT,
-            quantity = quantity,
-            limitPrice = if (useMarketBuy) null else effectivePriceInQuoteAsset,
-            quoteBudget = budgetIdr,
+            quantity = DecimalValue.fromDouble(quantity),
+            limitPrice = if (useMarketBuy) null else DecimalValue.fromDouble(effectivePriceInQuoteAsset),
+            quoteBudget = DecimalValue.fromDouble(budgetIdr),
             postOnlyPreferred = !useMarketBuy || useSidewaysMakerMode,
             expectedNetEdgePct = expectedNetProfitabilityPct,
             botMode = modeSnapshot.mode,
@@ -1311,8 +1314,8 @@ class StrategyOrchestrator(
     ): Boolean {
         val spreadHealthy = quote.spreadPct in 0.0..1.0
         val depthHealthy =
-            quote.bidDepthTop5Idr > DecimalValue.Zero &&
-                quote.askDepthTop5Idr > DecimalValue.Zero
+            quote.bidDepthTop5Idr.toDoubleOrZero() > 0.0 &&
+                quote.askDepthTop5Idr.toDoubleOrZero() > 0.0
         val priceIgnition =
             shortTermReturnPct(quote) >= (executionConfig.breakoutAggressiveEntryMinShortTermReturnPct * 0.72) &&
                 quote.mediumTermReturnPct >= maxOf(0.18, executionConfig.breakoutAggressiveEntryMinMediumTermReturnPct * 0.70)
@@ -1406,10 +1409,10 @@ class StrategyOrchestrator(
         pairId: PairId,
         balances: List<BalanceSnapshot>,
         marketQuotes: List<MarketQuote>,
-        targetBudgetIdr: DecimalValue,
+        targetBudgetIdr: Double,
     ): Boolean {
         val parts = pairId.assets()
-        val quoteBalance = balances.firstOrNull { it.asset.equals(parts.quoteAsset, ignoreCase = true) }?.free ?: DecimalValue.Zero
+        val quoteBalance = balances.firstOrNull { it.asset.equals(parts.quoteAsset, ignoreCase = true) }?.free?.toDoubleOrZero() ?: 0.0
         val quoteAssetPrice = quoteAssetReferencePrice(parts.quoteAsset, marketQuotes) ?: return false
         return quoteBalance * quoteAssetPrice >= maxOf(targetBudgetIdr, executionConfig.minOrderNotionalIdr)
     }
@@ -1445,17 +1448,15 @@ class StrategyOrchestrator(
     private fun estimatePortfolioValueReference(
         balances: List<BalanceSnapshot>,
         marketQuotes: List<MarketQuote>,
-    ): DecimalValue {
-        return balances.fold(DecimalValue.Zero) { acc, balance ->
-            val totalUnits = balance.free + balance.locked
-            val value = if (balance.asset.equals(executionConfig.referenceQuoteAsset, ignoreCase = true)) {
+    ): Double {
+        return balances.sumOf { balance ->
+            val totalUnits = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+            if (balance.asset.equals(executionConfig.referenceQuoteAsset, ignoreCase = true)) {
                 totalUnits
             } else {
-                val refPrice = quoteAssetReferencePrice(balance.asset.lowercase(), marketQuotes) ?: 0.0
-                totalUnits * refPrice
+                totalUnits * (quoteAssetReferencePrice(balance.asset.lowercase(), marketQuotes) ?: 0.0)
             }
-            acc + value
-        }
+        }.coerceAtLeast(0.0)
     }
 
     private fun deriveSyntheticPositions(
@@ -1465,11 +1466,11 @@ class StrategyOrchestrator(
         val now = kotlinx.datetime.Clock.System.now()
         return balances.mapNotNull { balance ->
             if (balance.asset.equals(executionConfig.referenceQuoteAsset, ignoreCase = true)) return@mapNotNull null
-            val totalUnits = balance.free + balance.locked
-            if (totalUnits <= DecimalValue.Zero) return@mapNotNull null
+            val totalUnits = balance.free.toDoubleOrZero() + balance.locked.toDoubleOrZero()
+            if (totalUnits <= 0.0) return@mapNotNull null
             val pairId = PairId("${balance.asset.lowercase()}_${executionConfig.referenceQuoteAsset.lowercase()}")
             val quote = marketQuotes.firstOrNull { it.pairId == pairId } ?: return@mapNotNull null
-            val markValue = totalUnits * quote.midPrice
+            val markValue = totalUnits * quote.midPrice.toDoubleOrZero()
             if (markValue < executionConfig.minOrderNotionalIdr) return@mapNotNull null
             PositionSnapshot(
                 positionId = PositionId("synthetic-${balance.asset.lowercase()}"),
@@ -1477,7 +1478,7 @@ class StrategyOrchestrator(
                 baseAsset = balance.asset.lowercase(),
                 quoteAsset = executionConfig.referenceQuoteAsset.lowercase(),
                 state = PositionState.OPEN,
-                quantity = totalUnits,
+                quantity = DecimalValue.fromDouble(totalUnits),
                 averageEntryPrice = quote.midPrice,
                 realizedPnlIdr = DecimalValue.Zero,
                 unrealizedPnlIdr = DecimalValue.Zero,
@@ -1488,16 +1489,16 @@ class StrategyOrchestrator(
         }
     }
 
-    private fun fallbackDailyRisk(equityIdr: DecimalValue): DailyRiskSnapshot = DailyRiskSnapshot(
-        openingEquityIdr = equityIdr,
-        currentEquityIdr = equityIdr,
+    private fun fallbackDailyRisk(equityIdr: Double): DailyRiskSnapshot = DailyRiskSnapshot(
+        openingEquityIdr = DecimalValue.fromDouble(equityIdr),
+        currentEquityIdr = DecimalValue.fromDouble(equityIdr),
         realizedPnlIdr = DecimalValue.Zero,
         unrealizedPnlIdr = DecimalValue.Zero,
         drawdownPct = 0.0,
         hardDailyLossLimitPct = 0.05,
         hardStopTriggered = false,
         rebasePending = false,
-        highWatermarkEquityIdr = equityIdr,
+        highWatermarkEquityIdr = DecimalValue.fromDouble(equityIdr),
     )
 
     private fun trackRecentPairExits(

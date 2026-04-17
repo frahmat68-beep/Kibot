@@ -10,6 +10,7 @@ import asyncio
 import aiohttp
 import logging
 import html
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -21,8 +22,8 @@ from enum import Enum
 # CONFIGURATION
 # ============================================================================
 
-TELEGRAM_BOT_TOKEN = "8583424689:AAHRe8drD2hmuyN48RoFv9Me0oXwcXnSoSE"
-TELEGRAM_USER_ID = "1346696386"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID", os.getenv("TELEGRAM_CHAT_ID", "")).strip()
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 # Rate limiting: Telegram allows ~30 messages/second

@@ -14,7 +14,7 @@ tmux kill-session -t lazarus-ampere 2>/dev/null || true
 cat > "$HOME/ampere-hunt/run_lazarus_ampere.sh" <<'EOF'
 #!/usr/bin/env bash
 export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
-export KIBOT_TELEGRAM_BOT_TOKEN="8583424689:AAHRe8drD2hmuyN48RoFv9Me0oXwcXnSoSE"
+export KIBOT_TELEGRAM_BOT_TOKEN="${KIBOT_TELEGRAM_BOT_TOKEN:-}"
 export KIBOT_TELEGRAM_CHAT_ID="1346696386"
 cd "$HOME/ampere-hunt"
 ./lazarus_ampere.sh >> "$HOME/logs/lazarus_ampere.log" 2>&1

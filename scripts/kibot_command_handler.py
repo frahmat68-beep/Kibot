@@ -10,6 +10,7 @@ import asyncio
 import aiohttp
 import logging
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
@@ -29,8 +30,8 @@ except ImportError:
 # CONFIGURATION
 # ============================================================================
 
-TELEGRAM_BOT_TOKEN = "8583424689:AAHRe8drD2hmuyN48RoFv9Me0oXwcXnSoSE"
-TELEGRAM_USER_ID = "1346696386"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID", os.getenv("TELEGRAM_CHAT_ID", "")).strip()
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 # File paths for state

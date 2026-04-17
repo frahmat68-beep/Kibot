@@ -27,7 +27,6 @@ data class MacHoldingDetail(
     val currentPriceLabel: String,
     val pnlIdrLabel: String,
     val pnlPctLabel: String,
-    val signalSource: String = "UNKNOWN",
 )
 
 @Serializable
@@ -131,12 +130,6 @@ data class MacDashboardState(
     val trailingFloors: List<MacTrailingFloorDetail>,
     val netWorthHistory: List<MacNetWorthPoint> = emptyList(),
     val assetAllocationDetailed: List<MacAssetAllocationDetail> = emptyList(),
-    val globalCircuitBreakerActive: Boolean = false,
-    val bucketAAllocationPct: Double = 50.0,
-    val bucketBAllocationPct: Double = 50.0,
-    val bucketAUsageIdr: Double = 0.0,
-    val bucketBUsageIdr: Double = 0.0,
-    val lastLossTimestampEpochMs: Long = 0L,
     val whatIfSimulation: com.kibot.shared.models.CommandCenterSimulationSummary? = null,
     val tradeHistory: kotlinx.serialization.json.JsonElement? = null,
 ) {
@@ -195,12 +188,6 @@ data class MacDashboardState(
             trailingFloors = emptyList(),
             netWorthHistory = emptyList(),
             assetAllocationDetailed = emptyList(),
-            globalCircuitBreakerActive = false,
-            bucketAAllocationPct = 50.0,
-            bucketBAllocationPct = 50.0,
-            bucketAUsageIdr = 0.0,
-            bucketBUsageIdr = 0.0,
-            lastLossTimestampEpochMs = 0L,
             whatIfSimulation = null,
             tradeHistory = null,
         )
@@ -322,12 +309,6 @@ class MacStateRepository {
             serverUptime = uptimeText,
             liveTimeline = resolvedTimeline,
             recentOrders = resolvedRecentOrders,
-            globalCircuitBreakerActive = if (preservePreviousRuntime) prev.globalCircuitBreakerActive else next.globalCircuitBreakerActive,
-            bucketAAllocationPct = if (preservePreviousRuntime) prev.bucketAAllocationPct else next.bucketAAllocationPct,
-            bucketBAllocationPct = if (preservePreviousRuntime) prev.bucketBAllocationPct else next.bucketBAllocationPct,
-            bucketAUsageIdr = if (preservePreviousRuntime || keepPortfolioFallback) prev.bucketAUsageIdr else next.bucketAUsageIdr,
-            bucketBUsageIdr = if (preservePreviousRuntime || keepPortfolioFallback) prev.bucketBUsageIdr else next.bucketBUsageIdr,
-            lastLossTimestampEpochMs = if (preservePreviousRuntime) prev.lastLossTimestampEpochMs else next.lastLossTimestampEpochMs,
             netWorthHistory = if ((looksLikeBootSnapshot || keepPortfolioFallback) && prev.netWorthHistory.isNotEmpty()) {
                 prev.netWorthHistory
             } else {

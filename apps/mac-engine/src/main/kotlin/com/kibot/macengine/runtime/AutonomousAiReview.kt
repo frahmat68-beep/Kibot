@@ -22,7 +22,7 @@ data class AutonomousAiReviewInput(
     val botId: String,
     val topCandidate: PairId?,
     val marketRegime: MarketRegime,
-    val freeIdr: DecimalValue,
+    val freeIdr: Double,
     val dailyPnlPct: Double,
     val holdings: List<ManagedPosition>,
     val aiHints: List<AiPairSupportHint>,
@@ -45,11 +45,11 @@ object AutonomousAiReviewBuilder {
     ): AutonomousAiReviewOutput {
         val recentTrades = input.recentTrades.takeLast(18)
         val learningSnapshot = input.learningSnapshot
-        val wins = recentTrades.count { it.netProfitIdr > DecimalValue.ZERO }
-        val losses = recentTrades.count { it.netProfitIdr < DecimalValue.ZERO }
-        val averageTradePnlPct = recentTrades.map { it.netProfitPct }.average()
-        val recentTradeFeesIdr = recentTrades.map { it.totalFeeIdr }.sumOf { it }
-        val recentTradeProfitIdr = recentTrades.map { it.netProfitIdr }.sumOf { it }
+        val wins = recentTrades.count { it.netProfitIdr > 0.0 }
+        val losses = recentTrades.count { it.netProfitIdr < 0.0 }
+        val averageTradePnlPct = recentTrades.map { it.netProfitPct }.average().takeIf { !it.isNaN() } ?: 0.0
+        val recentTradeFeesIdr = recentTrades.sumOf { it.totalFeeIdr }
+        val recentTradeProfitIdr = recentTrades.sumOf { it.netProfitIdr }
         val badPairs = recentTrades
             .groupBy { it.pair.lowercase() }
             .filterValues { trades ->
@@ -159,7 +159,7 @@ object AutonomousAiReviewBuilder {
 
         val concentrationPair = input.topCandidate
             ?.takeIf {
-                input.freeIdr >= 20000.0 &&
+                input.freeIdr >= 20_000.0 &&
                     input.marketRegime == MarketRegime.HIGH_VOLATILITY_MOMENTUM &&
                     strongWinners.size <= 2 &&
                     input.dailyPnlPct > -2.5
@@ -170,16 +170,16 @@ object AutonomousAiReviewBuilder {
         val redDay = input.dailyPnlPct < 0.0
         val severeRedDay = input.dailyPnlPct <= -2.5
         val criticalRedDay = input.dailyPnlPct <= -4.0
-        val cautiousDay = losses > wins || averageTradePnlPct < DecimalValue.ZERO || redDay
+        val cautiousDay = losses > wins || averageTradePnlPct < 0.0 || redDay
         val risk = learningSnapshot?.risk ?: LearningRiskSnapshot()
         val lossRecoveryMode = severeRedDay ||
-            recentTradeProfitIdr < DecimalValue.ZERO ||
+            recentTradeProfitIdr < 0.0 ||
             (losses >= wins && losses >= 2) ||
             risk.ruinProbability >= 0.28 ||
             risk.bootstrapConditionalVar95Pct <= -3.2 ||
             risk.maxDrawdownPct >= 5.0
         val missedMomentumWindow = input.marketRegime == MarketRegime.HIGH_VOLATILITY_MOMENTUM &&
-            input.freeIdr >= 20000.0 &&
+            input.freeIdr >= 20_000.0 &&
             input.topCandidate != null
         val hourlyAggressionMultiplier = learningSnapshot?.hourlyAggressionMultiplier ?: 1.0
         val dailyAggressionBias = learningSnapshot?.dailyAggressionBias ?: 0.0
@@ -202,7 +202,7 @@ object AutonomousAiReviewBuilder {
         val learningExtraSlots = when {
             risk.ruinProbability >= 0.28 -> -1
             learningBudgetDelta <= -0.18 -> -1
-            learningBudgetDelta >= 0.12 && input.freeIdr >= 60000.0 -> 1
+            learningBudgetDelta >= 0.12 && input.freeIdr >= 60_000.0 -> 1
             else -> 0
         }
         val learningTemporaryBlacklist = learningSnapshot?.temporaryBlacklistPairs.orEmpty().take(5)
@@ -281,8 +281,8 @@ object AutonomousAiReviewBuilder {
                 extraSlotsDelta = when {
                     criticalRedDay -> -2
                     severeRedDay -> -1
-                    input.freeIdr >= 200000.0 -> 2
-                    input.freeIdr >= 40000.0 -> 1
+                    input.freeIdr >= 200_000.0 -> 2
+                    input.freeIdr >= 40_000.0 -> 1
                     else -> 0
                 } + learningExtraSlots,
             ),
@@ -334,7 +334,7 @@ object AutonomousAiReviewBuilder {
                     if (risk.ruinProbability >= 0.20) add("ruin_probability_${"%.2f".format(risk.ruinProbability)}")
                     if (risk.sortinoLikeRatio < 0.0) add("negative_sortino_${"%.2f".format(risk.sortinoLikeRatio)}")
                     if (risk.kurtosis >= 3.0) add("fat_tail_kurtosis_${"%.2f".format(risk.kurtosis)}")
-                    if (recentTradeFeesIdr > recentTradeProfitIdr.absoluteValue() * 0.45 && recentTradeFeesIdr > DecimalValue.ZERO) add("fee_drag_detected")
+                    if (recentTradeFeesIdr > kotlin.math.abs(recentTradeProfitIdr) * 0.45 && recentTradeFeesIdr > 0.0) add("fee_drag_detected")
                     if (losingHoldings.isNotEmpty()) add("losing_holdings_present")
                     if (missedMomentumWindow) add("unused_free_cash_in_momentum")
                     if (learningTemporaryBlacklist.isNotEmpty() || recoveryBlacklistPairs.isNotEmpty()) add("local_learning_blacklist_active")
@@ -350,7 +350,7 @@ object AutonomousAiReviewBuilder {
                     if (risk.sharpeLikeRatio >= 0.22 && risk.skewness > 0.0 && !redDay) add("reward per risiko sedang sehat; izinkan winner run sedikit lebih lama")
                     if (losingHoldings.isNotEmpty()) add("rotasi loser ke pair fokus yang lebih sehat")
                     if (missedMomentumWindow) add("izinkan slot taktis tambahan untuk pair fokus")
-                    if (recentTradeFeesIdr > DecimalValue.ZERO) add("utamakan limit order untuk sleeve stabil")
+                    if (recentTradeFeesIdr > 0.0) add("utamakan limit order untuk sleeve stabil")
                     if (learningForceMarketPairs.isNotEmpty()) add("izinkan market order taktis hanya pada pair lead-lag yang delay-nya terbukti lambat")
                     if (learningTightTrailingPairs.isNotEmpty() || recoveryTightTrailingPairs.isNotEmpty()) add("ketatkan trailing stop pada pair fake pump / peak decay")
                     if (lossRecoveryMode) add("aktifkan mode pemulihan rugi: fokus likuiditas, limit-first, dan blacklist pair yang berulang kali gagal")

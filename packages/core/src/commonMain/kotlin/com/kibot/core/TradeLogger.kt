@@ -1,11 +1,7 @@
 package com.kibot.core
 
-import com.kibot.shared.models.*
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toLocalDateTime
-import kotlin.time.Duration.Companion.days
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -42,8 +38,8 @@ class TradeLogger(
         val tradeId: String,
         val pairId: String,
         val category: String,
-        val entryPrice: DecimalValue,
-        val budgetIdr: DecimalValue,
+        val entryPrice: Double,
+        val budgetIdr: Double,
         val pumpPhase: String,
         val pumpScore: Double,
         val orderTypeEntry: String,
@@ -57,11 +53,11 @@ class TradeLogger(
         val tradeId: String,
         val pairId: String,
         val category: String,
-        val entryPrice: DecimalValue,
-        val exitPrice: DecimalValue,
-        val budgetIdr: DecimalValue,
-        val pnlIdr: DecimalValue,
-        val pnlPct: DecimalValue,
+        val entryPrice: Double,
+        val exitPrice: Double,
+        val budgetIdr: Double,
+        val pnlIdr: Double,
+        val pnlPct: Double,
         val pumpPhase: String,
         val pumpScore: Double,
         val orderTypeEntry: String,
@@ -77,8 +73,8 @@ class TradeLogger(
 
     fun recordEntry(
         pairId: String,
-        entryPrice: DecimalValue,
-        budgetIdr: DecimalValue,
+        entryPrice: Double,
+        budgetIdr: Double,
         category: String,
         pumpPhase: String,
         pumpScore: Double,
@@ -107,7 +103,7 @@ class TradeLogger(
 
     fun recordExit(
         tradeId: String,
-        exitPrice: DecimalValue,
+        exitPrice: Double,
         exitReason: String,
         orderTypeExit: String = "LIMIT"
     ) {
@@ -118,9 +114,9 @@ class TradeLogger(
                     return@launch
                 }
 
-                val pnlGains = (exitPrice - openRecord.entryPrice) / openRecord.entryPrice
+                val pnlPct = (exitPrice - openRecord.entryPrice) / openRecord.entryPrice
                 val feeCost = 0.007 // Round-trip fee estimate (~0.7%)
-                val netPct = pnlGains - feeCost
+                val netPct = pnlPct - feeCost
                 val pnlIdr = openRecord.budgetIdr * netPct
                 
                 val entryAt = Instant.parse(openRecord.entryAt)
@@ -135,13 +131,13 @@ class TradeLogger(
                     exitPrice = exitPrice,
                     budgetIdr = openRecord.budgetIdr,
                     pnlIdr = pnlIdr,
-                    pnlPct = DecimalValue.fromDouble(netPct),
+                    pnlPct = netPct,
                     pumpPhase = openRecord.pumpPhase,
                     pumpScore = openRecord.pumpScore,
                     orderTypeEntry = openRecord.orderTypeEntry,
                     orderTypeExit = orderTypeExit,
                     holdMinutes = holdMinutes,
-                    win = pnlIdr > 0.0,
+                    win = pnlIdr > 0,
                     exitReason = exitReason,
                     bucketType = openRecord.bucketType,
                     entryAt = openRecord.entryAt,
@@ -149,34 +145,12 @@ class TradeLogger(
                 )
 
                 appendToFile(json.encodeToString(exitRecord))
-                println("[TRADELOG] EXIT ${openRecord.pairId} PnL=Rp${pnlIdr.toFormattedString(0)} (${(netPct * 100.0).toFormattedString(2)}%) reason=$exitReason [$tradeId]")
+                println("[TRADELOG] EXIT ${openRecord.pairId} PnL=Rp${String.format("%,.0f", pnlIdr)} (${String.format("%.2f", netPct * 100)}%) reason=$exitReason [$tradeId]")
                 
                 syncToSupabase(exitRecord)
             } catch (e: Exception) {
                 println("[TRADELOG][ERR] Failed to record exit: ${e.message}")
             }
-        }
-    }
-
-    fun readAll(): List<TradeExitRecord> {
-        if (!logFile.exists()) return emptyList()
-        return logFile.readLines().mapNotNull { line ->
-            runCatching { json.decodeFromString<TradeExitRecord>(line) }.getOrNull()
-        }
-    }
-
-    fun getTodayTrades(): List<TradeExitRecord> {
-        val todayStr = Clock.System.now().toLocalDateTime(TimeZone.UTC).date.toString()
-        return readAll().filter { it.exitAt.startsWith(todayStr) }
-    }
-
-    fun getLast7DaysTrades(): List<TradeExitRecord> = getTradesForLastDays(7)
-    fun getLast30DaysTrades(): List<TradeExitRecord> = getTradesForLastDays(30)
-
-    private fun getTradesForLastDays(days: Int): List<TradeExitRecord> {
-        val cutoff = Clock.System.now().minus(days.days)
-        return readAll().filter { 
-            runCatching { Instant.parse(it.exitAt) >= cutoff }.getOrDefault(false)
         }
     }
 

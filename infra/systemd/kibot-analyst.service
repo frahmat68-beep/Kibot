@@ -1,0 +1,16 @@
+[Unit]
+Description=KiBot Data Analyst
+After=network-online.target kidax-engine.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/KiBot
+ExecStart=/usr/bin/python3 scripts/kibot_analyst.py
+Restart=on-failure
+RestartSec=30
+MemoryMax=50M
+
+[Install]
+WantedBy=multi-user.target

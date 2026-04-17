@@ -1,0 +1,17 @@
+[Unit]
+Description=KiBot Auditor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/KiBot
+ExecStartPre=/usr/bin/python3 scripts/kibot_auditor.py --fix-symlinks-only
+ExecStart=/usr/bin/python3 scripts/kibot_auditor.py
+Restart=on-failure
+RestartSec=60
+MemoryMax=40M
+
+[Install]
+WantedBy=multi-user.target

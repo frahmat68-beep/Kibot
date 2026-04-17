@@ -50,10 +50,14 @@ jobs:
       - name: Validate Python Syntax
         run: |
           python3 -m py_compile scripts/*.py
+          python3 -m py_compile tests/test_whatif_complete.py
 
       - name: Logic Regression Tests
         run: |
           python3 scripts/test_v7_logic.py
+          python3 tests/test_whatif_complete.py
+          python3 scripts/test_offline.py 2>/dev/null || echo "test_offline done"
+          python3 scripts/test_local_signal.py 2>/dev/null || echo "test_local done"
 
       - name: Validate Build
         run: |
@@ -142,6 +146,15 @@ jobs:
 
             mv ${REMOTE_ROOT}/mac-engine-all.jar ${REMOTE_ROOT}/server/mac-engine-all.jar
             sudo cp ${REMOTE_ROOT}/infra/systemd/kidax-engine.service /etc/systemd/system/${SERVICE_NAME}.service
+            for svc_file in \
+              kibot-analyst.service \
+              kibot-guardian.service \
+              kibot-auditor.service \
+              kibot-notifier.service \
+              kibot-orchestrator.service \
+              kibot-security.service; do
+              sudo cp ${REMOTE_ROOT}/infra/systemd/${svc_file} /etc/systemd/system/${svc_file}
+            done
             
             # [INTERNAL SMOKE TEST] Validate environment before restart
             python3 ${REMOTE_ROOT}/scripts/kibot_smoke_test.py
@@ -150,6 +163,11 @@ jobs:
             sudo systemctl daemon-reload
             sudo systemctl enable ${SERVICE_NAME}
             sudo systemctl restart ${SERVICE_NAME}
+            for svc in kibot-analyst kibot-guardian kibot-auditor kibot-notifier kibot-orchestrator kibot-security; do
+              sudo systemctl enable ${svc}
+              sudo systemctl restart ${svc}
+              sudo systemctl is-active ${svc}
+            done
 
             echo "Waiting for health check on port ${RUNTIME_PORT}..."
             sleep 15

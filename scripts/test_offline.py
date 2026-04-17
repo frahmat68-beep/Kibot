@@ -62,9 +62,9 @@ engine = LearningEngine("/tmp/kibot_learning_state.json")
 random.seed(42)
 for _ in range(20):
     if random.random() < 0.6:
-        engine.record_trade("eth_idr", 0.015, True)
+        engine.record_trade("eth_idr", 0.015)
     else:
-        engine.record_trade("eth_idr", -0.008, True)
+        engine.record_trade("eth_idr", -0.008)
 check("engine kelly positive", engine.kelly_size("eth_idr") > 0)
 check("engine kelly capped", engine.kelly_size("eth_idr") <= 0.12)
 
