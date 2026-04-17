@@ -3,6 +3,9 @@ package com.kibot.core
 import com.kibot.shared.models.*
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Duration.Companion.days
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -159,6 +162,21 @@ class TradeLogger(
         if (!logFile.exists()) return emptyList()
         return logFile.readLines().mapNotNull { line ->
             runCatching { json.decodeFromString<TradeExitRecord>(line) }.getOrNull()
+        }
+    }
+
+    fun getTodayTrades(): List<TradeExitRecord> {
+        val todayStr = Clock.System.now().toLocalDateTime(TimeZone.UTC).date.toString()
+        return readAll().filter { it.exitAt.startsWith(todayStr) }
+    }
+
+    fun getLast7DaysTrades(): List<TradeExitRecord> = getTradesForLastDays(7)
+    fun getLast30DaysTrades(): List<TradeExitRecord> = getTradesForLastDays(30)
+
+    private fun getTradesForLastDays(days: Int): List<TradeExitRecord> {
+        val cutoff = Clock.System.now().minus(days.days)
+        return readAll().filter { 
+            runCatching { Instant.parse(it.exitAt) >= cutoff }.getOrDefault(false)
         }
     }
 

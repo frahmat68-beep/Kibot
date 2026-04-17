@@ -112,12 +112,18 @@ data class DecimalValue(val value: String) : Comparable<DecimalValue> {
 
     companion object {
         val Zero = DecimalValue("0")
+        val ZERO = Zero
         val Infinity = DecimalValue(Double.POSITIVE_INFINITY.toString())
         private const val SCALE = 100_000_000L
 
         fun fromDouble(value: Double): DecimalValue = DecimalValue(value.toString())
         fun fromLong(value: Long): DecimalValue = DecimalValue(value.toString())
         fun fromInt(value: Int): DecimalValue = DecimalValue(value.toString())
+        
+        fun from(value: Double): DecimalValue = fromDouble(value)
+        fun from(value: Int): DecimalValue = fromInt(value)
+        fun from(value: Long): DecimalValue = fromLong(value)
+        fun from(value: String?): DecimalValue = parse(value)
         
         fun fromScaledLong(scaled: Long): DecimalValue = DecimalValue((scaled.toDouble() / SCALE).toString())
         
@@ -143,5 +149,24 @@ fun Double.toFormattedString(decimals: Int): String {
     val integral = parts[0]
     val fractional = parts[1].padEnd(decimals, '0').take(decimals)
     return if (decimals > 0) "$integral.$fractional" else integral
+}
+
+fun <T> Iterable<T>.sumOf(selector: (T) -> DecimalValue): DecimalValue {
+    var sum = DecimalValue.ZERO
+    for (element in this) {
+        sum += selector(element)
+    }
+    return sum
+}
+
+fun Iterable<DecimalValue>.average(): DecimalValue {
+    val count = this.toList().size
+    if (count == 0) return DecimalValue.ZERO
+    return this.sumOf { it } / count.toDouble()
+}
+
+operator fun Double.div(other: DecimalValue): DecimalValue {
+    if (other.toScaledLong() == 0L) return DecimalValue.Infinity
+    return DecimalValue.fromDouble(this / other.toDouble())
 }
 
