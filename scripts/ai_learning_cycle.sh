@@ -17,14 +17,14 @@ LOGS_JSON="$(curl -fsS --max-time 8 "${API_BASE}/api/logs" || echo '[]')"
 
 cat > "${INPUT_JSON}" <<JSON
 {
-  "window": "rolling_6h",
+  "window": "rolling_30m",
   "generated_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "state": ${STATE_JSON},
   "logs": ${LOGS_JSON}
 }
 JSON
 
-python3 "${ROOT_DIR}/scripts/audit_trading_6h_ai.py" \
+python3 "${ROOT_DIR}/scripts/audit_trading_30m_ai.py" \
   --input "${INPUT_JSON}" \
   --all-providers \
   --provider-state-file "${PROVIDER_STATE_FILE}" \

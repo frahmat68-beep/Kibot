@@ -65,13 +65,6 @@ PROVIDERS = {
         "base_url": "https://integrate.api.nvidia.com/v1/chat/completions",
         "priority": 6,
     },
-    "huggingface": {
-        "daily_limit": 1000,
-        "model": "mistralai/Mistral-7B-Instruct-v0.3",
-        "api_key_env": "HUGGINGFACE_API_KEY",
-        "base_url": "https://api-inference.huggingface.co/models",
-        "priority": 7,
-    },
 }
 
 PROMPT_TEMPLATES = {
@@ -191,10 +184,6 @@ def _call_provider(provider: str, prompt: str) -> Optional[str]:
             url = f"{config['base_url']}/{config['model']}:generateContent?key={api_key}"
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
             headers = {"Content-Type": "application/json"}
-        elif provider == "huggingface":
-            url = f"{config['base_url']}/{config['model']}"
-            payload = {"inputs": prompt, "parameters": {"max_new_tokens": 500}}
-            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
         else:
             url = config["base_url"]
             if provider == "cohere":
@@ -219,8 +208,6 @@ def _call_provider(provider: str, prompt: str) -> Optional[str]:
                 return data["candidates"][0]["content"]["parts"][0]["text"]
             if provider == "cohere":
                 return data["text"]
-            if provider == "huggingface":
-                return data[0]["generated_text"] if isinstance(data, list) else data.get("generated_text", "")
             return data["choices"][0]["message"]["content"]
     except urllib.error.HTTPError as error:
         if error.code == 429:

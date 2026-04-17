@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 import os
-import sys
 import socket
-import json
-import threading
-import time
 from pathlib import Path
 
-# Load absolute path to .env
-ENV_PATH = Path("/Users/kiki/Documents/Web Develop/KiBot/.env")
+ROOT = Path(os.getenv("KIBOT_RUNTIME_ROOT", Path(__file__).resolve().parent.parent))
+ENV_PATH = Path(os.getenv("KIBOT_MANAGER_ENV_FILE", ROOT / ".env"))
+API_BASE = os.getenv("KIBOT_API_BASE", "http://127.0.0.1:8787")
+MANAGER_PORT = int(os.getenv("KIBOT_MANAGER_PORT", "9998"))
 
 def load_env():
     if ENV_PATH.exists():
@@ -26,10 +24,9 @@ def check_keys():
     return results
 
 def check_manager_threads():
-    # This is a simulation check. In a real environment, we'd check against the running process.
-    # Here we verify the manager script has the necessary thread definitions.
-    MANAGER_PATH = Path("/Users/kiki/Documents/Web Develop/KiBot/scripts/kibot_manager.py")
-    content = MANAGER_PATH.read_text()
+    # Source-level validation: confirm expected watchdog loops are still present.
+    manager_path = ROOT / "scripts" / "kibot_manager.py"
+    content = manager_path.read_text(encoding="utf-8")
     checks = {
         "News Watchdog": "_news_watchdog_loop",
         "PnL Watchdog": "_pnl_watchdog_loop",
@@ -41,6 +38,27 @@ def check_manager_threads():
     for name, func in checks.items():
         results[name] = "FOUND" if func in content else "NOT FOUND"
     return results
+
+
+def check_runtime_endpoint():
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(f"{API_BASE}/api/health", timeout=2) as response:
+            return f"RUNNING ({response.status})"
+    except Exception as exc:
+        return f"NOT_REACHABLE ({exc})"
+
+
+def check_udp_port():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind(("127.0.0.1", MANAGER_PORT))
+        return "AVAILABLE"
+    except Exception as exc:
+        return f"IN_USE ({exc})"
+    finally:
+        sock.close()
 
 def main():
     print("=== Trinity v7.1 Integration Handshake ===")
@@ -54,14 +72,13 @@ def main():
     for k, v in check_manager_threads().items():
         print(f"  [{'OK' if v == 'FOUND' else '!!'}] {k}: {v}")
         
-    print("\n3. Network Bindings (Check UDP port 8787):")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.bind(("127.0.0.1", 8787))
-        print("  [OK] Port 8787 is available for binding.")
-        sock.close()
-    except Exception as e:
-        print(f"  [!!] Port 8787 binding failed: {e}")
+    print("\n3. Runtime Health:")
+    runtime_status = check_runtime_endpoint()
+    print(f"  [{'OK' if runtime_status.startswith('RUNNING') else '..'}] {API_BASE}/api/health: {runtime_status}")
+
+    print("\n4. Manager UDP Port:")
+    udp_status = check_udp_port()
+    print(f"  [{'OK' if udp_status == 'AVAILABLE' else '..'}] UDP {MANAGER_PORT}: {udp_status}")
 
     print("\n=== Integration Check Complete ===")
 

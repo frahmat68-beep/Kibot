@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# KiBot v7.0 Service Installer
+# KiBot v7.1 Service Installer
 # ============================
 # Installs sub-system agents as individual systemd services.
 
@@ -18,8 +18,8 @@ create_service() {
     echo "Creating $name..."
     cat <<EOF | sudo tee "$SERVICE_DIR/$name.service" > /dev/null
 [Unit]
-Description=KiBot v7.0 $desc
-After=network.target kibot-manager.service
+Description=KiBot v7.1 $desc
+After=network.target
 
 [Service]
 Type=$type
@@ -50,22 +50,25 @@ create_service "kibot-analyst" "kibot_analyst.py" "Trade Analyst & Journaler"
 create_service "kibot-auditor" "kibot_auditor.py" "Self-Healing Infra Auditor"
 
 # 3. AI Coordinator (Team IT Proxy)
-create_service "kibot-coordinator" "kibot_ai_coordinator.py" "AI Rate-Limit Hub"
+create_service "kibot-ai-coordinator" "kibot_ai_coordinator.py" "AI Rate-Limit Hub"
 
 # 4. Telegram Notifier
-create_service "kibot-notifier" "kibot_telegram.py" "Telemetry Notifier"
+create_service "kibot-notifier" "kibot_notifier.py" "Telemetry Notifier"
 
-# 5. Security Guardian
+# 5. Server Guardian
 create_service "kibot-guardian" "kibot_guardian.py" "Risk & Safety Guardian"
 
-# 6. Security Auditor (Veto Logic)
-create_service "kibot-security" "kibot_security.py" "Veto Security Logic"
+# 6. Orchestrator
+create_service "kibot-orchestrator" "kibot_orchestrator.py" "System Coordinator"
+
+# 7. Security Monitor
+create_service "kibot-security" "kibot_security.py" "Security Monitor"
 
 echo "Reloading systemd..."
 sudo systemctl daemon-reload
 
 echo "Starting Trinity Agentic Core..."
-sudo systemctl enable kibot-analyst kibot-auditor kibot-coordinator kibot-notifier kibot-guardian kibot-security
-sudo systemctl start kibot-analyst kibot-auditor kibot-coordinator kibot-notifier kibot-guardian kibot-security
+sudo systemctl enable kibot-analyst kibot-auditor kibot-ai-coordinator kibot-notifier kibot-guardian kibot-orchestrator kibot-security
+sudo systemctl start kibot-analyst kibot-auditor kibot-ai-coordinator kibot-notifier kibot-guardian kibot-orchestrator kibot-security
 
-echo "v7.0 Services Installed Successfully."
+echo "v7.1 Services Installed Successfully."
