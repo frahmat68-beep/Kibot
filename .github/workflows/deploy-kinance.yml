@@ -175,9 +175,11 @@ jobs:
             # [INTERNAL SMOKE TEST] Validate environment before restart
             python3 ${REMOTE_ROOT}/scripts/kibot_smoke_test.py
 
-            sudo systemctl stop "${SERVICE_NAME}" || true
             sudo systemctl kill "${SERVICE_NAME}" || true
             sudo fuser -k "${RUNTIME_PORT}/tcp" || true
+            sleep 1
+            sudo systemctl stop "${SERVICE_NAME}" || true
+            sudo systemctl reset-failed "${SERVICE_NAME}" || true
             sudo systemctl daemon-reload
             sudo systemctl disable "${SERVICE_NAME}" || true
             sudo rm -f "/etc/systemd/system/multi-user.target.wants/${SERVICE_NAME}.service"
