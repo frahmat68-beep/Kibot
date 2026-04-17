@@ -71,18 +71,10 @@ check("engine kelly capped", engine.kelly_size("eth_idr") <= 0.12)
 if manager is not None:
     check("effective fee pct sane", 0.0004 < manager._effective_fee_pct() < 0.0055)
 
-    with patch("kibot_manager.requests.get") as mocked_get:
-        mocked_response = MagicMock()
-        mocked_response.raise_for_status.return_value = None
-        mocked_response.json.return_value = {"totalEquityIdr": 84_000}
-        mocked_get.return_value = mocked_response
+    with patch("kibot_manager._get_total_equity_estimate", return_value=84_000):
         check("minimum capital blocks tiny equity", not manager._check_minimum_capital())
 
-    with patch("kibot_manager.requests.get") as mocked_get:
-        mocked_response = MagicMock()
-        mocked_response.raise_for_status.return_value = None
-        mocked_response.json.return_value = {"totalEquityIdr": 500_000}
-        mocked_get.return_value = mocked_response
+    with patch("kibot_manager._get_total_equity_estimate", return_value=500_000):
         check("minimum capital allows viable equity", manager._check_minimum_capital())
 
     what_if = manager._simulate_what_if(

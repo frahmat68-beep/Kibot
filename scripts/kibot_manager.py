@@ -17,8 +17,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import asyncio
 
-import requests
 import urllib.request
+import urllib.parse
+import urllib.error
 import kibot_engine_v2 as engine
 from dashboard_template import DASHBOARD_HTML
 
@@ -89,6 +90,37 @@ LOCAL_SIGNAL_PORT = 9999
 _signal_engine_proc: Optional[threading.Thread] = None
 
 
+class SimpleResponse:
+    def __init__(self, data: bytes, status_code: int):
+        self.content = data
+        self.status_code = status_code
+    def json(self) -> Any:
+        return json.loads(self.content.decode("utf-8"))
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise Exception(f"HTTP Error {self.status_code}")
+    @property
+    def text(self) -> str:
+        return self.content.decode("utf-8")
+
+def _http_request(url: str, method: str = "GET", headers: dict = None, json_data: dict = None, params: dict = None, timeout: int = 15) -> SimpleResponse:
+    """Helper to replace requests library with standard urllib."""
+    try:
+        if params:
+            query = urllib.parse.urlencode(params)
+            url = f"{url}?{query}" if "?" not in url else f"{url}&{query}"
+        
+        data = json.dumps(json_data).encode("utf-8") if json_data else None
+        req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+        if json_data and "Content-Type" not in (headers or {}):
+            req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return SimpleResponse(response.read(), response.getcode())
+    except urllib.error.HTTPError as e:
+        return SimpleResponse(e.read(), e.code)
+    except Exception as e:
+        raise RuntimeError(f"Network error: {e}")
+
 def _load_dotenv_if_exists() -> None:
     candidates = []
     explicit = os.getenv("KIBOT_MANAGER_ENV_FILE")
@@ -136,7 +168,19 @@ def _load_json_file(path: Path, default: Any) -> Any:
 
 def _write_json_file(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            if isinstance(payload, str):
+                handle.write(payload)
+            else:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 def _metric_inc(name: str, amount: int = 1) -> None:
@@ -169,7 +213,7 @@ def _telegram_send(message: str, level: str = "INFO") -> None:
         emoji = "🚨" if level == "CRITICAL" else "⚠️" if level == "ALARM" else "📊" if level == "SUMMARY" else "ℹ️"
         full_msg = f"{emoji} [{level}] {message}"
         
-        requests.post(
+        _http_request(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={
                 "chat_id": chat_id,
@@ -191,8 +235,11 @@ from datetime import datetime, timedelta, date
 # Simpan ke local file DAN Supabase
 # =============================================
 
-TRADE_LOG_FILE = Path("/home/ubuntu/KiBot/state/trade_log.jsonl")
-DAILY_SUMMARY_FILE = Path("/home/ubuntu/KiBot/state/daily_summary.json")
+STATE_ROOT = Path(os.getenv("KIBOT_STATE_DIR", str(Path(os.getenv("KIBOT_RUNTIME_ROOT", Path.cwd())) / "state")))
+DATA_ROOT = Path(os.getenv("KIBOT_DATA_DIR", str(Path(os.getenv("KIBOT_RUNTIME_ROOT", Path.cwd())) / "data")))
+
+TRADE_LOG_FILE = STATE_ROOT / "trade_log.jsonl"
+DAILY_SUMMARY_FILE = STATE_ROOT / "daily_summary.json"
 
 class TradeLogger:
     """Log setiap trade dan hitung statistik untuk learning."""
@@ -286,8 +333,7 @@ class TradeLogger:
                         lines.append(json.dumps(t))
                     except Exception:
                         lines.append(line.strip())
-        with open(TRADE_LOG_FILE, "w") as f:
-            f.write("\n".join(lines) + "\n")
+        _write_json_file(TRADE_LOG_FILE, "\n".join(lines) + "\n")
         if found_trade:
             # FEEDBACK: Update Memory/Learning Engine
             if _learning_engine:
@@ -392,7 +438,7 @@ class TradeLogger:
             "equity_idr": equity,
             "saved_at": datetime.utcnow().isoformat()
         }
-        DAILY_SUMMARY_FILE.write_text(json.dumps(summary, indent=2))
+        _write_json_file(DAILY_SUMMARY_FILE, summary)
         print(
             f"[DAILY] {today_wib}: {stats['total']} trades "
             f"WR={stats['win_rate']:.0%} "
@@ -3130,7 +3176,7 @@ def _bootstrap_daily_guard_from_kidax() -> None:
     if _daily_guard_state.get("start_of_day_equity") is not None and _daily_guard_state.get("current_equity") is not None:
         return
     try:
-        response = requests.get("http://127.0.0.1:8787/api/state", timeout=2)
+        response = _http_request("http://127.0.0.1:8787/api/state", timeout=2)
         response.raise_for_status()
         payload = response.json()
     except Exception:
@@ -3704,8 +3750,8 @@ def _call_openai_compatible(
         "temperature": 0.1,
     }
     try:
-        response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_sec)
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        response = _http_request(api_url, method="POST", headers=headers, json_data=payload, timeout=timeout_sec)
+    except Exception as e:
         raise RuntimeError(f"{provider} network error: {type(e).__name__}")
     if response.status_code >= 300:
         raise RuntimeError(f"{provider} status={response.status_code} body={response.text[:240]}")
@@ -3743,8 +3789,8 @@ def _call_gemini(
         },
     }
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        response = _http_request(url, method="POST", headers=headers, json_data=payload, timeout=timeout_sec)
+    except Exception as e:
         raise RuntimeError(f"gemini network error: {type(e).__name__}")
     if response.status_code >= 300:
         raise RuntimeError(f"gemini status={response.status_code} body={response.text[:240]}")
@@ -3773,8 +3819,8 @@ def _call_cohere(
         "temperature": 0.1,
     }
     try:
-        response = requests.post(COHERE_API_URL, headers=headers, json=payload, timeout=timeout_sec)
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        response = _http_request(COHERE_API_URL, method="POST", headers=headers, json_data=payload, timeout=timeout_sec)
+    except Exception as e:
         raise RuntimeError(f"cohere network error: {type(e).__name__}")
     if response.status_code >= 300:
         raise RuntimeError(f"cohere status={response.status_code} body={response.text[:240]}")
@@ -3985,7 +4031,7 @@ def _emit_trinity_heartbeat() -> None:
 def _coingecko_track_record_score(pair: str) -> float:
     symbol = pair.split("_", 1)[0].lower()
     try:
-        response = requests.get(
+        response = _http_request(
             f"{COINGECKO_BASE}/search",
             params={"query": symbol},
             timeout=TIMEOUT,
@@ -4025,7 +4071,7 @@ def _get_adaptive_score_penalty(pair: str) -> float:
 
 def _fetch_coingecko_trending() -> list[dict[str, Any]]:
     try:
-        response = requests.get(
+        response = _http_request(
             f"{COINGECKO_BASE}/search/trending",
             timeout=TIMEOUT,
         )
@@ -4100,7 +4146,7 @@ def _get_total_equity_estimate() -> float | None:
         if isinstance(value, (int, float)) and float(value) > 0:
             return float(value)
     try:
-        response = requests.get("http://127.0.0.1:8787/api/state", timeout=3)
+        response = _http_request("http://127.0.0.1:8787/api/state", timeout=3)
         response.raise_for_status()
         data = response.json() or {}
     except Exception:
@@ -4572,7 +4618,7 @@ def _upsert_trade_history(entry: Dict[str, Any]) -> None:
     headers["Prefer"] = "return=minimal"
     primary_url = f"{SUPABASE_URL}/rest/v1/trade_history"
     try:
-        response = requests.post(primary_url, headers=headers, json=entry, timeout=CONTROL_PLANE_TIMEOUT_SEC)
+        response = _http_request(primary_url, method="POST", headers=headers, json_data=entry, timeout=CONTROL_PLANE_TIMEOUT_SEC)
         if response.status_code < 300:
             _record_control_plane_success()
             return
@@ -4594,7 +4640,7 @@ def _upsert_trade_history(entry: Dict[str, Any]) -> None:
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        fallback_resp = requests.post(fallback_url, headers=headers, json=fallback_payload, timeout=CONTROL_PLANE_TIMEOUT_SEC)
+        fallback_resp = _http_request(fallback_url, method="POST", headers=headers, json_data=fallback_payload, timeout=CONTROL_PLANE_TIMEOUT_SEC)
         fallback_resp.raise_for_status()
         _record_control_plane_success()
     except Exception as error:
@@ -4750,7 +4796,7 @@ def evaluate_foolish_trade(trade_data: Dict[str, Any]) -> None:
     if POST_MORTEM_API_KEY:
         headers["Authorization"] = f"Bearer {POST_MORTEM_API_KEY}"
     try:
-        response = requests.post(
+        response = _http_request(
             POST_MORTEM_API_URL,
             headers=headers,
             json=payload,
@@ -4785,7 +4831,7 @@ def force_evaluate_recent_loss() -> None:
             "order": "created_at.desc",
             "limit": "20",
         }
-        response = requests.get(url, headers=headers, params=params, timeout=TIMEOUT)
+        response = _http_request(url, headers=headers, json_data=params, timeout=TIMEOUT)
         if response.status_code >= 300:
             return
         rows = response.json() or []
@@ -5248,11 +5294,11 @@ def _cleanup_seen_news_ids() -> None:
 def _scan_rss_and_initiate_detector(feed_url: str, source: str) -> None:
     global _seen_news_ids, _seen_news_ids_timestamps
     try:
-        response = requests.get(feed_url, timeout=TIMEOUT)
+        response = _http_request(feed_url, timeout=TIMEOUT)
         if response.status_code != 200:
             return
         root = ET.fromstring(response.text)
-    except (requests.exceptions.RequestException, ET.ParseError) as e:
+    except (Exception, ET.ParseError) as e:
         print(f"[KIBOT][WARN] RSS parse/fetch error source={source} reason={type(e).__name__}", flush=True)
         return
     except Exception as e:
@@ -5346,7 +5392,7 @@ def _load_indodax_ticker_snapshot() -> Dict[str, Dict[str, Any]]:
     if _indodax_ticker_cache and (now - _indodax_ticker_cache_at) < max(60, INDODAX_TICKER_CACHE_TTL_SEC):
         return _indodax_ticker_snapshot
     try:
-        response = requests.get(INDODAX_SUMMARIES_URL, timeout=TIMEOUT)
+        response = _http_request(INDODAX_SUMMARIES_URL, timeout=TIMEOUT)
         if response.status_code >= 300:
             return _indodax_ticker_snapshot
         body = response.json()
@@ -5426,7 +5472,7 @@ def _fetch_dynamic_correlation_map() -> Dict[str, list[str]]:
     headers = {"Content-Type": "application/json"}
     if CORRELATION_API_KEY:
         headers["Authorization"] = f"Bearer {CORRELATION_API_KEY}"
-    response = requests.post(CORRELATION_API_URL, headers=headers, json=payload, timeout=CORRELATION_TIMEOUT_SEC)
+    response = _http_request(CORRELATION_API_URL, method="POST", headers=headers, json_data=payload, timeout=CORRELATION_TIMEOUT_SEC)
     if response.status_code >= 300:
         return {}
     return _normalize_sector_map(_parse_json_candidate(_extract_assistant_text(response.json() or {})))
@@ -5909,7 +5955,7 @@ def _maybe_run_30min_math_review() -> None:
 import urllib.request
 from datetime import datetime, timedelta
 
-DATA_DIR = Path("/home/ubuntu/KiBot/data")
+DATA_DIR = DATA_ROOT
 DATA_DIR.mkdir(exist_ok=True)
 
 def append_trade_to_daily_log(trade: dict):
@@ -5923,7 +5969,7 @@ def append_trade_to_daily_log(trade: dict):
             pass
     trade["logged_at"] = time.time()
     trades.append(trade)
-    log_file.write_text(json.dumps(trades, indent=2))
+    _write_json_file(log_file, trades)
 
 def run_daily_data_sync():
     today_wib = (datetime.utcnow() + timedelta(hours=7)).date()
