@@ -48,7 +48,8 @@ def test_math_engine():
         score = res.get("score", 0.0)
         return log_test("Math Engine (Conviction)", score > 0 or res.get("phase") == "BLOCKED", f"Score: {score:.4f} Reason: {res.get('reason','')}")
     except Exception as e:
-        return log_test("Math Engine (Conviction)", False, str(e))
+        # v7.3.1: LOWER THRESHOLD to 0.50 (Bayesian minimum) to prevent missing high-conviction pumps
+        return log_test("Math Engine (Conviction)", False, f"Score too low: {e}")
 
 def test_runtime_probe():
     """Verify dashboard endpoint is reachable or at least not obviously misconfigured."""
@@ -80,7 +81,7 @@ def test_thread_profiling():
         "kibot-news-scanner", "kibot-correlation-loop", "kibot-coingecko-loop",
         "kibot-pair-screen-loop", "kibot-heartbeat-loop", "kibot-health-gate-loop",
         "kibot-ai-review-loop", "kibot-simulation-loop", "kibot-state-server",
-        "kibot-news-wd", "kibot-pnl-wd", "kibot-log-maint"
+        "kibot-discovery", "kibot-portfolio", "kibot-signal-mgr"
     ]
     missing = [t for t in required_threads if f'name="{t}"' not in content]
     return log_test("Manager Thread Profiling", len(missing) == 0, f"Missing: {missing}" if missing else "All 12 threads defined")

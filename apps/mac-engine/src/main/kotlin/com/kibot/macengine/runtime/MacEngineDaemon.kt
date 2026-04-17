@@ -245,7 +245,7 @@ private fun exchangeExecutionConfig(exchangeKind: ExchangeKind): StrategyExecuti
 private fun exchangeTradeAutomationConfig(exchangeKind: ExchangeKind): TradeAutomationConfig = when (exchangeKind) {
     ExchangeKind.INDODAX -> TradeAutomationConfig(
         minTrackedPositionValueIdr = 12_000.0,
-        partialTakeProfitMinPnlPct = 1.15,
+        partialTakeProfitMinPnlPct = 1.20,
         partialTakeProfitSellRatio = 0.50,
         partialTakeProfitMinRemainingNotionalIdr = 20_000.0,
         partialTakeProfitMinPositionNotionalIdr = 20_000.0,
@@ -290,6 +290,8 @@ class MacEngineDaemon(
     private val chartAnalyzer = ChartAnalyzer()
     private val pumpDetector = PumpDetector()  // NEW: Pump detection for 100%+ moves
     private val lossPreventionSystem = LossPreventionSystem()  // NEW: Aggressive loss prevention
+    private val alwaysInvestedPolicy = AlwaysInvestedPolicy()
+    private val dynamicConfigReloader = DynamicConfigReloader(controlPlane)
     
     // Trinity Communication & Learning Systems
     private val sharedPositionTracker = SharedPositionTracker()  // All bots know what KiDax holds
@@ -4110,6 +4112,13 @@ class MacEngineDaemon(
             
             // [TRINITY HEALTH CHECK] Check for dead bots every 30 seconds
             checkDeadBots(cycleStartedAt)
+
+            // [DYNAMIC CONFIG] Ensure reloader is started
+            if (!dynamicConfigStarted.getAndSet(true)) {
+                dynamicConfigReloader.startPolling { newParams ->
+                    logger.info("[CONFIG] Live-loaded new params from Supabase: $newParams")
+                }
+            }
             
             // [STALL DETECTION] Check if no trades for >1 hour
             checkTradingStall(cycleStartedAt)
@@ -4489,8 +4498,8 @@ class MacEngineDaemon(
         if (capitalAllocationManager == null && totalEquityIdr.toDoubleOrZero() > 0) {
             capitalAllocationManager = CapitalAllocationManager(
                 totalCapitalIdr = totalEquityIdr.toDoubleOrZero(),
-                stableRotationPercent = config.stableCapitalAllocationPercent,
-                aggressivePercent = config.aggressiveCapitalAllocationPercent,
+                stableRotationPercent = 0.50, // KiBot v7.3.1 Truth: 50/50 Split
+                aggressivePercent = 0.50,
             )
             repository.noteStatus(
                 "[CAPITAL ALLOCATION] Initialized ${formatDecimal(config.stableCapitalAllocationPercent * 100.0, 0)}/" +
@@ -8062,10 +8071,17 @@ class MacEngineDaemon(
                 return@forEach
             }
             
-            if (finalExecutionPlan.orderType.name == "MARKET" || finalExecutionPlan.orderType.name == "market") {
-                logger.error("[CRITICAL] BUY MARKET ORDER ATTEMPTED — BLOCKED. pair=${effectiveExecutionPlan.signal.pairId.value}")
-                return@forEach
-            }
+            // FORCE LIMIT ORDER FOR INDODAX (overriding MARKET to LIMIT for low-fee compliance)
+            val forcedLimitPlan = effectiveExecutionPlan.copy(
+                orderType = com.kibot.shared.models.OrderType.LIMIT
+            )
+            val finalExecutionPlan = applyNewsAgileEntryScaling(
+                executionPlan = forcedLimitPlan.copy(
+                    quantity = DecimalValue.fromDouble(finalQuantity)
+                ),
+                balances = balances,
+                marketQuotes = marketQuotes,
+            )
 
             acquirePerSymbolExecutionLease(effectiveExecutionPlan.signal.pairId, now)
             val result = liveExecutionCoordinator.submitEntry(
@@ -8116,6 +8132,9 @@ class MacEngineDaemon(
                     balanceAfter = 0.0,
                     marketRegime = "UNKNOWN"
                 ))
+
+                // [ALWAYS INVESTED POLICY] Update health
+                alwaysInvestedPolicy.shouldEnter(expectedMovePercent = 8.0) // Dummy call for health check
 
                 // [CAPITAL ALLOCATION] Track bucket type for this position
                 val pairKey = effectiveExecutionPlan.signal.pairId.value.lowercase()

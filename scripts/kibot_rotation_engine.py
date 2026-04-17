@@ -25,10 +25,11 @@ class RotationEngine:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {
             "min_rotation_profit_pct": 0.5,    # Min profit to cover fees + buffer
-            "stagnancy_threshold_hours": 4,   # Max time to hold stagnant at low/zero profit
+            "stagnancy_threshold_hours": 2,   # v7.3.1 Truth: Max 2 hours stagnation
             "min_confidence_delta": 15,       # New signal must be 15% better than active
             "rotation_gate_threshold": 60,    # Total score required to rotate
-            "profit_reward_weight": 5.0       # Higher weight for locking 4%+ profits
+            "profit_reward_weight": 5.0,      # Higher weight for locking 4%+ profits
+            "stable_allocation_pct": 0.50     # KiBot v7.3.1 Truth: 50/50 Split
         }
 
     def evaluate_rotation(self, 

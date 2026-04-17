@@ -58,11 +58,13 @@ class TradeLogger(
         val budgetIdr: Double,
         val pnlIdr: Double,
         val pnlPct: Double,
+        val feeIdr: Double,
         val pumpPhase: String,
         val pumpScore: Double,
         val orderTypeEntry: String,
         val orderTypeExit: String,
         val holdMinutes: Long,
+        val holdTimeMs: Long,
         val win: Boolean,
         val exitReason: String,
         val bucketType: String,
@@ -121,7 +123,9 @@ class TradeLogger(
                 
                 val entryAt = Instant.parse(openRecord.entryAt)
                 val exitAt = Clock.System.now()
-                val holdMinutes = (exitAt - entryAt).inWholeMinutes
+                val holdDuration = exitAt - entryAt
+                val holdMinutes = holdDuration.inWholeMinutes
+                val holdTimeMs = holdDuration.inWholeMilliseconds
 
                 val exitRecord = TradeExitRecord(
                     tradeId = tradeId,
@@ -132,11 +136,13 @@ class TradeLogger(
                     budgetIdr = openRecord.budgetIdr,
                     pnlIdr = pnlIdr,
                     pnlPct = netPct,
+                    feeIdr = openRecord.budgetIdr * feeCost,
                     pumpPhase = openRecord.pumpPhase,
                     pumpScore = openRecord.pumpScore,
                     orderTypeEntry = openRecord.orderTypeEntry,
                     orderTypeExit = orderTypeExit,
                     holdMinutes = holdMinutes,
+                    holdTimeMs = holdTimeMs,
                     win = pnlIdr > 0,
                     exitReason = exitReason,
                     bucketType = openRecord.bucketType,
