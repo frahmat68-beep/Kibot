@@ -123,7 +123,12 @@ data class MacRuntimeConfig(
 object MacRuntimeConfigLoader {
     fun load(cwd: Path = Paths.get("").toAbsolutePath()): MacRuntimeConfig {
         val fileValues = linkedMapOf<String, String>()
-        val explicitEnvFile = System.getenv("KICRYP_ENV_FILE")?.takeIf { it.isNotBlank() }?.let(Paths::get)
+        val explicitEnvFile = (
+            System.getenv("KIBOT_ENV_FILE")
+                ?: System.getenv("KICRYP_ENV_FILE")
+            )
+            ?.takeIf { it.isNotBlank() }
+            ?.let(Paths::get)
         val hintedBotId = System.getenv("BOT_ID")?.takeIf { it.isNotBlank() }
         candidateEnvFiles(
             start = cwd,

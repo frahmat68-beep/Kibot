@@ -41,6 +41,9 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlin.math.absoluteValue
 import kotlin.math.max
 import java.io.IOException
@@ -87,13 +90,20 @@ class BinanceGateway internal constructor(
             val aggregatedRows = mutableListOf<Ticker24hRow>()
             withUrlFailover(config.publicRestUrls("ticker/24hr")) { url ->
                 selectiveTickerSymbolBatches.forEach { batchSymbolsJson ->
-                    val batchRows = client.get(url) {
-                        timeout {
-                            requestTimeoutMillis = marketDataTimeoutMs
-                            socketTimeoutMillis = marketDataTimeoutMs
+                    val batchRows = runCatching {
+                        fetchTicker24hRows(url, batchSymbolsJson)
+                    }.recoverCatching { error ->
+                        val invalidSymbols = extractInvalidSymbols(error, batchSymbolsJson)
+                        if (invalidSymbols.isEmpty()) throw error
+                        val survivingSymbols = decodeTickerSymbols(batchSymbolsJson)
+                            .filterNot { symbol -> invalidSymbols.any { it.equals(symbol, ignoreCase = true) } }
+                        survivingSymbols.flatMap { symbol ->
+                            fetchTicker24hRows(
+                                baseUrl = url,
+                                batchSymbolsJson = Json.encodeToString(ListSerializer(String.serializer()), listOf(symbol)),
+                            )
                         }
-                        parameter("symbols", batchSymbolsJson)
-                    }.body<List<Ticker24hRow>>()
+                    }.getOrElse { throw it }
                     aggregatedRows += batchRows
                 }
                 aggregatedRows
@@ -467,6 +477,35 @@ class BinanceGateway internal constructor(
         client = createPlatformHttpClient(defaultJson),
         json = defaultJson,
     )
+
+    private suspend fun fetchTicker24hRows(
+        baseUrl: String,
+        batchSymbolsJson: String,
+    ): List<Ticker24hRow> {
+        val responseBody = client.get(baseUrl) {
+            timeout {
+                requestTimeoutMillis = marketDataTimeoutMs
+                socketTimeoutMillis = marketDataTimeoutMs
+            }
+            parameter("symbols", batchSymbolsJson)
+        }.bodyAsText()
+        val parsed = json.parseToJsonElement(responseBody)
+        return when (parsed) {
+            is JsonArray -> json.decodeFromJsonElement(ListSerializer(Ticker24hRow.serializer()), parsed)
+            is JsonObject -> {
+                val error = runCatching { json.decodeFromJsonElement(BinanceErrorResponse.serializer(), parsed) }.getOrNull()
+                throw BinanceTickerBatchException(
+                    message = error?.msg ?: "Unexpected Binance ticker response object.",
+                    symbols = decodeTickerSymbols(batchSymbolsJson),
+                    code = error?.code,
+                )
+            }
+            else -> throw BinanceTickerBatchException(
+                message = "Unexpected Binance ticker payload type.",
+                symbols = decodeTickerSymbols(batchSymbolsJson),
+            )
+        }
+    }
 }
 
 internal fun buildTicker24hSymbolsPayload(): String {
@@ -489,6 +528,29 @@ internal fun buildTicker24hSymbolBatches(batchSize: Int = 8): List<String> {
         .map { Json.encodeToString(ListSerializer(String.serializer()), it) }
 }
 
+internal fun decodeTickerSymbols(payload: String): List<String> =
+    runCatching { Json.decodeFromString(ListSerializer(String.serializer()), payload) }.getOrDefault(emptyList())
+
+internal fun extractInvalidSymbols(error: Throwable, fallbackBatchPayload: String): List<String> {
+    val explicitSymbols = (error as? BinanceTickerBatchException)?.symbols.orEmpty()
+    val message = buildString {
+        append(error.message.orEmpty())
+        var cause = error.cause
+        while (cause != null) {
+            append(" ")
+            append(cause.message.orEmpty())
+            cause = cause.cause
+        }
+    }
+    val invalidSymbol = Regex("Invalid symbol\\.?\\s*:?\\s*([A-Z0-9]+)?", RegexOption.IGNORE_CASE)
+        .find(message)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.takeIf { it.isNotBlank() }
+    if (invalidSymbol != null) return listOf(invalidSymbol)
+    return explicitSymbols.ifEmpty { decodeTickerSymbols(fallbackBatchPayload) }
+}
+
 private data class SignedQuery(
     val parameters: Map<String, String>,
     val signature: String,
@@ -499,6 +561,12 @@ private data class BinanceErrorResponse(
     val code: Int? = null,
     val msg: String? = null,
 )
+
+internal class BinanceTickerBatchException(
+    message: String,
+    val symbols: List<String>,
+    val code: Int? = null,
+) : IllegalStateException(message)
 
 @Serializable
 private data class Ticker24hRow(
