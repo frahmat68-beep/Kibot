@@ -1,1 +1,68 @@
-# ... (full contents of kibot-engine.service) ...
+[Unit]
+Description=KiBot Oracle Trading Engine
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+StartLimitAction=none
+
+[Service]
+Type=simple
+User=ubuntu
+PermissionsStartOnly=true
+WorkingDirectory=/home/ubuntu/KiBot
+EnvironmentFile=-/home/ubuntu/KiBot/.env.server
+# Secrets loaded from env file — do NOT hardcode credentials here
+EnvironmentFile=/opt/kibot/.env
+Environment=DEVICE_ID=oracle-main
+Environment=DEVICE_DISPLAY_NAME="Oracle Cloud Server"
+Environment=DEVICE_ROLE=PRIMARY
+Environment=MAC_ENGINE_BIND_HOST=0.0.0.0
+Environment=MAC_ENGINE_PORT=8787
+Environment=BOT_ENABLE_LIVE_EXECUTION=true
+Environment=BOT_POLL_INTERVAL_MS=1200
+Environment=BOT_EXCHANGE_PING_REFRESH_INTERVAL_MS=1200
+Environment=BOT_BALANCE_REFRESH_INTERVAL_MS=1800
+Environment=BOT_OPEN_ORDERS_REFRESH_INTERVAL_MS=1800
+Environment=BOT_DAILY_RISK_REFRESH_INTERVAL_MS=15000
+Environment=BOT_DEVICES_REFRESH_INTERVAL_MS=30000
+Environment=BOT_COMMANDS_REFRESH_INTERVAL_MS=1200
+Environment=BOT_WEEKLY_SUMMARY_REFRESH_INTERVAL_MS=60000
+Environment=BOT_RECENT_ORDERS_REFRESH_INTERVAL_MS=2200
+Environment=BOT_RECENT_FILLS_REFRESH_INTERVAL_MS=2200
+Environment=BOT_ANALYSIS_PUBLISH_INTERVAL_MS=12000
+Environment=BOT_STRATEGY_METRICS_PUBLISH_INTERVAL_MS=120000
+Environment=GEMINI_SUPPORT_ENABLED=true
+Environment=GEMINI_SUPPORT_MODEL=gemini-2.0-flash-lite
+Environment=GEMINI_SUPPORT_MAX_CANDIDATES=8
+Environment=GEMINI_SUPPORT_MIN_INTERVAL_MINUTES=60
+Environment=GEMINI_SUPPORT_TIMEOUT_MS=10000
+Environment=GEMINI_SUPPORT_HOURLY_REQUEST_BUDGET=6
+Environment=GEMINI_SUPPORT_DAILY_REQUEST_BUDGET=36
+Environment=GEMINI_SUPPORT_FAILURE_COOLDOWN_MINUTES=90
+Environment=MAC_ENGINE_ENABLE_LAN_ADVERTISE=false
+Environment=MAC_DASHBOARD_STATE_POLL_INTERVAL_MS=15000
+Environment=MAC_DASHBOARD_LOG_POLL_INTERVAL_MS=20000
+Environment="JAVA_OPTS=-XX:+UseSerialGC -XX:MaxRAMPercentage=60 -XX:InitialRAMPercentage=15 -XX:ActiveProcessorCount=1 -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
+ExecStartPre=-/usr/bin/pkill -f gradle.*:apps:mac-engine:run
+ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/KiBot/apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar
+ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/mac-engine-0.1.0-all.jar
+ExecStartPre=-/usr/bin/pkill -f /home/ubuntu/KiBot/server/mac-engine-all.jar
+ExecStartPre=-/usr/bin/fuser -k 8787/tcp
+ExecStart=/bin/bash -lc '/usr/bin/java $JAVA_OPTS -jar /home/ubuntu/KiBot/server/mac-engine-all.jar'
+Restart=on-failure
+RestartSec=5
+# Resource limits to prevent system-wide slowdown
+CPUQuota=25%
+MemoryMax=384M
+MemoryHigh=256M
+OOMPolicy=kill
+TimeoutStopSec=20
+KillSignal=SIGTERM
+SuccessExitStatus=143
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kibot-engine
+
+[Install]
+WantedBy=multi-user.target
