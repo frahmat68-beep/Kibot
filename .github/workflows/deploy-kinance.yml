@@ -170,11 +170,15 @@ jobs:
             sudo systemctl stop "${SERVICE_NAME}" || true
             sudo fuser -k "${RUNTIME_PORT}/tcp" || true
             sudo systemctl daemon-reload
-            sudo systemctl enable "${SERVICE_NAME}"
+            sudo systemctl disable "${SERVICE_NAME}" || true
+            sudo rm -f "/etc/systemd/system/multi-user.target.wants/${SERVICE_NAME}.service"
+            sudo systemctl reenable "${SERVICE_NAME}"
             sudo systemctl restart "${SERVICE_NAME}"
             sudo systemctl is-active "${SERVICE_NAME}"
             for svc in kibot-analyst kibot-guardian kibot-auditor kibot-notifier kibot-orchestrator kibot-security; do
-              sudo systemctl enable "${svc}"
+              sudo systemctl disable "${svc}" || true
+              sudo rm -f "/etc/systemd/system/multi-user.target.wants/${svc}.service"
+              sudo systemctl reenable "${svc}"
               sudo systemctl restart "${svc}"
               sudo systemctl is-active "${svc}"
             done
