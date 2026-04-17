@@ -90,20 +90,10 @@ class BinanceGateway internal constructor(
             val aggregatedRows = mutableListOf<Ticker24hRow>()
             withUrlFailover(config.publicRestUrls("ticker/24hr")) { url ->
                 selectiveTickerSymbolBatches.forEach { batchSymbolsJson ->
-                    val batchRows = runCatching {
-                        fetchTicker24hRows(url, batchSymbolsJson)
-                    }.recoverCatching { error ->
-                        val invalidSymbols = extractInvalidSymbols(error, batchSymbolsJson)
-                        if (invalidSymbols.isEmpty()) throw error
-                        val survivingSymbols = decodeTickerSymbols(batchSymbolsJson)
-                            .filterNot { symbol -> invalidSymbols.any { it.equals(symbol, ignoreCase = true) } }
-                        survivingSymbols.flatMap { symbol ->
-                            fetchTicker24hRows(
-                                baseUrl = url,
-                                batchSymbolsJson = Json.encodeToString(ListSerializer(String.serializer()), listOf(symbol)),
-                            )
-                        }
-                    }.getOrElse { throw it }
+                    val batchRows = fetchTicker24hRowsWithPerSymbolFallback(
+                        baseUrl = url,
+                        batchSymbolsJson = batchSymbolsJson,
+                    )
                     aggregatedRows += batchRows
                 }
                 aggregatedRows
@@ -506,6 +496,36 @@ class BinanceGateway internal constructor(
             )
         }
     }
+
+    private suspend fun fetchTicker24hRowsWithPerSymbolFallback(
+        baseUrl: String,
+        batchSymbolsJson: String,
+    ): List<Ticker24hRow> {
+        return runCatching {
+            fetchTicker24hRows(baseUrl, batchSymbolsJson)
+        }.recoverCatching { error ->
+            val batchSymbols = decodeTickerSymbols(batchSymbolsJson)
+            val explicitInvalidSymbols = extractInvalidSymbols(error, batchSymbolsJson)
+            val recoveredRows = mutableListOf<Ticker24hRow>()
+            batchSymbols.forEach { symbol ->
+                if (explicitInvalidSymbols.any { it.equals(symbol, ignoreCase = true) }) {
+                    return@forEach
+                }
+                val singleSymbolPayload = Json.encodeToString(ListSerializer(String.serializer()), listOf(symbol))
+                val singleResult = runCatching {
+                    fetchTicker24hRows(baseUrl, singleSymbolPayload)
+                }.getOrElse { singleError ->
+                    val singleInvalidSymbols = extractInvalidSymbols(singleError, singleSymbolPayload)
+                    if (singleInvalidSymbols.any { it.equals(symbol, ignoreCase = true) }) {
+                        return@forEach
+                    }
+                    throw singleError
+                }
+                recoveredRows += singleResult
+            }
+            recoveredRows
+        }.getOrElse { throw it }
+    }
 }
 
 internal fun buildTicker24hSymbolsPayload(): String {
@@ -548,7 +568,7 @@ internal fun extractInvalidSymbols(error: Throwable, fallbackBatchPayload: Strin
         ?.getOrNull(1)
         ?.takeIf { it.isNotBlank() }
     if (invalidSymbol != null) return listOf(invalidSymbol)
-    return explicitSymbols.ifEmpty { decodeTickerSymbols(fallbackBatchPayload) }
+    return emptyList()
 }
 
 private data class SignedQuery(

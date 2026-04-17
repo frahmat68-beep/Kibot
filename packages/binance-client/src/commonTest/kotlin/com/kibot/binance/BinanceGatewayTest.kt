@@ -28,7 +28,7 @@ class BinanceGatewayTest {
     }
 
     @Test
-    fun `invalid ticker response falls back to affected batch symbols`() {
+    fun `invalid ticker response without explicit symbol does not discard whole batch`() {
         val batch = """["BTCUSDT","FUNUSDT"]"""
 
         val result = extractInvalidSymbols(
@@ -40,6 +40,18 @@ class BinanceGatewayTest {
             batch,
         )
 
-        assertContentEquals(listOf("BTCUSDT", "FUNUSDT"), result)
+        assertContentEquals(emptyList(), result)
+    }
+
+    @Test
+    fun `invalid ticker response returns explicit invalid symbol when provided`() {
+        val batch = """["BTCUSDT","FUNUSDT"]"""
+
+        val result = extractInvalidSymbols(
+            IllegalStateException("""Invalid symbol: FUNUSDT"""),
+            batch,
+        )
+
+        assertContentEquals(listOf("FUNUSDT"), result)
     }
 }
