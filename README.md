@@ -51,6 +51,16 @@ v7.1 reinforces the infrastructure with specialized background guards:
 
 ---
 
+## ✅ Operational Readiness Checklist (30s Check)
+Ensure your Trinity Node is running optimally:
+
+1.  **Thread Health**: Run `grep "started" logs/kibot_manager.log` and verify all 12 threads initiated.
+2.  **AI Connectivity**: Run `python3 scripts/verify_integration.py` to confirm Nvidia/Gemini/Groq keys.
+3.  **Storage Guard**: Check `df -h /` and ensure usage is < 80%.
+4.  **Telegram**: Verify receiving the `[STARTUP]` summary message.
+
+---
+
 ## 🤖 The "Team IT" Agent Legion
 The system uses a fallback chain of AI providers for non-trading decision support (Discovery, News, Post-mortems):
 1. **Groq** (Instant) | 2. **Gemini** (High-Fidelity) | 3. **OpenRouter** (Redundancy) | 4. **Cohere** | 5. **Jina** | 6. **Nvidia NIM** | 7. **Huggingface**
