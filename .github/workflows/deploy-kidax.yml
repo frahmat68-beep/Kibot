@@ -30,6 +30,7 @@ jobs:
       BOT_ID: main
       BOT_PROFILE_KEY: indodax
       EXCHANGE_KIND: INDODAX
+      EXPECTED_BOT_IDS: "kinance,kibot"
       DEVICE_ID: kibot-oracle-indodax
       DEVICE_DISPLAY_NAME: KiBot Oracle Indodax
     steps:
@@ -119,7 +120,7 @@ jobs:
           port: ${{ env.DEPLOY_PORT }}
           username: ${{ env.DEPLOY_USER }}
           key: ${{ env.DEPLOY_KEY }}
-          envs: REMOTE_ROOT,SERVICE_NAME,RUNTIME_PORT,ENV_FILE,BOT_ID,BOT_PROFILE_KEY,EXCHANGE_KIND,DEVICE_ID,DEVICE_DISPLAY_NAME
+          envs: REMOTE_ROOT,SERVICE_NAME,RUNTIME_PORT,ENV_FILE,BOT_ID,BOT_PROFILE_KEY,EXCHANGE_KIND,EXPECTED_BOT_IDS,DEVICE_ID,DEVICE_DISPLAY_NAME
           script: |
             set -euo pipefail
             RELEASE_LABEL="#${{ github.run_number }}"
@@ -146,6 +147,7 @@ jobs:
             ensure_env KIBOT_ENV_FILE ${REMOTE_ROOT}/${ENV_FILE}
             ensure_env MAC_ENGINE_PORT ${RUNTIME_PORT}
             ensure_env MAC_ENGINE_BIND_HOST 0.0.0.0
+            ensure_env KIBOT_HIVE_EXPECTED_BOT_IDS ${EXPECTED_BOT_IDS}
 
             for unit in ${RECOVERY_TIMER} ${RECOVERY_SERVICE} ${BULKHEAD_SERVICES}; do
               sudo systemctl disable --now "${unit}" || true
