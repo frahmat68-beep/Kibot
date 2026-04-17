@@ -123,6 +123,9 @@ jobs:
           script: |
             set -euo pipefail
             RELEASE_LABEL="#${{ github.run_number }}"
+            RECOVERY_TIMER="${SERVICE_NAME}-recovery.timer"
+            RECOVERY_SERVICE="${SERVICE_NAME}-recovery.service"
+            BULKHEAD_SERVICES="kibot-guardian kibot-auditor kibot-notifier kibot-orchestrator kibot-security kibot-analyst"
             ensure_env() {
               KEY="$1"
               VALUE="$2"
@@ -144,6 +147,9 @@ jobs:
             ensure_env MAC_ENGINE_PORT ${RUNTIME_PORT}
             ensure_env MAC_ENGINE_BIND_HOST 0.0.0.0
 
+            for unit in ${RECOVERY_TIMER} ${RECOVERY_SERVICE} ${BULKHEAD_SERVICES}; do
+              sudo systemctl disable --now "${unit}" || true
+            done
             sudo systemctl stop ${SERVICE_NAME} || true
 
             mv ${REMOTE_ROOT}/mac-engine-all.jar ${REMOTE_ROOT}/server/mac-engine-all.jar
@@ -170,13 +176,6 @@ jobs:
             sudo rm -f /etc/systemd/system/multi-user.target.wants/${SERVICE_NAME}.service
             sudo systemctl reenable ${SERVICE_NAME}
             sudo systemctl restart ${SERVICE_NAME}
-            for svc in kibot-analyst kibot-guardian kibot-auditor kibot-notifier kibot-orchestrator kibot-security; do
-              sudo systemctl disable ${svc} || true
-              sudo rm -f /etc/systemd/system/multi-user.target.wants/${svc}.service
-              sudo systemctl reenable ${svc}
-              sudo systemctl restart ${svc}
-              sudo systemctl is-active ${svc}
-            done
 
             echo "Waiting for health check on port ${RUNTIME_PORT}..."
             sleep 15
@@ -184,6 +183,17 @@ jobs:
               echo "❌ Health check failed! Logs:"
               sudo journalctl -u ${SERVICE_NAME} -n 100 --no-pager
               exit 1
+            fi
+            for svc in ${BULKHEAD_SERVICES}; do
+              sudo systemctl disable ${svc} || true
+              sudo rm -f /etc/systemd/system/multi-user.target.wants/${svc}.service
+              sudo systemctl reenable ${svc}
+              sudo systemctl restart ${svc}
+              sudo systemctl is-active ${svc}
+            done
+            if systemctl list-unit-files | grep -q "^${RECOVERY_TIMER}"; then
+              sudo systemctl reenable ${RECOVERY_TIMER}
+              sudo systemctl restart ${RECOVERY_TIMER}
             fi
             echo "✅ Deployment successful!"
             cat /tmp/kibot-state.json
