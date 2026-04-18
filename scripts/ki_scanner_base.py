@@ -11,6 +11,13 @@ from pathlib import Path
 MANAGER_HOST = os.environ.get("KIBOT_MANAGER_HOST", "213.35.118.26")
 MANAGER_UDP_PORT = int(os.environ.get("KIBOT_MANAGER_UDP_PORT", "9999"))
 SCAN_INTERVAL_S = int(os.environ.get("SCAN_INTERVAL_S", "30"))
+RUNTIME_ROOT = Path(os.environ.get("KIBOT_RUNTIME_ROOT", str(Path(__file__).resolve().parent.parent)))
+SCANNER_STATE_ROOT = Path(
+    os.environ.get(
+        "KIBOT_SCANNER_STATE_DIR",
+        str(RUNTIME_ROOT / "state" / "scanners"),
+    )
+)
 
 # Semua pair yang terdaftar di Indodax (di-update tiap startup dari API)
 _indodax_pairs_cache: dict[str, str] = {}  # base_symbol → pair_id (e.g. "BTC" → "btc_idr")
@@ -61,7 +68,7 @@ class KiScannerBase(ABC):
         self.weight = SCANNER_WEIGHTS.get(self.exchange, 0.10)
         self._vol_history: dict[str, list] = {}
         self._price_history: dict[str, list] = {}
-        self._state_file = Path(f"state/scanner_{self.exchange.lower()}_state.json")
+        self._state_file = SCANNER_STATE_ROOT / f"scanner_{self.exchange.lower()}_state.json"
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
         self._load_state()
         # Load Indodax pairs on startup

@@ -12,6 +12,8 @@ WorkingDirectory=/home/ubuntu/KiBot/scripts
 EnvironmentFile=-/home/ubuntu/KiBot/.env.server
 EnvironmentFile=-/home/ubuntu/KiBot/.env.kibot
 Environment=PYTHONUNBUFFERED=1
+Environment=KIBOT_RUNTIME_ROOT=/home/ubuntu/KiBot
+Environment=KIBOT_SCANNER_STATE_DIR=/home/ubuntu/KiBot/state/scanners
 Environment=KIBOT_MANAGER_HOST=213.35.118.26
 Environment=KIBOT_MANAGER_UDP_PORT=9999
 Environment=SCAN_INTERVAL_S=30
