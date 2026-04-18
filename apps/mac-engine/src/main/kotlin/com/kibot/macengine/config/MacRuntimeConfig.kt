@@ -182,12 +182,12 @@ object MacRuntimeConfigLoader {
         val configuredAggressive = optional("KICRYP_AGGRESSIVE_CAPITAL_ALLOCATION_PCT")?.toDoubleOrNull()
         val stableCapitalAllocationPercent = when {
             configuredStable != null && configuredAggressive != null &&
-                configuredStable in 0.50..0.95 &&
-                configuredAggressive in 0.05..0.50 &&
+                configuredStable in 0.45..0.95 &&
+                configuredAggressive in 0.05..0.55 &&
                 abs((configuredStable + configuredAggressive) - 1.0) <= 0.001 -> configuredStable
-            configuredStable != null && configuredStable in 0.50..0.95 -> configuredStable
-            configuredAggressive != null && configuredAggressive in 0.05..0.50 -> (1.0 - configuredAggressive)
-            else -> 0.70
+            configuredStable != null && configuredStable in 0.45..0.95 -> configuredStable
+            configuredAggressive != null && configuredAggressive in 0.05..0.55 -> (1.0 - configuredAggressive)
+            else -> 0.50
         }
         val aggressiveCapitalAllocationPercent = (1.0 - stableCapitalAllocationPercent)
 
