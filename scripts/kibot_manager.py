@@ -22,6 +22,16 @@ import kibot_engine_v2 as engine
 from dashboard_template import DASHBOARD_HTML
 
 _WHATIF_AVAILABLE = True
+try:
+    from kibot_whatif_engine import run_simulation
+except Exception as _whatif_error:
+    _WHATIF_AVAILABLE = False
+
+    def run_simulation(market_prices: dict) -> dict:
+        return {}
+
+    print(f"[KIBOT][WHATIF][WARN] simulation engine unavailable: {_whatif_error}", flush=True)
+
 from kibot_engine_v2 import (
     trade_logger, cascade_state, position_manager,
     screen_bucket_b, dual_scanner_agree, fetch_kicom,
