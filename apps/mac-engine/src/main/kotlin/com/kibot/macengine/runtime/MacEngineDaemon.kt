@@ -9,6 +9,7 @@ import com.kibot.core.ChartAnalyzer
 import com.kibot.core.PumpDetector
 import com.kibot.core.LossPreventionSystem
 import com.kibot.core.SharedPositionTracker
+import com.kibot.core.PairWhitelistManager
 import com.kibot.core.TradeLedger
 import com.kibot.core.TrinityHeartbeatMonitor
 import com.kibot.core.CapitalAllocationManager
@@ -291,6 +292,8 @@ class MacEngineDaemon(
     private val pumpDetector = PumpDetector()  // NEW: Pump detection for 100%+ moves
     private val lossPreventionSystem = LossPreventionSystem()  // NEW: Aggressive loss prevention
     private val alwaysInvestedPolicy = AlwaysInvestedPolicy()
+    private val partialTpManager = PartialTakeProfitManager()
+    private val profitLockManager = ProfitLockManager()
     private val dynamicConfigReloader = DynamicConfigReloader(controlPlane)
     
     // Trinity Communication & Learning Systems
@@ -299,7 +302,8 @@ class MacEngineDaemon(
     private val heartbeatMonitor = TrinityHeartbeatMonitor()  // Monitor bot health
     private val latePumpEntry = LatePumpEntryStrategy()  // Enter pumps that already started
     private val tradingStallDetector = TradingStallDetector(stallTimeoutMinutes = 60)  // Stall detection: 1 hour
-    private var capitalAllocationManager: CapitalAllocationManager? = null  // 70/30 capital split (initialized in syncOnce)
+    private var capitalAllocationManager: CapitalAllocationManager? = null  // 50/50 capital split (initialized in syncOnce)
+    private val pairWhitelistManager = PairWhitelistManager(controlPlane, config.botId)
     private val dualEngineConfig = DualEngineConfig()
     private val dualEngineCoordinator = DualEngineCoordinator(config = dualEngineConfig)
     
@@ -1867,6 +1871,22 @@ class MacEngineDaemon(
         val activeByPair = activeOrders.filter { it.status in activeOrderStatuses }.groupBy { it.pairId }
         val scoredByPair = cycle.rankedPairs.associateBy { it.pairId }
         for (position in managedPositions) {
+
+            // [NEW LADDER TP] Using PartialTakeProfitManager
+            val currentProfitPct = ((currentBid - entryPx) / entryPx) * 100.0
+            val bucketForTp = positionBucketTypeByPair[pairKey] ?: "LEAD_LAG"
+            val tpAction = partialTpManager.checkTpLevels(
+                pairId = position.pairId.value,
+                bucketType = bucketForTp,
+                currentProfitPct = currentProfitPct,
+                remainingQuantity = qty
+            )
+            if (tpAction != null) {
+                logger.info("[PARTIAL_TP_MANAGER] Triggered ${tpAction.reason} for ${tpAction.pairId}")
+                // Original logic already returns an ExitDecision below for basic Partial TP.
+                // We keep the old logic but mark the level as executed in the manager.
+                partialTpManager.markExecuted(tpAction.levelKey)
+            }
             val pairKey = position.pairId.value.lowercase()
             val currentBid = position.currentBidPrice.toDoubleOrZero()
             val peak = maxOf(hyperAggressivePeakBidByPair[pairKey] ?: currentBid, currentBid)
@@ -1926,6 +1946,32 @@ class MacEngineDaemon(
             if (!armed) continue
             
             // Use profit-locked floor instead of simple trailing floor
+
+            // [HARDENED 7% STOP] Forced stop-loss limit
+            if (gainPct <= -7.0 && noSellOrder) {
+                logger.warn("[HARDENED_STOP] Triggered -7% protection for ${position.pairId.value}")
+                // Proceed to exit logic below by forcing shouldExitByTrail to true
+                val hardenedStopSignal = com.kibot.shared.models.StrategySignal(
+                    pairId = position.pairId,
+                    signalType = com.kibot.shared.models.StrategySignalType.EXIT,
+                    confidence = 0.99,
+                    rationale = listOf("HARDENED STOP-LOSS -7% PROTECT"),
+                    entryPrice = position.averageEntryPrice
+                )
+                return com.kibot.core.ExitDecision(
+                    position = position,
+                    reason = com.kibot.core.ExitReason.STOP_LOSS,
+                    message = "Hardened 7% stop for ${position.pairId.value}",
+                    executionPlan = com.kibot.shared.models.ExecutionPlan(
+                        signal = hardenedStopSignal,
+                        side = com.kibot.shared.models.OrderSide.SELL,
+                        orderType = com.kibot.shared.models.OrderType.LIMIT,
+                        limitPrice = DecimalValue.fromDouble(currentBid * 0.995),
+                        quantity = DecimalValue.fromDouble(qty),
+                        botMode = cycle.modeSnapshot.mode
+                    )
+                )
+            }
             val profitLockedFloor = calculateProfitLockedFloor(entryPx, peak, gainPct, dynamicTrailingStopPct)
             val shouldExitByTrail = currentBid <= profitLockedFloor && noSellOrder
             
@@ -3827,17 +3873,17 @@ class MacEngineDaemon(
 
     /**
      * [CAPITAL ALLOCATION] Allocate capital for a new position
-     * Returns allocated amount based on 70/30 bucket rules
+     * Returns allocated amount based on 50/50 bucket rules
      */
-    private fun allocateCapitalForEntry(
+     private fun allocateCapitalForEntry(
         requestedAmountIdr: Double,
-        isAnomalyCoin: Boolean,
+        isLeadLag: Boolean,
         pairId: String
     ): Double {
         val manager = capitalAllocationManager ?: return requestedAmountIdr
-        val result = manager.allocate(isAnomalyCoin, requestedAmountIdr)
+        val result = manager.allocate(isLeadLag, requestedAmountIdr)
         
-        val bucketLabel = if (isAnomalyCoin) "AGGRESSIVE(30%)" else "STABLE(70%)"
+        val bucketLabel = if (isLeadLag) "LEAD_LAG(50%)" else "LOCAL_PUMP(50%)"
         logger.info(
             "[CAPITAL_ALLOCATION] {} - bucket={} requested=Rp{} allocated=Rp{} remaining=Rp{}",
             pairId, bucketLabel,
@@ -3845,10 +3891,6 @@ class MacEngineDaemon(
             formatDecimal(result.allocatedIdr, 0),
             formatDecimal(result.currentAvailable, 0)
         )
-        
-        if (result.requiresRebalance) {
-            logger.warn("[CAPITAL_ALLOCATION] Rebalance recommended: {}", result.rebalanceMessage)
-        }
         
         return result.allocatedIdr
     }
@@ -3858,22 +3900,17 @@ class MacEngineDaemon(
      */
     private fun returnCapitalAfterExit(
         profitIdr: Double,
-        wasAggressiveTrade: Boolean,
-        pairId: String
+        wasLeadLag: Boolean,
+        pairId: String,
+        entryBudget: Double
     ) {
         val manager = capitalAllocationManager ?: return
-        manager.depositProfit(profitIdr, wasAggressiveTrade)
+
+        val lockResult = profitLockManager.onProfitRealized(profitIdr)
+        manager.depositProfit(lockResult.reDeployable, wasLeadLag, entryBudget)
         
-        val bucketLabel = if (wasAggressiveTrade) "AGGRESSIVE(30%)" else "STABLE(70%)"
-        val profitLabel = if (profitIdr >= 0) "+Rp${formatDecimal(profitIdr, 0)}" else "Rp${formatDecimal(profitIdr, 0)}"
-        logger.info(
-            "[CAPITAL_ALLOCATION] EXIT {} - bucket={} profit={}",
-            pairId, bucketLabel, profitLabel
-        )
-        
-        val status = manager.getStatus()
-        if (status.requiresRebalance) {
-            logger.warn(
+        val bucketLabel = if (wasLeadLag) "LEAD_LAG" else "LOCAL_PUMP"
+        logger.info("[PROFIT_LOCK] $pairId: profit=Rp${formatDecimal(profitIdr, 0)} -> locked=Rp${formatDecimal(lockResult.locked, 0)} | re-deploy=Rp${formatDecimal(entryBudget + lockResult.reDeployable, 0)} ($bucketLabel)")
                 "[CAPITAL_ALLOCATION] Auto-rebalancing triggered: drift={:.1f}%",
                 status.driftPercent * 100
             )
@@ -4101,6 +4138,10 @@ class MacEngineDaemon(
     }
 
     suspend fun syncOnce() = coroutineScope {
+
+        if (daemonStartedAt.plus(30.seconds) > now) {
+            pairWhitelistManager.loadFromSupabase()
+        }
         val cycleStartedAt = clock.now()
         markPipelineStage("MARKER: ENTER_SYNC_LOOP")
         try {
@@ -4511,8 +4552,8 @@ class MacEngineDaemon(
         
         // Calculate holdings per bucket based on DYNAMIC ANOMALY DETECTION (not hardcoded list!)
         // FIX: Hapus stableAnomalies hardcode, ganti dengan deteksi volume anomaly dari Kinance signal
-        var stableHoldingsIdr = 0.0
-        var aggressiveHoldingsIdr = 0.0
+        var leadLagHoldingsIdr = 0.0
+        var localPumpHoldingsIdr = 0.0
         var holdingsDebugLog = ""
         
         // Build dynamic anomaly set from active Kinance signals with volume spike > 2.5x
@@ -4554,31 +4595,31 @@ class MacEngineDaemon(
 	                    rememberedBucket == "AGGRESSIVE" ||
 	                        normalizedAsset in dynamicAnomalyCoins
 	                if (classifyAggressive) {
-	                    aggressiveHoldingsIdr += coinValueIdr  // Volume anomaly = aggressive (30%)
+	                    localPumpHoldingsIdr += coinValueIdr  // Volume anomaly = aggressive (30%)
 	                } else {
-	                    stableHoldingsIdr += coinValueIdr  // Normal = stable (70%)
+	                    leadLagHoldingsIdr += coinValueIdr  // Normal = stable (70%)
 	                }
 	            }
 	        } catch (ex: Exception) {
 	            logger.error("[HOLDINGS_CALC_ERROR] ${ex.message}", ex)
 	        }
         
-        if (holdingsDebugLog.isNotEmpty() || stableHoldingsIdr > 0 || aggressiveHoldingsIdr > 0) {
-            logger.info("[HOLDINGS_CALC] stable=${stableHoldingsIdr.toLong()} aggressive=${aggressiveHoldingsIdr.toLong()} holdings: $holdingsDebugLog")
+        if (holdingsDebugLog.isNotEmpty() || leadLagHoldingsIdr > 0 || localPumpHoldingsIdr > 0) {
+            logger.info("[HOLDINGS_CALC] stable=${leadLagHoldingsIdr.toLong()} aggressive=${localPumpHoldingsIdr.toLong()} holdings: $holdingsDebugLog")
         }
         
 	        // UPDATE CAPITAL ALLOCATION: use live holdings so the 70/30 sleeves reflect actual deployed capital.
-	        capitalAllocationManager?.updateFreeCapital(
-	            freeQuoteBalance,
+	        capitalAllocationManager?.updateEquity(
 	            totalEquityIdr.toDoubleOrZero(),
-	            stableHoldingsIdr,
-	            aggressiveHoldingsIdr,
+	            freeQuoteBalance,
+	            leadLagHoldingsIdr,
+	            localPumpHoldingsIdr,
 	        )
         
         // DEBUG: Log capital allocation status
         val capStatus = capitalAllocationManager?.getStatus()
         if (capStatus != null) {
-            logger.info("[CAPITAL_REBALANCE] stable_available=${capStatus.stableCapitalIdr.toLong()} aggressive_available=${capStatus.aggressiveCapitalIdr.toLong()} stable_deployed=${capStatus.totalDeployedStable.toLong()} aggressive_deployed=${capStatus.totalDeployedAggressive.toLong()}")
+            logger.info("[CAPITAL_REBALANCE] stable_available=${capStatus["leadLagAvailable"]?.toLong() ?: 0L} aggressive_available=${capStatus["localPumpAvailable"]?.toLong() ?: 0L} stable_deployed=${capStatus["leadLagDeployed"]?.toLong() ?: 0L} aggressive_deployed=${capStatus["localPumpDeployed"]?.toLong() ?: 0L}")
         }
 
         emitEngineHeartbeat(
@@ -5765,6 +5806,15 @@ class MacEngineDaemon(
             val packet = DatagramPacket(buffer, buffer.size)
             try {
                 socket.receive(packet)
+
+                // [UDP RELIABILITY] Send ACK immediately
+                val ackBytes = "ACK-${packet.data.decodeToString(0, packet.length).run { 
+                    runCatching { json.parseToJsonElement(this).jsonObject["traceId"]?.jsonPrimitive?.content }.getOrNull() 
+                }}".toByteArray()
+                if (ackBytes.size > 4) {
+                    val ackPacket = DatagramPacket(ackBytes, ackBytes.size, packet.address, packet.port)
+                    socket.send(ackPacket)
+                }
                 val decodedBinary = if (config.leadLagUdpBinaryProtocolEnabled || config.leadLagUdpBinaryDualStackEnabled) {
                     decodeBinaryUdpPacket(packet.data, packet.length)
                 } else {
@@ -7294,6 +7344,8 @@ class MacEngineDaemon(
                         exitReason = filteredExitDecision.message,
                         timestamp = now,
                     )
+
+                    pairWhitelistManager.recordTrade(pairKey, netProfit > 0)
                     localLearningMemoryStore.recordTrade(
                         LearningTradeEvent(
                             timestampUtc = now.toString(),
@@ -7424,12 +7476,13 @@ class MacEngineDaemon(
                 
                 // [70/30 CAPITAL ALLOCATION] Return capital to appropriate bucket after exit
                 if (pnlIdr != null && !isPartialExit) {
-                    val wasAggressive = filteredExitDecision.executionPlan.speculativePocket == true ||
+                    val wasAnomaly = filteredExitDecision.executionPlan.speculativePocket == true ||
                         filteredExitDecision.executionPlan.botMode in listOf(BotMode.ATTACK, BotMode.ATTACK)
                     returnCapitalAfterExit(
                         profitIdr = pnlIdr,
-                        wasAggressiveTrade = wasAggressive,
-                        pairId = filteredExitDecision.executionPlan.signal.pairId.value
+                        wasLeadLag = !wasAnomaly,
+                        pairId = filteredExitDecision.executionPlan.signal.pairId.value,
+                        entryBudget = filteredExitDecision.executionPlan.quoteBudget?.toDoubleOrZero() ?: 0.0
                     )
                 }
                 
@@ -8023,7 +8076,7 @@ class MacEngineDaemon(
             val freeIdr = resolveAllocatableIdr(cycle, balances)
             val currentPosCount = managedPositions.count { it.currentValueIdr.toDoubleOrZero() >= dustHoldingsIgnoreMinValueIdr }
             val allocResult = capitalAllocationManager?.allocate(
-                isAnomalyCoin = isAnomalyCoin,
+                isLeadLag = !isAnomalyCoin,
                 requestedAmountIdr = budgetNeeded,
                 totalFreeIdr = freeIdr,
                 currentPositionCount = currentPosCount
@@ -8138,7 +8191,7 @@ class MacEngineDaemon(
 
                 // [CAPITAL ALLOCATION] Track bucket type for this position
                 val pairKey = effectiveExecutionPlan.signal.pairId.value.lowercase()
-                val bucketType = if (isAnomalyCoin) "AGGRESSIVE" else "STABLE"
+                val bucketType = if (!isAnomalyCoin) "LEAD_LAG" else "LOCAL_PUMP"
                 positionBucketTypeByPair[pairKey] = bucketType
                 positionEntryCapitalByPair[pairKey] = allocResult.allocatedIdr
                 logger.info("[CAPITAL_TRACK] ${pairKey}: allocated=${formatDecimal(allocResult.allocatedIdr, 0)} from ${bucketType} bucket")
@@ -13501,9 +13554,21 @@ class MacEngineDaemon(
                 val prelimBudget = minOf(current, budgetCapIdr)
                 
                 // [70/30] Apply capital allocation from bucket
+
+                // [POLICY GATE] AlwaysInvestedPolicy check
+                val quote = resolvedMarketQuotes.firstOrNull { it.pairId == executionPlan.signal.pairId }
+                val policyDecision = alwaysInvestedPolicy.shouldEnter(
+                    expectedMovePercent = executionPlan.expectedNetEdgePct ?: 1.5,
+                    spreadPercent = quote?.spreadPct ?: 0.1,
+                    slippagePercent = quote?.estimatedSlippagePct ?: 0.05
+                )
+                if (!policyDecision.allowed) {
+                    logger.info("[POLICY_REJECTED] ${executionPlan.signal.pairId}: ${policyDecision.rationale}")
+                    return executionPlan.copy(quoteBudget = DecimalValue.Zero)
+                }
                 val allocatedBudget = allocateCapitalForEntry(
                     requestedAmountIdr = prelimBudget,
-                    isAnomalyCoin = isAnomalyCoin,
+                    isLeadLag = !isAnomalyCoin,
                     pairId = executionPlan.signal.pairId.value
                 )
                 
@@ -13522,7 +13587,7 @@ class MacEngineDaemon(
                 // [70/30] Apply capital allocation from bucket
                 val allocatedBudget = allocateCapitalForEntry(
                     requestedAmountIdr = prelimBudget,
-                    isAnomalyCoin = isAnomalyCoin,
+                    isLeadLag = !isAnomalyCoin,
                     pairId = executionPlan.signal.pairId.value
                 )
                 

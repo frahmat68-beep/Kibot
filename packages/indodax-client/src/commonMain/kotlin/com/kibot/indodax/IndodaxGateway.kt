@@ -266,20 +266,20 @@ class IndodaxGateway internal constructor(
             }
 
             plan.side == OrderSide.SELL && plan.orderType == OrderType.MARKET -> {
-                params[pairParts.baseAsset] = formatIndodaxDecimal(plan.quantity.value)
+                params[pairParts.baseAsset] = formatIndodaxDecimal(plan.quantity.value, plan.signal.pairId.value)
             }
 
             plan.side == OrderSide.BUY -> {
-                params[pairParts.baseAsset] = formatIndodaxDecimal(plan.quantity.value)
+                params[pairParts.baseAsset] = formatIndodaxDecimal(plan.quantity.value, plan.signal.pairId.value)
                 params["price"] = formatIndodaxDecimal(
-                    plan.limitPrice?.value ?: error("Limit buy requires limitPrice."),
+                    plan.limitPrice?.value ?: error("Limit buy requires limitPrice."), plan.signal.pairId.value
                 )
             }
 
             else -> {
-                params[pairParts.baseAsset] = formatIndodaxDecimal(plan.quantity.value)
+                params[pairParts.baseAsset] = formatIndodaxDecimal(plan.quantity.value, plan.signal.pairId.value)
                 params["price"] = formatIndodaxDecimal(
-                    plan.limitPrice?.value ?: plan.signal.entryPrice?.value ?: "0",
+                    plan.limitPrice?.value ?: plan.signal.entryPrice?.value ?: "0", plan.signal.pairId.value
                 )
             }
         }
@@ -953,12 +953,21 @@ private fun normalizeNumeric(value: Any?): String = when (value) {
 
 internal fun formatIndodaxDecimal(
     raw: String,
+    pair: String? = null,
     scale: Int = 8,
 ): String {
     val trimmed = raw.trim()
     if (trimmed.isEmpty()) return "0"
     val decimal = runCatching { BigDecimal(trimmed) }.getOrNull() ?: return "0"
-    val normalized = decimal.setScale(scale.coerceAtLeast(0), RoundingMode.DOWN).stripTrailingZeros()
+    
+    // DRX and coins < 10 IDR usually require integer quantities in Indodax
+    val effectiveScale = when {
+        pair?.startsWith("drx", ignoreCase = true) == true -> 0
+        pair?.contains("_idr", ignoreCase = true) == true && decimal.toDouble() < 1.0 -> 0 // Safety for sub-unit
+        else -> scale
+    }
+    
+    val normalized = decimal.setScale(effectiveScale, RoundingMode.FLOOR).stripTrailingZeros()
     val plain = normalized.toPlainString()
     return if (plain == "-0") "0" else plain
 }

@@ -734,6 +734,27 @@ class SupabaseControlPlaneClient internal constructor(
         )?.toEncryptedCredentialBundle()
     }
 
+    override suspend fun fetchPairWhitelist(botId: BotId): List<com.kibot.core.TradeWhitelistRecord> {
+        return selectList<PairWhitelistRow>(
+            table = "pair_whitelist",
+            filters = mapOf("bot_id" to "eq.${botId.value}")
+        ).map { it.toTradeWhitelistRecord() }
+    }
+
+    override suspend fun upsertPairWhitelist(botId: BotId, record: com.kibot.core.TradeWhitelistRecord) {
+        upsertTable(
+            table = "pair_whitelist",
+            body = buildJsonObject {
+                put("bot_id", botId.value)
+                put("pair_id", record.pairId)
+                put("wins", record.wins)
+                put("total_trades", record.totalTrades)
+                put("last_updated", record.lastUpdated.toString())
+            },
+            onConflict = "bot_id,pair_id"
+        )
+    }
+
     suspend fun fetchSnapshot(botId: BotId, deviceId: DeviceId, date: LocalDate): ControlPlaneSnapshot = coroutineScope {
         val botState = async { fetchBotState(botId) }
         val lease = async { fetchLease(botId) }
@@ -1386,6 +1407,21 @@ private fun ParameterVersionRow.toBotUpdateRecommendation(): BotUpdateRecommenda
             val parsed = (value as? JsonPrimitive)?.doubleOrNull ?: return@mapNotNull null
             key to parsed
         }
+
+@Serializable
+private data class PairWhitelistRow(
+    @SerialName("pair_id") val pairId: String,
+    val wins: Int,
+    @SerialName("total_trades") val totalTrades: Int,
+    @SerialName("last_updated") val lastUpdated: Instant
+)
+
+private fun PairWhitelistRow.toTradeWhitelistRecord() = com.kibot.core.TradeWhitelistRecord(
+    pairId = pairId,
+    wins = wins,
+    totalTrades = totalTrades,
+    lastUpdated = lastUpdated
+)
         ?.toMap()
         .orEmpty()
 

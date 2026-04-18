@@ -1,4 +1,5 @@
 package com.kibot.core
+import kotlinx.coroutines.launch
 
 /**
  * PairWhitelistManager - Maintains whitelist of high-conviction pairs
@@ -8,7 +9,7 @@ package com.kibot.core
  * 
  * Soft filtering: Prefer whitelist, but allow new pairs to prove themselves
  */
-class PairWhitelistManager {
+class PairWhitelistManager(private val controlPlane: ControlPlaneGateway? = null, private val botId: com.kibot.shared.models.BotId? = null) {
     
     // Hard-coded whitelist of proven pairs
     private val hardWhitelist = setOf("STO", "DRX", "D")
@@ -114,6 +115,25 @@ class PairWhitelistManager {
             stats.wins++
         }
         stats.lastUpdated = System.currentTimeMillis()
+
+        // Async persistence to Supabase
+        if (controlPlane != null && botId != null) {
+            kotlinx.coroutines.GlobalScope.launch {
+                try {
+                    controlPlane.upsertPairWhitelist(
+                        botId,
+                        TradeWhitelistRecord(
+                            pairId = stats.pair,
+                            wins = stats.wins,
+                            totalTrades = stats.totalTrades,
+                            lastUpdated = kotlinx.datetime.Instant.fromEpochMilliseconds(stats.lastUpdated)
+                        )
+                    )
+                } catch (e: Exception) {
+                    // Log error or ignore for non-critical persistence
+                }
+            }
+        }
     }
     
     /**
@@ -151,6 +171,26 @@ class PairWhitelistManager {
             probationaryCount = probationary.size,
             blacklistedCount = blacklisted.size,
             totalPairsTracked = pairStats.size,
+
+    /**
+     * Load stats from Supabase
+     */
+    suspend fun loadFromSupabase() {
+        if (controlPlane == null || botId == null) return
+        try {
+            val records = controlPlane.fetchPairWhitelist(botId)
+            records.forEach { record ->
+                pairStats[record.pairId] = PairStats(
+                    pair = record.pairId,
+                    wins = record.wins,
+                    totalTrades = record.totalTrades,
+                    lastUpdated = record.lastUpdated.toEpochMilliseconds()
+                )
+            }
+        } catch (e: Exception) {
+            // Log error
+        }
+    }
             totalTrades = totalTrades,
             totalWins = totalWins,
             overallWinRatePercent = if (totalTrades == 0) 0.0 else (totalWins.toDouble() / totalTrades) * 100.0,

@@ -184,4 +184,14 @@ interface ControlPlaneGateway {
     suspend fun upsertEncryptedCredentialBundle(bundle: EncryptedCredentialBundle)
 
     suspend fun fetchEncryptedCredentialBundle(botId: BotId): EncryptedCredentialBundle?
+    suspend fun fetchPairWhitelist(botId: BotId): List<TradeWhitelistRecord>
+
+data class TradeWhitelistRecord(
+    val pairId: String,
+    val wins: Int,
+    val totalTrades: Int,
+    val lastUpdated: kotlinx.datetime.Instant
+)
+
+    suspend fun upsertPairWhitelist(botId: BotId, record: TradeWhitelistRecord)
 }
