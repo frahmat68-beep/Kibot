@@ -29,6 +29,16 @@ SUMMARY_HISTORY = ANALYST_DIR / "analyst_daily.json"
 WIB_UTC_OFFSET_HOURS = int(os.getenv("KIBOT_WIB_UTC_OFFSET_HOURS", "7"))
 ANALYST_INTERVAL_SECONDS = int(os.getenv("KIBOT_ANALYST_INTERVAL_SECONDS", "600"))
 
+DEMO_TRADE_SIGNATURES = {
+    ("BUY", 400.0, 401.0, 40100.0, 60.15, "", "BUCKET_B", 0.88),
+    ("SELL", 450.0, 449.0, 44900.0, 67.35, "PARTIAL_TP_1", "BUCKET_A", 0.0),
+}
+DEMO_FAILURE_SIGNATURE = (
+    "kidax-engine",
+    "INSUFFICIENT_BALANCE",
+    "Cannot buy bio_idr: free IDR 1051 < required 8000",
+)
+
 
 def ensure_dirs() -> None:
     ANALYST_DIR.mkdir(parents=True, exist_ok=True)
@@ -169,6 +179,67 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
     return records
+
+
+def _rewrite_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def _is_demo_trade(record: Dict[str, Any]) -> bool:
+    if str(record.get("pair", "")).lower() != "bio_idr":
+        return False
+    signature = (
+        str(record.get("side", "")).upper(),
+        float(record.get("requested_price", 0.0)),
+        float(record.get("filled_price", 0.0)),
+        float(record.get("filled_idr", 0.0)),
+        float(record.get("fee_idr", 0.0)),
+        str(record.get("exit_reason", "")),
+        str(record.get("bucket", "BUCKET_A")),
+        round(float(record.get("conviction_score", 0.0)), 2),
+    )
+    return signature in DEMO_TRADE_SIGNATURES
+
+
+def _is_demo_failure(record: Dict[str, Any]) -> bool:
+    signature = (
+        str(record.get("service", "")),
+        str(record.get("error_type", "")),
+        str(record.get("message", "")),
+    )
+    return signature == DEMO_FAILURE_SIGNATURE
+
+
+def purge_demo_fixture_records() -> None:
+    removed = 0
+
+    if TRADE_LOG.exists():
+        trades = _read_jsonl(TRADE_LOG)
+        filtered_trades = [row for row in trades if not _is_demo_trade(row)]
+        removed += len(trades) - len(filtered_trades)
+        if len(filtered_trades) != len(trades):
+            _rewrite_jsonl(TRADE_LOG, filtered_trades)
+
+    if FAILURE_LOG.exists():
+        failures = _read_jsonl(FAILURE_LOG)
+        filtered_failures = [row for row in failures if not _is_demo_failure(row)]
+        removed += len(failures) - len(filtered_failures)
+        if len(filtered_failures) != len(failures):
+            _rewrite_jsonl(FAILURE_LOG, filtered_failures)
+
+    if removed:
+        print(f"[ANALYST] Purged {removed} legacy demo fixture records")
 
 
 def _read_today_trades() -> List[Dict[str, Any]]:
@@ -329,6 +400,7 @@ def rotate_logs_if_needed(max_size_mb: float = 5.0) -> None:
 
 def run_analyst_loop(interval_seconds: int = 600) -> None:
     ensure_dirs()
+    purge_demo_fixture_records()
     print("[ANALYST] KiBot Data Analyst started")
     while True:
         try:
