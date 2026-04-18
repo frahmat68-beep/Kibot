@@ -14654,6 +14654,7 @@ internal fun resolveOwnership(
     val resolved = when {
         ownerByList == ownerByLease -> ownerByLease
         ownerByLease -> true
+        ownerByList && lastResolved == true -> true
         else -> false
     }
     return OwnershipResolution(
