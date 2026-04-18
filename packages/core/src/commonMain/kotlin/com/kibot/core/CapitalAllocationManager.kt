@@ -20,8 +20,8 @@ import kotlin.math.floor
  */
 class CapitalAllocationManager(
     private val totalCapitalIdr: Double = 60_000.0,
-    private val leadLagRatio: Double = 0.50,
-    private val localPumpRatio: Double = 0.50,
+    private val leadLagRatio: Double = (System.getenv("KIBOT_LEAD_LAG_BUCKET_PCT")?.toDoubleOrNull() ?: System.getenv("KIBOT_STABLE_CAPITAL_ALLOCATION_PCT")?.toDoubleOrNull() ?: 0.50),
+    private val localPumpRatio: Double = (System.getenv("KIBOT_LOCAL_PUMP_BUCKET_PCT")?.toDoubleOrNull() ?: System.getenv("KIBOT_AGGRESSIVE_CAPITAL_ALLOCATION_PCT")?.toDoubleOrNull() ?: 0.50),
     private val globalCashReservePercent: Double = 0.20,
     private val rebalanceDriftThreshold: Double = 0.05,
 ) {
