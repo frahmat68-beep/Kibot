@@ -46,15 +46,33 @@ def _parse_guardian_service_override(raw: str) -> List[str]:
     ]
 
 
+def _load_runtime_identity_from_env_file() -> Dict[str, str]:
+    env_file = ROOT / ".env.kibot"
+    values: Dict[str, str] = {}
+    if not env_file.exists():
+        return values
+    try:
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+            key, value = raw.split("=", 1)
+            values[key.strip()] = value.strip().strip('"').strip("'")
+    except Exception:
+        return {}
+    return values
+
+
 def resolve_services_to_guard() -> List[str]:
     override = os.getenv("KIBOT_GUARDIAN_SERVICES", "").strip()
     if override:
         parsed = _parse_guardian_service_override(override)
         if parsed:
             return parsed
-    exchange_kind = (os.getenv("KIBOT_EXCHANGE_KIND") or "").strip().upper()
-    bot_id = (os.getenv("BOT_ID") or "").strip().lower()
-    profile_key = (os.getenv("BOT_PROFILE_KEY") or "").strip().lower()
+    file_identity = _load_runtime_identity_from_env_file()
+    exchange_kind = (os.getenv("KIBOT_EXCHANGE_KIND") or file_identity.get("KIBOT_EXCHANGE_KIND") or "").strip().upper()
+    bot_id = (os.getenv("BOT_ID") or file_identity.get("BOT_ID") or "").strip().lower()
+    profile_key = (os.getenv("BOT_PROFILE_KEY") or file_identity.get("BOT_PROFILE_KEY") or "").strip().lower()
     identity_hint = " ".join([exchange_kind.lower(), bot_id, profile_key])
     services = ["kibot-manager"]
     if exchange_kind == "INDODAX":
