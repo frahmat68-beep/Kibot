@@ -6926,9 +6926,12 @@ class MacEngineDaemon(
         )
         if (!config.enableLiveExecution) {
             val reason = "EXIT_DETECTED: live execution disabled"
-            logger.warn(reason)
             lastRejectedReasonLabel = reason
-            lastRejectedReasonAt = now
+            val lastAt = lastRejectedReasonAt
+            if (lastAt == null || (now - lastAt).inWholeMilliseconds >= 60_000L) {
+                logger.info(reason)
+                lastRejectedReasonAt = now
+            }
             return
         }
         val activeControlPlaneState = runCatching { lease.term.value }.getOrNull()
