@@ -697,3 +697,44 @@ data class ChartAnalysisConfig(
     val stagnationVolatilityPct: Double = 1.20,
     val forceRotateMinutes: Double = 30.0,
 )
+
+    fun calculateRSI(prices: List<Double>, period: Int = 14): Double {
+        if (prices.size < period + 1) return 50.0
+        val changes = prices.zipWithNext { a, b -> b - a }
+        var avgGain = changes.take(period).filter { it > 0 }.sum() / period
+        var avgLoss = changes.take(period).filter { it < 0 }.sum().let { kotlin.math.abs(it) } / period
+
+        if (prices.size > period + 1) {
+            for (i in period until changes.size) {
+                val change = changes[i]
+                val gain = if (change > 0) change else 0.0
+                val loss = if (change < 0) kotlin.math.abs(change) else 0.0
+                avgGain = (avgGain * (period - 1) + gain) / period
+                avgLoss = (avgLoss * (period - 1) + loss) / period
+            }
+        }
+
+        if (avgLoss == 0.0) return 100.0
+        val rs = avgGain / avgLoss
+        return 100.0 - (100.0 / (1.0 + rs))
+    }
+
+    fun calculateVWAP(candles: List<Candle>): Double {
+        var totalPV = 0.0
+        var totalV = 0.0
+        for (c in candles) {
+            val typicalPrice = (c.high + c.low + c.close) / 3.0
+            totalPV += typicalPrice * c.volume
+            totalV += c.volume
+        }
+        return if (totalV == 0.0) 0.0 else totalPV / totalV
+    }
+
+    fun assessPumpConfidence(rsi: Double, currentPrice: Double, vwap: Double, volumeRatio: Double): Double {
+        var score = 0.0
+        if (volumeRatio > 3.0) score += 0.4
+        if (currentPrice > vwap) score += 0.2
+        if (rsi in 40.0..70.0) score += 0.2
+        if (rsi < 40.0 && volumeRatio > 2.0) score += 0.2
+        return score.coerceIn(0.0, 1.0)
+    }

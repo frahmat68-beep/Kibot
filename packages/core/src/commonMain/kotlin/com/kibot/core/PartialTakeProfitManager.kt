@@ -22,13 +22,18 @@ class PartialTakeProfitManager {
     )
 
     // Ladder TP berbeda per bucket sesuai KIBOT_AUDIT_AND_FIX_PROMPT
-    private val LEAD_LAG_TP_LADDER = listOf(
-        TpLevel(1.2, 0.30, "TP1: jual 30% di +1.2%"),
+        private val LEAD_LAG_TP_LADDER = listOf(
+        TpLevel(0.5, 0.30, "TP1: jual 30% di +0.5%"),
+        TpLevel(1.2, 0.50, "TP2: jual 50% di +1.2%")
+    ),
         TpLevel(2.5, 0.50, "TP2: jual 50% di +2.5%")
     )
     
-    private val LOCAL_PUMP_TP_LADDER = listOf(
+        private val LOCAL_PUMP_TP_LADDER = listOf(
         TpLevel(1.0, 0.25, "TP1: jual 25% di +1%"),
+        TpLevel(2.5, 0.40, "TP2: jual 40% di +2.5%"),
+        TpLevel(4.5, 0.35, "TP3: jual 35% sisa di +4.5%")
+    ),
         TpLevel(2.5, 0.40, "TP2: jual 40% di +2.5%"),
         TpLevel(4.5, 0.35, "TP3: jual 35% sisa di +4.5%")
     )

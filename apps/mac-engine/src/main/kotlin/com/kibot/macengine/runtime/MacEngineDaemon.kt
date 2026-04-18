@@ -4065,6 +4065,7 @@ class MacEngineDaemon(
         cachedOpenOrders = emptyList()
         cachedBalances = emptyList()
         ensureLeadLagListenerInitialized()
+        scheduleDailyReset()
         startTelegramCommandPolling()
         startWhatIfSimulationPolling()
         ensureRegistered()
@@ -14589,4 +14590,27 @@ private fun EngineLeaseSnapshot?.isHeldBy(deviceId: DeviceId, now: Instant): Boo
         state == LeaseState.HELD &&
         now < expiresAt &&
         !conflictDetected
+
+    private fun scheduleDailyReset() {
+        val now = java.time.LocalTime.now()
+        val midnight = java.time.LocalTime.MIDNIGHT
+        val secondsUntilMidnight = if (now.isBefore(midnight)) 
+            java.time.Duration.between(now, midnight).seconds
+        else
+            86400 - java.time.Duration.between(midnight, now).seconds
+        
+        scope.launch {
+            kotlinx.coroutines.delay(secondsUntilMidnight * 1000)
+            while (true) {
+                performDailyReset()
+                kotlinx.coroutines.delay(86400 * 1000)
+            }
+        }
+    }
+
+    private suspend fun performDailyReset() {
+        logger.info("[DAILY_RESET] Midnight reset: profit lock, daily counters")
+        profitLockManager.resetDaily()
+        // Here we could add repository.saveDailySummary()
+    }
 }
