@@ -114,20 +114,19 @@ The system uses a fallback chain of AI providers for non-trading decision suppor
 sudo systemctl status kibot-*
 
 # Global Restart (Trinity Pulse)
-sudo systemctl restart kibot-manager kibot-engine kibot-ai-coordinator
+sudo systemctl restart kibot-manager kidax-engine kinance-engine
 ```
 
 ---
 
-## 🔑 Infrastructure & Keys (Audit Log)
+## 🔑 Infrastructure Notes (Sanitized)
 
-| Service | Mode | Key/Note |
+| Service | Mode | Note |
 | :--- | :--- | :--- |
-| **NVIDIA API** | AUDITOR | `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` |
-| **Huggingface** | NEWS | Shared Public Keys (Auto-Rotate) |
-| **Indodax Node** | SGP | `213.35.118.26` (Oracle Singapore) |
-| **Binance Node** | TYO | `152.69.218.198` (Oracle Tokyo) |
-| **Database** | CLOUD | Supabase (Cloud Sync / vptlelbgyxwieyfdpuja) |
+| **AI Providers** | AUDITOR / LEARNING | Simpan token hanya di file env server, jangan pernah commit ke repo. |
+| **Indodax Node** | SGP | Oracle Singapore executor node. |
+| **Binance Node** | TYO | Oracle Tokyo radar/scanner node. |
+| **Database** | CLOUD | Supabase control-plane untuk sinkronisasi state. |
 
 ---
 *KiBot Trinity v7.2 - Math is the law. Rotation is the edge.*
@@ -173,6 +172,30 @@ Daftar komponen sistem yang telah diaudit dan diperkeras untuk produksi 100%:
 - **File**: `packages/core/src/commonMain/kotlin/com/kibot/core/PartialTakeProfitManager.kt`
 - **Fungsi**: Manajemen exit bertahap untuk mengunci profit lebih awal.
 - **Log tag**: `[PARTIAL_TP]`
+
+### [KiScannerBase] — ✅ Production
+- **File**: `scripts/ki_scanner_base.py`
+- **Fungsi**: Base scanner global lintas exchange dengan pemetaan pair Indodax dinamis.
+- **Dipanggil oleh**: `ki_binance_scanner.py`, `ki_bybit_scanner.py`, `ki_kucoin_scanner.py`, `ki_cryptocom_scanner.py`, `ki_mexc_scanner.py` saat loop radar berjalan.
+- **Log tag**: `[INDODAX_PAIRS]`, `[BINANCE]`, `[BYBIT]`, `[KUCOIN]`, `[CRYPTOCOM]`, `[MEXC]`
+- **Server**: Tokyo
+- **Diubah**: 2026-04-19
+
+### [MultiScannerEngine] — ✅ Production
+- **File**: `scripts/multi_scanner_engine.py`
+- **Fungsi**: Menggabungkan sinyal multi-scanner menjadi MSC lalu meneruskan entry ke executor.
+- **Dipanggil oleh**: `scripts/kibot_manager.py` saat menerima `MULTI_SCANNER_SIGNAL` atau `DETECTOR_HIT`.
+- **Log tag**: `[MSC_RECV]`, `[MSC]`, `[MSC_BLOCK]`
+- **Server**: SG
+- **Diubah**: 2026-04-19
+
+### [KiCapitalEngine] — ✅ Production
+- **File**: `scripts/ki_capital_engine.py`
+- **Fungsi**: Alokasi modal bucket, partial TP, profit lock, trailing stop, dan hard stop guard.
+- **Dipanggil oleh**: `scripts/kibot_manager.py` saat posisi/update fill diproses.
+- **Log tag**: `[v7][PARTIAL_TP]`, `[v7][TRAILING_STOP]`, `[v7][PROFIT_LOCK]`, `[v7][HARD_STOP]`
+- **Server**: SG
+- **Diubah**: 2026-04-19
 
 ---
 *Blueprint updated: 2026-04-18*

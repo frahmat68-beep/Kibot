@@ -58,7 +58,6 @@ def atomic_write(path: Path, data: Dict[str, Any]) -> None:
 
 def send_telegram(message: str, parse_mode: str = "Markdown") -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print(f"[NOTIFIER] Telegram not configured. Message: {message[:160]}")
         return False
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": parse_mode}
     request = urllib.request.Request(
