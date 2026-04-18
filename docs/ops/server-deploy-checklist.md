@@ -27,6 +27,7 @@ Dokumen ini adalah checklist deploy untuk topologi aktif `main` / `kinance` / `k
 - `MAC_ENGINE_BIND_HOST=0.0.0.0`
 - `MAC_ENGINE_ENABLE_LAN_ADVERTISE=false`
 - `BOT_ENABLE_LIVE_EXECUTION=true`
+  Untuk node executor live seperti `main` / `kidax`.
 - `KIBOT_LOCAL_POSITION_STATE_ENABLED=true`
 - `KIBOT_MONTHLY_PNL_ANCHOR_PATH=/home/ubuntu/KiBot/state/monthly_pnl_anchor.json`
 - `KIBOT_LEAD_LAG_UDP_ENABLED=true`
@@ -86,6 +87,7 @@ Dokumen ini adalah checklist deploy untuk topologi aktif `main` / `kinance` / `k
 - `BOT_ID=kinance`
 - `BOT_PROFILE_KEY=kinance`
 - `KIBOT_EXCHANGE_KIND=BINANCE_SPOT`
+- `BOT_ENABLE_LIVE_EXECUTION=false`
 - `DEVICE_ROLE=PRIMARY`
 - `MAC_ENGINE_PORT=8788`
 - `DEVICE_ID=kinance-oracle-sg`
@@ -95,6 +97,8 @@ Dokumen ini adalah checklist deploy untuk topologi aktif `main` / `kinance` / `k
 - `KIBOT_LEAD_LAG_UDP_TARGET_PORT=9999`
 - `BINANCE_API_KEY`
 - `BINANCE_API_SECRET`
+- Pada topologi 2 server aktif, `kinance` dipakai sebagai scanner / lead-lag radar.
+  Jalur scan, heartbeat, UDP callout, dan AI review tetap aktif walau live execution dimatikan.
 
 ### KiBot Commander
 - `BOT_ID=kibot`

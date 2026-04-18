@@ -37,6 +37,10 @@ Operationally, treat both nodes as role-based runtime workers tied by control-pl
 - Main engine service: `kinance-engine`
 - API port: `8788`
 - UDP: `9999` (lead-lag/trinity bus)
+- Active role in current 2-server topology:
+  - global scanner / lead-lag radar
+  - live execution disabled intentionally (`BOT_ENABLE_LIVE_EXECUTION=false`)
+  - still emits heartbeat, UDP callouts, market scan, and AI-assisted review context
 - Observed capacity:
   - CPU: `2 vCPU` (AMD EPYC 7742)
   - RAM: `954 MB`
