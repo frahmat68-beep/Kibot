@@ -20,21 +20,53 @@ STATE_DIR = ROOT / "state"
 ORCH_STATE = STATE_DIR / "orchestrator_state.json"
 EVENTS_DIR = STATE_DIR / "events"
 
-SUBSYSTEMS = {
-    "kibot-manager": {"port": 9998, "critical": True},
-    "kidax-engine": {"port": 8787, "critical": True},
-    "kinance-engine": {"port": 8788, "critical": False},
-    "kibot-analyst": {"port": None, "critical": False},
-    "kibot-guardian": {"port": None, "critical": False},
-    "kibot-auditor": {"port": None, "critical": False},
-    "kibot-notifier": {"port": None, "critical": False},
-    "kibot-orchestrator": {"port": None, "critical": False},
-    "kibot-security": {"port": None, "critical": False},
-}
-
-
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def load_runtime_identity() -> Dict[str, str]:
+    env_file = ROOT / ".env.kibot"
+    values: Dict[str, str] = {}
+    if env_file.exists():
+        try:
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                raw = line.strip()
+                if not raw or raw.startswith("#") or "=" not in raw:
+                    continue
+                key, value = raw.split("=", 1)
+                values[key.strip()] = value.strip().strip('"').strip("'")
+        except Exception:
+            values = {}
+    return {
+        "exchange_kind": (os.getenv("KIBOT_EXCHANGE_KIND") or values.get("KIBOT_EXCHANGE_KIND") or "").strip().upper(),
+        "bot_id": (os.getenv("BOT_ID") or values.get("BOT_ID") or "").strip().lower(),
+        "profile_key": (os.getenv("BOT_PROFILE_KEY") or values.get("BOT_PROFILE_KEY") or "").strip().lower(),
+    }
+
+
+def build_subsystems() -> Dict[str, Dict[str, Any]]:
+    identity = load_runtime_identity()
+    exchange_kind = identity["exchange_kind"]
+    bot_id = identity["bot_id"]
+    profile_key = identity["profile_key"]
+    hint = " ".join([exchange_kind.lower(), bot_id, profile_key])
+    if exchange_kind == "INDODAX" or any(token in hint for token in ("indodax", "kidax", "main")):
+        local_engine = ("kidax-engine", 8787)
+    else:
+        local_engine = ("kinance-engine", 8788)
+    return {
+        "kibot-manager": {"port": 9998, "critical": True},
+        local_engine[0]: {"port": local_engine[1], "critical": True},
+        "kibot-analyst": {"port": None, "critical": False},
+        "kibot-guardian": {"port": None, "critical": False},
+        "kibot-auditor": {"port": None, "critical": False},
+        "kibot-notifier": {"port": None, "critical": False},
+        "kibot-orchestrator": {"port": None, "critical": False},
+        "kibot-security": {"port": None, "critical": False},
+    }
+
+
+SUBSYSTEMS = build_subsystems()
 
 
 def atomic_write(path: Path, data: Dict[str, Any]) -> None:

@@ -30,9 +30,40 @@ SAFE_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "daily_guard.json": {"hard_stopped": True, "reason": "AUDITOR_RESTORED_CORRUPT_FILE", "daily_pnl_pct": 0.0},
     "manager_gate.json": {"entry_state": "SUSPENDED", "mode": "CONSERVATIVE"},
 }
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def load_runtime_identity() -> Dict[str, str]:
+    env_file = ROOT / ".env.kibot"
+    values: Dict[str, str] = {}
+    if env_file.exists():
+        try:
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                raw = line.strip()
+                if not raw or raw.startswith("#") or "=" not in raw:
+                    continue
+                key, value = raw.split("=", 1)
+                values[key.strip()] = value.strip().strip('"').strip("'")
+        except Exception:
+            values = {}
+    return {
+        "exchange_kind": (os.getenv("KIBOT_EXCHANGE_KIND") or values.get("KIBOT_EXCHANGE_KIND") or "").strip().upper(),
+        "bot_id": (os.getenv("BOT_ID") or values.get("BOT_ID") or "").strip().lower(),
+        "profile_key": (os.getenv("BOT_PROFILE_KEY") or values.get("BOT_PROFILE_KEY") or "").strip().lower(),
+    }
+
+
+def resolve_local_engine_service() -> str:
+    identity = load_runtime_identity()
+    hint = " ".join([identity["exchange_kind"].lower(), identity["bot_id"], identity["profile_key"]])
+    if identity["exchange_kind"] == "INDODAX" or any(token in hint for token in ("indodax", "kidax", "main")):
+        return "kidax-engine"
+    return "kinance-engine"
+
+
 SYSTEMD_SERVICES = [
-    "kidax-engine",
-    "kinance-engine",
+    resolve_local_engine_service(),
     "kibot-manager",
     "kibot-guardian",
     "kibot-analyst",
@@ -40,10 +71,6 @@ SYSTEMD_SERVICES = [
     "kibot-orchestrator",
     "kibot-security",
 ]
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def atomic_write(path: Path, data: Dict[str, Any]) -> None:
@@ -77,11 +104,21 @@ def fix_symlink_conflict(service: str) -> bool:
     symlink_path = Path(f"/etc/systemd/system/multi-user.target.wants/{service}.service")
     if not symlink_path.exists():
         return True
+    if symlink_path.is_symlink():
+        try:
+            target = symlink_path.resolve(strict=True)
+            log_audit(f"CHECK_SYMLINK_{service}", "OK", f"Symlink healthy -> {target}")
+            return True
+        except FileNotFoundError:
+            pass
+    else:
+        log_audit(f"CHECK_SYMLINK_{service}", "SKIPPED", f"Non-symlink path present at {symlink_path}; manual review recommended")
+        return True
     try:
         subprocess.run(["sudo", "rm", "-f", str(symlink_path)], check=True, timeout=10)
         subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True, timeout=30)
-        log_audit(f"FIX_SYMLINK_{service}", "SUCCESS", f"Removed conflicting symlink: {symlink_path}")
-        push_event("SYMLINK_FIXED", f"Fixed deployment blocker: {symlink_path}", "INFO")
+        log_audit(f"FIX_SYMLINK_{service}", "SUCCESS", f"Removed broken symlink: {symlink_path}")
+        push_event("SYMLINK_FIXED", f"Removed broken symlink: {symlink_path}", "INFO")
         return True
     except Exception as error:
         log_audit(f"FIX_SYMLINK_{service}", "FAILED", str(error))
@@ -199,25 +236,44 @@ def generate_audit_report_for_ai() -> Dict[str, Any]:
 def check_peer_connectivity() -> bool:
     try:
         import socket
-        # Determine peer based on current host type
-        is_indodax = "indodax" in str(ROOT).lower()
+        identity = load_runtime_identity()
+        hint = " ".join([identity["exchange_kind"].lower(), identity["bot_id"], identity["profile_key"]])
+        is_indodax = identity["exchange_kind"] == "INDODAX" or any(token in hint for token in ("indodax", "kidax", "main"))
         peer_host = os.getenv("KINANCE_UDP_HOST") if is_indodax else os.getenv("KIDAX_UDP_HOST")
-        if not peer_host: return True # Nothing to check
+        peer_port = 8788 if is_indodax else 8787
+        if not peer_host:
+            return True
         
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(3)
-            # Check manager port 8787
-            result = s.connect_ex((peer_host, 8787))
+            result = s.connect_ex((peer_host, peer_port))
             if result == 0:
-                log_audit("PEER_HEARTBEAT", "SUCCESS", f"Peer {peer_host} is reachable on 8787")
+                log_audit("PEER_HEARTBEAT", "SUCCESS", f"Peer {peer_host} is reachable on {peer_port}")
                 return True
             else:
-                log_audit("PEER_HEARTBEAT", "FAILED", f"Peer {peer_host} unreachable on 8787")
-                push_event("PEER_OFFLINE", f"PERINGATAN: Peer Node ({peer_host}) tidak merespon pada port 8787. Sitem cadangan (Failover) dalam siaga.", "CRITICAL")
+                log_audit("PEER_HEARTBEAT", "FAILED", f"Peer {peer_host} unreachable on {peer_port}")
+                push_event("PEER_OFFLINE", f"PERINGATAN: Peer Node ({peer_host}) tidak merespon pada port {peer_port}. Sistem cadangan dalam siaga.", "CRITICAL")
                 return False
     except Exception as e:
         log_audit("PEER_HEARTBEAT_ERROR", "ERROR", str(e))
         return False
+
+
+def jar_candidates() -> List[Path]:
+    candidates = [
+        ROOT / "server" / "mac-engine-all.jar",
+        Path("/home/ubuntu/KiDax/server/mac-engine-all.jar"),
+        Path("/home/ubuntu/Kinance/server/mac-engine-all.jar"),
+    ]
+    seen = set()
+    unique: List[Path] = []
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
 
 def run_audit_cycle() -> None:
     print("[AUDITOR] Starting audit cycle")
@@ -225,7 +281,7 @@ def run_audit_cycle() -> None:
     backup_state_files()
     verify_and_fix_state_files()
     check_peer_connectivity()
-    for jar in [Path("/home/ubuntu/KiDax/server/mac-engine-all.jar"), Path("/home/ubuntu/Kinance/server/mac-engine-all.jar")]:
+    for jar in jar_candidates():
         if jar.exists():
             verify_jar_integrity(jar)
     log_audit("AUDIT_CYCLE", "COMPLETE", f"Cycle done at {now_iso()}")
