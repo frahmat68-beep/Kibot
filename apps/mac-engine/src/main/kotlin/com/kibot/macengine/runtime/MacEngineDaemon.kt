@@ -13573,15 +13573,17 @@ class MacEngineDaemon(
                 val current = executionPlan.quoteBudget?.toDoubleOrZero() ?: budgetCapIdr
                 val prelimBudget = minOf(current, budgetCapIdr)
                 
-                // [70/30] Apply capital allocation from bucket
+                // [50/50] Apply capital allocation from bucket
                 val feeRate = if (executionPlan.orderType == com.kibot.shared.models.OrderType.LIMIT) 0.23 else 0.4211
                 // [POLICY GATE] Keep entry math-positive by default when market context
                 // is unavailable in this helper scope.
+                val signalBucketType = if (isAnomalyCoin) "LOCAL_PUMP" else "LEAD_LAG"
                 val policyDecision = alwaysInvestedPolicy.shouldEnter(
                     expectedMovePercent = executionPlan.expectedNetEdgePct,
                     spreadPercent = 0.1,
                     slippagePercent = 0.05,
                     feePercent = feeRate,
+                    bucketType = signalBucketType
                 )
                 if (!policyDecision.allowed) {
                     logger.info("[POLICY_REJECTED] ${executionPlan.signal.pairId}: ${policyDecision.rationale}")
@@ -13605,7 +13607,7 @@ class MacEngineDaemon(
                 val current = executionPlan.quoteBudget?.toDoubleOrZero() ?: budgetCapIdr
                 val prelimBudget = minOf(current, budgetCapIdr)
                 
-                // [70/30] Apply capital allocation from bucket
+                // [50/50] Apply capital allocation from bucket
                 val allocatedBudget = allocateCapitalForEntry(
                     requestedAmountIdr = prelimBudget,
                     isLeadLag = !isAnomalyCoin,
