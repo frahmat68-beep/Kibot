@@ -53,11 +53,18 @@ def resolve_services_to_guard() -> List[str]:
         if parsed:
             return parsed
     exchange_kind = (os.getenv("KIBOT_EXCHANGE_KIND") or "").strip().upper()
+    bot_id = (os.getenv("BOT_ID") or "").strip().lower()
+    profile_key = (os.getenv("BOT_PROFILE_KEY") or "").strip().lower()
+    identity_hint = " ".join([exchange_kind.lower(), bot_id, profile_key])
     services = ["kibot-manager"]
     if exchange_kind == "INDODAX":
         services.append("kidax-engine")
     elif exchange_kind in {"BINANCE", "BINANCE_SPOT"}:
         services.append("kinance-engine")
+    elif any(token in identity_hint for token in ("kinance", "binance")):
+        services.append("kinance-engine")
+    elif any(token in identity_hint for token in ("kidax", "indodax", "main")):
+        services.append("kidax-engine")
     else:
         # Safe fallback for legacy nodes with mixed runtime roles.
         services.extend(["kidax-engine", "kinance-engine"])
