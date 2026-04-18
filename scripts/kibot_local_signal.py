@@ -9,10 +9,16 @@ from datetime import datetime
 
 # CONFIGURATION
 INDODAX_TICKER_API = "https://indodax.com/api/tickers"
-MANAGER_UDP_IP = "127.0.0.1"
-MANAGER_UDP_PORT = 9998
-SCAN_INTERVAL = 30
-CONVICTION_THRESHOLD = 0.85
+MANAGER_UDP_IP = os.getenv("KIBOT_MANAGER_UDP_HOST", "127.0.0.1")
+MANAGER_UDP_PORT = int(
+    os.getenv("KIBOT_MANAGER_UDP_TARGET_PORT")
+    or os.getenv("KIBOT_MANAGER_UDP_BIND_PORT")
+    or os.getenv("KIBOT_MANAGER_PORT")
+    or "9998"
+)
+SCAN_INTERVAL = int(os.getenv("KIBOT_LOCAL_SIGNAL_SCAN_INTERVAL_SEC", "30"))
+CONVICTION_THRESHOLD = float(os.getenv("KIBOT_LOCAL_SIGNAL_CONVICTION_THRESHOLD", "0.85"))
+SIGNAL_SOURCE = os.getenv("KIBOT_LOCAL_SIGNAL_SOURCE", "kibot_local_signal")
 
 def get_tickers():
     try:
@@ -62,17 +68,17 @@ def send_signal(pair, conviction):
         "pair": pair,
         "conviction": conviction,
         "timestamp": int(time.time()),
-        "source": "kibot_local_scanner"
+        "source": SIGNAL_SOURCE
     }
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.sendto(json.dumps(payload).encode(), (MANAGER_UDP_IP, MANAGER_UDP_PORT))
-        print(f"[{datetime.now()}] SIGNAL SENT: {pair} (Conviction: {conviction})")
+        print(f"[{datetime.now()}] SIGNAL SENT: {pair} -> {MANAGER_UDP_IP}:{MANAGER_UDP_PORT} (Conviction: {conviction})")
     except Exception as e:
         print(f"[{datetime.now()}] UDP Send failed: {e}")
 
 def main():
-    print(f"[{datetime.now()}] KiBot Local Signal Engine v7.0 Started")
+    print(f"[{datetime.now()}] KiBot Local Signal Engine v7.0 Started target={MANAGER_UDP_IP}:{MANAGER_UDP_PORT}")
     history = {}
     
     while True:

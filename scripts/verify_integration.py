@@ -4,16 +4,30 @@ import socket
 from pathlib import Path
 
 ROOT = Path(os.getenv("KIBOT_RUNTIME_ROOT", Path(__file__).resolve().parent.parent))
-ENV_PATH = Path(os.getenv("KIBOT_MANAGER_ENV_FILE", ROOT / ".env"))
 API_BASE = os.getenv("KIBOT_API_BASE", "http://127.0.0.1:8787")
-MANAGER_PORT = int(os.getenv("KIBOT_MANAGER_PORT", "9998"))
+ENV_PATHS = [
+    Path(os.getenv("KIBOT_MANAGER_ENV_FILE", ROOT / ".env.server")),
+    ROOT / ".env.kibot_manager",
+    ROOT / ".env",
+]
 
 def load_env():
-    if ENV_PATH.exists():
-        for line in ENV_PATH.read_text().splitlines():
+    for path in ENV_PATHS:
+        if not path.exists():
+            continue
+        for line in path.read_text().splitlines():
             if "=" in line and not line.startswith("#"):
                 key, val = line.split("=", 1)
                 os.environ[key.strip()] = val.strip()
+
+
+def manager_port() -> int:
+    return int(
+        os.getenv("KIBOT_MANAGER_PORT")
+        or os.getenv("KIBOT_MANAGER_UDP_BIND_PORT")
+        or os.getenv("KIBOT_MANAGER_HTTP_BIND_PORT")
+        or "9998"
+    )
 
 def check_keys():
     keys = ["NVIDIA_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY", "TELEGRAM_BOT_TOKEN"]
@@ -53,8 +67,9 @@ def check_runtime_endpoint():
 
 def check_udp_port():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    port = manager_port()
     try:
-        sock.bind(("127.0.0.1", MANAGER_PORT))
+        sock.bind(("127.0.0.1", port))
         return "AVAILABLE"
     except Exception as exc:
         return f"IN_USE ({exc})"
@@ -79,7 +94,7 @@ def main():
 
     print("\n4. Manager UDP Port:")
     udp_status = check_udp_port()
-    print(f"  [{'OK' if udp_status == 'AVAILABLE' else '..'}] UDP {MANAGER_PORT}: {udp_status}")
+    print(f"  [{'OK' if udp_status == 'AVAILABLE' else '..'}] UDP {manager_port()}: {udp_status}")
 
     print("\n=== Integration Check Complete ===")
 

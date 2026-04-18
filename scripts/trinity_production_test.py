@@ -18,7 +18,15 @@ os.environ["KIBOT_RUNTIME_ROOT"] = str(ROOT)
 os.environ.setdefault("KIBOT_STATE_DIR", str(ROOT / "state"))
 os.environ.setdefault("KIBOT_DATA_DIR", str(ROOT / "data"))
 API_BASE = os.getenv("KIBOT_API_BASE", "http://127.0.0.1:8787")
-MANAGER_PORT = int(os.getenv("KIBOT_MANAGER_PORT", "9998"))
+
+
+def manager_port() -> int:
+    return int(
+        os.getenv("KIBOT_MANAGER_PORT")
+        or os.getenv("KIBOT_MANAGER_UDP_BIND_PORT")
+        or os.getenv("KIBOT_MANAGER_HTTP_BIND_PORT")
+        or "9998"
+    )
 
 def log_test(name, result, details=""):
     status = "[PASS]" if result else "[FAIL]"
@@ -65,11 +73,12 @@ def test_runtime_probe():
 def test_manager_udp_port():
     """Verify the configured manager UDP port is syntactically sane and bindable locally."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    port = manager_port()
     try:
-        sock.bind(("127.0.0.1", MANAGER_PORT))
-        return log_test("Manager UDP Port", True, f"UDP {MANAGER_PORT} bind ok")
+        sock.bind(("127.0.0.1", port))
+        return log_test("Manager UDP Port", True, f"UDP {port} bind ok")
     except Exception as exc:
-        return log_test("Manager UDP Port", True, f"UDP {MANAGER_PORT} already in use: {exc}")
+        return log_test("Manager UDP Port", True, f"UDP {port} already in use: {exc}")
     finally:
         sock.close()
 

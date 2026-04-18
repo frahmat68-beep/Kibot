@@ -44,8 +44,35 @@ def load_runtime_identity() -> Dict[str, str]:
     }
 
 
+def load_manager_port() -> int:
+    for env_name in ("KIBOT_MANAGER_HTTP_BIND_PORT", "KIBOT_MANAGER_UDP_BIND_PORT", "KIBOT_MANAGER_PORT"):
+        value = os.getenv(env_name)
+        if value:
+            try:
+                return int(value)
+            except ValueError:
+                pass
+
+    for env_path in (ROOT / ".env.server", ROOT / ".env.kibot_manager", ROOT / ".env"):
+        if not env_path.exists():
+            continue
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                raw = line.strip()
+                if not raw or raw.startswith("#") or "=" not in raw:
+                    continue
+                key, value = raw.split("=", 1)
+                if key.strip() in {"KIBOT_MANAGER_HTTP_BIND_PORT", "KIBOT_MANAGER_UDP_BIND_PORT", "KIBOT_MANAGER_PORT"}:
+                    return int(value.strip().strip('"').strip("'"))
+        except Exception:
+            continue
+
+    return 9998
+
+
 def build_subsystems() -> Dict[str, Dict[str, Any]]:
     identity = load_runtime_identity()
+    manager_port = load_manager_port()
     exchange_kind = identity["exchange_kind"]
     bot_id = identity["bot_id"]
     profile_key = identity["profile_key"]
@@ -55,7 +82,7 @@ def build_subsystems() -> Dict[str, Dict[str, Any]]:
     else:
         local_engine = ("kinance-engine", 8788)
     return {
-        "kibot-manager": {"port": 9998, "critical": True},
+        "kibot-manager": {"port": manager_port, "critical": True},
         local_engine[0]: {"port": local_engine[1], "critical": True},
         "kibot-analyst": {"port": None, "critical": False},
         "kibot-guardian": {"port": None, "critical": False},
