@@ -1,59 +1,30 @@
 package com.kibot.core
 
-import kotlin.time.Duration.Companion.minutes
+import com.kibot.shared.models.*
+import java.time.Instant
 
-/**
- * AlwaysInvestedPolicy — "Pantang Nganggur & Anti-Penakut"
- * 
- * Filosofi: Saldo menganggur = kerugian waktu
- * Bot WAJIB entry jika perhitungan matematik positif
- */
-class AlwaysInvestedPolicy(
-    private val indodaxFeePercent: Double = 0.51, // maker + taker average
-    private val maxIdleCapitalPercent: Double = 0.15,
-    private val maxIdleMinutes: Int = 30,
-) {
-    data class EntryDecision(
-        val allowed: Boolean,
-        val breakEvenPercent: Double,
-        val expectedNetPercent: Double,
-        val rationale: String,
-    )
-    
-    /**
-     * Hitung apakah entry mathematically profitable
-     * Entry HANYA diblokir jika GUARANTEED LOSS
-     */
+class AlwaysInvestedPolicy {
+    data class EntryDecision(val granted: Boolean, val reason: String)
+
     fun shouldEnter(
-        expectedMovePercent: Double,
-        spreadPercent: Double = 0.1,
-        slippagePercent: Double = 0.05,
-        feePercent: Double = 0.4211,
+        pairId: PairId,
+        quote: MarketQuote,
+        config: EngineConfig,
+        now: Instant
     ): EntryDecision {
-        val totalEntryCost = feePercent + (slippagePercent / 2)
-        val totalExitCost = feePercent + (slippagePercent / 2)
-        val breakEven = totalEntryCost + totalExitCost + spreadPercent
-        val expectedNet = expectedMovePercent - breakEven
+        // 1. Fee Gate: Expected return must cover round-trip fees
+        val estFees = 0.0021 // 0.21% default taker round-trip
+        val grossTrend = quote.shortTermReturnPct / 100.0
         
-        return EntryDecision(
-            allowed = expectedNet >= 0.0, // ANY positive = GO
-            breakEvenPercent = breakEven,
-            expectedNetPercent = expectedNet,
-            rationale = if (expectedNet >= 0) {
-                "ENTER: Expected +${String.format("%.2f", expectedNet)}% after fees"
-            } else {
-                "BLOCK: Guaranteed loss of ${String.format("%.2f", -expectedNet)}%"
-            }
-        )
-    }
-    
-    /**
-     * Force rotation jika cash idle terlalu lama
-     */
-    fun shouldForceEntry(
-        freeCapitalPercent: Double,
-        idleMinutes: Int,
-    ): Boolean {
-        return freeCapitalPercent > maxIdleCapitalPercent && idleMinutes > maxIdleMinutes
+        if (grossTrend < estFees * 1.5) {
+            return EntryDecision(false, "Insufficient expected alpha (Trend ${quote.shortTermReturnPct}% < Fee Gate)")
+        }
+
+        // 2. Liquidity Gate: Min volume to avoid slippage
+        if (quote.quoteVolume24h.toDoubleOrZero() < 50_000_000.0) {
+            return EntryDecision(false, "Low liquidity (Volume < 50M IDR)")
+        }
+
+        return EntryDecision(true, "Policy OK")
     }
 }
