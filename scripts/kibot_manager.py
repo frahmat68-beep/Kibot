@@ -17,19 +17,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import asyncio
 
 import requests
-
-_SUPABASE_PUSH_INTERVAL_SEC = 30
-_last_supabase_push = 0
-
-def _should_push_telemetry():
-    global _last_supabase_push
-    import time
-    now = time.time()
-    if now - _last_supabase_push >= _SUPABASE_PUSH_INTERVAL_SEC:
-        _last_supabase_push = now
-        return True
-    return False
-
 import urllib.request
 import kibot_engine_v2 as engine
 from dashboard_template import DASHBOARD_HTML
@@ -410,27 +397,6 @@ def _broadcast_udp(msg: dict):
             print(f"[UDP][ERR] send failed: {e}", flush=True)
 
 def _get_total_equity_estimate() -> float:
-
-
-def _get_opening_equity_fallback():
-    try:
-        # Try to get opening balance from the engine API if available
-        import requests
-        resp = requests.get("http://127.0.0.1:8787/api/state", timeout=2)
-        if resp.status_code == 200:
-            data = resp.json()
-            return float(data.get("openingBalanceIdr") or data.get("equity", 60000.0))
-    except:
-        pass
-    return 60000.0
-
-def _get_synced_daily_pnl(current_equity):
-    """Menghitung PnL harian menggunakan baseline yang disinkronkan dengan Engine."""
-    global _daily_guard_state
-    # Gunakan 'dailyInitialEquityIdr' yang di-push oleh Kotlin Engine ke Supabase
-    opening_equity = float(_daily_guard_state.get("openingBalanceIdr") or _daily_guard_state.get("opening_equity") or _get_opening_equity_fallback())
-    if opening_equity <= 0: return 0.0
-    return (current_equity - opening_equity) / opening_equity
     """Estimasi total aset (IDR + Koin) dari KiDax."""
     # Prioritas 1: Daily Guard state
     eq = _daily_guard_state.get("current_equity")
@@ -1160,7 +1126,7 @@ def run_30min_math_review():
 
     stats = trade_logger.get_today_stats()
     equity = _get_total_equity_estimate() or 0.0
-    pnl_pct = _get_synced_daily_pnl(equity) # [SYNC_FIX]
+    pnl_pct = (portfolio_manager.realized_pnl_today / equity) if equity > 0 else 0.0
     loss_idr = abs(min(pnl_pct, 0) * equity)
 
     from datetime import datetime, timedelta
@@ -1174,11 +1140,6 @@ def run_30min_math_review():
     ev_idr       = stats["ev_idr"]
 
     to_recover = loss_idr / max(ev_idr, 1) if ev_idr > 0 else float("inf")
-
-    # [TASK 11] SYNC TELEGRAM TO ENGINE STATUS
-    engine_status = "RUNNING"
-    if pnl_pct <= -0.03: engine_status = "HARD_STOP_ACTIVE"
-    elif to_recover > trades_left: engine_status = "DEFENSIVE"
 
     # Keputusan berbasis math
     if ev_idr <= 0 and stats["total"] >= 3:
@@ -1204,8 +1165,8 @@ def run_30min_math_review():
 
     pnl_emoji = "🟢" if pnl_pct >= 0 else ("🟡" if pnl_pct >= -0.01 else "🔴")
     report = (
-        f"📊 STATUS: {engine_status} [{now_wib.strftime('%H:%M')} WIB]\n"
-        f"💰 PnL Today: {pnl_pct:+.2%} (Real) | Eq: Rp{equity:,.0f}\n"
+        f"📊 [{now_wib.strftime('%H:%M')} WIB] 30min Review\n"
+        f"{pnl_emoji} PnL: {pnl_pct:+.2%} | Equity: Rp{equity:,.0f}\n"
         f"📈 {stats['total']} trade ({stats['wins']}W/{stats['losses']}L) "
         f"WR={stats['win_rate']:.0%}\n"
         f"💰 EV: Rp{ev_idr:+,.0f}/trade | PF={stats['pf']:.2f}\n"
@@ -1219,10 +1180,7 @@ def run_30min_math_review():
     _sync_snapshot_to_supabase(pnl_pct, equity, stats, action)
 
 def _sync_snapshot_to_supabase(pnl_pct, equity, stats, action):
-    """Sync performance snapshot ke Supabase non-blocking dengan throttling 30s."""
-    if not _should_push_telemetry():
-        return
-        
+    """Sync performance snapshot ke Supabase non-blocking."""
     import threading
     def do_sync():
         try:
@@ -4734,12 +4692,8 @@ def _check_kinance_health() -> bool:
     return True
 
 
-
-VALID_SIGNAL_TYPES = {"DETECTOR_HIT", "INSTANT_BUY_ANOMALY", "VETO_REJECTED", "EMERGENCY_VETO_SELL", "PARTIAL_EXIT", "STOP_LOSS", "TAKE_PROFIT"}
-
 def _process_signal(msg: Dict[str, Any]) -> None:
     msg_type = str(msg.get("msgType") or "").upper()
-    if msg_type not in VALID_SIGNAL_TYPES: return
 
     try:
         _check_daily_loss_limit()

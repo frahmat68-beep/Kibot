@@ -246,7 +246,7 @@ class IndodaxGateway internal constructor(
         if (plan.side == com.kibot.shared.models.OrderSide.BUY) {
             val budget = plan.quoteBudget?.toDoubleOrZero() ?: 0.0
             if (budget > 0 && budget < 11000.0) {
-                logger.warn("[MIN_ORDER_GUARD] Order rejected: budget ${budget} IDR is less than 11,000 IDR floor.")
+                println("[MIN_ORDER_GUARD] Order rejected: budget $budget IDR is less than 11,000 IDR floor.")
                 return buildRejectedOrder(plan, clientOrderId, "Budget below 11k IDR floor")
             }
         }
@@ -349,6 +349,42 @@ class IndodaxGateway internal constructor(
             originalQuantity = simulatedQuantity,
             executedQuantity = simulatedQuantity,
             remainingQuantity = DecimalValue.Zero,
+            feePaid = DecimalValue.Zero,
+            createdAt = now,
+            updatedAt = now,
+        )
+    }
+
+    private fun buildRejectedOrder(
+        plan: ExecutionPlan,
+        clientOrderId: ClientOrderId,
+        reason: String,
+    ): OrderSnapshot {
+        val now = Clock.System.now()
+        val referencePrice =
+            plan.limitPrice
+                ?: plan.signal.entryPrice
+                ?: plan.signal.takeProfitPrice
+                ?: plan.signal.stopPrice
+                ?: DecimalValue("1")
+        val originalQuantity = when {
+            plan.quantity.toDoubleOrZero() > 0.0 -> plan.quantity
+            plan.quoteBudget != null && referencePrice.toDoubleOrZero() > 0.0 ->
+                DecimalValue.fromDouble((plan.quoteBudget?.toDoubleOrZero() ?: 0.0) / referencePrice.toDoubleOrZero())
+            else -> DecimalValue.Zero
+        }
+        println("[MIN_ORDER_GUARD] Rejected ${plan.side.name} ${plan.signal.pairId.value}: $reason")
+        return OrderSnapshot(
+            orderId = OrderId("rejected-${clientOrderId.value}"),
+            clientOrderId = clientOrderId,
+            pairId = plan.signal.pairId,
+            side = plan.side,
+            orderType = plan.orderType,
+            status = OrderStatus.REJECTED,
+            price = referencePrice,
+            originalQuantity = originalQuantity,
+            executedQuantity = DecimalValue.Zero,
+            remainingQuantity = originalQuantity,
             feePaid = DecimalValue.Zero,
             createdAt = now,
             updatedAt = now,
