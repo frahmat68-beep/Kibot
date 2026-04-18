@@ -141,8 +141,9 @@ def flush_message_queue() -> None:
 def _send_daily_report() -> None:
     try:
         from kibot_analyst import generate_daily_report
-
-        notify(generate_daily_report(), bypass_rate=True)
+        report = generate_daily_report()
+        if "Belum ada data trading" not in report:
+            notify(report, bypass_rate=True)
     except Exception as error:
         notify(f"⚠️ Daily report error: {error}", "WARNING")
 
