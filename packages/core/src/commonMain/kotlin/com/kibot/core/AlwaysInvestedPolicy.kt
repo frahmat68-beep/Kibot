@@ -1,30 +1,53 @@
 package com.kibot.core
 
-import com.kibot.shared.models.*
-import java.time.Instant
-
-class AlwaysInvestedPolicy {
-    data class EntryDecision(val granted: Boolean, val reason: String)
+/**
+ * AlwaysInvestedPolicy — "Pantang Nganggur & Anti-Penakut"
+ *
+ * Filosofi: saldo menganggur = opportunity cost.
+ * Entry diblokir hanya jika ekspektasi net setelah biaya masih di bawah ambang minimum.
+ */
+class AlwaysInvestedPolicy(
+    private val indodaxFeePercent: Double = 0.51,
+    private val maxIdleCapitalPercent: Double = 0.15,
+    private val maxIdleMinutes: Int = 30,
+) {
+    data class EntryDecision(
+        val allowed: Boolean,
+        val breakEvenPercent: Double,
+        val expectedNetPercent: Double,
+        val rationale: String,
+    )
 
     fun shouldEnter(
-        pairId: PairId,
-        quote: MarketQuote,
-        config: EngineConfig,
-        now: Instant
+        expectedMovePercent: Double,
+        spreadPercent: Double = 0.1,
+        slippagePercent: Double = 0.05,
+        feePercent: Double = indodaxFeePercent,
+        bucketType: String = "LOCAL_PUMP",
     ): EntryDecision {
-        // 1. Fee Gate: Expected return must cover round-trip fees
-        val estFees = 0.0021 // 0.21% default taker round-trip
-        val grossTrend = quote.shortTermReturnPct / 100.0
-        
-        if (grossTrend < estFees * 1.5) {
-            return EntryDecision(false, "Insufficient expected alpha (Trend ${quote.shortTermReturnPct}% < Fee Gate)")
-        }
+        val totalEntryCost = feePercent + (slippagePercent / 2.0)
+        val totalExitCost = feePercent + (slippagePercent / 2.0)
+        val breakEven = totalEntryCost + totalExitCost + spreadPercent
+        val expectedNet = expectedMovePercent - breakEven
+        val minNet = if (bucketType == "LEAD_LAG") 0.10 else 0.15
+        val isAllowed = expectedNet >= minNet
 
-        // 2. Liquidity Gate: Min volume to avoid slippage
-        if (quote.quoteVolume24h.toDoubleOrZero() < 50_000_000.0) {
-            return EntryDecision(false, "Low liquidity (Volume < 50M IDR)")
-        }
+        return EntryDecision(
+            allowed = isAllowed,
+            breakEvenPercent = breakEven,
+            expectedNetPercent = expectedNet,
+            rationale = if (isAllowed) {
+                "ENTER: Expected +${String.format("%.2f", expectedNet)}% after fees"
+            } else {
+                "BLOCK: Net +${String.format("%.2f", expectedNet)}% < min $minNet%"
+            },
+        )
+    }
 
-        return EntryDecision(true, "Policy OK")
+    fun shouldForceEntry(
+        freeCapitalPercent: Double,
+        idleMinutes: Int,
+    ): Boolean {
+        return freeCapitalPercent > maxIdleCapitalPercent && idleMinutes > maxIdleMinutes
     }
 }

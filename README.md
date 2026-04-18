@@ -142,3 +142,37 @@ sudo systemctl restart kibot-manager kibot-engine kibot-ai-coordinator
 | 2026-04-18 | `ProfitLockManager` | Capital Safety | 30% profit auto-locked from re-deployment. |
 | 2026-04-18 | `AlwaysInvestedPolicy` | Entry Gate | Dynamic fee/slippage/spread gating for positive EV. |
 | 2026-04-18 | `IndodaxGateway` | Precision | Integer quantity scaling for micro-caps (DRX, etc). |
+
+---
+
+## 🏛️ KiBot Trinity Blueprint (v5.0 - Audited)
+
+Daftar komponen sistem yang telah diaudit dan diperkeras untuk produksi 100%:
+
+### [ControlPlaneGateway] — ✅
+- **File**: `packages/core/src/commonMain/kotlin/com/kibot/core/ControlPlaneGateway.kt`
+- **Fungsi**: Interface utama komunikasi dengan Supabase dan dashboard.
+- **Log tag**: `[CP_GATEWAY]`
+
+### [MacEngineDaemon] — ✅
+- **File**: `apps/mac-engine/src/main/kotlin/com/kibot/macengine/runtime/MacEngineDaemon.kt`
+- **Fungsi**: Jantung eksekusi trading, koordinasi sinyal UDP, dan manajemen posisi.
+- **Log tag**: `[BOOT]`, `[UDP_ACK]`, `[POLICY_OK]`
+
+### [AlwaysInvestedPolicy] — ✅
+- **File**: `packages/core/src/commonMain/kotlin/com/kibot/core/AlwaysInvestedPolicy.kt`
+- **Fungsi**: "Fee Gate" matematika. Memastikan profit > biaya (0.10% LL / 0.15% LP).
+- **Log tag**: `[POLICY_OK]`, `[POLICY_SKIP]`
+
+### [CapitalAllocationManager] — ✅
+- **File**: `packages/core/src/commonMain/kotlin/com/kibot/core/CapitalAllocationManager.kt`
+- **Fungsi**: Penjaga rasio modal 50/50 antara Lead-Lag dan Local Pump.
+- **Log tag**: `[ALLOC]`
+
+### [PartialTakeProfitManager] — ✅
+- **File**: `packages/core/src/commonMain/kotlin/com/kibot/core/PartialTakeProfitManager.kt`
+- **Fungsi**: Manajemen exit bertahap untuk mengunci profit lebih awal.
+- **Log tag**: `[PARTIAL_TP]`
+
+---
+*Blueprint updated: 2026-04-18*
