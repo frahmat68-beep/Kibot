@@ -103,6 +103,19 @@ def test_ai_fallback_chain():
     active = [p for p in providers if p in content]
     return log_test("AI Legion Redundancy", len(active) >= 3, f"Active: {active}")
 
+
+def test_analyst_entrypoint():
+    """Verify analyst service boots into its real loop, not demo fixtures."""
+    analyst_path = ROOT / "scripts" / "kibot_analyst.py"
+    content = analyst_path.read_text()
+    has_loop_entry = "run_analyst_loop(ANALYST_INTERVAL_SECONDS)" in content
+    has_demo_seed = 'record_trade("bio_idr"' in content
+    return log_test(
+        "Analyst Entrypoint",
+        has_loop_entry and not has_demo_seed,
+        f"loop_entry={has_loop_entry} demo_seed={has_demo_seed}",
+    )
+
 def run_all():
     print("=== Trinity v7.1 Production Pre-Flight Audit ===")
     print(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -114,7 +127,8 @@ def run_all():
         test_manager_udp_port(),
         test_thread_profiling(),
         test_log_maintenance_logic(),
-        test_ai_fallback_chain()
+        test_ai_fallback_chain(),
+        test_analyst_entrypoint(),
     ]
     
     print("-" * 60)

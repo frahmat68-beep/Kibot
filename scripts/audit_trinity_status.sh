@@ -10,8 +10,16 @@ LOG_WINDOW="${LOG_WINDOW:-15 minutes ago}"
 
 INDODAX_HOST="${INDODAX_HOST:-213.35.118.26}"
 BINANCE_HOST="${BINANCE_HOST:-152.69.218.198}"
-INDODAX_KEY="${INDODAX_KEY:-${ROOT_DIR}/SSH_INDODAX/ssh-key-2026-03-22.key}"
-BINANCE_KEY="${BINANCE_KEY:-${ROOT_DIR}/SSH_BINANCE/ssh-key-2026-03-27.key}"
+INDODAX_KEY="${INDODAX_KEY:-${ROOT_DIR}/SSH_MANAGEMENT/ssh-key-2026-03-22.key}"
+BINANCE_KEY="${BINANCE_KEY:-${ROOT_DIR}/SSH_SCANNER/ssh-key-2026-03-27.key}"
+
+if [[ ! -f "$INDODAX_KEY" && -f "${ROOT_DIR}/SSH_INDODAX/ssh-key-2026-03-22.key" ]]; then
+  INDODAX_KEY="${ROOT_DIR}/SSH_INDODAX/ssh-key-2026-03-22.key"
+fi
+
+if [[ ! -f "$BINANCE_KEY" && -f "${ROOT_DIR}/SSH_BINANCE/ssh-key-2026-03-27.key" ]]; then
+  BINANCE_KEY="${ROOT_DIR}/SSH_BINANCE/ssh-key-2026-03-27.key"
+fi
 
 ssh_run() {
   local host="$1"
@@ -87,13 +95,17 @@ safe_ssh_section "KiDax" "$INDODAX_HOST" "$INDODAX_KEY" "
 set -e
 printf 'host=%s\n' '$INDODAX_HOST'
 printf 'service=%s\n' \"\$(systemctl is-active kidax-engine)\"
+printf 'manager_service=%s\n' \"\$(systemctl is-active kibot-manager)\"
+printf 'analyst_service=%s\n' \"\$(systemctl is-active kibot-analyst)\"
 printf 'failed_units=%s\n' \"\$(systemctl --failed --no-legend | wc -l | tr -d ' ')\"
 printf 'api_state=%s\n' \"\$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8787/api/state || true)\"
 printf 'api_health=%s\n' \"\$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8787/api/health || true)\"
-printf 'jar_sha=%s\n' \"\$(sha256sum /home/ubuntu/KiDax/server/mac-engine-all.jar | cut -d' ' -f1)\"
+printf 'jar_sha=%s\n' \"\$(sha256sum /home/ubuntu/KiBot/server/mac-engine-all.jar | cut -d' ' -f1)\"
 printf 'warn_cp_12s=%s\n' \"\$(journalctl -u kidax-engine --since '$LOG_WINDOW' --no-pager | grep -c 'Timed out waiting for 12000 ms' || true)\"
 printf 'warn_oom=%s\n' \"\$(journalctl -u kidax-engine --since '$LOG_WINDOW' --no-pager | grep -c 'Failed to parse OOM policy' || true)\"
 printf 'warn_health_500=%s\n' \"\$(journalctl -u kidax-engine --since '$LOG_WINDOW' --no-pager | grep -c '500 Internal Server Error: GET - /api/health' || true)\"
+printf 'legacy_kibot_recovery=%s/%s\n' \"\$(systemctl is-enabled kibot-recovery.service 2>/dev/null || echo not-found)\" \"\$(systemctl is-active kibot-recovery.service 2>/dev/null || echo inactive)\"
+printf 'legacy_kibot_engine_recovery_timer=%s/%s\n' \"\$(systemctl is-enabled kibot-engine-recovery.timer 2>/dev/null || echo not-found)\" \"\$(systemctl is-active kibot-engine-recovery.timer 2>/dev/null || echo inactive)\"
 "
 
 safe_ssh_section "KiNance" "$BINANCE_HOST" "$BINANCE_KEY" "
@@ -102,14 +114,21 @@ printf 'host=%s\n' '$BINANCE_HOST'
 printf 'kinance_service=%s\n' \"\$(systemctl is-active kinance-engine)\"
 printf 'kibot_service=%s\n' \"\$(systemctl is-active kibot-engine)\"
 printf 'manager_service=%s\n' \"\$(systemctl is-active kibot-manager)\"
+printf 'analyst_service=%s\n' \"\$(systemctl is-active kibot-analyst)\"
+printf 'notifier_service=%s\n' \"\$(systemctl is-active kibot-notifier)\"
 printf 'failed_units=%s\n' \"\$(systemctl --failed --no-legend | wc -l | tr -d ' ')\"
 printf 'api_state=%s\n' \"\$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 http://127.0.0.1:8788/api/state || true)\"
 printf 'api_health=%s\n' \"\$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 http://127.0.0.1:8788/api/health || true)\"
-printf 'jar_sha=%s\n' \"\$(sha256sum /home/ubuntu/KiNance/server/mac-engine-all.jar | cut -d' ' -f1)\"
+printf 'jar_sha=%s\n' \"\$(sha256sum /home/ubuntu/KiBot/server/mac-engine-all.jar | cut -d' ' -f1)\"
 printf 'warn_cp_12s=%s\n' \"\$(journalctl -u kinance-engine --since '$LOG_WINDOW' --no-pager | grep -c 'Timed out waiting for 12000 ms' || true)\"
 printf 'warn_stopped=%s\n' \"\$(journalctl -u kinance-engine --since '$LOG_WINDOW' --no-pager | grep -c 'LIFECYCLE_BLOCK: Cannot start sync cycle' || true)\"
 printf 'warn_json=%s\n' \"\$(journalctl -u kinance-engine --since '$LOG_WINDOW' --no-pager | grep -c 'Ignoring malformed dashboard JSON file' || true)\"
 printf 'warn_health_500=%s\n' \"\$(journalctl -u kinance-engine --since '$LOG_WINDOW' --no-pager | grep -c '500 Internal Server Error: GET - /api/health' || true)\"
+printf 'legacy_kibot_recovery=%s/%s\n' \"\$(systemctl is-enabled kibot-recovery.service 2>/dev/null || echo not-found)\" \"\$(systemctl is-active kibot-recovery.service 2>/dev/null || echo inactive)\"
+printf 'legacy_kibot_local_scanner=%s/%s\n' \"\$(systemctl is-enabled kibot-local-scanner.service 2>/dev/null || echo not-found)\" \"\$(systemctl is-active kibot-local-scanner.service 2>/dev/null || echo inactive)\"
+printf 'legacy_kibot_coordinator=%s/%s\n' \"\$(systemctl is-enabled kibot-coordinator.service 2>/dev/null || echo not-found)\" \"\$(systemctl is-active kibot-coordinator.service 2>/dev/null || echo inactive)\"
+printf 'legacy_kibot_engine_recovery_timer=%s/%s\n' \"\$(systemctl is-enabled kibot-engine-recovery.timer 2>/dev/null || echo not-found)\" \"\$(systemctl is-active kibot-engine-recovery.timer 2>/dev/null || echo inactive)\"
+printf 'legacy_kinance_engine_recovery_timer=%s/%s\n' \"\$(systemctl is-enabled kinance-engine-recovery.timer 2>/dev/null || echo not-found)\" \"\$(systemctl is-active kinance-engine-recovery.timer 2>/dev/null || echo inactive)\"
 "
 
 print_header "Summary"
@@ -119,3 +138,4 @@ echo "- api_state=200 dan api_health=200"
 echo "- failed_units=0"
 echo "- warn_cp_12s=0"
 echo "- warn_stopped=0"
+echo "- semua legacy_* = disabled/inactive atau not-found/inactive"

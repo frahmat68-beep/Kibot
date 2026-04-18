@@ -8,6 +8,15 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_DIR="/etc/systemd/system"
 USER_NAME="$(whoami)"
+ENABLE_AI_COORDINATOR="${ENABLE_AI_COORDINATOR:-false}"
+
+disable_legacy_unit() {
+    local unit="$1"
+    if sudo systemctl list-unit-files "$unit" >/dev/null 2>&1; then
+        echo "Disabling legacy unit $unit..."
+        sudo systemctl disable --now "$unit" >/dev/null 2>&1 || true
+    fi
+}
 
 create_service() {
     local name=$1
@@ -49,26 +58,38 @@ create_service "kibot-analyst" "kibot_analyst.py" "Trade Analyst & Journaler"
 # 2. Infrastructure Auditor
 create_service "kibot-auditor" "kibot_auditor.py" "Self-Healing Infra Auditor"
 
-# 3. AI Coordinator (Team IT Proxy)
-create_service "kibot-ai-coordinator" "kibot_ai_coordinator.py" "AI Rate-Limit Hub"
-
-# 4. Telegram Notifier
+# 3. Telegram Notifier
 create_service "kibot-notifier" "kibot_notifier.py" "Telemetry Notifier"
 
-# 5. Server Guardian
+# 4. Server Guardian
 create_service "kibot-guardian" "kibot_guardian.py" "Risk & Safety Guardian"
 
-# 6. Orchestrator
+# 5. Orchestrator
 create_service "kibot-orchestrator" "kibot_orchestrator.py" "System Coordinator"
 
-# 7. Security Monitor
+# 6. Security Monitor
 create_service "kibot-security" "kibot_security.py" "Security Monitor"
+
+if [[ "$ENABLE_AI_COORDINATOR" == "true" ]]; then
+    create_service "kibot-ai-coordinator" "kibot_ai_coordinator.py" "AI Rate-Limit Hub"
+fi
+
+disable_legacy_unit "kibot-coordinator.service"
+disable_legacy_unit "kibot-local-scanner.service"
+disable_legacy_unit "kibot-recovery.service"
+disable_legacy_unit "kibot-engine.service"
+disable_legacy_unit "kibot-engine-recovery.timer"
+disable_legacy_unit "kibot-engine-recovery.service"
 
 echo "Reloading systemd..."
 sudo systemctl daemon-reload
 
 echo "Starting Trinity Agentic Core..."
-sudo systemctl enable kibot-analyst kibot-auditor kibot-ai-coordinator kibot-notifier kibot-guardian kibot-orchestrator kibot-security
-sudo systemctl start kibot-analyst kibot-auditor kibot-ai-coordinator kibot-notifier kibot-guardian kibot-orchestrator kibot-security
+SERVICES=(kibot-analyst kibot-auditor kibot-notifier kibot-guardian kibot-orchestrator kibot-security)
+if [[ "$ENABLE_AI_COORDINATOR" == "true" ]]; then
+    SERVICES+=(kibot-ai-coordinator)
+fi
+sudo systemctl enable "${SERVICES[@]}"
+sudo systemctl start "${SERVICES[@]}"
 
 echo "v7.1 Services Installed Successfully."

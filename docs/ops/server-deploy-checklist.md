@@ -11,6 +11,14 @@ Dokumen ini adalah checklist deploy untuk topologi aktif `main` / `kinance` / `k
   - heartbeat timeout -> safe mode + emergency sell
   - local position snapshot -> startup recovery fallback
 
+## Active Systemd Set
+- Node A / `213.35.118.26`
+  - wajib aktif: `kidax-engine`, `kibot-manager`, `kibot-analyst`
+- Node B / `152.69.218.198`
+  - wajib aktif: `kinance-engine`, `kibot-manager`, `kibot-analyst`, `kibot-notifier`, `kibot-guardian`, `kibot-auditor`, `kibot-orchestrator`, `kibot-security`
+- `kibot_local_signal.py` sekarang dijalankan dari thread internal `kibot-manager`, bukan dari service `kibot-local-scanner.service`
+- AI routing / learning review utama sekarang dimiliki `kibot-manager`; service `kibot-coordinator.service` adalah legacy dan harus tetap mati pada topologi aktif 2 server
+
 ## Artefak Build
 - Fat jar runtime:
   - `./gradlew :apps:mac-engine:fatJar`
@@ -121,8 +129,22 @@ Dokumen ini adalah checklist deploy untuk topologi aktif `main` / `kinance` / `k
 - Jangan share file runtime antar node.
 - Recovery service lokal:
   - `infra/scripts/engine-recovery.sh`
-  - jalan tiap 2 menit lewat cron setelah `setup-engine-autorecover.sh`
-  - kalau `api/state` masih tidak sehat, service di-restart otomatis dengan bounded retry
+  - gunakan hanya pada unit engine yang memang aktif di topologi node tersebut
+  - jangan aktifkan watchdog recovery untuk `kibot-engine`, `kibot-local-scanner`, atau service legacy lain
+
+## Legacy Units Yang Harus Tetap Mati
+- `kibot-recovery.service`
+- `kibot-local-scanner.service`
+- `kibot-coordinator.service`
+- `kibot-engine.service`
+- `kibot-engine-recovery.service`
+- `kibot-engine-recovery.timer`
+- `kinance-engine-recovery.service` dan `kinance-engine-recovery.timer` pada node scanner-only
+- `kidax-standby-engine.service` dan `kidax-standby-engine-recovery.timer` jika standby node tidak dipakai
+
+Verifikasi cepat:
+- `systemctl is-enabled kibot-recovery kibot-local-scanner kibot-coordinator kibot-engine-recovery.timer`
+- target aman: `disabled` atau `not-found`
 
 ## Systemd Memory Baseline
 - Baseline aman awal:
@@ -153,13 +175,15 @@ Alasan:
 
 ## Smoke Test Pasca Deploy
 1. Cek service hidup:
-   - `sudo systemctl status kinance-engine --no-pager`
-   - `sudo systemctl status kibot-engine --no-pager`
-   - `sudo systemctl status kidax-engine --no-pager`
+  - `sudo systemctl status kinance-engine --no-pager`
+  - `sudo systemctl status kibot-engine --no-pager`
+  - `sudo systemctl status kidax-engine --no-pager`
+  - `sudo systemctl status kibot-manager kibot-analyst kibot-notifier kibot-guardian kibot-auditor kibot-orchestrator kibot-security --no-pager`
+  - `systemctl is-active kibot-recovery kibot-local-scanner kibot-coordinator kibot-engine-recovery.timer kinance-engine-recovery.timer || true`
 2. Cek dashboard state:
-   - `curl http://127.0.0.1:8787/api/state`
-   - `curl http://127.0.0.1:8788/api/state`
-   - `curl http://127.0.0.1:8789/api/state` jika commander engine aktif
+  - `curl http://127.0.0.1:8787/api/state`
+  - `curl http://127.0.0.1:8788/api/state`
+  - `curl http://127.0.0.1:8789/api/state` jika commander engine aktif
 3. Jalankan smoke script:
    - `scripts/smoke_test_trinity.sh`
 4. Pantau log:
@@ -168,10 +192,13 @@ Alasan:
    - `sudo journalctl -u kibot-engine -f -n 200`
    - `sudo journalctl -u kibot-manager -f -n 200`
 5. Cek note AI manager:
-   - `cat /home/ubuntu/KiBot/state/runtime_note.json`
-   - `cat /home/ubuntu/KiBot/state/ai_provider_state.json`
-   - `cat /home/ubuntu/KiBot/state/pair_cooldowns.json`
-   - `cat /home/ubuntu/KiBot/state/daily_summary.json`
+  - `cat /home/ubuntu/KiBot/state/runtime_note.json`
+  - `cat /home/ubuntu/KiBot/state/ai_provider_state.json`
+  - `cat /home/ubuntu/KiBot/state/pair_cooldowns.json`
+  - `cat /home/ubuntu/KiBot/state/daily_summary.json`
+  - `cat /home/ubuntu/KiBot/state/learning_review.json`
+  - `cat /home/ubuntu/KiBot/state/daily_report.json`
+  - `cat /home/ubuntu/KiBot/state/daily_cycle_state.json`
 
 ## Log Yang Harus Kelihatan
 - `TRINITY_HEARTBEAT`

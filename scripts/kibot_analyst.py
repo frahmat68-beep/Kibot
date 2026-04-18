@@ -27,6 +27,7 @@ BEHAVIOR_LOG = ANALYST_DIR / "behavior.jsonl"
 DAILY_SUMMARY = ANALYST_DIR / "daily_summary.json"
 SUMMARY_HISTORY = ANALYST_DIR / "analyst_daily.json"
 WIB_UTC_OFFSET_HOURS = int(os.getenv("KIBOT_WIB_UTC_OFFSET_HOURS", "7"))
+ANALYST_INTERVAL_SECONDS = int(os.getenv("KIBOT_ANALYST_INTERVAL_SECONDS", "600"))
 
 
 def ensure_dirs() -> None:
@@ -339,21 +340,4 @@ def run_analyst_loop(interval_seconds: int = 600) -> None:
 
 
 if __name__ == "__main__":
-    ensure_dirs()
-    record_trade("bio_idr", "BUY", "LIMIT", 400.0, 401.0, 40100.0, 60.15, success=True, bucket="BUCKET_B", conviction_score=0.88)
-    record_trade(
-        "bio_idr",
-        "SELL",
-        "LIMIT",
-        450.0,
-        449.0,
-        44900.0,
-        67.35,
-        net_pnl_pct=0.118,
-        net_pnl_idr=4800.0,
-        holding_ms=1800000,
-        exit_reason="PARTIAL_TP_1",
-        success=True,
-    )
-    record_failure("kidax-engine", "INSUFFICIENT_BALANCE", "Cannot buy bio_idr: free IDR 1051 < required 8000", severity="ERROR")
-    print(generate_daily_report())
+    run_analyst_loop(ANALYST_INTERVAL_SECONDS)

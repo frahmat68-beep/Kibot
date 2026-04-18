@@ -13,18 +13,30 @@ Target: decide safe action in under 10 minutes.
 
 ## 1) 5-Minute Health Check
 
-Run on each node:
+Run on Node A:
 
 ```bash
-systemctl is-active kidax-engine kinance-engine kibot-manager kibot-orchestrator kibot-auditor kibot-guardian kibot-security kibot-notifier
+systemctl is-active kidax-engine kibot-manager kibot-analyst
 curl -fsS http://localhost:8787/api/health || true
-curl -fsS http://localhost:8788/api/health || true
 ```
 
 Green baseline:
 - all services `active`
 - engine API responds
 - no rapid restart loop
+
+Run on Node B:
+
+```bash
+systemctl is-active kinance-engine kibot-manager kibot-analyst kibot-notifier kibot-guardian kibot-auditor kibot-orchestrator kibot-security
+curl -fsS http://localhost:8788/api/health || true
+```
+
+Legacy services that should stay `inactive` or `not-found`:
+
+```bash
+systemctl is-active kibot-recovery kibot-local-scanner kibot-coordinator kibot-engine-recovery.timer kinance-engine-recovery.timer || true
+```
 
 ## 2) Fast State Triage
 

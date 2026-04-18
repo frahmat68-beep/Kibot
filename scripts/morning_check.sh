@@ -5,8 +5,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INDODAX_HOST="${INDODAX_HOST:-213.35.118.26}"
 BINANCE_HOST="${BINANCE_HOST:-152.69.218.198}"
-INDODAX_KEY="${INDODAX_KEY:-${ROOT_DIR}/SSH_INDODAX/ssh-key-2026-03-22.key}"
-BINANCE_KEY="${BINANCE_KEY:-${ROOT_DIR}/SSH_BINANCE/ssh-key-2026-03-27.key}"
+INDODAX_KEY="${INDODAX_KEY:-${ROOT_DIR}/SSH_MANAGEMENT/ssh-key-2026-03-22.key}"
+BINANCE_KEY="${BINANCE_KEY:-${ROOT_DIR}/SSH_SCANNER/ssh-key-2026-03-27.key}"
+
+if [[ ! -f "$INDODAX_KEY" && -f "${ROOT_DIR}/SSH_INDODAX/ssh-key-2026-03-22.key" ]]; then
+  INDODAX_KEY="${ROOT_DIR}/SSH_INDODAX/ssh-key-2026-03-22.key"
+fi
+
+if [[ ! -f "$BINANCE_KEY" && -f "${ROOT_DIR}/SSH_BINANCE/ssh-key-2026-03-27.key" ]]; then
+  BINANCE_KEY="${ROOT_DIR}/SSH_BINANCE/ssh-key-2026-03-27.key"
+fi
 
 ssh_run() {
   local host="$1"
@@ -57,11 +65,11 @@ ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'journalctl -u kidax-engine --since "5 mi
 
 echo
 echo "=== Service status ==="
-ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'systemctl is-active kidax-engine kibot-manager kibot-recovery || true'
+ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'systemctl is-active kidax-engine kibot-manager kibot-analyst || true; printf "legacy_kibot_recovery=%s\n" "$(systemctl is-active kibot-recovery.service 2>/dev/null || echo inactive)"; printf "legacy_kibot_engine_recovery_timer=%s\n" "$(systemctl is-active kibot-engine-recovery.timer 2>/dev/null || echo inactive)"'
 
 echo
 echo "=== Binance side ==="
-ssh_run "$BINANCE_HOST" "$BINANCE_KEY" 'systemctl is-active kinance-engine kibot-recovery || true'
+ssh_run "$BINANCE_HOST" "$BINANCE_KEY" 'systemctl is-active kinance-engine kibot-manager kibot-analyst kibot-notifier kibot-guardian kibot-auditor kibot-orchestrator kibot-security || true; printf "legacy_kibot_recovery=%s\n" "$(systemctl is-active kibot-recovery.service 2>/dev/null || echo inactive)"; printf "legacy_kibot_local_scanner=%s\n" "$(systemctl is-active kibot-local-scanner.service 2>/dev/null || echo inactive)"; printf "legacy_kibot_coordinator=%s\n" "$(systemctl is-active kibot-coordinator.service 2>/dev/null || echo inactive)"; printf "legacy_kinance_engine_recovery_timer=%s\n" "$(systemctl is-active kinance-engine-recovery.timer 2>/dev/null || echo inactive)"'
 ssh_run "$BINANCE_HOST" "$BINANCE_KEY" 'payload="$(curl -sf --max-time 3 http://localhost:8788/api/state || true)"; if [ -z "$payload" ]; then echo "ERROR: empty response"; else PAYLOAD="$payload" python3 - <<'"'"'PY'"'"'
 import json
 import os
@@ -75,4 +83,5 @@ fi'
 echo
 echo "=== Learning hooks ==="
 ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'test -f /home/ubuntu/KiBot/state/pair_memory.json && echo "pair_memory: EXISTS" || echo "pair_memory: NOT FOUND"'
+ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'for f in /home/ubuntu/KiBot/state/learning_review.json /home/ubuntu/KiBot/state/daily_report.json /home/ubuntu/KiBot/state/daily_cycle_state.json; do if [ -f "$f" ]; then echo "$(basename "$f"): EXISTS"; else echo "$(basename "$f"): NOT FOUND"; fi; done'
 ssh_run "$INDODAX_HOST" "$INDODAX_KEY" 'journalctl -u kibot-manager --since "1 hour ago" --no-pager | grep -iE "WHATIF|pair_memory|LEARNING|AI REVIEW|batch_review" || true'
