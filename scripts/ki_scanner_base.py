@@ -38,11 +38,13 @@ def fetch_indodax_pairs() -> dict[str, str]:
         pairs = r.json()
         result = {}
         for p in pairs:
-            pair_id = p.get("id", "")           # e.g. "btc_idr"
-            base    = p.get("base_currency", "") # e.g. "btc"
-            quote   = p.get("quote_currency","") # e.g. "idr"
-            if pair_id and base and quote == "idr":
-                result[base.upper()] = pair_id   # "BTC" → "btc_idr"
+            pair_id = p.get("ticker_id") or p.get("id") or ""
+            base = p.get("traded_currency") or p.get("base_currency") or ""
+            quote = p.get("base_currency") or p.get("quote_currency") or p.get("quote") or ""
+            if pair_id and base and str(quote).lower() == "idr":
+                if "_" not in pair_id and pair_id.lower().endswith("idr"):
+                    pair_id = f"{str(base).lower()}_idr"
+                result[str(base).upper()] = pair_id
         _indodax_pairs_cache = result
         _indodax_cache_ttl = time.time() + 3600  # cache 1 jam
         print(f"[INDODAX_PAIRS] Loaded {len(result)} pairs from Indodax API")
