@@ -186,8 +186,8 @@ journalctl -u kibot-manager -f
 
 - Blueprint summary: `KiBot_Blueprint.md`
 - This detailed architecture guide: `docs/architecture/TWO_SERVER_SYSTEM_GUIDE.md`
+- Oncall quick entry point: `docs/ops/ONCALL_QUICKSTART.md`
 - Deployment references:
   - `docs/TRINITY_DEPLOYMENT.md`
   - `docs/ops/server-deploy-checklist.md`
   - `docs/ops/github-actions-two-server.md`
-
