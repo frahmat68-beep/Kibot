@@ -1518,16 +1518,35 @@ def _process_signal_multipos(msg: dict):
 
 def _process_local_signal(msg: dict):
     """Handle signals from the local Indodax anomaly engine."""
-    pair_id = msg.get("symbol", "").lower().strip()
-    if not pair_id: return
+    pair_id = str(msg.get("pairId") or msg.get("pair") or msg.get("symbol") or "").lower().strip()
+    if not pair_id:
+        return
+
+    price = float(msg.get("price") or 0.0)
+    if price <= 0:
+        snapshot = _load_indodax_ticker_snapshot()
+        ticker = snapshot.get(pair_id, {})
+        price = float(ticker.get("last") or 0.0)
+    if price <= 0:
+        return
+
+    raw_score = float(
+        msg.get("score")
+        or msg.get("conviction")
+        or msg.get("pumpScore")
+        or msg.get("pump_score")
+        or 0.0
+    )
+    if raw_score <= 1.0:
+        raw_score *= 100.0
     
     # Enrich signal for multi-position vetting
     refined = {
         "source": "KIBOT_LOCAL_ENGINE",
         "type": "LOCAL_PUMP_SIGNAL",
         "pairId": pair_id,
-        "price": msg.get("price", 0),
-        "pumpScore": float(msg.get("score", 0)) * 10, # Normalize to 0-100
+        "price": price,
+        "pumpScore": raw_score,
         "reason": msg.get("reason", "Local anomaly detected"),
         "pump_phase": "EARLY", # Local signals are by definition early
         "target_pct": 0.035,   # Conservative target for local anomalies

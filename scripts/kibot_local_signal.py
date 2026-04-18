@@ -62,11 +62,15 @@ def calculate_conviction(symbol, ticker, history):
     
     return round(conviction, 4)
 
-def send_signal(pair, conviction):
+def send_signal(pair, conviction, price):
     payload = {
         "kind": "local_signal",
         "pair": pair,
+        "pairId": pair,
+        "symbol": pair,
         "conviction": conviction,
+        "score": round(conviction * 100.0, 2),
+        "price": price,
         "timestamp": int(time.time()),
         "source": SIGNAL_SOURCE
     }
@@ -89,7 +93,7 @@ def main():
             conviction = calculate_conviction(symbol, data, history)
             
             if conviction >= CONVICTION_THRESHOLD:
-                send_signal(symbol, conviction)
+                send_signal(symbol, conviction, float(data.get("last", 0) or 0))
                 
         # Simple history tracking for next cycle volume delta
         time.sleep(SCAN_INTERVAL)
