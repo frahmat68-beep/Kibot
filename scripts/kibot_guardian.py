@@ -35,8 +35,36 @@ DISK_CRITICAL_PCT = 90
 CPU_WARN_PCT = 90
 CPU_WARN_SUSTAINED_S = 300
 MAX_SERVICE_RESTARTS_PER_HOUR = 3
-SERVICES_TO_GUARD = ["kibot-manager", "kidax-engine", "kinance-engine"]
 restart_counts: Dict[str, List[float]] = {}
+
+
+def _parse_guardian_service_override(raw: str) -> List[str]:
+    return [
+        token.strip()
+        for token in raw.split(",")
+        if token.strip()
+    ]
+
+
+def resolve_services_to_guard() -> List[str]:
+    override = os.getenv("KIBOT_GUARDIAN_SERVICES", "").strip()
+    if override:
+        parsed = _parse_guardian_service_override(override)
+        if parsed:
+            return parsed
+    exchange_kind = (os.getenv("KIBOT_EXCHANGE_KIND") or "").strip().upper()
+    services = ["kibot-manager"]
+    if exchange_kind == "INDODAX":
+        services.append("kidax-engine")
+    elif exchange_kind in {"BINANCE", "BINANCE_SPOT"}:
+        services.append("kinance-engine")
+    else:
+        # Safe fallback for legacy nodes with mixed runtime roles.
+        services.extend(["kidax-engine", "kinance-engine"])
+    return services
+
+
+SERVICES_TO_GUARD = resolve_services_to_guard()
 
 
 def now_iso() -> str:
@@ -197,7 +225,7 @@ def save_state(metrics: Dict[str, Any]) -> None:
 
 
 def run_guardian_loop() -> None:
-    print("[GUARDIAN] KiBot Server Guardian started")
+    print(f"[GUARDIAN] KiBot Server Guardian started. Guarding services: {', '.join(SERVICES_TO_GUARD)}")
     cpu_high_since: Optional[float] = None
     while True:
         try:
