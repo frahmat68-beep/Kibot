@@ -1,13 +1,13 @@
-- [ ] Task 0: Security & Baseline Check (Audit credentials)
-- [ ] Task 1: 50/50 Allocation Config (Kotlin & .env)
-- [ ] Task 2: Bootstrap Fix (loadFromSupabase timing)
-- [ ] Task 3: Coroutine Scope Fix (Memory leak prevention)
-- [ ] Task 4: Allocation Wiring (Lead-Lag vs Local Pump)
-- [ ] Task 5: Partial TP Wiring (Monitoring loop)
-- [ ] Task 6: Profit Lock Wiring (30% locking)
-- [ ] Task 7: Fee/EV Gate (AlwaysInvestedPolicy)
-- [ ] Task 8: UDP ACK Fix (Dedicated port 8789)
-- [ ] Task 10: Logic: Indicators (RSI/VWAP) in ChartAnalyzer
-- [ ] Task 11: Telegram Formatting (Real data)
-- [ ] Task 12: Supabase Throttling (30s)
-- [ ] Deployment & Final Verification
+- [x] Task 0: Security & Baseline Check (Audit credentials)
+- [x] Task 1: 50/50 Allocation Config (Kotlin & .env)
+- [x] Task 2: Bootstrap Fix (loadFromSupabase timing)
+- [x] Task 3: Coroutine Scope Fix (Memory leak prevention)
+- [x] Task 4: Allocation Wiring (Lead-Lag vs Local Pump)
+- [x] Task 5: Partial TP Wiring (Monitoring loop)
+- [x] Task 6: Profit Lock Wiring (30% locking)
+- [x] Task 7: Fee/EV Gate (AlwaysInvestedPolicy)
+- [x] Task 8: UDP ACK Fix (Dedicated port 8789)
+- [x] Task 10: Logic: Indicators (RSI/VWAP) in ChartAnalyzer
+- [x] Task 11: Telegram Formatting (Real data)
+- [x] Task 12: Supabase Throttling (30s)
+- [x] Deployment & Final Verification
