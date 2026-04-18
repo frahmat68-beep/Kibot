@@ -28,9 +28,10 @@ class AlwaysInvestedPolicy(
         expectedMovePercent: Double,
         spreadPercent: Double = 0.1,
         slippagePercent: Double = 0.05,
+        feePercent: Double = 0.4211,
     ): EntryDecision {
-        val totalEntryCost = indodaxFeePercent + (slippagePercent / 2)
-        val totalExitCost = indodaxFeePercent + (slippagePercent / 2)
+        val totalEntryCost = feePercent + (slippagePercent / 2)
+        val totalExitCost = feePercent + (slippagePercent / 2)
         val breakEven = totalEntryCost + totalExitCost + spreadPercent
         val expectedNet = expectedMovePercent - breakEven
         

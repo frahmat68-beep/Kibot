@@ -131,3 +131,14 @@ sudo systemctl restart kibot-manager kibot-engine kibot-ai-coordinator
 
 ---
 *KiBot Trinity v7.2 - Math is the law. Rotation is the edge.*
+
+## 🏗️ KIBOT BLUEPRINT REGISTRY (Production Hardening)
+
+| Date | Component | Change Type | Impact |
+| :--- | :--- | :--- | :--- |
+| 2026-04-18 | `PairWhitelistManager` | Persistence | Persist/Restore whitelist from Supabase on reboot. |
+| 2026-04-18 | `UDP ACK Protocol` | Reliability | Fixed port 8789 ACK for Kinance signal delivery. |
+| 2026-04-18 | `PartialTakeProfit` | Risk Management | 30-50% ladder exits at +0.5% & +1.2%. |
+| 2026-04-18 | `ProfitLockManager` | Capital Safety | 30% profit auto-locked from re-deployment. |
+| 2026-04-18 | `AlwaysInvestedPolicy` | Entry Gate | Dynamic fee/slippage/spread gating for positive EV. |
+| 2026-04-18 | `IndodaxGateway` | Precision | Integer quantity scaling for micro-caps (DRX, etc). |

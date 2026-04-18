@@ -106,6 +106,8 @@ data class MacRuntimeConfig(
     val leadLagUdpHeartbeatIntervalMillis: Long,
     val leadLagUdpHeartbeatTimeoutMillis: Long,
     val leadLagUdpHeartbeatRequiredBotIds: Set<String>,
+    val kinanceAckPort: Int = 8789,
+    val kinanceHost: String = "152.69.218.198",
     val indodaxHyperGuardrailEnabled: Boolean,
     val indodaxHyperGuardrailTakerFeePct: Double,
     val hyperAggressiveConfig: HyperAggressiveConfig,
@@ -426,6 +428,8 @@ object MacRuntimeConfigLoader {
                 }
                 ?.toSet()
                 ?: defaultHeartbeatPeers(botId.value),
+            kinanceAckPort = kinanceAckPort,
+            kinanceHost = kinanceHost,
             indodaxHyperGuardrailEnabled = optional("KICRYP_INDODAX_HYPER_GUARDRAIL_ENABLED")
                 ?.equals("true", ignoreCase = true)
                 ?: true,

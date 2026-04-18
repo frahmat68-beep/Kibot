@@ -303,7 +303,7 @@ class MacEngineDaemon(
     private val latePumpEntry = LatePumpEntryStrategy()  // Enter pumps that already started
     private val tradingStallDetector = TradingStallDetector(stallTimeoutMinutes = 60)  // Stall detection: 1 hour
     private var capitalAllocationManager: CapitalAllocationManager? = null  // 50/50 capital split (initialized in syncOnce)
-    private val pairWhitelistManager = PairWhitelistManager(controlPlane, config.botId)
+    private val pairWhitelistManager = PairWhitelistManager(controlPlane, config.botId, CoroutineScope(SupervisorJob() + Dispatchers.IO))
     private val dualEngineConfig = DualEngineConfig()
     private val dualEngineCoordinator = DualEngineCoordinator(config = dualEngineConfig)
     
@@ -4033,6 +4033,13 @@ class MacEngineDaemon(
     private var lastNonEmptyMarketQuotesAt: Instant? = null
 
     suspend fun run() {
+        logger.info("[BOOT] Loading pair whitelist from Supabase...")
+        try {
+            pairWhitelistManager.loadFromSupabase()
+            logger.info("[BOOT] Pair whitelist loaded successfully")
+        } catch (e: Exception) {
+            logger.warn("[BOOT] Failed to load whitelist from Supabase, starting fresh: ${e.message}")
+        }
         logger.info("Mac engine daemon loop started.")
         // Force reset runtime cache so engine re-syncs from exchange snapshots immediately.
         cachedRecentOrders = emptyList()
@@ -4139,10 +4146,6 @@ class MacEngineDaemon(
 
     suspend fun syncOnce() = coroutineScope {
 
-        if (daemonStartedAt.plus(30.seconds) > now) {
-            pairWhitelistManager.loadFromSupabase()
-        }
-        val cycleStartedAt = clock.now()
         markPipelineStage("MARKER: ENTER_SYNC_LOOP")
         try {
             // [TRINITY HEARTBEAT] Record this bot's heartbeat
@@ -5807,13 +5810,19 @@ class MacEngineDaemon(
             try {
                 socket.receive(packet)
 
-                // [UDP RELIABILITY] Send ACK immediately
-                val ackBytes = "ACK-${packet.data.decodeToString(0, packet.length).run { 
-                    runCatching { json.parseToJsonElement(this).jsonObject["traceId"]?.jsonPrimitive?.content }.getOrNull() 
-                }}".toByteArray()
-                if (ackBytes.size > 4) {
-                    val ackPacket = DatagramPacket(ackBytes, ackBytes.size, packet.address, packet.port)
+                // [UDP RELIABILITY] Send ACK immediately to dedicated port
+                val rawPayload = packet.data.decodeToString(0, packet.length)
+                val traceId = runCatching {
+                    json.parseToJsonElement(rawPayload).jsonObject["traceId"]?.jsonPrimitive?.content
+                }.getOrNull() ?: "unknown"
+                
+                if (traceId != "unknown") {
+                    val ackMessage = "ACK:$traceId:${System.currentTimeMillis()}"
+                    val ackBytes = ackMessage.toByteArray(Charsets.UTF_8)
+                    val kinanceAckAddress = java.net.InetAddress.getByName(config.kinanceHost)
+                    val ackPacket = DatagramPacket(ackBytes, ackBytes.size, kinanceAckAddress, config.kinanceAckPort)
                     socket.send(ackPacket)
+                    logger.debug("[UDP_ACK] Sent ACK for traceId=$traceId to ${config.kinanceHost}:${config.kinanceAckPort}")
                 }
                 val decodedBinary = if (config.leadLagUdpBinaryProtocolEnabled || config.leadLagUdpBinaryDualStackEnabled) {
                     decodeBinaryUdpPacket(packet.data, packet.length)
@@ -13557,10 +13566,12 @@ class MacEngineDaemon(
 
                 // [POLICY GATE] AlwaysInvestedPolicy check
                 val quote = resolvedMarketQuotes.firstOrNull { it.pairId == executionPlan.signal.pairId }
+                val feeRate = if (executionPlan.orderType == com.kibot.shared.models.OrderType.LIMIT) 0.23 else 0.4211
                 val policyDecision = alwaysInvestedPolicy.shouldEnter(
                     expectedMovePercent = executionPlan.expectedNetEdgePct ?: 1.5,
                     spreadPercent = quote?.spreadPct ?: 0.1,
-                    slippagePercent = quote?.estimatedSlippagePct ?: 0.05
+                    slippagePercent = quote?.estimatedSlippagePct ?: 0.05,
+                    feePercent = feeRate
                 )
                 if (!policyDecision.allowed) {
                     logger.info("[POLICY_REJECTED] ${executionPlan.signal.pairId}: ${policyDecision.rationale}")

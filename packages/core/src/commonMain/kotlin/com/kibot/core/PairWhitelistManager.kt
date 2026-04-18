@@ -9,7 +9,7 @@ import kotlinx.coroutines.launch
  * 
  * Soft filtering: Prefer whitelist, but allow new pairs to prove themselves
  */
-class PairWhitelistManager(private val controlPlane: ControlPlaneGateway? = null, private val botId: com.kibot.shared.models.BotId? = null) {
+class PairWhitelistManager(private val controlPlane: ControlPlaneGateway? = null, private val botId: com.kibot.shared.models.BotId? = null, private val scope: kotlinx.coroutines.CoroutineScope? = null) {
     
     // Hard-coded whitelist of proven pairs
     private val hardWhitelist = setOf("STO", "DRX", "D")
@@ -118,9 +118,9 @@ class PairWhitelistManager(private val controlPlane: ControlPlaneGateway? = null
 
         // Async persistence to Supabase
         if (controlPlane != null && botId != null) {
-            kotlinx.coroutines.GlobalScope.launch {
+            scope?.launch {
                 try {
-                    controlPlane.upsertPairWhitelist(
+                    controlPlane?.upsertPairWhitelist(
                         botId,
                         TradeWhitelistRecord(
                             pairId = stats.pair,
