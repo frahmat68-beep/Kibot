@@ -1175,6 +1175,11 @@ def run_30min_math_review():
 
     to_recover = loss_idr / max(ev_idr, 1) if ev_idr > 0 else float("inf")
 
+    # [TASK 11] SYNC TELEGRAM TO ENGINE STATUS
+    engine_status = "RUNNING"
+    if pnl_pct <= -0.03: engine_status = "HARD_STOP_ACTIVE"
+    elif to_recover > trades_left: engine_status = "DEFENSIVE"
+
     # Keputusan berbasis math
     if ev_idr <= 0 and stats["total"] >= 3:
         action = "TIGHTEN_FILTER"
@@ -1199,8 +1204,8 @@ def run_30min_math_review():
 
     pnl_emoji = "🟢" if pnl_pct >= 0 else ("🟡" if pnl_pct >= -0.01 else "🔴")
     report = (
-        f"📊 [{now_wib.strftime('%H:%M')} WIB] 30min Review\n"
-        f"{pnl_emoji} PnL: {pnl_pct:+.2%} | Equity: Rp{equity:,.0f}\n"
+        f"📊 STATUS: {engine_status} [{now_wib.strftime('%H:%M')} WIB]\n"
+        f"💰 PnL Today: {pnl_pct:+.2%} (Real) | Eq: Rp{equity:,.0f}\n"
         f"📈 {stats['total']} trade ({stats['wins']}W/{stats['losses']}L) "
         f"WR={stats['win_rate']:.0%}\n"
         f"💰 EV: Rp{ev_idr:+,.0f}/trade | PF={stats['pf']:.2f}\n"
@@ -1214,7 +1219,10 @@ def run_30min_math_review():
     _sync_snapshot_to_supabase(pnl_pct, equity, stats, action)
 
 def _sync_snapshot_to_supabase(pnl_pct, equity, stats, action):
-    """Sync performance snapshot ke Supabase non-blocking."""
+    """Sync performance snapshot ke Supabase non-blocking dengan throttling 30s."""
+    if not _should_push_telemetry():
+        return
+        
     import threading
     def do_sync():
         try:

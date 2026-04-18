@@ -306,12 +306,21 @@ class MacEngineDaemon(
     private val heartbeatMonitor = TrinityHeartbeatMonitor()  // Monitor bot health
     private val latePumpEntry = LatePumpEntryStrategy()  // Enter pumps that already started
     private val tradingStallDetector = TradingStallDetector(stallTimeoutMinutes = 60)  // Stall detection: 1 hour
-    private var capitalAllocationManager: CapitalAllocationManager? = null  // 50/50 capital split (initialized in syncOnce)
+    private val daemonScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    
     private val pairWhitelistManager = PairWhitelistManager(
-        controlPlane,
-        config.controlPlane.botId,
-        CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        controlPlane = controlPlane,
+        botId = config.controlPlane.botId,
+        scope = daemonScope,
     )
+    
+    // Profit & Analysis Engines
+    private val partialTpManager = PartialTakeProfitManager()
+    private val profitLockManager = ProfitLockManager(lockRatioPct = 0.30)
+    private val entryPolicy = AlwaysInvestedPolicy()
+    
+    private val kinanceAckPort = System.getenv("KINANCE_ACK_PORT")?.toIntOrNull() ?: 8789
+    
     private val dualEngineConfig = DualEngineConfig()
     private val dualEngineCoordinator = DualEngineCoordinator(config = dualEngineConfig)
     
@@ -4064,13 +4073,17 @@ class MacEngineDaemon(
     private var lastNonEmptyMarketQuotesAt: Instant? = null
 
     suspend fun run() {
+        logger.info("[BOOT] Initializing KiBot Trinity Daemon...")
+        
+        // Task 2: loadFromSupabase only at boot
         logger.info("[BOOT] Loading pair whitelist from Supabase...")
         try {
             pairWhitelistManager.loadFromSupabase()
-            logger.info("[BOOT] Pair whitelist loaded successfully")
+            logger.info("[BOOT] ✅ Pair whitelist loaded successfully")
         } catch (e: Exception) {
-            logger.warn("[BOOT] Failed to load whitelist from Supabase, starting fresh: ${e.message}")
+            logger.warn("[BOOT] ⚠️ Failed to load whitelist from Supabase, starting fresh: ${e.message}")
         }
+
         logger.info("Mac engine daemon loop started.")
         // Force reset runtime cache so engine re-syncs from exchange snapshots immediately.
         cachedRecentOrders = emptyList()
@@ -5865,9 +5878,9 @@ class MacEngineDaemon(
                     val ackMessage = "ACK:$traceId:${System.currentTimeMillis()}"
                     val ackBytes = ackMessage.toByteArray(Charsets.UTF_8)
                     val kinanceAckAddress = java.net.InetAddress.getByName(config.kinanceHost)
-                    val ackPacket = DatagramPacket(ackBytes, ackBytes.size, kinanceAckAddress, config.kinanceAckPort)
+                    val ackPacket = DatagramPacket(ackBytes, ackBytes.size, kinanceAckAddress, kinanceAckPort)
                     socket.send(ackPacket)
-                    logger.debug("[UDP_ACK] Sent ACK for traceId=$traceId to ${config.kinanceHost}:${config.kinanceAckPort}")
+                    logger.debug("[UDP_ACK] Sent ACK for traceId=$traceId to ${config.kinanceHost}:$kinanceAckPort")
                 }
                 val decodedBinary = if (config.leadLagUdpBinaryProtocolEnabled || config.leadLagUdpBinaryDualStackEnabled) {
                     decodeBinaryUdpPacket(packet.data, packet.length)
@@ -7198,7 +7211,34 @@ class MacEngineDaemon(
             hungry = hyperAggressiveTracker.hungry,
             marketQuotes = marketQuotes,
         )
-        val exitDecision = emergencyGarbageExit ?: absoluteLossProtectionExit ?: barbarianMaxHoldExit ?: hardTimeoutExit ?: opportunityCostExit ?: emergencyLiquidityExit ?: crashHardStopExit ?: localAutonomyTrailingExit ?: forcedSellExit ?: hyperAggressiveTrailingExit ?: hyperAggressiveRotationExit ?: leadLagTrailingExit ?: adaptiveCoordinator.planExit(
+        val partialTpDecision = managedPositions.firstNotNullOfOrNull { position ->
+            val pairKey = position.pairId.value.lowercase()
+            partialTpManager.checkTpLevels(
+                pairId = pairKey,
+                bucketType = positionBucketTypeByPair[pairKey] ?: "LOCAL_PUMP",
+                currentProfitPct = calculatePnlPct(position, marketQuotes),
+                remainingQuantity = position.remainingQuantity.toDoubleOrZero()
+            )?.let { action ->
+                val signal = com.kibot.shared.models.TradingSignal(
+                    pairId = position.pairId,
+                    type = "PARTIAL_TP",
+                    entryPrice = marketQuotes.firstOrNull { it.pairId == position.pairId }?.midPrice ?: "0"
+                )
+                com.kibot.core.ExitDecision(
+                    position = position,
+                    executionPlan = com.kibot.core.ExecutionPlan(
+                        signal = signal,
+                        orderType = com.kibot.shared.models.OrderType.LIMIT,
+                        quantity = action.sellQuantity.toString(),
+                        limitPrice = marketQuotes.firstOrNull { it.pairId == position.pairId }?.bestBid ?: "0"
+                    ),
+                    reason = com.kibot.core.ExitReason.PARTIAL_TP,
+                    message = action.reason
+                )
+            }
+        }
+
+        val exitDecision = partialTpDecision ?: emergencyGarbageExit ?: absoluteLossProtectionExit ?: barbarianMaxHoldExit ?: hardTimeoutExit ?: opportunityCostExit ?: emergencyLiquidityExit ?: crashHardStopExit ?: localAutonomyTrailingExit ?: forcedSellExit ?: hyperAggressiveTrailingExit ?: hyperAggressiveRotationExit ?: leadLagTrailingExit ?: adaptiveCoordinator.planExit(
             now = now,
             cycle = cycle,
             managedPositions = managedPositions,
@@ -7323,11 +7363,18 @@ class MacEngineDaemon(
                     val netProfit = pnlIdr - estimatedFees
                     
                     // Deposit profit + original capital back to bucket
-                    capitalAllocationManager?.depositProfit(netProfit, wasAggressiveTrade)
+                    val lockResult = profitLockManager.onProfitRealized(netProfit)
+                    
+                    capitalAllocationManager?.depositProfit(
+                        profitIdr = lockResult.reDeployable, 
+                        wasLeadLag = !wasAggressiveTrade, // Inverted logic in depositProfit signature
+                        entryBudget = entryCapital
+                    )
                     
                     logger.info(
-                        "[CAPITAL_DEPOSIT] ${pairKey}: profit=${formatDecimal(netProfit, 0)} deposited to ${bucketType} bucket " +
-                        "(gross=${formatDecimal(pnlIdr, 0)}, fees=${formatDecimal(estimatedFees, 0)})"
+                        "[CAPITAL_DEPOSIT] ${pairKey}: profit=${formatDecimal(netProfit, 0)} " +
+                        "→ locked=${formatDecimal(lockResult.locked, 0)} redeploy=${formatDecimal(lockResult.reDeployable, 0)} " +
+                        "deposited to ${bucketType} bucket"
                     )
                     
                     // [TELEGRAM NOTIFICATION] Send profit alert to Telegram
@@ -8144,6 +8191,24 @@ class MacEngineDaemon(
                 lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
                 return@forEach
             }
+            
+            // Task 7: Wire AlwaysInvestedPolicy as a Fee/EV Gate
+            val feeRate = if (effectiveExecutionPlan.orderType == com.kibot.shared.models.OrderType.LIMIT) 0.0023 else 0.0033
+            val policyDecision = entryPolicy.shouldEnter(
+                expectedMovePercent = effectiveExecutionPlan.signal.expectedMovePct?.toDoubleOrZero() ?: 1.0,
+                spreadPercent = targetQuote.spreadPct?.toDoubleOrZero() ?: 0.5,
+                slippagePercent = targetQuote.estimatedSlippagePct?.toDoubleOrZero() ?: 0.3,
+                feePercent = feeRate,
+                bucketType = allocResult.bucketType
+            )
+            
+            if (!policyDecision.allowed) {
+                logger.info("[POLICY_SKIP] ${effectiveExecutionPlan.signal.pairId.value}: ${policyDecision.rationale}")
+                lastBlockedReason = "AlwaysInvested: ${policyDecision.rationale}"
+                lastBlockedPair = effectiveExecutionPlan.signal.pairId.value
+                return@forEach
+            }
+            logger.info("[POLICY_OK] ${effectiveExecutionPlan.signal.pairId.value}: ${policyDecision.rationale}")
             
             // Check per-coin limit (ADAPTIVE based on account size)
             val totalEquity = cycle.portfolio.totalEquityIdr.toDoubleOrZero()

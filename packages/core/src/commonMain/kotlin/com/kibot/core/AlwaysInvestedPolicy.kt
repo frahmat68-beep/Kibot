@@ -29,6 +29,10 @@ class AlwaysInvestedPolicy(
         val totalExitCost = feePercent + (slippagePercent / 2.0)
         val breakEven = totalEntryCost + totalExitCost + spreadPercent
         val expectedNet = expectedMovePercent - breakEven
+<<<<<<< HEAD
+=======
+        
+>>>>>>> 64081d79 (TRINITY ULTIMATE: Fix Daily PnL Reset, Capital Allocation, Fee Gate, and Sync Reporting)
         val minNet = if (bucketType == "LEAD_LAG") 0.10 else 0.15
         val isAllowed = expectedNet >= minNet
 
@@ -40,7 +44,11 @@ class AlwaysInvestedPolicy(
                 "ENTER: Expected +${String.format("%.2f", expectedNet)}% after fees"
             } else {
                 "BLOCK: Net +${String.format("%.2f", expectedNet)}% < min $minNet%"
+<<<<<<< HEAD
             },
+=======
+            }
+>>>>>>> 64081d79 (TRINITY ULTIMATE: Fix Daily PnL Reset, Capital Allocation, Fee Gate, and Sync Reporting)
         )
     }
 

@@ -1,8 +1,13 @@
-- [ ] Bug #1: Implement Zero-Quantity Guard (10k IDR Min)
-- [ ] Bug #2: Implement Hard Stop logic (-3% loss limit)
-- [ ] Bug #3: Fix LEVEL_3/LIMITED entry blocking
-- [ ] Bug #4: Sync Telegram bot with Live Engine API
-- [ ] Bug #5: Optimize Rotation with Confidence/Gain gates
-- [ ] Bug #6: Whitelist signal types (Filter "Bias" signals)
-- [ ] Local Verification & Unit Tests
-- [ ] Deployment to Production Server (SSH & Git Push)
+- [ ] Task 0: Security & Baseline Check (Audit credentials)
+- [ ] Task 1: 50/50 Allocation Config (Kotlin & .env)
+- [ ] Task 2: Bootstrap Fix (loadFromSupabase timing)
+- [ ] Task 3: Coroutine Scope Fix (Memory leak prevention)
+- [ ] Task 4: Allocation Wiring (Lead-Lag vs Local Pump)
+- [ ] Task 5: Partial TP Wiring (Monitoring loop)
+- [ ] Task 6: Profit Lock Wiring (30% locking)
+- [ ] Task 7: Fee/EV Gate (AlwaysInvestedPolicy)
+- [ ] Task 8: UDP ACK Fix (Dedicated port 8789)
+- [ ] Task 10: Logic: Indicators (RSI/VWAP) in ChartAnalyzer
+- [ ] Task 11: Telegram Formatting (Real data)
+- [ ] Task 12: Supabase Throttling (30s)
+- [ ] Deployment & Final Verification

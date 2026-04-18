@@ -743,3 +743,11 @@ data class ChartAnalysisConfig(
         if (spreadPct < 2.0) score += 0.20          // Liquidity check
         return score.coerceIn(0.0, 1.0)
     }
+
+    fun detectVolumeSpike(candles: List<Candle>, lookback: Int = 10): Boolean {
+        if (candles.size < lookback + 1) return false
+        val recentVolume = candles.last().volume
+        val avgVolume = candles.takeLast(lookback + 1).dropLast(1).map { it.volume }.average()
+        return recentVolume > (avgVolume * 2.5)
+    }
+}
