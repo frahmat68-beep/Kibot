@@ -659,7 +659,6 @@ class ChartAnalyzer(
             "morning_star",
         )
     }
-}
 
 data class ChartAnalysisConfig(
     // MICRO-CAP FRIENDLY: Lowered volume requirements for small coins

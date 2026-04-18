@@ -1,14 +1,8 @@
-- [ ] Task 0: Security Scan & Environment Setup
-- [ ] Task 1: Enforce 50/50 Capital Allocation (read from env)
-- [ ] Task 2: Refine loadFromSupabase timing to strictly boot-only
-- [ ] Task 3: Standardize Coroutine Scopes in WhitelistManager
-- [ ] Task 4: Wire 50/50 Allocation Result to Order Path
-- [ ] Task 5: Implement Logic Hardening in PartialTakeProfitManager
-- [ ] Task 6: Implement ProfitLockManager (30% logic)
-- [ ] Task 7: Wire AlwaysInvestedPolicy (Fee Gate) with Bucket Thresholds
-- [ ] Task 8: Fix UDP ACK to dedicated Port 8789
-- [ ] Task 9: Enable NAGA Signal Tier Handling
-- [ ] Task 10: Enhance Chart Heuristics (RSI + VWAP + Volume)
-- [ ] Task 11: Implement Rich Telegram Notifications (kibot_manager.py)
-- [ ] Task 12: Implement Supabase Telemetry Throttle (30s)
-- [ ] Task 13: Final Verification & Blueprint Update
+- [ ] Bug #1: Implement Zero-Quantity Guard (10k IDR Min)
+- [ ] Bug #2: Implement Hard Stop logic (-3% loss limit)
+- [ ] Bug #3: Fix LEVEL_3/LIMITED entry blocking
+- [ ] Bug #4: Sync Telegram bot with Live Engine API
+- [ ] Bug #5: Optimize Rotation with Confidence/Gain gates
+- [ ] Bug #6: Whitelist signal types (Filter "Bias" signals)
+- [ ] Local Verification & Unit Tests
+- [ ] Deployment to Production Server (SSH & Git Push)

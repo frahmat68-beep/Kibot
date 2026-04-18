@@ -1815,8 +1815,20 @@ class MacEngineDaemon(
             val replacementSexy = replacement in sexySet
             val lowProfit = position.unrealizedPnlPct < hyperConfig.allInLiquidationMaxPnlPct
             val allInLiquidation = superSexyTarget != null && replacementDiff && (stagnant || lowProfit)
-            val adaptiveStagnantRotation = (stagnant || timeBasedZombieStagnant) && replacementDiff && (replacementSexy || position.unrealizedPnlPct <= 1.5)
-            noSellOrder && (allInLiquidation || adaptiveStagnantRotation)
+            val replacementScore = cycle.rankedPairs.firstOrNull { it.pairId == replacement }?.rankingScore ?: 0.0
+            val currentScore = cycle.rankedPairs.firstOrNull { it.pairId == position.pairId }?.rankingScore ?: 0.0
+            
+            // BUG #5: Rotation optimization gates
+            val confidenceGate = replacementScore >= 0.80
+            val gainGate = (replacementScore - currentScore) >= 0.05 // Expected gain > fees (approx 5% score diff)
+            val lossGate = position.unrealizedPnlPct > -1.5 // Jangan rotasi kalau loss > 1.5% (kasih nafas)
+            
+            val adaptiveStagnantRotation = (stagnant || timeBasedZombieStagnant) && 
+                replacementDiff && 
+                (replacementSexy || position.unrealizedPnlPct <= 1.5) &&
+                confidenceGate && gainGate && lossGate
+            
+            noSellOrder && (allInLiquidation || (adaptiveStagnantRotation && replacementDiff))
         }?.let { position ->
             val pairScore = cycle.rankedPairs.firstOrNull { it.pairId == position.pairId }
             val signal = com.kibot.shared.models.StrategySignal(
@@ -8168,7 +8180,8 @@ class MacEngineDaemon(
             )
 
             acquirePerSymbolExecutionLease(effectiveExecutionPlan.signal.pairId, now)
-            val result = liveExecutionCoordinator.submitEntry(
+            if (!canEnterNewPosition(now, targetQuote.pairId)) return false
+        val result = liveExecutionCoordinator.submitEntry(
                 botId = config.controlPlane.botId,
 
                 deviceId = config.device.deviceId,
@@ -8755,13 +8768,14 @@ class MacEngineDaemon(
             logger.error("[CAPITAL_BLOCKED] BUY_MOMENTUM ${normalizedSynthetic.signal.pairId.value}: exceeds adaptive limit")
             return false
         }
-        val finalQty2 = (allocResult2.allocatedIdr / limitPrice2).coerceAtLeast(0.00000001)
+        val finalQty2 = calculateOrderQuantity(allocResult2.allocatedIdr, limitPrice2) ?: return false
         val finalPlan2 = applyNewsAgileEntryScaling(
             executionPlan = normalizedSynthetic.copy(quantity = DecimalValue.fromDouble(finalQty2)),
             balances = balances,
             marketQuotes = marketQuotes,
         )
         
+        if (!canEnterNewPosition(now, targetQuote.pairId)) return false
         val result = liveExecutionCoordinator.submitEntry(
             botId = config.controlPlane.botId,
             deviceId = config.device.deviceId,
@@ -9201,7 +9215,7 @@ class MacEngineDaemon(
                     return false
                 }
             }
-            val finalQty3 = (allocResult3.allocatedIdr / limitPrice3).coerceAtLeast(0.00000001)
+            val finalQty3 = calculateOrderQuantity(allocResult3.allocatedIdr, limitPrice3) ?: return false
             applyNewsAgileEntryScaling(
                 executionPlan = normalized.copy(quantity = DecimalValue.fromDouble(finalQty3)),
                 balances = balances,
@@ -10855,7 +10869,7 @@ class MacEngineDaemon(
             shouldSurfaceRecentOrder -> {
                 val lastOrder = latestRecentOrder!!
                 val pair = lastOrder.pairId.value.uppercase()
-                val qty = formatDecimal(resolvedOrderQuantity(lastOrder), 4)
+                val qty = formatDecimal(resolvedOrderQuantity(lastOrder), 8)
                 val price = formatExecutionPrice(resolvedOrderPrice(lastOrder))
                 when (lastOrder.side.name.uppercase()) {
                     "BUY" -> "📥 Bought $qty $pair @ $price"
@@ -11172,6 +11186,48 @@ class MacEngineDaemon(
                 operatorAction = "No emergency brake.",
             )
         }
+    }
+
+
+    private fun canEnterNewPosition(now: kotlinx.datetime.Instant, pairId: com.kibot.shared.models.PairId): Boolean {
+        val currentState = repository.state.value
+        val dailyPnlPct = (parseMonetaryLabel(currentState.dailyPnlIdrLabel) ?: 0.0) / (parseMonetaryLabel(currentState.openingEquityIdrLabel) ?: 1.0) * 100.0
+        val hardStopLimitPct = -config.hardDailyLossLimitPct * 100.0
+        
+        // BUG #2: Hard Stop Indodax
+        if (dailyPnlPct <= hardStopLimitPct) {
+            logger.warn("[HARD_STOP] Entry blocked for {}: PnL {}% <= Limit {}%", pairId.value, formatDecimal(dailyPnlPct, 2), formatDecimal(hardStopLimitPct, 2))
+            return false
+        }
+        
+        // BUG #3: LEVEL_3/LIMITED Mode Block
+        val mode = currentState.operatingMode.uppercase()
+        val blockedModes = setOf("LIMITED", "DEFENSIVE", "SAFE", "RESTRICTED")
+        if (mode in blockedModes) {
+            logger.warn("[MODE_GATE] Entry blocked for {}: operatingMode is {}", pairId.value, mode)
+            return false
+        }
+        
+        return true
+    }
+
+    private fun calculateOrderQuantity(budgetIdr: Double, priceIdr: Double): Double? {
+        if (priceIdr <= 0.0 || budgetIdr <= 0.0) return null
+        
+        // BUG #1: Zero Quantity Buy (Indodax min 10k IDR)
+        val minBudget = 10000.0
+        if (budgetIdr < minBudget) {
+            logger.warn("[ORDER_GUARD] Budget {} IDR < min {} IDR, skipping.", formatDecimal(budgetIdr, 0), formatDecimal(minBudget, 0))
+            return null
+        }
+        
+        val qty = budgetIdr / priceIdr
+        if (qty < 0.00000001) {
+            logger.warn("[ORDER_GUARD] Calculated qty {} too small, skipping.", formatDecimal(qty, 8))
+            return null
+        }
+        
+        return qty
     }
 
     private fun normalizeTelegramNodeStatus(value: String): String {
@@ -13431,6 +13487,7 @@ class MacEngineDaemon(
             formatDecimal(allocatedIdr, 0),
         )
         acquirePerSymbolExecutionLease(bypassPair, now)
+        if (!canEnterNewPosition(now, targetQuote.pairId)) return false
         val result = liveExecutionCoordinator.submitEntry(
             botId = config.controlPlane.botId,
             deviceId = config.device.deviceId,

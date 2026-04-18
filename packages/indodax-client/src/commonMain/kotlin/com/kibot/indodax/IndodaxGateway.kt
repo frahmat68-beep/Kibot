@@ -241,6 +241,15 @@ class IndodaxGateway internal constructor(
     }
 
     override suspend fun placeOrder(plan: ExecutionPlan, clientOrderId: ClientOrderId): OrderSnapshot {
+
+        // [PRODUCTION_RESCUE] Minimum order guard: Indodax requires ~10k IDR min
+        if (plan.side == com.kibot.shared.models.OrderSide.BUY) {
+            val budget = plan.quoteBudget?.toDoubleOrZero() ?: 0.0
+            if (budget > 0 && budget < 11000.0) {
+                logger.warn("[MIN_ORDER_GUARD] Order rejected: budget ${budget} IDR is less than 11,000 IDR floor.")
+                return buildRejectedOrder(plan, clientOrderId, "Budget below 11k IDR floor")
+            }
+        }
         if (config.shadowMode) {
             return buildShadowFilledOrder(plan, clientOrderId)
         }

@@ -13,7 +13,14 @@ class BotModeDecider(
         risk: RiskDecision,
         healthDecision: EntryHealthDecision,
     ): BotModeSnapshot {
-        val mode = BotMode.ATTACK
+
+        val mode = when {
+            !risk.allowNewEntries -> BotMode.SAFE
+            risk.riskLadderLevel >= 3 -> BotMode.LIMITED  // LEVEL_3 -> LIMITED
+            risk.riskLadderLevel >= 2 -> BotMode.DEFENSIVE
+            else -> BotMode.ATTACK
+        }
+
         val aggressionScore = (
             0.94 *
                 risk.deploymentMultiplier.coerceAtLeast(0.88) *
@@ -24,7 +31,7 @@ class BotModeDecider(
             addAll(healthDecision.reasons.take(2))
             addAll(risk.reasons.take(3))
             addAll(market.rationale.take(3))
-            add("Mode dikunci ATTACK sesuai konfigurasi agresif tetap.")
+            add("Mode dinamis berdasarkan risk ladder (L${risk.riskLadderLevel})")
             add("Entry tetap memakai gate health minimum agar tidak menembak saat feed rusak total.")
         }.distinct()
 
