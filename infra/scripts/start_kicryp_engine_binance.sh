@@ -9,13 +9,14 @@ fi
 KINANCE_ENV="/home/ubuntu/KiNance/.env.kinance"
 KIBOT_ENV="/home/ubuntu/KiBot/.env.kibot"
 KIBOT_MANAGER_ENV="/home/ubuntu/KiBot/.env.kibot_manager"
+SERVER_ENV="/home/ubuntu/KiBot/.env.server"
 DROPIN_DIR="/etc/systemd/system/kibot-engine.service.d"
 DROPIN_FILE="${DROPIN_DIR}/binance-relocation.conf"
 KINANCE_DROPIN_DIR="/etc/systemd/system/kinance-engine.service.d"
 KINANCE_DROPIN_FILE="${KINANCE_DROPIN_DIR}/kibot-local-routing.conf"
 ORACLE_HOST="213.35.118.26"
 KINANCE_LOCAL_UDP_PORT="10098"
-MANAGER_UDP_PORT="9998"
+MANAGER_UDP_PORT="${MANAGER_UDP_PORT:-}"
 
 upsert_env() {
   local file="$1"
@@ -49,11 +50,31 @@ path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 PY
 }
 
+read_env_value() {
+  local file="$1"
+  local key="$2"
+  [ -f "$file" ] || return 1
+  awk -F= -v key="$key" '
+    $1 == key {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+      gsub(/^"|"$/, "", $2)
+      print $2
+      exit
+    }
+  ' "$file"
+}
+
+if [[ -z "$MANAGER_UDP_PORT" ]]; then
+  MANAGER_UDP_PORT="$(read_env_value "$SERVER_ENV" "KIBOT_MANAGER_UDP_BIND_PORT" || true)"
+fi
+MANAGER_UDP_PORT="${MANAGER_UDP_PORT:-9998}"
+
 echo "[1/5] Redirect KiNance -> localhost KiBot -> Oracle KiDax..."
 upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_LISTEN_PORT" "${KINANCE_LOCAL_UDP_PORT}"
 upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_HOST" "127.0.0.1"
 upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_PORT" "${MANAGER_UDP_PORT}"
-upsert_env "$KINANCE_ENV" "KIBOT_HIVE_UDP_PEERS" "${ORACLE_HOST}:9997"
+upsert_env "$KINANCE_ENV" "KIBOT_HIVE_UDP_PEERS" "${ORACLE_HOST}:9999"
+upsert_env "$KINANCE_ENV" "KIBOT_HIVE_EXPECTED_BOT_IDS" "main,kibot"
 upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS" "1000"
 upsert_env "$KINANCE_ENV" "KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS" "5000"
 
@@ -65,9 +86,9 @@ echo "[3/5] Set KiBot Binance output ke KiDax Oracle..."
 upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_ENABLED" "true"
 upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_LISTEN_PORT" "9999"
 upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_HOST" "$ORACLE_HOST"
-upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_PORT" "9997"
-upsert_env "$KIBOT_ENV" "KIBOT_HIVE_UDP_PEERS" "127.0.0.1:${KINANCE_LOCAL_UDP_PORT},${ORACLE_HOST}:9997"
-upsert_env "$KIBOT_ENV" "KIBOT_HIVE_EXPECTED_BOT_IDS" "kinance,kidax"
+upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_TARGET_PORT" "9999"
+upsert_env "$KIBOT_ENV" "KIBOT_HIVE_UDP_PEERS" "127.0.0.1:${KINANCE_LOCAL_UDP_PORT},${ORACLE_HOST}:9999"
+upsert_env "$KIBOT_ENV" "KIBOT_HIVE_EXPECTED_BOT_IDS" "main,kinance"
 upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS" "1000"
 upsert_env "$KIBOT_ENV" "KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS" "5000"
 

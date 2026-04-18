@@ -75,8 +75,8 @@ print('BOT_ENABLE_LIVE_EXECUTION="true"')
 if mode == "kidax":
     print('SHADOW_MODE="false"')
     print('KIBOT_EXCHANGE_KIND="INDODAX"')
-    print('KIBOT_LEAD_LAG_UDP_LISTEN_PORT="9997"')
-    print('KIBOT_LEAD_LAG_UDP_TARGET_PORT="9998"')
+    print('KIBOT_LEAD_LAG_UDP_LISTEN_PORT="9999"')
+    print('KIBOT_LEAD_LAG_UDP_TARGET_PORT="9999"')
     print('KIBOT_HIVE_UDP_PEERS="127.0.0.1:9999"')
     print('KIBOT_HIVE_EXPECTED_BOT_IDS="kinance,kibot"')
 elif mode == "kibot":
@@ -84,9 +84,9 @@ elif mode == "kibot":
     print('KIBOT_EXPECT_LIVE_EXECUTION="true"')
     print('KIBOT_LEAD_LAG_UDP_ENABLED="true"')
     print('KIBOT_LEAD_LAG_UDP_LISTEN_PORT="9999"')
-    print('KIBOT_LEAD_LAG_UDP_TARGET_PORT="9998"')
-    print('KIBOT_HIVE_UDP_PEERS="127.0.0.1:9997"')
-    print('KIBOT_HIVE_EXPECTED_BOT_IDS="kinance,kidax"')
+    print('KIBOT_LEAD_LAG_UDP_TARGET_PORT="9999"')
+    print('KIBOT_HIVE_UDP_PEERS="127.0.0.1:9999"')
+    print('KIBOT_HIVE_EXPECTED_BOT_IDS="main,kinance"')
 PY
 }
 

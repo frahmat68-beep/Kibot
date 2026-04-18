@@ -1,6 +1,6 @@
 # Server Deploy Checklist
 
-Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiCryp` setelah logic chart-adaptive, heartbeat UDP, dan local recovery aktif.
+Dokumen ini adalah checklist deploy untuk topologi aktif `main` / `kinance` / `kibot` setelah logic chart-adaptive, heartbeat UDP, dan local recovery aktif.
 
 ## Status Deploy
 - Build runtime utama sudah tervalidasi lewat `MacEngineDaemonTest`.
@@ -28,17 +28,17 @@ Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiCryp` 
 - `MAC_ENGINE_ENABLE_LAN_ADVERTISE=false`
 - `BOT_ENABLE_LIVE_EXECUTION=true`
 - `KIBOT_LOCAL_POSITION_STATE_ENABLED=true`
-- `KIBOT_MONTHLY_PNL_ANCHOR_PATH=/home/ubuntu/KiCryp/state/monthly_pnl_anchor.json`
+- `KIBOT_MONTHLY_PNL_ANCHOR_PATH=/home/ubuntu/KiBot/state/monthly_pnl_anchor.json`
 - `KIBOT_LEAD_LAG_UDP_ENABLED=true`
 - `KIBOT_LEAD_LAG_UDP_HEARTBEAT_ENABLED=true`
 - `KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=100`
 - `KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=500`
 
-### KiCryp Manager Ringan
-- gunakan `kicryp-manager.service` Python untuk commander ringan jika RAM server tipis
-- `KIBOT_MANAGER_STATE_DIR=/home/ubuntu/KiCryp/state`
-- `KIBOT_MANAGER_PROVIDER_STATE_FILE=/home/ubuntu/KiCryp/state/ai_provider_state.json`
-- `KIBOT_MANAGER_RUNTIME_NOTE_FILE=/home/ubuntu/KiCryp/state/runtime_note.json`
+### KiBot Manager Ringan
+- gunakan `kibot-manager.service` Python untuk commander ringan jika RAM server tipis
+- `KIBOT_MANAGER_STATE_DIR=/home/ubuntu/KiBot/state`
+- `KIBOT_MANAGER_PROVIDER_STATE_FILE=/home/ubuntu/KiBot/state/ai_provider_state.json`
+- `KIBOT_MANAGER_RUNTIME_NOTE_FILE=/home/ubuntu/KiBot/state/runtime_note.json`
 - `KIBOT_MANAGER_HEARTBEAT_INTERVAL_SEC=0.10`
 - `KIDAX_UDP_HOST=213.35.118.26`
 - `KINANCE_UDP_HOST=152.69.218.198`
@@ -66,7 +66,7 @@ Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiCryp` 
 - `KIBOT_POST_MORTEM_BLACKLIST_NET_LOSS_IDR=500`
 - `KIBOT_POST_MORTEM_BLACKLIST_PNL_PCT=-1.0`
 - `KIBOT_DAILY_SUMMARY_ENABLED=true`
-- `KIBOT_MANAGER_DAILY_SUMMARY_FILE=/home/ubuntu/KiCryp/state/daily_summary.json`
+- `KIBOT_MANAGER_DAILY_SUMMARY_FILE=/home/ubuntu/KiBot/state/daily_summary.json`
 
 ### KiDax
 - `BOT_ID=main`
@@ -75,9 +75,9 @@ Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiCryp` 
 - `DEVICE_ROLE=PRIMARY`
 - `MAC_ENGINE_PORT=8787`
 - `DEVICE_ID=kidax-oracle-sg`
-- `KIBOT_HIVE_EXPECTED_BOT_IDS=kinance,kicryp`
+- `KIBOT_HIVE_EXPECTED_BOT_IDS=kinance,kibot`
 - `KIBOT_LEAD_LAG_UDP_LISTEN_PORT=9999`
-- `KIBOT_LEAD_LAG_UDP_TARGET_HOST=<ip-kinance-atau-kicryp-lan>`
+- `KIBOT_LEAD_LAG_UDP_TARGET_HOST=<ip-kinance-atau-kibot-lan>`
 - `KIBOT_LEAD_LAG_UDP_TARGET_PORT=9999`
 - `INDODAX_API_KEY`
 - `INDODAX_API_SECRET`
@@ -89,19 +89,19 @@ Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiCryp` 
 - `DEVICE_ROLE=PRIMARY`
 - `MAC_ENGINE_PORT=8788`
 - `DEVICE_ID=kinance-oracle-sg`
-- `KIBOT_HIVE_EXPECTED_BOT_IDS=main,kicryp`
+- `KIBOT_HIVE_EXPECTED_BOT_IDS=main,kibot`
 - `KIBOT_LEAD_LAG_UDP_LISTEN_PORT=9999`
-- `KIBOT_LEAD_LAG_UDP_TARGET_HOST=<ip-kidax-atau-kicryp-lan>`
+- `KIBOT_LEAD_LAG_UDP_TARGET_HOST=<ip-main-atau-kibot-lan>`
 - `KIBOT_LEAD_LAG_UDP_TARGET_PORT=9999`
 - `BINANCE_API_KEY`
 - `BINANCE_API_SECRET`
 
-### KiCryp
-- `BOT_ID=kicryp`
-- `BOT_PROFILE_KEY=kicryp`
+### KiBot Commander
+- `BOT_ID=kibot`
+- `BOT_PROFILE_KEY=kibot`
 - `DEVICE_ROLE=PRIMARY`
 - `MAC_ENGINE_PORT=8789`
-- `DEVICE_ID=kicryp-oracle-sg`
+- `DEVICE_ID=kibot-oracle-sg`
 - `KIBOT_HIVE_EXPECTED_BOT_IDS=main,kinance`
 - `KIBOT_LEAD_LAG_UDP_LISTEN_PORT=9999`
 - `KIBOT_LEAD_LAG_UDP_TARGET_HOST=<ip-kidax-atau-kinance-lan>`
@@ -125,7 +125,7 @@ Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiCryp` 
   - `-Xms128m -Xmx300m`
 - Jika dashboard, AI assist, atau telemetry makin ramai:
   - naikkan jadi `-Xmx512m`
-- Untuk `kicryp-manager.service` ringan:
+- Untuk `kibot-manager.service` ringan:
   - `MemoryMax=192M`
   - `Nice=5`
 
@@ -136,38 +136,38 @@ Dokumen ini adalah checklist deploy untuk trio `KiDax`, `Kinance`, dan `KiCryp` 
 4. Jika top-up baru masuk dan ingin PnL bulan berjalan mulai dari nol, hapus file anchor lama atau biarkan runtime membuat anchor baru saat sync pertama bulan ini.
 5. `sudo systemctl daemon-reload`
 6. Restart `Kinance`.
-7. Restart `KiCryp`.
+7. Restart `KiBot Commander` jika node commander aktif.
 8. Restart `KiDax` terakhir.
 9. Pastikan cron recovery aktif:
    - `crontab -l | grep engine-recovery.sh`
 
 Alasan:
 - `Kinance` dulu supaya feed global dan heartbeat siap.
-- `KiCryp` kedua supaya veto/safe-mode layer aktif.
+- `KiBot Commander` kedua supaya veto/safe-mode layer aktif jika deployment memang memakai commander engine.
 - `KiDax` terakhir supaya executor tidak start sendirian tanpa partner.
 - Recovery check tetap jalan tiap 2 menit agar 1 server lebih tahan crash kecil.
 
 ## Smoke Test Pasca Deploy
 1. Cek service hidup:
    - `sudo systemctl status kinance-engine --no-pager`
-   - `sudo systemctl status kicryp-engine --no-pager`
+   - `sudo systemctl status kibot-engine --no-pager`
    - `sudo systemctl status kidax-engine --no-pager`
 2. Cek dashboard state:
    - `curl http://127.0.0.1:8787/api/state`
    - `curl http://127.0.0.1:8788/api/state`
-   - `curl http://127.0.0.1:8789/api/state`
+   - `curl http://127.0.0.1:8789/api/state` jika commander engine aktif
 3. Jalankan smoke script:
    - `scripts/smoke_test_trinity.sh`
 4. Pantau log:
    - `sudo journalctl -u kidax-engine -f -n 200`
    - `sudo journalctl -u kinance-engine -f -n 200`
-   - `sudo journalctl -u kicryp-engine -f -n 200`
-   - `sudo journalctl -u kicryp-manager -f -n 200`
+   - `sudo journalctl -u kibot-engine -f -n 200`
+   - `sudo journalctl -u kibot-manager -f -n 200`
 5. Cek note AI manager:
-   - `cat /home/ubuntu/KiCryp/state/runtime_note.json`
-   - `cat /home/ubuntu/KiCryp/state/ai_provider_state.json`
-   - `cat /home/ubuntu/KiCryp/state/pair_cooldowns.json`
-   - `cat /home/ubuntu/KiCryp/state/daily_summary.json`
+   - `cat /home/ubuntu/KiBot/state/runtime_note.json`
+   - `cat /home/ubuntu/KiBot/state/ai_provider_state.json`
+   - `cat /home/ubuntu/KiBot/state/pair_cooldowns.json`
+   - `cat /home/ubuntu/KiBot/state/daily_summary.json`
 
 ## Log Yang Harus Kelihatan
 - `TRINITY_HEARTBEAT`
@@ -181,7 +181,7 @@ Alasan:
 - Semua endpoint `/api/state` respon normal.
 - Tidak ada node yang masuk `SAFE_MODE` tanpa sebab.
 - Tidak ada spam `chart_activity_blocked` pada pair yang seharusnya aktif.
-- Heartbeat timeout tidak muncul saat ketiga node hidup.
+- Heartbeat timeout tidak muncul saat pasangan node yang diwajibkan hidup.
 - File `local_position_state.json` terbuat dan terupdate saat ada posisi.
 
 ## Hold Deploy Jika

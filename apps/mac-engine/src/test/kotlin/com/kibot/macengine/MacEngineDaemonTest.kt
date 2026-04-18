@@ -971,6 +971,51 @@ class MacEngineDaemonTest {
     }
 
     @Test
+    fun `heartbeat brake accepts control plane alias for main and kidax`() = runBlocking {
+        val localBotId = BotId("kinance")
+        val controlPlane = FakeControlPlaneGateway(botId = localBotId)
+        controlPlane.botState = runningBotState().copy(botId = localBotId)
+        controlPlane.seedLease(heldLease().copy(botId = localBotId))
+
+        val daemon = MacEngineDaemon(
+            repository = MacStateRepository(),
+            controlPlane = controlPlane,
+            exchange = FakeExchangeGateway(
+                marketQuotes = mutableListOf(marketQuote("doge_usdt", 103.0, 0.78)),
+                balances = mutableListOf(BalanceSnapshot("usdt", DecimalValue("10000"))),
+            ),
+            config = runtimeConfig(
+                exchangeKind = ExchangeKind.BINANCE_SPOT,
+                leadLagUdpEnabled = true,
+                leadLagUdpListenPort = 10129,
+                leadLagUdpTargetHost = "127.0.0.1",
+                leadLagUdpTargetPort = 10130,
+                leadLagUdpHeartbeatEnabled = true,
+                leadLagUdpHeartbeatIntervalMillis = 20L,
+                leadLagUdpHeartbeatTimeoutMillis = 80L,
+                leadLagUdpHeartbeatRequiredBotIds = setOf("main"),
+            ).copy(
+                controlPlane = runtimeConfig().controlPlane.copy(botId = localBotId),
+            ),
+            clock = fixedClock,
+        )
+
+        val kidaxPeerState = runningBotState().copy(
+            botId = BotId("kidax"),
+            lastHeartbeatAt = fixedClock.now(),
+        )
+        daemon.writePrivateField("latestPeerBotStates", mapOf("kidax" to kidaxPeerState))
+        daemon.writePrivateField("lastKnownHealthyPeerBotStates", mapOf("kidax" to kidaxPeerState))
+
+        val reason = daemon.invokePrivateSuspendMethod<String?>(
+            "enforceTrinityHeartbeatBrake",
+            fixedClock.now() + 10.minutes,
+        )
+
+        assertEquals(null, reason)
+    }
+
+    @Test
     fun `stale binary lead lag sequence is ignored`() = runBlocking {
         val controlPlane = FakeControlPlaneGateway(botId = botId)
         controlPlane.botState = runningBotState()

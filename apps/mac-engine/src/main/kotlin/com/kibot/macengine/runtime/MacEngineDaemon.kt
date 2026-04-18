@@ -5593,10 +5593,26 @@ class MacEngineDaemon(
 
     private fun nextUdpSequenceId(): Int = udpSequenceCounter.getAndIncrement().coerceAtLeast(1)
 
+    private fun botIdAliases(botId: String): List<String> {
+        val normalized = botId.trim().lowercase()
+        return when (normalized) {
+            "main", "kidax" -> listOf("main", "kidax")
+            "kibot", "kicryp" -> listOf("kibot", "kicryp")
+            else -> listOf(normalized)
+        }
+    }
+
+    private fun <T> lookupBotIdAlias(map: Map<String, T>, botId: String): T? {
+        botIdAliases(botId).forEach { alias ->
+            map[alias]?.let { return it }
+        }
+        return null
+    }
+
     private fun senderCodeFor(botId: String): Byte = when {
-        botId.contains("kinance", ignoreCase = true) -> 1
-        botId.contains("kibot", ignoreCase = true) -> 2
-        botId.contains("kidax", ignoreCase = true) -> 3
+        botIdAliases(botId).contains("kinance") -> 1
+        botIdAliases(botId).contains("kibot") -> 2
+        botIdAliases(botId).contains("kidax") -> 3
         else -> 15
     }
 
@@ -5946,8 +5962,9 @@ class MacEngineDaemon(
         if (uptimeMs < graceMs) return null
             val controlPlaneFallbackPeers = mutableListOf<String>()
         val stalePeers = expectedBots.mapNotNull { botId ->
-            val seenAt = lastTrinityHeartbeatByBotId[botId]
-            val peerState = latestPeerBotStates[botId] ?: lastKnownHealthyPeerBotStates[botId]
+            val seenAt = lookupBotIdAlias(lastTrinityHeartbeatByBotId, botId)
+            val peerState = lookupBotIdAlias(latestPeerBotStates, botId)
+                ?: lookupBotIdAlias(lastKnownHealthyPeerBotStates, botId)
             val peerHeartbeatAgeMs = peerState?.lastHeartbeatAt?.let { maxOf((now - it).inWholeMilliseconds, 0L) }
             val peerLooksHealthy = peerState != null &&
                 peerState.desiredState != BotDesiredState.OFF &&
@@ -10806,9 +10823,9 @@ class MacEngineDaemon(
             else -> "online"
         }
         fun peerNodeStatus(peerBotId: String): String {
-            if (config.controlPlane.botId.value.equals(peerBotId, ignoreCase = true)) return localNodeStatus()
-            val peerState = peerBotStates[peerBotId.lowercase()] ?: return "offline"
-            val udpSeenAt = lastTrinityHeartbeatByBotId[peerBotId.lowercase()]
+            if (botIdAliases(config.controlPlane.botId.value).contains(peerBotId.lowercase())) return localNodeStatus()
+            val peerState = lookupBotIdAlias(peerBotStates, peerBotId) ?: return "offline"
+            val udpSeenAt = lookupBotIdAlias(lastTrinityHeartbeatByBotId, peerBotId)
             val udpAgeMs = udpSeenAt?.let { (now - it).inWholeMilliseconds }
             val heartbeatAt = peerState.lastHeartbeatAt ?: return when {
                 peerState.desiredState == BotDesiredState.OFF || peerState.effectiveState == BotEffectiveState.STOPPED -> "offline"

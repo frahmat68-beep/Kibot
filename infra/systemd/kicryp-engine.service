@@ -30,7 +30,7 @@ Environment=KIBOT_LEAD_LAG_UDP_ENABLED=true
 Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_ENABLED=true
 Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=1000
 Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000
-Environment=KIBOT_HIVE_EXPECTED_BOT_IDS=kinance,kidax
+Environment=KIBOT_HIVE_EXPECTED_BOT_IDS=main,kinance
 Environment="JAVA_OPTS=-XX:+UseSerialGC -Xms96m -Xmx256m -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
 ExecStart=/bin/bash -lc '/usr/bin/java $JAVA_OPTS -jar /home/ubuntu/KiBot/server/mac-engine-all.jar'
 Restart=on-failure

@@ -63,7 +63,10 @@ Primary daemons:
 
 - `kibot-manager`
   - UDP bridge, veto/control helper, AI provider coordination
-  - local state endpoint on `9998`
+  - local control endpoint follows `KIBOT_MANAGER_UDP_BIND_PORT`
+  - observed live during audit:
+    - Node A `9998`
+    - Node B `9996`
 - `kibot-orchestrator`
   - runtime health orchestration
 - `kibot-auditor`
