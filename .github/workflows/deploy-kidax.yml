@@ -23,7 +23,7 @@ jobs:
       BOT_ID: main
       BOT_PROFILE_KEY: indodax
       EXCHANGE_KIND: INDODAX
-      EXPECTED_BOT_IDS: "kinance,kibot"
+      EXPECTED_BOT_IDS: "kinance"
       KIDAX_UDP_HOST: "213.35.118.26"
       KINANCE_UDP_HOST: "152.69.218.198"
       DEVICE_ID: kibot-oracle-indodax

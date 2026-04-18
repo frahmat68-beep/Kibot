@@ -24,7 +24,7 @@ Environment=KIBOT_LEAD_LAG_UDP_ENABLED=true
 Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_ENABLED=true
 Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=1000
 Environment=KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000
-Environment=KIBOT_HIVE_EXPECTED_BOT_IDS=kinance,kibot
+Environment=KIBOT_HIVE_EXPECTED_BOT_IDS=kinance
 Environment="JAVA_OPTS=-XX:+UseSerialGC -Xms96m -Xmx256m -Dkotlinx.coroutines.scheduler.core.pool.size=2 -Dkotlinx.coroutines.scheduler.max.pool.size=3 -Dfile.encoding=UTF-8"
 ExecStartPre=-/usr/bin/pkill -TERM -f mac-engine
 ExecStartPre=/bin/sleep 3

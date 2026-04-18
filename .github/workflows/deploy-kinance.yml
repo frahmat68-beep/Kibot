@@ -23,7 +23,7 @@ jobs:
       BOT_ID: kinance
       BOT_PROFILE_KEY: kinance
       EXCHANGE_KIND: BINANCE_SPOT
-      EXPECTED_BOT_IDS: "main,kibot"
+      EXPECTED_BOT_IDS: "main"
       KIDAX_UDP_HOST: "213.35.118.26"
       KINANCE_UDP_HOST: "152.69.218.198"
       DEVICE_ID: kibot-oracle-binance

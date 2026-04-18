@@ -87,7 +87,7 @@ Dokumen ini adalah checklist deploy untuk topologi aktif `main` / `kinance` / `k
 - `DEVICE_ROLE=PRIMARY`
 - `MAC_ENGINE_PORT=8787`
 - `DEVICE_ID=kidax-oracle-sg`
-- `KIBOT_HIVE_EXPECTED_BOT_IDS=kinance,kibot`
+- `KIBOT_HIVE_EXPECTED_BOT_IDS=kinance`
 - `KIBOT_LEAD_LAG_UDP_LISTEN_PORT=9999`
 - `KIBOT_LEAD_LAG_UDP_TARGET_HOST=<ip-kinance-atau-kibot-lan>`
 - `KIBOT_LEAD_LAG_UDP_TARGET_PORT=9999`
@@ -102,7 +102,7 @@ Dokumen ini adalah checklist deploy untuk topologi aktif `main` / `kinance` / `k
 - `DEVICE_ROLE=PRIMARY`
 - `MAC_ENGINE_PORT=8788`
 - `DEVICE_ID=kinance-oracle-sg`
-- `KIBOT_HIVE_EXPECTED_BOT_IDS=main,kibot`
+- `KIBOT_HIVE_EXPECTED_BOT_IDS=main`
 - `KIBOT_LEAD_LAG_UDP_LISTEN_PORT=9999`
 - `KIBOT_LEAD_LAG_UDP_TARGET_HOST=<ip-main-atau-kibot-lan>`
 - `KIBOT_LEAD_LAG_UDP_TARGET_PORT=9999`

@@ -114,9 +114,9 @@ touch "$ENV_FILE"
   fi
 
   if grep -q '^KIBOT_HIVE_EXPECTED_BOT_IDS=' "$ENV_FILE"; then
-    sed -i 's/^KIBOT_HIVE_EXPECTED_BOT_IDS=.*/KIBOT_HIVE_EXPECTED_BOT_IDS=main,kibot/' "$ENV_FILE"
+    sed -i 's/^KIBOT_HIVE_EXPECTED_BOT_IDS=.*/KIBOT_HIVE_EXPECTED_BOT_IDS=main/' "$ENV_FILE"
   else
-    printf '\nKIBOT_HIVE_EXPECTED_BOT_IDS=main,kibot\n' >> "$ENV_FILE"
+    printf '\nKIBOT_HIVE_EXPECTED_BOT_IDS=main\n' >> "$ENV_FILE"
   fi
 
   if ! grep -q '^SHADOW_MODE=false$' "$ENV_FILE"; then
@@ -214,9 +214,9 @@ touch "$ENV_FILE"
   fi
 
   if grep -q '^KIBOT_HIVE_EXPECTED_BOT_IDS=' "$ENV_FILE"; then
-    sed -i 's/^KIBOT_HIVE_EXPECTED_BOT_IDS=.*/KIBOT_HIVE_EXPECTED_BOT_IDS=kinance,kibot/' "$ENV_FILE"
+    sed -i 's/^KIBOT_HIVE_EXPECTED_BOT_IDS=.*/KIBOT_HIVE_EXPECTED_BOT_IDS=kinance/' "$ENV_FILE"
   else
-    printf '\nKIBOT_HIVE_EXPECTED_BOT_IDS=kinance,kibot\n' >> "$ENV_FILE"
+    printf '\nKIBOT_HIVE_EXPECTED_BOT_IDS=kinance\n' >> "$ENV_FILE"
   fi
 
   if ! grep -q '^SHADOW_MODE=false$' "$ENV_FILE"; then
