@@ -13567,6 +13567,12 @@ class MacEngineDaemon(
                 // [POLICY GATE] AlwaysInvestedPolicy check
                 val quote = resolvedMarketQuotes.firstOrNull { it.pairId == executionPlan.signal.pairId }
                 val feeRate = if (executionPlan.orderType == com.kibot.shared.models.OrderType.LIMIT) 0.23 else 0.4211
+                // [GATE] Balance & Connectivity Check
+                val dailyPnl = results.lastOrNull()?.portfolio?.dailyPnlPct?.toDoubleOrZero() ?: 0.0
+                if (dailyPnl <= -0.02) {
+                    logger.warn("[GATE_REJECTED] Daily hard stop active: {:.2f}%", dailyPnl * 100)
+                    return executionPlan.copy(quoteBudget = com.kibot.shared.models.DecimalValue.Zero)
+                }
                 val policyDecision = alwaysInvestedPolicy.shouldEnter(
                     expectedMovePercent = executionPlan.expectedNetEdgePct ?: 1.5,
                     spreadPercent = quote?.spreadPct ?: 0.1,
