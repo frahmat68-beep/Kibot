@@ -74,17 +74,18 @@ def test_manager_udp_port():
         sock.close()
 
 def test_thread_profiling():
-    """Verify that all 11 background threads are correctly defined."""
+    """Verify that all required background threads are correctly defined."""
     manager_path = ROOT / "scripts" / "kibot_manager.py"
     content = manager_path.read_text()
     required_threads = [
         "kibot-news-scanner", "kibot-correlation-loop", "kibot-coingecko-loop",
         "kibot-pair-screen-loop", "kibot-heartbeat-loop", "kibot-health-gate-loop",
-        "kibot-ai-review-loop", "kibot-simulation-loop", "kibot-state-server",
+        "kibot-ai-review-loop", "kibot-learning-review-loop", "kibot-daily-cycle-loop",
+        "kibot-simulation-loop", "kibot-state-server",
         "kibot-discovery", "kibot-portfolio", "kibot-signal-mgr"
     ]
     missing = [t for t in required_threads if f'name="{t}"' not in content]
-    return log_test("Manager Thread Profiling", len(missing) == 0, f"Missing: {missing}" if missing else "All 12 threads defined")
+    return log_test("Manager Thread Profiling", len(missing) == 0, f"Missing: {missing}" if missing else "All required threads defined")
 
 def test_log_maintenance_logic():
     """Verify disk usage monitoring and log rotation logic."""

@@ -67,6 +67,11 @@ Primary daemons:
 
 - `kibot-manager`
   - UDP bridge, veto/control helper, AI provider coordination
+  - maintains `30m` learning review state for strategy-only AI reflection
+  - owns midnight WIB cycle:
+    - send end-of-day Telegram report
+    - request liquidation of all open positions
+    - reset intraday PnL/metrics after positions are flat
   - local control endpoint follows `KIBOT_MANAGER_UDP_BIND_PORT`
   - observed live during audit:
     - Node A `9998`
@@ -80,7 +85,12 @@ Primary daemons:
 - `kibot-security`
   - security checks
 - `kibot-notifier`
-  - notification/log fanout
+  - urgent-only Telegram alert fanout
+  - expected payloads:
+    - crash loop
+    - disk / RAM critical
+    - critical service failure
+  - non-urgent trade spam is intentionally suppressed; daily report is emitted by `kibot-manager`
 - `kibot-analyst` (optional/on-demand in many deployments)
 
 ## C) Control Plane + Shared State
@@ -116,6 +126,10 @@ Primary daemons:
 ## 4. Python Sidecar Interaction
 
 - `kibot-manager` receives/bridges event streams and AI approval context.
+- `kibot-manager` now writes strategy learning and reset state to:
+  - `.state/learning_review.json`
+  - `.state/daily_report.json`
+  - `.state/daily_cycle_state.json`
 - Guard/analyst/orchestrator services monitor liveness and anomalies.
 - Systemd restart policy keeps sidecars resilient under low-RAM pressure.
 

@@ -142,11 +142,93 @@ def _metric_add(name: str, amount: float) -> None:
         _metrics[name] = float(current) + float(amount)
 
 
-def _telegram_send(message: str) -> None:
+def _wib_now() -> datetime:
+    return datetime.now(timezone.utc) + timedelta(hours=int(os.getenv("KIBOT_WIB_UTC_OFFSET_HOURS", "7")))
+
+
+def _wib_today_str() -> str:
+    return _wib_now().date().isoformat()
+
+
+def _parse_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _to_wib_date_string(value: Any) -> str:
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return ""
+    return (parsed + timedelta(hours=int(os.getenv("KIBOT_WIB_UTC_OFFSET_HOURS", "7")))).date().isoformat()
+
+
+def _parse_numeric(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    raw = str(value).strip()
+    if not raw:
+        return None
+    cleaned = re.sub(r"[^0-9,.-]", "", raw)
+    if cleaned.count(",") > 1 and "." not in cleaned:
+        cleaned = cleaned.replace(",", "")
+    elif "," in cleaned and "." in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    elif "." in cleaned and "," not in cleaned:
+        whole, fractional = cleaned.rsplit(".", 1)
+        if fractional.isdigit() and len(fractional) == 3 and whole.replace("-", "").isdigit():
+            cleaned = cleaned.replace(".", "")
+    else:
+        cleaned = cleaned.replace(",", "")
+    try:
+        return float(cleaned)
+    except Exception:
+        return None
+
+
+def _telegram_send(message: str, *, category: str = "general", force: bool = False) -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_USER_ID", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_USER_ID", "")).strip()
     if not token or not chat_id:
         return
+    if not force:
+        allowed = {"urgent", "daily_report"}
+        if category not in allowed:
+            return
+        if category == "daily_report":
+            explicit_primary = os.getenv("KIBOT_NOTIFICATION_PRIMARY", "").strip().lower()
+            if explicit_primary:
+                if explicit_primary not in {"1", "true", "yes", "on"}:
+                    return
+            else:
+                role_hint = " ".join(
+                    filter(
+                        None,
+                        [
+                            os.getenv("BOT_ID", "").strip().lower(),
+                            os.getenv("BOT_PROFILE_KEY", "").strip().lower(),
+                            os.getenv("KIBOT_EXCHANGE_KIND", "").strip().lower(),
+                        ],
+                    )
+                )
+                if any(token_hint in role_hint for token_hint in ("kinance", "binance", "scanner")):
+                    return
+                if not any(token_hint in role_hint for token_hint in ("kidax", "main", "indodax")):
+                    runtime_payload = _fetch_local_runtime_state(timeout_sec=1.0) if "LOCAL_RUNTIME_STATE_URLS" in globals() else {}
+                    runtime_url = str(runtime_payload.get("_state_url") or "")
+                    if ":8788/" in runtime_url or runtime_url.endswith(":8788/api/state"):
+                        return
     try:
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
@@ -2488,6 +2570,13 @@ RUNTIME_NOTE_PATH = Path(
 )
 RUNTIME_NOTE_MIN_INTERVAL_SEC = int(os.getenv("KIBOT_MANAGER_RUNTIME_NOTE_MIN_INTERVAL_SEC", "15"))
 DAILY_SUMMARY_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_SUMMARY_FILE", str(STATE_ROOT / "daily_summary.json")))
+DAILY_REPORT_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_REPORT_FILE", str(STATE_ROOT / "daily_report.json")))
+DAILY_REPORT_HISTORY_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_REPORT_HISTORY_FILE", str(STATE_ROOT / "daily_report_history.json")))
+LEARNING_REVIEW_PATH = Path(os.getenv("KIBOT_MANAGER_LEARNING_REVIEW_FILE", str(STATE_ROOT / "learning_review.json")))
+LEARNING_REVIEW_HISTORY_PATH = Path(os.getenv("KIBOT_MANAGER_LEARNING_REVIEW_HISTORY_FILE", str(STATE_ROOT / "learning_review_history.json")))
+DAILY_CYCLE_STATE_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_CYCLE_FILE", str(STATE_ROOT / "daily_cycle_state.json")))
+TRADE_LOG_RUNTIME_PATH = Path(os.getenv("KIBOT_MANAGER_TRADE_LOG_FILE", str(Path.cwd() / "state/trade_log.jsonl")))
+TRADE_SUMMARY_RUNTIME_PATH = Path(os.getenv("KIBOT_MANAGER_TRADE_SUMMARY_FILE", str(Path.cwd() / "state/trade_summary.json")))
 PAIR_MEMORY_PATH = Path(os.getenv("KIBOT_MANAGER_PAIR_MEMORY_FILE", str(STATE_ROOT / "pair_memory.json")))
 PAIR_MEMORY_ROLLING_WINDOW = int(os.getenv("KIBOT_PAIR_MEMORY_ROLLING_WINDOW", "50"))
 PAIR_MEMORY_MIN_TRADES_FOR_WINRATE = int(os.getenv("KIBOT_PAIR_MEMORY_MIN_TRADES_FOR_WINRATE", "3"))
@@ -2532,6 +2621,17 @@ DAILY_LOSS_LIMIT_PCT = float(os.getenv("KIBOT_DAILY_LOSS_LIMIT_PCT", "0.02"))
 WIB_UTC_OFFSET_HOURS = int(os.getenv("KIBOT_WIB_UTC_OFFSET_HOURS", "7"))
 DAILY_GUARD_STATE_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_GUARD_FILE", str(STATE_ROOT / "daily_guard.json")))
 MANAGER_GATE_STATE_PATH = Path(os.getenv("KIBOT_MANAGER_GATE_STATE_FILE", str(STATE_ROOT / "manager_gate.json")))
+LOCAL_RUNTIME_STATE_URLS = [
+    item.strip()
+    for item in os.getenv(
+        "KIBOT_MANAGER_RUNTIME_STATE_URLS",
+        "http://127.0.0.1:8787/api/state,http://127.0.0.1:8788/api/state",
+    ).split(",")
+    if item.strip()
+]
+LEARNING_REVIEW_INTERVAL_SEC = int(os.getenv("KIBOT_LEARNING_REVIEW_INTERVAL_SEC", "1800"))
+MIDNIGHT_RESET_RETRY_SEC = int(os.getenv("KIBOT_MIDNIGHT_RESET_RETRY_SEC", "60"))
+MIDNIGHT_RESET_ALERT_AFTER_SEC = int(os.getenv("KIBOT_MIDNIGHT_RESET_ALERT_AFTER_SEC", "600"))
 SAFE_ENTRY_MSG_TYPES = {"DETECTOR_HIT", "INSTANT_BUY_ANOMALY"}
 EXIT_MSG_TYPES = {"SELL_WALL_SURGE", "MOMENTUM_LOSS", "TRAILING_STOP_HIT", "THESIS_INVALID_EXIT"}
 # Maximum size for unbounded caches
@@ -2580,6 +2680,19 @@ _daily_guard_state: Dict[str, Any] = _load_json_file(
         "reason": "",
     },
 )
+_daily_cycle_state: Dict[str, Any] = _load_json_file(
+    DAILY_CYCLE_STATE_PATH,
+    {
+        "active_wib_date": _wib_today_str(),
+        "pending_new_date": "",
+        "pending_previous_date": "",
+        "pending_started_at": "",
+        "last_liquidation_emit_at": "",
+        "last_daily_report_date": "",
+        "last_reset_completed_date": "",
+        "alert_sent_for_pending_cycle": False,
+    },
+)
 _pair_memory: Dict[str, Dict[str, Any]] = _load_json_file(PAIR_MEMORY_PATH, {})
 
 
@@ -2612,8 +2725,34 @@ def _save_daily_guard_state() -> None:
     _write_json_file(DAILY_GUARD_STATE_PATH, _daily_guard_state)
 
 
+def _save_daily_cycle_state() -> None:
+    _write_json_file(DAILY_CYCLE_STATE_PATH, _daily_cycle_state)
+
+
 def _save_pair_memory_state() -> None:
     _write_json_file(PAIR_MEMORY_PATH, _pair_memory)
+
+
+def _operational_wib_date() -> str:
+    return str(_daily_cycle_state.get("active_wib_date") or _wib_today_str())
+
+
+def _midnight_reset_pending() -> bool:
+    return bool(str(_daily_cycle_state.get("pending_new_date") or "").strip())
+
+
+def _fetch_local_runtime_state(timeout_sec: float = 2.0) -> Dict[str, Any]:
+    for url in LOCAL_RUNTIME_STATE_URLS:
+        try:
+            response = requests.get(url, timeout=timeout_sec)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, dict) and payload:
+                payload.setdefault("_state_url", url)
+                return payload
+        except Exception:
+            continue
+    return {}
 
 
 def _default_pair_memory() -> Dict[str, Any]:
@@ -2839,12 +2978,11 @@ def _daily_guard_reset_due() -> bool:
 
 
 def _refresh_daily_guard_from_equity(current_equity: float | None) -> None:
-    today = (datetime.now(timezone.utc) + timedelta(hours=WIB_UTC_OFFSET_HOURS)).date().isoformat()
-    if _daily_guard_state.get("date") != today:
-        had_daily_hard_stop = bool(_gate_state.get("daily_hard_stop"))
+    logical_today = _operational_wib_date()
+    if not _daily_guard_state.get("date"):
         _daily_guard_state.update(
             {
-                "date": today,
+                "date": logical_today,
                 "start_of_day_equity": current_equity,
                 "current_equity": current_equity,
                 "daily_pnl_pct": None,
@@ -2855,37 +2993,39 @@ def _refresh_daily_guard_from_equity(current_equity: float | None) -> None:
             }
         )
         _save_daily_guard_state()
-        if had_daily_hard_stop:
-            _gate_state["daily_hard_stop"] = False
-            _gate_state["daily_hard_stop_reason"] = ""
-            _gate_state["daily_hard_stop_reset_at"] = ""
-            _save_gate_state()
-            _resume_new_entries("new day reset")
+        return
+    if _daily_guard_state.get("date") != logical_today:
+        if current_equity is not None:
+            _daily_guard_state["current_equity"] = current_equity
+            _save_daily_guard_state()
+        return
 
 
 def _reconcile_daily_guard_day_rollover() -> None:
-    today = (datetime.now(timezone.utc) + timedelta(hours=WIB_UTC_OFFSET_HOURS)).date().isoformat()
+    today = _operational_wib_date()
     if _daily_guard_state.get("date") == today:
         return
-    _daily_guard_state.update(
+    if not _daily_guard_state.get("date"):
+        _daily_guard_state.update(
+            {
+                "date": today,
+                "start_of_day_equity": _daily_guard_state.get("current_equity"),
+                "daily_pnl_pct": 0.0,
+                "hard_stopped": False,
+                "triggered_at": "",
+                "reset_at": "",
+                "reason": "",
+            }
+        )
+        _save_daily_guard_state()
+        return
+    _append_runtime_event(
+        "daily_rollover_pending",
         {
-            "date": today,
-            "start_of_day_equity": _daily_guard_state.get("current_equity"),
-            "daily_pnl_pct": 0.0,
-            "hard_stopped": False,
-            "triggered_at": "",
-            "reset_at": "",
-            "reason": "",
-        }
+            "stored_date": _daily_guard_state.get("date"),
+            "target_date": today,
+        },
     )
-    _save_daily_guard_state()
-    if bool(_gate_state.get("daily_hard_stop")):
-        _gate_state["daily_hard_stop"] = False
-        _gate_state["daily_hard_stop_reason"] = ""
-        _gate_state["daily_hard_stop_reset_at"] = ""
-        _save_gate_state()
-    _daily_reset_extra_state()
-    _resume_new_entries("new day rollover")
 
 def _ensure_hard_stop_consistency() -> None:
     """Clear stale hard-stop flags when the stored PnL no longer breaches today's limit."""
@@ -2940,7 +3080,10 @@ def _check_daily_loss_limit(current_equity: float | None = None) -> None:
     if current_equity is None:
         current_equity = float(_daily_guard_state.get("current_equity") or 0.0) or None
     _refresh_daily_guard_from_equity(current_equity)
+    actual_today = _wib_today_str()
     if _daily_guard_state.get("hard_stopped") and _daily_guard_reset_due():
+        if str(_daily_guard_state.get("date") or "") != actual_today:
+            return
         _daily_guard_state.update({"hard_stopped": False, "reason": "", "triggered_at": ""})
         _save_daily_guard_state()
         _gate_state["daily_hard_stop"] = False
@@ -2964,11 +3107,8 @@ def _bootstrap_daily_guard_from_kidax() -> None:
     # Only bootstrap missing context; do not re-trigger hard stops from external labels.
     if _daily_guard_state.get("start_of_day_equity") is not None and _daily_guard_state.get("current_equity") is not None:
         return
-    try:
-        response = requests.get("http://127.0.0.1:8787/api/state", timeout=2)
-        response.raise_for_status()
-        payload = response.json()
-    except Exception:
+    payload = _fetch_local_runtime_state(timeout_sec=2.0)
+    if not payload:
         return
 
     daily_pnl_pct = None
@@ -2989,17 +3129,10 @@ def _bootstrap_daily_guard_from_kidax() -> None:
 
     current_equity = None
     for key in ("totalValueIdr", "portfolioValueIdr", "total_value_idr"):
-        value = payload.get(key)
-        if value is None:
-            continue
-        cleaned_value = re.sub(r"[^\d.,-]", "", str(value)).replace(".", "").replace(",", ".")
-        try:
-            current_equity = float(cleaned_value)
-            current_equity = float(cleaned_value)
+        current_equity = _parse_numeric(payload.get(key))
+        if current_equity is not None:
             break
-        except Exception:
-            continue
-    
+
     if current_equity is not None:
         _refresh_daily_guard_from_equity(current_equity)
         if daily_pnl_pct is not None and _daily_guard_state.get("daily_pnl_pct") is None:
@@ -3237,29 +3370,33 @@ def _pair_cooldown_active(pair: str) -> Tuple[bool, str]:
     return True, str(state.get("reason") or "cooldown_active")
 
 
+def _default_daily_summary(date_str: str | None = None) -> Dict[str, Any]:
+    return {
+        "date": date_str or _operational_wib_date(),
+        "ai_success": {},
+        "ai_failure": {},
+        "veto_metrics": {},
+        "loss_blacklist_pairs": [],
+        "coins_bought_today": [],
+        "coins_sold_today": [],
+        "recent_notes": [],
+        "learning_reviews": [],
+        "last_learning_review": {},
+    }
+
+
 def _load_daily_summary() -> Dict[str, Any]:
-    today = datetime.now(timezone.utc).date().isoformat()
-    data = _load_json_file(
-        DAILY_SUMMARY_PATH,
-        {
-            "date": today,
-            "ai_success": {},
-            "ai_failure": {},
-            "veto_metrics": {},
-            "loss_blacklist_pairs": [],
-            "recent_notes": [],
-        },
-    )
-    if data.get("date") != today:
-        data = {
-            "date": today,
-            "ai_success": {},
-            "ai_failure": {},
-            "veto_metrics": {},
-            "loss_blacklist_pairs": [],
-            "recent_notes": [],
-        }
-    return data
+    logical_today = _operational_wib_date()
+    data = _load_json_file(DAILY_SUMMARY_PATH, _default_daily_summary(logical_today))
+    if not isinstance(data, dict):
+        return _default_daily_summary(logical_today)
+    if not data.get("date"):
+        data["date"] = logical_today
+    if data.get("date") != logical_today:
+        data = _default_daily_summary(logical_today)
+    base = _default_daily_summary(str(data.get("date") or logical_today))
+    base.update(data)
+    return base
 
 
 def _update_daily_summary(kind: str, detail: Dict[str, Any]) -> None:
@@ -3282,6 +3419,26 @@ def _update_daily_summary(kind: str, detail: Dict[str, Any]) -> None:
         pair = str(detail.get("pair") or "")
         if pair and pair not in summary["loss_blacklist_pairs"]:
             summary["loss_blacklist_pairs"].append(pair)
+    elif kind == "coin_bought":
+        pair = str(detail.get("pair") or "").lower().strip()
+        if pair and pair not in summary["coins_bought_today"]:
+            summary["coins_bought_today"].append(pair)
+    elif kind == "coin_sold":
+        pair = str(detail.get("pair") or "").lower().strip()
+        if pair and pair not in summary["coins_sold_today"]:
+            summary["coins_sold_today"].append(pair)
+    elif kind == "learning_review":
+        entry = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "summary": str(detail.get("summary") or "").strip(),
+            "strategy": str(detail.get("strategy") or "").strip(),
+            "lessons": list(detail.get("lessons") or []),
+            "risks": list(detail.get("risks") or []),
+        }
+        reviews = list(summary.get("learning_reviews") or [])
+        reviews.append(entry)
+        summary["learning_reviews"] = reviews[-16:]
+        summary["last_learning_review"] = entry
     note_line = {
         "at": datetime.now(timezone.utc).isoformat(),
         "kind": kind,
@@ -3306,6 +3463,462 @@ def _append_runtime_event(kind: str, detail: Dict[str, Any]) -> None:
         del _recent_runtime_events[:-40]
 
 
+def _load_trade_log_records() -> List[Dict[str, Any]]:
+    if not TRADE_LOG_RUNTIME_PATH.exists():
+        return []
+    records: List[Dict[str, Any]] = []
+    try:
+        with open(TRADE_LOG_RUNTIME_PATH, "r", encoding="utf-8") as handle:
+            for line in handle:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    item = json.loads(raw)
+                except Exception:
+                    continue
+                if isinstance(item, dict):
+                    records.append(item)
+    except Exception as error:
+        print(f"[KIBOT][TRADE_LOG][WARN] read failed reason={error}", flush=True)
+    return records
+
+
+def _trade_records_for_wib_date(target_date: str) -> List[Dict[str, Any]]:
+    if not target_date:
+        return []
+    rows: List[Dict[str, Any]] = []
+    for record in _load_trade_log_records():
+        trade_date = _to_wib_date_string(record.get("timestamp") or record.get("ts") or record.get("entry_at"))
+        if trade_date == target_date:
+            rows.append(record)
+    return rows
+
+
+def _load_learning_review_history() -> List[Dict[str, Any]]:
+    data = _load_json_file(LEARNING_REVIEW_HISTORY_PATH, [])
+    return data if isinstance(data, list) else []
+
+
+def _save_learning_review(review: Dict[str, Any]) -> None:
+    _write_json_file(LEARNING_REVIEW_PATH, review)
+    history = [item for item in _load_learning_review_history() if item.get("at") != review.get("at")]
+    history.append(review)
+    history = sorted(history, key=lambda item: str(item.get("at") or ""))[-96:]
+    _write_json_file(LEARNING_REVIEW_HISTORY_PATH, history)
+
+
+def _store_daily_report(report: Dict[str, Any]) -> None:
+    _write_json_file(DAILY_REPORT_PATH, report)
+    history = _load_json_file(DAILY_REPORT_HISTORY_PATH, [])
+    if not isinstance(history, list):
+        history = []
+    history = [item for item in history if item.get("report_date") != report.get("report_date")]
+    history.append(report)
+    history = sorted(history, key=lambda item: str(item.get("report_date") or ""))[-30:]
+    _write_json_file(DAILY_REPORT_HISTORY_PATH, history)
+
+
+def _reset_intraday_metrics() -> None:
+    global _veto_metrics
+    for name in (
+        "market_orders_today",
+        "limit_orders_today",
+        "entries_blocked_hard_stop",
+        "entries_blocked_learn_gate",
+        "entries_blocked_whatif",
+        "whatif_skips_today",
+        "whatif_enters_today",
+    ):
+        _metrics[name] = 0
+    _metrics["fee_bleed_est_idr"] = 0.0
+    _math_review_trade_journal.clear()
+    _veto_metrics = {"approved": 0, "rejected": 0, "sell_confirmed": 0, "emergency_sell": 0}
+
+
+def _active_position_pairs() -> List[str]:
+    pairs = {pair.lower().strip() for pair in _active_positions_cache.keys() if str(pair).strip()}
+    for pair in _current_balance_snapshot().get("holdings_pairs") or []:
+        normalized = str(pair).lower().strip()
+        if normalized:
+            pairs.add(normalized)
+    return sorted(pairs)
+
+
+def _extract_state_holdings(payload: Dict[str, Any]) -> List[str]:
+    holdings = payload.get("holdingsDetailed")
+    if not isinstance(holdings, list):
+        return []
+    pairs: List[str] = []
+    for item in holdings:
+        if not isinstance(item, dict):
+            continue
+        pair = str(item.get("pairId") or "").lower().strip()
+        if pair:
+            pairs.append(pair)
+            continue
+        asset = str(item.get("assetCode") or item.get("symbol") or "").lower().strip()
+        if asset and asset != "idr":
+            pairs.append(f"{asset}_idr")
+    return sorted(dict.fromkeys(pairs))
+
+
+def _current_balance_snapshot() -> Dict[str, Any]:
+    payload = _fetch_local_runtime_state(timeout_sec=2.0)
+    equity = None
+    free_cash = None
+    for key in ("totalEquityIdr", "total_equity_idr", "portfolioValueIdr", "portfolio_value_idr", "totalValueIdr", "total_value_idr"):
+        equity = _parse_numeric(payload.get(key))
+        if equity is not None:
+            break
+    for key in ("freeIdr", "free_idr", "freeCashIdr", "free_cash_idr", "freeIdrLabel"):
+        free_cash = _parse_numeric(payload.get(key))
+        if free_cash is not None:
+            break
+    if equity is None:
+        equity = _get_total_equity_estimate()
+    return {
+        "equity_idr": equity,
+        "free_cash_idr": free_cash,
+        "holdings_pairs": _extract_state_holdings(payload),
+        "payload": payload,
+    }
+
+
+def _build_daily_report_payload(report_date: str) -> Dict[str, Any]:
+    records = _trade_records_for_wib_date(report_date)
+    sells = [item for item in records if str(item.get("side") or "").upper() == "SELL"]
+    buys = [item for item in records if str(item.get("side") or "").upper() == "BUY"]
+    current_summary = _load_daily_summary()
+    report_guard = dict(_daily_guard_state) if str(_daily_guard_state.get("date") or "") == report_date else {}
+    start_balance = _parse_numeric(report_guard.get("start_of_day_equity"))
+    end_balance = _parse_numeric(report_guard.get("current_equity"))
+    if end_balance is None:
+        latest_balance_after = None
+        for row in reversed(records):
+            latest_balance_after = _parse_numeric(row.get("balanceAfter") or row.get("balance_after"))
+            if latest_balance_after is not None:
+                break
+        end_balance = latest_balance_after
+    if end_balance is None:
+        end_balance = _current_balance_snapshot().get("equity_idr")
+    daily_pnl_idr = sum((_parse_numeric(item.get("netPnlIdr") or item.get("net_pnl_idr")) or 0.0) for item in sells)
+    daily_pnl_pct = _parse_numeric(report_guard.get("daily_pnl_pct"))
+    if daily_pnl_pct is None and start_balance and end_balance is not None and start_balance > 0:
+        daily_pnl_pct = (end_balance - start_balance) / start_balance
+
+    report_day = datetime.fromisoformat(report_date).date()
+    weekly_sells: List[Dict[str, Any]] = []
+    for record in _load_trade_log_records():
+        trade_date = _to_wib_date_string(record.get("timestamp") or record.get("ts") or record.get("entry_at"))
+        if not trade_date:
+            continue
+        try:
+            trade_day = datetime.fromisoformat(trade_date).date()
+        except Exception:
+            continue
+        if 0 <= (report_day - trade_day).days <= 6 and str(record.get("side") or "").upper() == "SELL":
+            weekly_sells.append(record)
+    weekly_pnl_idr = sum((_parse_numeric(item.get("netPnlIdr") or item.get("net_pnl_idr")) or 0.0) for item in weekly_sells)
+    weekly_base = max((end_balance or 0.0) - weekly_pnl_idr, 1.0)
+    weekly_pnl_pct = weekly_pnl_idr / weekly_base if weekly_base > 0 else 0.0
+    wins = sum(1 for item in sells if (_parse_numeric(item.get("netPnlIdr") or item.get("net_pnl_idr")) or 0.0) > 0)
+    losses = max(len(sells) - wins, 0)
+    bought_pairs = sorted(
+        dict.fromkeys(
+            [str(item.get("pair") or item.get("pairId") or "").lower().strip() for item in buys if str(item.get("pair") or item.get("pairId") or "").strip()]
+            + list(current_summary.get("coins_bought_today") or [])
+        )
+    )
+    learning_reviews = [item for item in _load_learning_review_history() if str(item.get("wib_date") or "") == report_date]
+    latest_learning = learning_reviews[-1] if learning_reviews else (current_summary.get("last_learning_review") or {})
+    report = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "report_date": report_date,
+        "start_balance_idr": start_balance,
+        "end_balance_idr": end_balance,
+        "daily_pnl_idr": daily_pnl_idr,
+        "daily_pnl_pct": daily_pnl_pct,
+        "weekly_pnl_idr": weekly_pnl_idr,
+        "weekly_pnl_pct": weekly_pnl_pct,
+        "closed_trades": len(sells),
+        "wins": wins,
+        "losses": losses,
+        "win_rate": (wins / max(len(sells), 1)) if sells else 0.0,
+        "coins_bought_today": bought_pairs,
+        "lessons": list(latest_learning.get("lessons") or []),
+        "next_strategy": str(latest_learning.get("strategy") or latest_learning.get("summary") or "Prioritaskan pair high-trust, tekan kerugian, dan jaga rotasi modal tetap cepat.").strip(),
+        "risks": list(latest_learning.get("risks") or []),
+    }
+    _store_daily_report(report)
+    return report
+
+
+def _render_daily_report_text(report: Dict[str, Any]) -> str:
+    daily_pct = (_parse_numeric(report.get("daily_pnl_pct")) or 0.0) * 100.0
+    weekly_pct = (_parse_numeric(report.get("weekly_pnl_pct")) or 0.0) * 100.0
+    bought = ", ".join(str(item).upper() for item in list(report.get("coins_bought_today") or [])[:8]) or "tidak ada"
+    lessons = list(report.get("lessons") or [])[:3]
+    if not lessons:
+        lessons = [str(report.get("next_strategy") or "Fokus ke pair paling bersih, kurangi whipsaw, dan pertahankan disiplin exit.")]
+    lines = [
+        f"📘 KiBot Midnight Report — {report.get('report_date', '?')} WIB",
+        "",
+        f"Saldo akhir hari: Rp{(_parse_numeric(report.get('end_balance_idr')) or 0.0):,.0f}",
+        f"PnL hari ini: {daily_pct:+.2f}% (Rp{(_parse_numeric(report.get('daily_pnl_idr')) or 0.0):,.0f})",
+        f"PnL 7 hari: {weekly_pct:+.2f}% (Rp{(_parse_numeric(report.get('weekly_pnl_idr')) or 0.0):,.0f})",
+        f"Trade tutup: {int(report.get('closed_trades') or 0)} | Win rate: {float(report.get('win_rate') or 0.0) * 100:.0f}%",
+        f"Koin dibeli hari ini: {bought}",
+        "",
+        "Pelajaran untuk sesi berikutnya:",
+    ]
+    for lesson in lessons:
+        lines.append(f"• {lesson}")
+    strategy = str(report.get("next_strategy") or "").strip()
+    if strategy:
+        lines.extend(["", f"Fokus besok: {strategy}"])
+    return "\n".join(lines)
+
+
+def _collect_learning_review_snapshot() -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(seconds=LEARNING_REVIEW_INTERVAL_SEC)
+    recent_events = [
+        event
+        for event in _recent_runtime_events
+        if (_parse_datetime(event.get("at")) or now) >= window_start
+    ]
+    event_counts: Dict[str, int] = {}
+    why_not: Dict[str, int] = {}
+    screen_focus: List[str] = []
+    for event in recent_events:
+        kind = str(event.get("kind") or "unknown")
+        event_counts[kind] = event_counts.get(kind, 0) + 1
+        detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
+        if kind in {"learning_block", "what_if", "emergency_veto_sell", "daily_hard_stop"}:
+            reason = str(detail.get("reason") or detail.get("recommendation") or kind).strip()
+            why_not[reason] = why_not.get(reason, 0) + 1
+        top_pair = str(detail.get("top_pair") or detail.get("pair") or "").lower().strip()
+        if top_pair:
+            screen_focus.append(top_pair)
+    balance = _current_balance_snapshot()
+    active_positions = [
+        {
+            "pair": pair,
+            "pnl_pct": _parse_numeric(row.get("pnlPct") or row.get("pnl_pct")) or 0.0,
+            "entry_price": _parse_numeric(row.get("entryPrice") or row.get("entry_price")),
+        }
+        for pair, row in list(_active_positions_cache.items())[:8]
+        if isinstance(row, dict)
+    ]
+    return {
+        "at_utc": now.isoformat(),
+        "wib_date": _operational_wib_date(),
+        "market_regime": _daily_summary_market_regime() if DAILY_SUMMARY_ENABLED else "UNKNOWN",
+        "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+        "equity_idr": balance.get("equity_idr"),
+        "free_cash_idr": balance.get("free_cash_idr"),
+        "active_positions": active_positions,
+        "active_position_pairs": _active_position_pairs(),
+        "scan_focus_pairs": list(dict.fromkeys(screen_focus))[:6],
+        "event_counts": event_counts,
+        "why_not_counts": why_not,
+        "veto_metrics": dict(_veto_metrics),
+        "math_review": {
+            "last_action": _math_review_last_action,
+            "last_reason": _math_review_last_reason,
+        },
+        "recent_notes": list(_load_daily_summary().get("recent_notes") or [])[-8:],
+    }
+
+
+def _run_strategy_learning_review() -> Dict[str, Any]:
+    snapshot = _collect_learning_review_snapshot()
+    fallback_summary = "Belum cukup data 30 menit terakhir; pertahankan risk gate saat ini."
+    result = {
+        "at": snapshot["at_utc"],
+        "wib_date": snapshot["wib_date"],
+        "summary": fallback_summary,
+        "strategy": "Jaga modal, prioritaskan pair dengan why-not rendah dan veto rejection minim.",
+        "lessons": [],
+        "risks": [],
+        "source": "fallback",
+    }
+    if AI_ROUTER_ENABLED:
+        prompt = (
+            "Kamu adalah assistant pembelajaran strategi untuk bot trading crypto.\n"
+            "PENTING: dilarang memberi instruksi BUY/SELL langsung. Fokusmu hanya evaluasi belajar, guardrail, dan strategi 30 menit berikutnya.\n"
+            "Jawab JSON dengan keys: summary, strategy, lessons, risks.\n\n"
+            f"Data 30 menit terakhir:\n{json.dumps(snapshot, ensure_ascii=False, indent=2)}"
+        )
+        try:
+            routed_text, provider = _call_ai_router(
+                task="learning_review",
+                system_prompt="Jawab JSON singkat. Hindari instruksi trading langsung.",
+                user_prompt=prompt,
+                model_hint=POST_MORTEM_MODEL,
+                timeout_sec=min(POST_MORTEM_TIMEOUT_SEC, 18.0),
+            )
+            parsed = _parse_json_candidate(routed_text) if routed_text else None
+            if isinstance(parsed, dict) and parsed:
+                result = {
+                    "at": snapshot["at_utc"],
+                    "wib_date": snapshot["wib_date"],
+                    "summary": str(parsed.get("summary") or fallback_summary).strip(),
+                    "strategy": str(parsed.get("strategy") or "Pertahankan mode sekarang sambil fokus ke kualitas entry dan exit.").strip(),
+                    "lessons": [str(item).strip() for item in list(parsed.get("lessons") or []) if str(item).strip()][:5],
+                    "risks": [str(item).strip() for item in list(parsed.get("risks") or []) if str(item).strip()][:5],
+                    "source": provider or "ai_router",
+                }
+        except Exception as error:
+            print(f"[KIBOT][LEARNING_REVIEW][WARN] ai review failed reason={error}", flush=True)
+    _save_learning_review(result)
+    _update_daily_summary(
+        "learning_review",
+        {
+            "summary": result.get("summary"),
+            "strategy": result.get("strategy"),
+            "lessons": result.get("lessons"),
+            "risks": result.get("risks"),
+        },
+    )
+    _append_runtime_event(
+        "learning_review",
+        {
+            "summary": result.get("summary"),
+            "strategy": result.get("strategy"),
+            "source": result.get("source"),
+        },
+    )
+    _write_runtime_note(force=True)
+    return result
+
+
+def _strategy_learning_loop() -> None:
+    last_run_at = 0.0
+    while not _shutdown_event.is_set():
+        try:
+            now_ts = time.time()
+            if (now_ts - last_run_at) >= max(300, LEARNING_REVIEW_INTERVAL_SEC):
+                last_run_at = now_ts
+                _run_strategy_learning_review()
+        except Exception as error:
+            print(f"[KIBOT][LEARNING_REVIEW][ERROR] {error}", flush=True)
+        if _shutdown_event.wait(30.0):
+            break
+
+
+def _emit_midnight_liquidation_for_pairs(pairs: List[str]) -> None:
+    for pair in pairs:
+        _emit_emergency_veto_sell(
+            pair=pair,
+            reason="midnight_reset_liquidation",
+            confidence=0.99,
+            expected_net_pct=0.15,
+            extra_payload={"cycle": "daily_midnight_reset"},
+        )
+
+
+def _complete_midnight_reset(new_date: str, *, reason: str) -> None:
+    current_equity = _current_balance_snapshot().get("equity_idr")
+    _daily_guard_state.update(
+        {
+            "date": new_date,
+            "start_of_day_equity": current_equity,
+            "current_equity": current_equity,
+            "daily_pnl_pct": 0.0,
+            "hard_stopped": False,
+            "triggered_at": "",
+            "reset_at": "",
+            "reason": "",
+        }
+    )
+    _save_daily_guard_state()
+    _gate_state["daily_hard_stop"] = False
+    _gate_state["daily_hard_stop_reason"] = ""
+    _gate_state["daily_hard_stop_reset_at"] = ""
+    _save_gate_state()
+    _daily_reset_extra_state()
+    _reset_intraday_metrics()
+    _daily_cycle_state.update(
+        {
+            "active_wib_date": new_date,
+            "pending_new_date": "",
+            "pending_previous_date": "",
+            "pending_started_at": "",
+            "last_liquidation_emit_at": "",
+            "last_reset_completed_date": new_date,
+            "alert_sent_for_pending_cycle": False,
+        }
+    )
+    _save_daily_cycle_state()
+    _write_json_file(DAILY_SUMMARY_PATH, _default_daily_summary(new_date))
+    _resume_new_entries(f"midnight_reset_completed:{reason}")
+    _append_runtime_event("midnight_reset_completed", {"new_date": new_date, "reason": reason})
+    _write_runtime_note(force=True)
+
+
+def _start_midnight_rollover(previous_date: str, new_date: str) -> None:
+    report = _build_daily_report_payload(previous_date)
+    _telegram_send(_render_daily_report_text(report), category="daily_report")
+    _daily_cycle_state["last_daily_report_date"] = previous_date
+    _save_daily_cycle_state()
+    pairs = _active_position_pairs()
+    if not pairs:
+        _complete_midnight_reset(new_date, reason="no_active_positions")
+        return
+    _daily_cycle_state.update(
+        {
+            "pending_new_date": new_date,
+            "pending_previous_date": previous_date,
+            "pending_started_at": datetime.now(timezone.utc).isoformat(),
+            "last_liquidation_emit_at": datetime.now(timezone.utc).isoformat(),
+            "last_daily_report_date": previous_date,
+            "alert_sent_for_pending_cycle": False,
+        }
+    )
+    _save_daily_cycle_state()
+    _suspend_new_entries("midnight_reset_liquidation")
+    _emit_midnight_liquidation_for_pairs(pairs)
+    _append_runtime_event("midnight_reset_started", {"from_date": previous_date, "to_date": new_date, "pairs": pairs})
+    _write_runtime_note(force=True)
+
+
+def _daily_cycle_loop() -> None:
+    while not _shutdown_event.is_set():
+        try:
+            actual_today = _wib_today_str()
+            pending_new_date = str(_daily_cycle_state.get("pending_new_date") or "")
+            if pending_new_date:
+                active_pairs = _active_position_pairs()
+                if active_pairs:
+                    last_emit = _parse_datetime(_daily_cycle_state.get("last_liquidation_emit_at"))
+                    now = datetime.now(timezone.utc)
+                    if last_emit is None or (now - last_emit).total_seconds() >= MIDNIGHT_RESET_RETRY_SEC:
+                        _daily_cycle_state["last_liquidation_emit_at"] = now.isoformat()
+                        _save_daily_cycle_state()
+                        _emit_midnight_liquidation_for_pairs(active_pairs)
+                    pending_started = _parse_datetime(_daily_cycle_state.get("pending_started_at")) or now
+                    if (
+                        not bool(_daily_cycle_state.get("alert_sent_for_pending_cycle"))
+                        and (now - pending_started).total_seconds() >= MIDNIGHT_RESET_ALERT_AFTER_SEC
+                    ):
+                        _telegram_send(
+                            f"🚨 Midnight reset masih menunggu posisi rata. Pairs: {', '.join(active_pairs[:6]).upper()}",
+                            category="urgent",
+                        )
+                        _daily_cycle_state["alert_sent_for_pending_cycle"] = True
+                        _save_daily_cycle_state()
+                else:
+                    _complete_midnight_reset(pending_new_date, reason="positions_flat")
+            elif _operational_wib_date() != actual_today:
+                _start_midnight_rollover(_operational_wib_date(), actual_today)
+        except Exception as error:
+            print(f"[KIBOT][MIDNIGHT][ERROR] {error}", flush=True)
+        if _shutdown_event.wait(15.0):
+            break
+
+
 def _heartbeat_loop() -> None:
     interval = max(0.05, MANAGER_HEARTBEAT_INTERVAL_SEC)
     while not _shutdown_event.is_set():
@@ -3327,6 +3940,10 @@ def _write_runtime_note(*, force: bool = False) -> None:
     note = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "service": "kibot_manager",
+        "operational_wib_date": _operational_wib_date(),
+        "actual_wib_date": _wib_today_str(),
+        "midnight_reset_pending": _midnight_reset_pending(),
+        "daily_cycle_state": dict(_daily_cycle_state),
         "host_bind": f"{UDP_BIND_HOST}:{UDP_BIND_PORT}",
         "kidax_target": f"{KIDAX_UDP_HOST}:{KIDAX_UDP_PORT}" if KIDAX_UDP_HOST else "",
         "kinance_target": f"{KINANCE_UDP_HOST}:{KINANCE_UDP_PORT}" if KINANCE_UDP_HOST else "",
@@ -3356,6 +3973,7 @@ def _write_runtime_note(*, force: bool = False) -> None:
         "veto_metrics": _veto_metrics,
         "sector_count": len(_last_sector_map),
         "sector_preview": {key: value[:5] for key, value in list(_last_sector_map.items())[:5]},
+        "latest_learning_review": _load_json_file(LEARNING_REVIEW_PATH, {}),
         "recent_events": list(_recent_runtime_events[-15:]),
     }
     try:
@@ -3935,22 +4553,13 @@ def _get_total_equity_estimate() -> float | None:
         value = _daily_guard_state.get(payload_key)
         if isinstance(value, (int, float)) and float(value) > 0:
             return float(value)
-    try:
-        response = requests.get("http://127.0.0.1:8787/api/state", timeout=3)
-        response.raise_for_status()
-        data = response.json() or {}
-    except Exception:
+    data = _fetch_local_runtime_state(timeout_sec=3.0)
+    if not data:
         return None
     for field in ("totalEquityIdr", "total_equity_idr", "portfolioValueIdr", "portfolio_value_idr", "balanceIdr", "balance_idr", "totalValueIdr", "total_value_idr"):
-        value = data.get(field)
-        if isinstance(value, (int, float)) and float(value) > 0:
-            return float(value)
-        try:
-            cleaned = float(str(value).replace(",", "").strip())
-            if cleaned > 0:
-                return cleaned
-        except Exception:
-            continue
+        numeric = _parse_numeric(data.get(field))
+        if numeric is not None and numeric > 0:
+            return numeric
     return None
 
 
@@ -5430,6 +6039,7 @@ def _process_active_positions(msg: Dict[str, Any]) -> None:
                 "entry_time": time.time()
             }
             print(f"[KIBOT][TRAIL] Started trailing for {pair} at {entry_price}", flush=True)
+            _update_daily_summary("coin_bought", {"pair": pair})
 
     # Check for closed positions to record math
     for pair in previous_cache_pairs - current_cache_pairs:
@@ -5441,6 +6051,7 @@ def _process_active_positions(msg: Dict[str, Any]) -> None:
             pnl_pct = float(last_row.get("pnlPct") or 0.0)
             _record_trade_result(pair, gross_pnl_pct=pnl_pct, entry_time=trail["entry_time"])
             print(f"[KIBOT][MATH] Recorded trade for {pair}: {pnl_pct:+.2%}", flush=True)
+        _update_daily_summary("coin_sold", {"pair": pair})
 
     # Update active trails
     for pair, row in tracked_pairs.items():
@@ -5826,6 +6437,8 @@ def main() -> None:
     _save_pair_cooldown_state()
     _save_gate_state()
     _save_daily_guard_state()
+    _daily_cycle_state["active_wib_date"] = str(_daily_cycle_state.get("active_wib_date") or _wib_today_str())
+    _save_daily_cycle_state()
     _bootstrap_daily_guard_from_kidax()
     _set_conservative_mode("fresh_start")
     if DAILY_SUMMARY_ENABLED:
@@ -5854,6 +6467,10 @@ def main() -> None:
     ai_review_thread = threading.Thread(target=_ai_batch_review_loop, name="kibot-ai-review-loop", daemon=True)
     ai_review_thread.start()
     math_review_thread = threading.Thread(target=_math_review_loop, name="kibot-math-review-loop", daemon=True)
+    learning_review_thread = threading.Thread(target=_strategy_learning_loop, name="kibot-learning-review-loop", daemon=True)
+    learning_review_thread.start()
+    daily_cycle_thread = threading.Thread(target=_daily_cycle_loop, name="kibot-daily-cycle-loop", daemon=True)
+    daily_cycle_thread.start()
     sim_thread = threading.Thread(target=_simulation_loop, name="kibot-simulation-loop", daemon=True)
     math_review_thread.start()
     sim_thread.start()

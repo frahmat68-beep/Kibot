@@ -26,6 +26,7 @@ FAILURE_LOG = ANALYST_DIR / "failures.jsonl"
 BEHAVIOR_LOG = ANALYST_DIR / "behavior.jsonl"
 DAILY_SUMMARY = ANALYST_DIR / "daily_summary.json"
 SUMMARY_HISTORY = ANALYST_DIR / "analyst_daily.json"
+WIB_UTC_OFFSET_HOURS = int(os.getenv("KIBOT_WIB_UTC_OFFSET_HOURS", "7"))
 
 
 def ensure_dirs() -> None:
@@ -39,6 +40,10 @@ def now_utc() -> datetime:
 
 def now_iso() -> str:
     return now_utc().isoformat()
+
+
+def today_wib_str() -> str:
+    return (now_utc() + timedelta(hours=WIB_UTC_OFFSET_HOURS)).strftime("%Y-%m-%d")
 
 
 def atomic_write(path: Path, data: Any) -> None:
@@ -166,8 +171,22 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
 
 
 def _read_today_trades() -> List[Dict[str, Any]]:
-    today = now_utc().strftime("%Y-%m-%d")
-    return [record for record in _read_jsonl(TRADE_LOG) if str(record.get("ts", "")).startswith(today)]
+    today = today_wib_str()
+    rows: List[Dict[str, Any]] = []
+    for record in _read_jsonl(TRADE_LOG):
+        ts = str(record.get("ts", "")).strip()
+        if not ts:
+            continue
+        try:
+            parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            trade_day = (parsed.astimezone(timezone.utc) + timedelta(hours=WIB_UTC_OFFSET_HOURS)).strftime("%Y-%m-%d")
+        except Exception:
+            trade_day = ts[:10]
+        if trade_day == today:
+            rows.append(record)
+    return rows
 
 
 def _update_history(summary: Dict[str, Any]) -> None:
@@ -187,14 +206,14 @@ def _update_daily_summary() -> Dict[str, Any]:
     trades = _read_today_trades()
     sells = [trade for trade in trades if trade.get("side") == "SELL"]
     if not sells:
-        summary = {"date": now_utc().strftime("%Y-%m-%d"), "no_trades": True}
+        summary = {"date": today_wib_str(), "no_trades": True}
     else:
         wins = [sell for sell in sells if float(sell.get("net_pnl_pct", 0.0)) > 0.0]
         losses = [sell for sell in sells if float(sell.get("net_pnl_pct", 0.0)) <= 0.0]
         total_fee = sum(float(trade.get("fee_idr", 0.0)) for trade in trades)
         market_orders = [trade for trade in trades if trade.get("order_type") == "MARKET"]
         summary = {
-            "date": now_utc().strftime("%Y-%m-%d"),
+            "date": today_wib_str(),
             "total_trades": len(sells),
             "wins": len(wins),
             "losses": len(losses),
@@ -254,9 +273,17 @@ def generate_daily_report() -> str:
     for winner in summary.get("top_winners", [])[:3]:
         lines.append(f"  • {winner['pair']}: {float(winner['pnl']) * 100:+.2f}%")
     failures_today = 0
-    today = now_utc().strftime("%Y-%m-%d")
+    today = today_wib_str()
     for item in _read_jsonl(FAILURE_LOG):
-        if str(item.get("ts", "")).startswith(today):
+        ts = str(item.get("ts", "")).strip()
+        try:
+            parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            item_day = (parsed.astimezone(timezone.utc) + timedelta(hours=WIB_UTC_OFFSET_HOURS)).strftime("%Y-%m-%d")
+        except Exception:
+            item_day = ts[:10]
+        if item_day == today:
             failures_today += 1
     lines.append("")
     lines.append(f"⚠️ System Failures Hari Ini: {failures_today}")

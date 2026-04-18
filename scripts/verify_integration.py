@@ -28,11 +28,12 @@ def check_manager_threads():
     manager_path = ROOT / "scripts" / "kibot_manager.py"
     content = manager_path.read_text(encoding="utf-8")
     checks = {
-        "News Watchdog": "_news_watchdog_loop",
-        "PnL Watchdog": "_pnl_watchdog_loop",
-        "Log Maintenance": "_log_maintenance_loop",
+        "News Scanner": "_news_scanner_loop",
+        "Health Gate": "_health_gate_loop",
         "Screener": "_pair_screen_loop",
-        "AI Review": "_ai_batch_review_loop"
+        "AI Review": "_ai_batch_review_loop",
+        "Learning Review": "_strategy_learning_loop",
+        "Daily Cycle": "_daily_cycle_loop",
     }
     results = {}
     for name, func in checks.items():

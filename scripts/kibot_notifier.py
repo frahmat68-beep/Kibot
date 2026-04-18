@@ -12,7 +12,7 @@ import os
 import queue
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +24,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_USER_ID", "")).strip()
 
 MAX_MSGS_PER_MINUTE = 5
+WIB_UTC_OFFSET_HOURS = int(os.getenv("KIBOT_WIB_UTC_OFFSET_HOURS", "7"))
+DAILY_REPORTS_ENABLED = os.getenv("KIBOT_NOTIFIER_DAILY_REPORTS", "false").lower() in {"1", "true", "yes", "on"}
 message_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
 last_send_times: List[float] = []
 
@@ -92,11 +94,6 @@ def _format_event_message(event: Dict[str, Any]) -> Optional[str]:
     event_type = event.get("type", "")
     severity = event.get("severity", "INFO")
     data = event.get("data", {})
-    if event_type in {"TRADE_BUY", "TRADE_SELL"}:
-        return _format_trade_notification(event)
-    if event_type == "HARD_STOP":
-        pnl = float(data.get("daily_pnl_pct", 0.0)) * 100
-        return f"🛑 *HARD STOP TRIGGERED*\nPnL Hari Ini: `{pnl:.2f}%`\nBot berhenti trading sampai reset harian"
     if event_type == "RAM_CRITICAL":
         return f"🚨 *RAM CRITICAL*\nUsage: {data.get('ram_pct', '?')}%\nAvailable: {data.get('ram_available_mb', '?')}MB"
     if event_type == "DISK_CRITICAL":
@@ -105,10 +102,7 @@ def _format_event_message(event: Dict[str, Any]) -> Optional[str]:
         return f"🚨 *SERVICE CRASH LOOP*\n{data.get('service', '?')} crashed {data.get('restarts_1h', '?')}x dalam 1 jam"
     if event_type == "JAR_CORRUPT":
         return f"🚨 *JAR CORRUPT*\n{event.get('message', '?')}"
-    if event_type == "DAILY_DRAWDOWN_ALERT":
-        pnl = float(data.get("daily_pnl_pct", 0.0)) * 100
-        return f"⚠️ *DRAWDOWN ALERT*\nPnL Hari Ini: `{pnl:.2f}%`"
-    if event_type in {"SYMLINK_FIXED", "STATE_RESTORED", "CRITICAL_FAILURE", "CRITICAL_SERVICE_DOWN", "SECURITY_SECRETS_FOUND"}:
+    if event_type in {"CRITICAL_FAILURE", "CRITICAL_SERVICE_DOWN", "SECURITY_SECRETS_FOUND"}:
         prefix = "🚨" if severity == "CRITICAL" else "🔧"
         return f"{prefix} *{event_type.replace('_', ' ')}*\n{event.get('message', 'No details')}"
     return None
@@ -154,21 +148,16 @@ def _send_weekly_report() -> None:
 
 def run_notifier_loop() -> None:
     print("[NOTIFIER] KiBot Notifier started")
-    send_telegram("🤖 *KiBot Trinity* online dan siap trading!")
     last_daily_report = 0.0
-    last_weekly_report = 0.0
     while True:
         try:
             process_events()
             flush_message_queue()
-            now = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc) + timedelta(hours=WIB_UTC_OFFSET_HOURS)
             day_seconds = now.hour * 3600 + now.minute * 60 + now.second
-            if 36000 <= day_seconds <= 36060 and time.time() - last_daily_report > 3600:
+            if DAILY_REPORTS_ENABLED and day_seconds <= 60 and time.time() - last_daily_report > 3600:
                 _send_daily_report()
                 last_daily_report = time.time()
-            if now.weekday() == 0 and 36000 <= day_seconds <= 36060 and time.time() - last_weekly_report > 86400:
-                _send_weekly_report()
-                last_weekly_report = time.time()
             atomic_write(NOTIFY_STATE, {"ts": now.isoformat(), "queued": message_queue.qsize(), "last_send_count_1m": len(last_send_times)})
             time.sleep(5)
         except Exception as error:

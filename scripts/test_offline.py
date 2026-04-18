@@ -2,6 +2,7 @@ import json
 import os
 import random
 import sys
+from tempfile import TemporaryDirectory
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -70,6 +71,7 @@ check("engine kelly capped", engine.kelly_size("eth_idr") <= 0.12)
 
 if manager is not None:
     check("effective fee pct sane", 0.0004 < manager._effective_fee_pct() < 0.0055)
+    check("parse numeric idr thousand", manager._parse_numeric("Rp 63.365") == 63365)
 
     with patch("kibot_manager._get_total_equity_estimate", return_value=84_000):
         check("minimum capital blocks tiny equity", not manager._check_minimum_capital())
@@ -86,6 +88,89 @@ if manager is not None:
     )
     check("what-if exposes fee round trip", what_if["fee_round_trip_pct"] > 0.0)
     check("what-if skips when net negative", what_if["recommendation"] == "SKIP")
+
+    with TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        old_trade_log = manager.TRADE_LOG_RUNTIME_PATH
+        old_learning_history = manager.LEARNING_REVIEW_HISTORY_PATH
+        old_daily_report = manager.DAILY_REPORT_PATH
+        old_daily_report_history = manager.DAILY_REPORT_HISTORY_PATH
+        old_daily_summary = manager.DAILY_SUMMARY_PATH
+        old_cycle_state = dict(manager._daily_cycle_state)
+        old_guard_state = dict(manager._daily_guard_state)
+        try:
+            manager.TRADE_LOG_RUNTIME_PATH = tmp / "trade_log.jsonl"
+            manager.LEARNING_REVIEW_HISTORY_PATH = tmp / "learning_review_history.json"
+            manager.DAILY_REPORT_PATH = tmp / "daily_report.json"
+            manager.DAILY_REPORT_HISTORY_PATH = tmp / "daily_report_history.json"
+            manager.DAILY_SUMMARY_PATH = tmp / "daily_summary.json"
+            manager._daily_cycle_state.update({
+                "active_wib_date": "2026-04-18",
+                "pending_new_date": "",
+            })
+            manager._daily_guard_state.update({
+                "date": "2026-04-18",
+                "start_of_day_equity": 100000.0,
+                "current_equity": 103500.0,
+                "daily_pnl_pct": 0.035,
+                "hard_stopped": False,
+            })
+            manager.TRADE_LOG_RUNTIME_PATH.write_text(
+                "\n".join(
+                    [
+                        json.dumps({
+                            "timestamp": "2026-04-18T01:00:00+00:00",
+                            "pair": "btc_idr",
+                            "side": "BUY",
+                            "filledIdr": 50000,
+                        }),
+                        json.dumps({
+                            "timestamp": "2026-04-18T06:00:00+00:00",
+                            "pair": "btc_idr",
+                            "side": "SELL",
+                            "netPnlIdr": 3500,
+                            "balanceAfter": 103500,
+                        }),
+                    ]
+                ) + "\n",
+                encoding="utf-8",
+            )
+            manager._write_json_file(
+                manager.DAILY_SUMMARY_PATH,
+                {
+                    **manager._default_daily_summary("2026-04-18"),
+                    "coins_bought_today": ["btc_idr"],
+                },
+            )
+            manager._write_json_file(
+                manager.LEARNING_REVIEW_HISTORY_PATH,
+                [
+                    {
+                        "at": "2026-04-18T16:30:00+00:00",
+                        "wib_date": "2026-04-18",
+                        "summary": "Filter whipsaw makin ketat.",
+                        "strategy": "Besok fokus pair high-trust dan rotasi cepat.",
+                        "lessons": ["Kurangi entry saat veto rejection naik."],
+                        "risks": ["Likuiditas tipis sore hari."],
+                    }
+                ],
+            )
+            report = manager._build_daily_report_payload("2026-04-18")
+            check("daily report end balance", report["end_balance_idr"] == 103500.0)
+            check("daily report bought pair", "btc_idr" in report["coins_bought_today"])
+            check("daily report carries lesson", bool(report["lessons"]))
+            report_text = manager._render_daily_report_text(report)
+            check("daily report text includes saldo", "Saldo akhir hari" in report_text)
+        finally:
+            manager.TRADE_LOG_RUNTIME_PATH = old_trade_log
+            manager.LEARNING_REVIEW_HISTORY_PATH = old_learning_history
+            manager.DAILY_REPORT_PATH = old_daily_report
+            manager.DAILY_REPORT_HISTORY_PATH = old_daily_report_history
+            manager.DAILY_SUMMARY_PATH = old_daily_summary
+            manager._daily_cycle_state.clear()
+            manager._daily_cycle_state.update(old_cycle_state)
+            manager._daily_guard_state.clear()
+            manager._daily_guard_state.update(old_guard_state)
 
 detector = VWAPRegimeDetector()
 bullish = [{"close": 100 + i, "high": 101 + i, "low": 99 + i, "volume": 2000} for i in range(15)]

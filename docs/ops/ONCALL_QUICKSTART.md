@@ -104,9 +104,20 @@ Only close when all conditions are true:
 - `scanUniverseCount` and `pairScores` are populated where expected
 - no repeating critical warning pattern for at least 10 minutes
 
+## 6.5) Midnight WIB Expectations
+
+At `00:00 WIB`, healthy behavior is:
+- `kibot-manager` sends one daily Telegram report with end balance, daily PnL, 7-day PnL, bought coins, and learning notes
+- open positions are force-liquidated via manager emergency veto sell
+- new entries stay suspended until positions are flat, then intraday metrics reset for the new day
+
+Useful files:
+- `.state/daily_report.json`
+- `.state/learning_review.json`
+- `.state/daily_cycle_state.json`
+
 ## 7) Canonical Docs
 
 - Full architecture: `docs/architecture/TWO_SERVER_SYSTEM_GUIDE.md`
 - Deployment details: `docs/TRINITY_DEPLOYMENT.md`
 - Checklist: `docs/ops/server-deploy-checklist.md`
-
