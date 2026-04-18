@@ -1016,6 +1016,50 @@ class MacEngineDaemonTest {
     }
 
     @Test
+    fun `syncOnce maps main control plane peer into kidax slot`() = runBlocking {
+        val localBotId = BotId("kinance")
+        val controlPlane = FakeControlPlaneGateway(botId = localBotId)
+        controlPlane.botState = runningBotState().copy(botId = localBotId)
+        controlPlane.seedBotState(
+            runningBotState().copy(
+                botId = BotId("main"),
+                lastHeartbeatAt = fixedClock.now(),
+            ),
+        )
+        controlPlane.seedLease(heldLease().copy(botId = localBotId))
+        controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
+        val config = runtimeConfig(
+            exchangeKind = ExchangeKind.BINANCE_SPOT,
+            leadLagUdpEnabled = true,
+            leadLagUdpListenPort = 10131,
+            leadLagUdpTargetHost = "127.0.0.1",
+            leadLagUdpTargetPort = 10132,
+            leadLagUdpHeartbeatEnabled = true,
+            leadLagUdpHeartbeatIntervalMillis = 20L,
+            leadLagUdpHeartbeatTimeoutMillis = 80L,
+            leadLagUdpHeartbeatRequiredBotIds = setOf("main"),
+        ).copy(
+            controlPlane = runtimeConfig().controlPlane.copy(botId = localBotId),
+        )
+
+        val daemon = MacEngineDaemon(
+            repository = MacStateRepository(),
+            controlPlane = controlPlane,
+            exchange = FakeExchangeGateway(
+                marketQuotes = mutableListOf(marketQuote("doge_usdt", 103.0, 0.78)),
+                balances = mutableListOf(BalanceSnapshot("usdt", DecimalValue("100000"))),
+            ),
+            config = config,
+            clock = fixedClock,
+        )
+
+        daemon.syncOnce()
+
+        val peerStates = daemon.readPrivateField<Map<String, BotStateSnapshot?>>("latestPeerBotStates")
+        assertEquals("main", peerStates["kidax"]?.botId?.value)
+    }
+
+    @Test
     fun `stale binary lead lag sequence is ignored`() = runBlocking {
         val controlPlane = FakeControlPlaneGateway(botId = botId)
         controlPlane.botState = runningBotState()

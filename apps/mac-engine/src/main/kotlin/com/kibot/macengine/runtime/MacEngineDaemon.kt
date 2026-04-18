@@ -4197,16 +4197,31 @@ class MacEngineDaemon(
             val now = clock.now()
             val jakartaDate = jakartaNowDate(now)
             logger.info("DEAD_ZONE_TRACE: checking local balance / peer state cache")
+            val localBotAliases = botIdAliases(config.controlPlane.botId.value).toSet()
             val peerBotStates = listOf("kidax", "kibot", "kinance")
-            .associateWith { peerId ->
-                if (peerId.equals(config.controlPlane.botId.value, ignoreCase = true)) {
-                    null
-                } else {
-                    readControlPlane<BotStateSnapshot?>(null) {
-                        controlPlane.fetchBotState(BotId(peerId))
+                .associateWith { peerId ->
+                    if (localBotAliases.contains(peerId)) {
+                        null
+                    } else {
+                        controlPlaneLookupBotIds(peerId)
+                            .filterNot { localBotAliases.contains(it) }
+                            .mapNotNull { lookupId ->
+                                readControlPlane<BotStateSnapshot?>(null) {
+                                    controlPlane.fetchBotState(BotId(lookupId))
+                                }
+                            }
+                            .maxByOrNull { peerState ->
+                                when {
+                                    peerState.syncHealth == SyncHealth.HEALTHY &&
+                                        peerState.effectiveState == BotEffectiveState.RUNNING -> 4
+                                    peerState.syncHealth == SyncHealth.HEALTHY -> 3
+                                    peerState.effectiveState == BotEffectiveState.RUNNING -> 2
+                                    peerState.effectiveState != BotEffectiveState.STOPPED -> 1
+                                    else -> 0
+                                }
+                            }
                     }
                 }
-            }
             latestPeerBotStates = peerBotStates
             lastKnownHealthyPeerBotStates = lastKnownHealthyPeerBotStates + peerBotStates
                 .filterValues { peerState ->
@@ -5607,6 +5622,12 @@ class MacEngineDaemon(
             map[alias]?.let { return it }
         }
         return null
+    }
+
+    private fun controlPlaneLookupBotIds(botId: String): List<String> = when (botId.trim().lowercase()) {
+        "main", "kidax" -> listOf("main", "kidax")
+        "kibot", "kicryp" -> listOf("kibot", "kicryp")
+        else -> listOf(botId.trim().lowercase())
     }
 
     private fun senderCodeFor(botId: String): Byte = when {

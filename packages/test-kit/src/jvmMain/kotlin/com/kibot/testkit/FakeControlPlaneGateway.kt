@@ -56,6 +56,7 @@ class FakeControlPlaneGateway(
     var runtimeIntelligence: RuntimeIntelligenceUpdate? = null
     var latestWeeklyLearningSummary: WeeklyLearningSummary? = null
     var lastKingDashboardTelemetry: Triple<Double, Long?, List<String>>? = null
+    private val extraBotStates = linkedMapOf<String, BotStateSnapshot>()
 
     var botState: BotStateSnapshot = BotStateSnapshot(
         botId = botId,
@@ -95,7 +96,8 @@ class FakeControlPlaneGateway(
         return descriptor
     }
 
-    override suspend fun fetchBotState(botId: BotId): BotStateSnapshot? = botState.takeIf { it.botId == botId }
+    override suspend fun fetchBotState(botId: BotId): BotStateSnapshot? =
+        botState.takeIf { it.botId == botId } ?: extraBotStates[botId.value.lowercase()]
 
     override suspend fun fetchLease(botId: BotId): EngineLeaseSnapshot? = lease?.takeIf { it.botId == botId }
 
@@ -207,6 +209,10 @@ class FakeControlPlaneGateway(
                 lastHeartbeatAt = snapshot.observedAt,
             )
         }
+    }
+
+    fun seedBotState(snapshot: BotStateSnapshot) {
+        extraBotStates[snapshot.botId.value.lowercase()] = snapshot
     }
 
     override suspend fun publishRuntimeIntelligence(update: RuntimeIntelligenceUpdate) {
