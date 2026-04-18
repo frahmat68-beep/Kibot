@@ -190,6 +190,10 @@ object MacRuntimeConfigLoader {
             else -> 0.50
         }
         val aggressiveCapitalAllocationPercent = (1.0 - stableCapitalAllocationPercent)
+        val kinanceAckPort = optional("KICRYP_KINANCE_ACK_PORT")?.toIntOrNull() ?: 8789
+        val kinanceHost = optional("KICRYP_KINANCE_HOST")
+            ?.takeIf { it.isNotBlank() }
+            ?: "152.69.218.198"
 
         return MacRuntimeConfig(
             runtimeProfileKey = runtimeProfileKey,

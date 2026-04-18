@@ -5,6 +5,7 @@ import com.kibot.core.DeviceRegistration
 import com.kibot.core.KingDashboardSnapshot
 import com.kibot.core.TradeLogSubmission
 import com.kibot.core.TradeHistoryRecord
+import com.kibot.core.TradeWhitelistRecord
 import com.kibot.shared.models.AuditLogRecord
 import com.kibot.shared.models.BotDesiredState
 import com.kibot.shared.models.BotEffectiveState
@@ -49,6 +50,7 @@ class FakeControlPlaneGateway(
     private val logs = mutableListOf<AuditLogRecord>()
     private val recentOrders = mutableListOf<OrderSnapshot>()
     private val activePositions = mutableListOf<PositionSnapshot>()
+    private val pairWhitelistRecords = linkedMapOf<String, TradeWhitelistRecord>()
     val strategyMetrics = mutableListOf<PairScore>()
     val updateRecommendations = mutableListOf<BotUpdateRecommendation>()
     var runtimeIntelligence: RuntimeIntelligenceUpdate? = null
@@ -372,6 +374,14 @@ class FakeControlPlaneGateway(
     }
 
     override suspend fun fetchEncryptedCredentialBundle(botId: BotId): EncryptedCredentialBundle? = encryptedCredentialBundle
+
+    override suspend fun fetchPairWhitelist(botId: BotId): List<TradeWhitelistRecord> {
+        return pairWhitelistRecords.values.sortedByDescending { it.lastUpdated }
+    }
+
+    override suspend fun upsertPairWhitelist(botId: BotId, record: TradeWhitelistRecord) {
+        pairWhitelistRecords[record.pairId] = record
+    }
 
     fun seedLease(snapshot: EngineLeaseSnapshot?) {
         lease = snapshot

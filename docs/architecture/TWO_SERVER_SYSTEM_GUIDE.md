@@ -1,193 +1,213 @@
 # KiBot Two-Server System Guide
 
-This document is the primary reference for how KiBot runs across two production servers.
-Use this as the first onboarding and debugging entry point for humans and coding agents.
+Last verified: 2026-04-18 (after compile/test + live SSH audit).
 
-## 1) System Purpose
+This is the primary onboarding/debugging map for humans and coding agents.
 
-KiBot is a distributed trading runtime split across two Oracle VPS nodes:
+## 0) Core Rule: Identity Is Config-Driven
 
-- Node A (`kidax-engine`): primary Indodax execution node.
-- Node B (`kinance-engine`): Binance radar/market-feed node and peer for lead-lag coordination.
+Never infer runtime behavior from folder names alone.
+The active role is determined by env + service config:
 
-Both nodes share the same control-plane and exchange heartbeats/signals over UDP.
+- `BOT_ID`
+- `BOT_PROFILE_KEY`
+- `KIBOT_EXCHANGE_KIND`
+- `DEVICE_ID`
 
-## 2) Production Nodes
+Legacy labels like "Indodax server" / "Binance server" are shorthand only.
+Operationally, treat both nodes as role-based runtime workers tied by control-plane + UDP.
 
-### Node A (Primary Runtime)
+## 1) Current Production Topology (2 Nodes)
+
+## Node A (`kibot-kotlin-1`)
+
 - Host: `213.35.118.26`
-- Hostname: `kibot-kotlin-1`
-- Primary service: `kidax-engine`
-- Profile: `BOT_ID=main`, `BOT_PROFILE_KEY=indodax`, `KIBOT_EXCHANGE_KIND=INDODAX`
+- Main engine service: `kidax-engine`
+- API port: `8787`
+- UDP: `9999` (lead-lag/trinity bus)
+- Observed capacity:
+  - CPU: `2 vCPU` (AMD EPYC 7742)
+  - RAM: `954 MB`
+  - Swap: `2047 MB`
+  - Disk: `48 GB` root (`~25%` used during audit)
 
-### Node B (Radar Runtime)
+## Node B (`kibot-binance`)
+
 - Host: `152.69.218.198`
-- Hostname: `kibot-binance`
-- Primary service: `kinance-engine`
-- Profile: `BOT_ID=kinance`, `BOT_PROFILE_KEY=kinance`, `KIBOT_EXCHANGE_KIND=BINANCE_SPOT`
+- Main engine service: `kinance-engine`
+- API port: `8788`
+- UDP: `9999` (lead-lag/trinity bus)
+- Observed capacity:
+  - CPU: `2 vCPU` (AMD EPYC 7742)
+  - RAM: `954 MB`
+  - Swap: `2047 MB`
+  - Disk: `48 GB` root (`~22%` used during audit)
 
-## 3) Capacity and Constraints
+## 2) System Inventory Per Node
 
-Both nodes are low-resource Oracle instances:
-
-- CPU: `2 vCPU`
-- RAM: around `954 MB`
-- Swap: around `2 GB`
-
-Design implications:
-
-- JVM memory must stay conservative.
-- Runtime loops must avoid expensive fan-out retries.
-- Background daemons must be lightweight and restart-safe.
-
-## 4) Service Inventory (Both Nodes)
-
-Core Java/Kotlin runtime:
+## A) Kotlin/JVM Trading Runtime
 
 - `kidax-engine` (Node A) / `kinance-engine` (Node B)
-  - Runs `apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar`
-  - Owns strategy cycle, health gates, lease/ownership, and order execution logic
+- Artifact: `apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar`
+- Main responsibilities:
+  - strategy cycle orchestration (`MacEngineDaemon`)
+  - control-plane sync (state/lease/device/commands)
+  - exchange gateway calls (Indodax/Binance)
+  - execution planning + order submission
+  - risk/health gating
+  - local dashboard APIs (`/api/health`, `/api/state`)
 
-Python control/support layer:
+## B) Python Sidecar Runtime (Ops + Coordination)
+
+Primary daemons:
 
 - `kibot-manager`
-  - UDP heartbeat/signal bridge and veto/control support
+  - UDP bridge, veto/control helper, AI provider coordination
+  - local state endpoint on `9998`
 - `kibot-orchestrator`
-  - Service orchestration/runtime coordination
+  - runtime health orchestration
 - `kibot-auditor`
-  - Runtime checks and anomaly auditing
+  - startup/runtime audit + repair hooks
 - `kibot-guardian`
-  - Safety guardrails and recovery helpers
+  - safety/restart guardrails
 - `kibot-security`
-  - Security checks/hardening helpers
+  - security checks
 - `kibot-notifier`
-  - Notifications and operational status delivery
+  - notification/log fanout
+- `kibot-analyst` (optional/on-demand in many deployments)
 
-## 5) End-to-End Runtime Flow
+## C) Control Plane + Shared State
 
-1. Bootstrap
-- Engine loads env/runtime config, resolves exchange profile, and registers device identity.
+- Supabase is the shared control-plane for both nodes.
+- Core shared models live in `packages/shared-models`.
+- Control-plane client path:
+  - interface: `packages/core/.../ControlPlaneGateway.kt`
+  - implementation: `packages/control-plane/.../SupabaseControlPlaneClient.kt`
 
-2. Control-plane sync
-- Engine reads bot state, lease term, device snapshots, commands, and risk context.
+## 3) End-to-End Call Path (Kotlin + Python)
 
-3. Exchange fetch stage
-- Fetches balances, open orders, market quotes, and probes exchange reachability.
+## 1. Bootstrap
 
-4. Strategy stage
-- Builds market/radar context (`scanUniverseCount`, `pairScores`, candidate ranking).
-- Applies health/risk gates before entry/exit planning.
+- Loader: `apps/mac-engine/.../MacRuntimeConfig.kt`
+- Engine bootstrap: `apps/mac-engine/.../Main.kt`
+- Daemon core: `apps/mac-engine/.../MacEngineDaemon.kt`
 
-5. Execution stage
-- Builds execution plans.
-- Submits orders to exchange gateway.
-- Persists/reconciles order snapshots against control-plane state.
+## 2. Sync Cycle (`syncOnce`)
 
-6. Cross-node coordination
-- UDP heartbeat and lead-lag signal exchange between nodes.
-- Lease and heartbeat conditions decide ownership and failover readiness.
+- Fetch bot state + lease + devices + commands from control-plane.
+- Fetch balances/orders/quotes via exchange gateway.
+- Build strategy context (ranked pairs, health, risk, mode).
+- Evaluate entry/exit plans.
+- Submit/track orders through `LiveExecutionCoordinator`.
 
-7. Dashboard/API publishing
-- Node A serves state/health on `:8787`.
-- Node B serves state/health on `:8788`.
+## 3. Cross-Node Coordination
 
-## 6) Configuration Source of Truth
+- UDP heartbeats + lead-lag signals over port `9999`.
+- Health snapshots + runtime status from both nodes influence gating decisions.
+- Lease ownership protects against split-brain execution.
 
-Rules:
+## 4. Python Sidecar Interaction
 
-- `EnvironmentFile` values must stay authoritative for node identity.
-- Avoid overriding `BOT_ID`, `BOT_PROFILE_KEY`, and `KIBOT_RUNTIME_ROOT` in systemd unit body unless intentionally required.
-- Logical role is more important than historical physical label.
+- `kibot-manager` receives/bridges event streams and AI approval context.
+- Guard/analyst/orchestrator services monitor liveness and anomalies.
+- Systemd restart policy keeps sidecars resilient under low-RAM pressure.
 
-Related files:
+## 4) Integration Hotspots (.kt + .py)
 
-- `infra/systemd/kidax-engine.service`
-- `infra/systemd/kinance-engine.service`
-- `infra/systemd/kibot-manager.service`
-- `apps/mac-engine/src/main/kotlin/com/kibot/macengine/config/MacRuntimeConfig.kt`
+These are common root-cause zones when integration drifts:
 
-## 7) Known Failure Modes and Root Causes
+- Config contract drift:
+  - `MacRuntimeConfig` fields vs env keys vs systemd overrides
+- Control-plane interface drift:
+  - `ControlPlaneGateway` method changes not mirrored in fakes/clients
+- Runtime helper API drift:
+  - `CapitalAllocationManager` call-site mismatches in `MacEngineDaemon`
+- Signal/whitelist persistence drift:
+  - `PairWhitelistManager` schema/serialization mismatch
+- Test-kit contract drift:
+  - `packages/test-kit/.../FakeControlPlaneGateway.kt` lagging behind interface
 
-### A) Empty Binance universe (`scanUniverseCount=0`)
+## 5) Capacity Envelope and Safety Budgets
 
-Symptoms:
-- `pairScores=[]`
-- strategy cycle repeatedly absent
-- health warnings around market quote feed
+Both nodes are micro-capacity boxes.
+Treat these as hard design constraints:
 
-Root causes previously seen:
-- Invalid symbol handling in Binance ticker batch fallback dropped too many symbols.
-- Runtime identity/config drift between env files and systemd overrides.
+- keep JVM heaps conservative (`~256-360M` class)
+- avoid heavy fan-out/retry storms
+- keep sidecars lightweight and restart-safe
+- prefer bounded polling/backoff over burst retries
 
-Code paths:
-- `packages/binance-client/.../BinanceGateway.kt`
-- `apps/mac-engine/.../MacEngineDaemon.kt` (market quote fetch/enrichment and health gating)
+If memory pressure rises, prioritize:
 
-### B) Duplicate client order id retries
+1. stabilize engine + manager first,
+2. then re-enable optional sidecars.
 
-Symptoms:
-- Exchange rejection with messages like `already exists`/`duplicate`
-- repeated submission attempts with same client order id
+## 6) Deploy Contract (Must Follow)
 
-Root cause:
-- Retry loop did not short-circuit cleanly on explicit exchange rejections.
+1. Build once from `main`.
+2. Deploy the same artifact hash to both nodes.
+3. Restart relevant services in controlled order.
+4. Observe logs and APIs for at least 10 minutes.
+5. Close only after both nodes are healthy and stable.
 
-Code path:
-- `packages/core/.../LiveExecutionCoordinator.kt`
+Recommended references:
 
-### C) Manager process starts then exits
+- `docs/TRINITY_DEPLOYMENT.md`
+- `docs/ops/server-deploy-checklist.md`
+- `docs/ops/ONCALL_QUICKSTART.md`
 
-Symptoms:
-- `kibot-manager` repeatedly restart-limited
+## 7) 10-Minute Post-Deploy Validation
 
-Root cause seen:
-- Placeholder/incomplete manager script deployed instead of full runtime file.
+Minimum checks on both nodes:
 
-Code path:
-- `scripts/kibot_manager.py`
+- `systemctl is-active` for engine + manager + core sidecars
+- `/api/health` returns `status=ok`
+- `/api/state` returns non-empty runtime state
+- no repeating high-signal errors in journal:
+  - stale feed loops
+  - duplicate order-id retries
+  - lease conflict loops
+  - malformed payload/JSON loops
 
-## 8) Operational Checks
+## 8) Known Failure Signatures -> Root Causes
 
-Service status:
+## A) `scanUniverseCount=0` / `pairScores=[]`
 
-```bash
-systemctl is-active kidax-engine kinance-engine kibot-manager kibot-orchestrator kibot-auditor kibot-guardian kibot-security kibot-notifier
-```
+- likely feed symbol mapping/runtime identity mismatch
+- inspect gateway fallback + env identity
 
-API health/state:
+## B) repeated `duplicate/already exists` on order submit
 
-```bash
-curl -fsS http://localhost:8787/api/health
-curl -fsS http://localhost:8787/api/state
-curl -fsS http://localhost:8788/api/health
-curl -fsS http://localhost:8788/api/state
-```
+- execution retry path not short-circuiting correctly
+- inspect `LiveExecutionCoordinator`
 
-Live logs:
+## C) manager active but engine degraded
 
-```bash
-journalctl -u kidax-engine -f
-journalctl -u kinance-engine -f
-journalctl -u kibot-manager -f
-```
+- peer heartbeat path degraded or control-plane throttled
+- inspect manager UDP/log pipeline and lease status
 
-## 9) Deploy Discipline
+## D) compile/runtime drift after large updates
 
-- Build once from `main`, deploy same artifact to both nodes.
-- Deploy unit/env changes together with runtime code when identity/routing is touched.
-- Observe logs post-deploy for at least 10 minutes.
-- Do not close incident until:
-  - both engine services are active,
-  - health endpoints stable,
-  - expected market quotes and radar fields are populated,
-  - no recurring critical warning/error pattern.
+- usually interface or call-signature drift across:
+  - core
+  - mac-engine
+  - control-plane
+  - test-kit
 
-## 10) Repository Pointers
+## 9) Source of Truth Files
 
-- Blueprint summary: `KiBot_Blueprint.md`
-- This detailed architecture guide: `docs/architecture/TWO_SERVER_SYSTEM_GUIDE.md`
-- Oncall quick entry point: `docs/ops/ONCALL_QUICKSTART.md`
-- Deployment references:
-  - `docs/TRINITY_DEPLOYMENT.md`
-  - `docs/ops/server-deploy-checklist.md`
-  - `docs/ops/github-actions-two-server.md`
+- Runtime entry:
+  - `apps/mac-engine/src/main/kotlin/com/kibot/macengine/Main.kt`
+  - `apps/mac-engine/src/main/kotlin/com/kibot/macengine/runtime/MacEngineDaemon.kt`
+- Runtime config:
+  - `apps/mac-engine/src/main/kotlin/com/kibot/macengine/config/MacRuntimeConfig.kt`
+- Core contracts:
+  - `packages/core/src/commonMain/kotlin/com/kibot/core/ControlPlaneGateway.kt`
+  - `packages/core/src/commonMain/kotlin/com/kibot/core/CapitalAllocationManager.kt`
+  - `packages/core/src/commonMain/kotlin/com/kibot/core/PairWhitelistManager.kt`
+- Control-plane implementation:
+  - `packages/control-plane/src/commonMain/kotlin/com/kibot/controlplane/SupabaseControlPlaneClient.kt`
+- Systemd runtime:
+  - `infra/systemd/kidax-engine.service`
+  - `infra/systemd/kinance-engine.service`
+  - `infra/systemd/kibot-manager.service`

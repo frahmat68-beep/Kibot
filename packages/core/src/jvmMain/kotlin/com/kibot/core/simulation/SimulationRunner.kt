@@ -100,4 +100,6 @@ class StubControlPlaneGateway : ControlPlaneGateway {
     override suspend fun upsertOrderSnapshot(botId: BotId, term: Long, deviceId: DeviceId, order: OrderSnapshot) {}
     override suspend fun upsertEncryptedCredentialBundle(bundle: EncryptedCredentialBundle) {}
     override suspend fun fetchEncryptedCredentialBundle(botId: BotId): EncryptedCredentialBundle? = null
+    override suspend fun fetchPairWhitelist(botId: BotId): List<TradeWhitelistRecord> = emptyList()
+    override suspend fun upsertPairWhitelist(botId: BotId, record: TradeWhitelistRecord) {}
 }

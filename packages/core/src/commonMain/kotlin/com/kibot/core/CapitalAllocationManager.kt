@@ -39,6 +39,19 @@ class CapitalAllocationManager(
         const val MICRO_ACCOUNT_THRESHOLD_IDR = 500_000.0
         const val MIN_ORDER_INDODAX_IDR = 10_000.0
         const val MAX_SINGLE_POSITION_PCT = 0.25
+        const val MULTI_SLOT_TRIGGER_IDR = 20_000.0
+
+        /**
+         * Compatibility helper for strategy/deployment modules that scale concurrent
+         * slots by available free cash.
+         */
+        fun calculateDynamicAdditionalSlots(freeCashIdr: Double): Int {
+            if (freeCashIdr < MULTI_SLOT_TRIGGER_IDR) return 0
+            val slotBudget = (MIN_ORDER_INDODAX_IDR * 2.0).coerceAtLeast(20_000.0)
+            return floor(freeCashIdr / slotBudget)
+                .toInt()
+                .coerceIn(0, 6)
+        }
     }
 
     data class AllocationResult(
@@ -79,6 +92,20 @@ class CapitalAllocationManager(
         )
     }
 
+    /**
+     * Backward-compatible aliases used by existing veto flows.
+     * Bucket A = lead-lag, Bucket B = local pump/anomaly.
+     */
+    fun allocateA(requestedAmountIdr: Double): AllocationResult = allocate(
+        isLeadLag = true,
+        requestedAmountIdr = requestedAmountIdr,
+    )
+
+    fun allocateB(requestedAmountIdr: Double): AllocationResult = allocate(
+        isLeadLag = false,
+        requestedAmountIdr = requestedAmountIdr,
+    )
+
     private fun checkMicroMode(): Boolean {
         isMicroAccount = currentTotalEquityIdr < MICRO_ACCOUNT_THRESHOLD_IDR
         return isMicroAccount
@@ -107,6 +134,18 @@ class CapitalAllocationManager(
         }
     }
 
+    /**
+     * Backward-compatible signature still used by validation tests and
+     * parts of mac-engine.
+     */
+    fun depositProfit(profitIdr: Double, wasAggressiveTrade: Boolean) {
+        depositProfit(
+            profitIdr = profitIdr,
+            wasLeadLag = wasAggressiveTrade,
+            entryBudget = 0.0,
+        )
+    }
+
     fun updateEquity(totalEquityIdr: Double, freeIdr: Double, deployedLL: Double, deployedLP: Double) {
         this.currentTotalEquityIdr = totalEquityIdr
         this.deployedLeadLagIdr = deployedLL
@@ -115,6 +154,14 @@ class CapitalAllocationManager(
         val tradeableTotal = totalEquityIdr * (1 - globalCashReservePercent)
         availableLeadLagIdr = maxOf(0.0, (tradeableTotal * leadLagRatio) - deployedLL)
         availableLocalPumpIdr = maxOf(0.0, (tradeableTotal * localPumpRatio) - deployedLP)
+    }
+
+    fun rebalance() {
+        val tradeableTotal = currentTotalEquityIdr * (1 - globalCashReservePercent)
+        val targetLeadLagIdr = tradeableTotal * leadLagRatio
+        val targetLocalPumpIdr = tradeableTotal * localPumpRatio
+        availableLeadLagIdr = (targetLeadLagIdr - deployedLeadLagIdr).coerceAtLeast(0.0)
+        availableLocalPumpIdr = (targetLocalPumpIdr - deployedLocalPumpIdr).coerceAtLeast(0.0)
     }
 
     private fun currentDriftPercent(): Double {

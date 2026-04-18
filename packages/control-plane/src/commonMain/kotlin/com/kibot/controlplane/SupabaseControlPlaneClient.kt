@@ -1407,21 +1407,6 @@ private fun ParameterVersionRow.toBotUpdateRecommendation(): BotUpdateRecommenda
             val parsed = (value as? JsonPrimitive)?.doubleOrNull ?: return@mapNotNull null
             key to parsed
         }
-
-@Serializable
-private data class PairWhitelistRow(
-    @SerialName("pair_id") val pairId: String,
-    val wins: Int,
-    @SerialName("total_trades") val totalTrades: Int,
-    @SerialName("last_updated") val lastUpdated: Instant
-)
-
-private fun PairWhitelistRow.toTradeWhitelistRecord() = com.kibot.core.TradeWhitelistRecord(
-    pairId = pairId,
-    wins = wins,
-    totalTrades = totalTrades,
-    lastUpdated = lastUpdated
-)
         ?.toMap()
         .orEmpty()
 
@@ -1441,6 +1426,21 @@ private fun PairWhitelistRow.toTradeWhitelistRecord() = com.kibot.core.TradeWhit
         createdAt = createdAt,
     )
 }
+
+@Serializable
+private data class PairWhitelistRow(
+    @SerialName("pair_id") val pairId: String,
+    val wins: Int,
+    @SerialName("total_trades") val totalTrades: Int,
+    @SerialName("last_updated") val lastUpdated: Instant,
+)
+
+private fun PairWhitelistRow.toTradeWhitelistRecord() = com.kibot.core.TradeWhitelistRecord(
+    pairId = pairId,
+    wins = wins,
+    totalTrades = totalTrades,
+    lastUpdated = lastUpdated,
+)
 
 @Serializable
 private data class EncryptedCredentialRow(
