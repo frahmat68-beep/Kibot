@@ -208,8 +208,19 @@ def _parse_numeric(value: Any) -> float | None:
 
 
 def _telegram_send(message: str, *, category: str = "general", force: bool = False) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_USER_ID", "")).strip()
+    token = (
+        os.getenv("TELEGRAM_BOT_TOKEN")
+        or os.getenv("KIBOT_TELEGRAM_BOT_TOKEN")
+        or os.getenv("KICRYP_TELEGRAM_BOT_TOKEN")
+        or ""
+    ).strip()
+    chat_id = (
+        os.getenv("TELEGRAM_CHAT_ID")
+        or os.getenv("TELEGRAM_USER_ID")
+        or os.getenv("KIBOT_TELEGRAM_CHAT_ID")
+        or os.getenv("KICRYP_TELEGRAM_CHAT_ID")
+        or ""
+    ).strip()
     if not token or not chat_id:
         return
     if not force:
@@ -2607,6 +2618,7 @@ DAILY_CYCLE_STATE_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_CYCLE_FILE", str(ST
 TRADE_LOG_RUNTIME_PATH = Path(os.getenv("KIBOT_MANAGER_TRADE_LOG_FILE", str(Path.cwd() / "state/trade_log.jsonl")))
 TRADE_SUMMARY_RUNTIME_PATH = Path(os.getenv("KIBOT_MANAGER_TRADE_SUMMARY_FILE", str(Path.cwd() / "state/trade_summary.json")))
 PAIR_MEMORY_PATH = Path(os.getenv("KIBOT_MANAGER_PAIR_MEMORY_FILE", str(STATE_ROOT / "pair_memory.json")))
+WHATIF_RESULTS_PATH = Path(os.getenv("KIBOT_MANAGER_WHATIF_RESULTS_FILE", str(STATE_ROOT / "whatif_results.json")))
 PAIR_MEMORY_ROLLING_WINDOW = int(os.getenv("KIBOT_PAIR_MEMORY_ROLLING_WINDOW", "50"))
 PAIR_MEMORY_MIN_TRADES_FOR_WINRATE = int(os.getenv("KIBOT_PAIR_MEMORY_MIN_TRADES_FOR_WINRATE", "3"))
 AI_BATCH_REVIEW_INTERVAL_SEC = int(os.getenv("KIBOT_AI_BATCH_REVIEW_INTERVAL_SEC", str(6 * 60 * 60)))
@@ -3731,6 +3743,25 @@ def _collect_learning_review_snapshot() -> Dict[str, Any]:
         if top_pair:
             screen_focus.append(top_pair)
     balance = _current_balance_snapshot()
+    trade_metrics = _get_trade_metrics_today()
+    whatif_payload = _load_json_file(WHATIF_RESULTS_PATH, {})
+    top_whatif = []
+    for pair in list(whatif_payload.get("topOpportunities") or [])[:5]:
+        if isinstance(pair, str) and pair.strip():
+            top_whatif.append(pair.strip().lower())
+    top_screen_candidates = []
+    for item in list(_screen_cache or [])[:5]:
+        if not isinstance(item, dict):
+            continue
+        analysis = item.get("analysis")
+        top_screen_candidates.append(
+            {
+                "pair": str(item.get("pair_id") or "").lower(),
+                "score": round(float(getattr(analysis, "legitimacy_score", 0.0) or 0.0), 2),
+                "phase": str(getattr(analysis, "pump_phase", "") or ""),
+                "recommendation": str(getattr(analysis, "entry_recommendation", "") or ""),
+            }
+        )
     active_positions = [
         {
             "pair": pair,
@@ -3747,12 +3778,20 @@ def _collect_learning_review_snapshot() -> Dict[str, Any]:
         "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
         "equity_idr": balance.get("equity_idr"),
         "free_cash_idr": balance.get("free_cash_idr"),
+        "trade_metrics": trade_metrics,
         "active_positions": active_positions,
         "active_position_pairs": _active_position_pairs(),
         "scan_focus_pairs": list(dict.fromkeys(screen_focus))[:6],
+        "top_screen_candidates": top_screen_candidates,
+        "whatif_top_opportunities": top_whatif,
         "event_counts": event_counts,
         "why_not_counts": why_not,
         "veto_metrics": dict(_veto_metrics),
+        "daily_guard": {
+            "hard_stopped": bool(_daily_guard_state.get("hard_stopped")),
+            "reason": str(_daily_guard_state.get("reason") or ""),
+            "reset_at": str(_daily_guard_state.get("reset_at") or ""),
+        },
         "math_review": {
             "last_action": _math_review_last_action,
             "last_reason": _math_review_last_reason,
@@ -3761,22 +3800,98 @@ def _collect_learning_review_snapshot() -> Dict[str, Any]:
     }
 
 
+def _build_learning_review_fallback(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    trade_metrics = snapshot.get("trade_metrics") if isinstance(snapshot.get("trade_metrics"), dict) else {}
+    veto_metrics = snapshot.get("veto_metrics") if isinstance(snapshot.get("veto_metrics"), dict) else {}
+    why_not_counts = snapshot.get("why_not_counts") if isinstance(snapshot.get("why_not_counts"), dict) else {}
+    top_screen_candidates = snapshot.get("top_screen_candidates") if isinstance(snapshot.get("top_screen_candidates"), list) else []
+    top_whatif = snapshot.get("whatif_top_opportunities") if isinstance(snapshot.get("whatif_top_opportunities"), list) else []
+    daily_pnl_pct = _parse_numeric(snapshot.get("daily_pnl_pct")) or 0.0
+    active_pairs = [str(item).lower() for item in list(snapshot.get("active_position_pairs") or []) if str(item).strip()]
+
+    lessons: List[str] = []
+    risks: List[str] = []
+    strategy_parts: List[str] = []
+
+    if daily_pnl_pct <= -0.015:
+        lessons.append("PnL intraday sedang tertekan; kecilkan agresi dan prioritaskan validasi ulang sebelum entry baru.")
+        risks.append("Loss lanjutan bisa memicu hard stop harian bila entry dipaksakan.")
+        strategy_parts.append("mode defensif")
+    elif daily_pnl_pct >= 0.01:
+        lessons.append("PnL masih sehat; pertahankan tempo tapi jangan longgarkan threshold terlalu cepat.")
+        strategy_parts.append("kunci profit yang sudah ada")
+
+    total_trades = int(trade_metrics.get("total_trades") or 0)
+    win_rate = float(trade_metrics.get("win_rate") or 0.0)
+    ev_per_trade = float(trade_metrics.get("ev_per_trade") or 0.0)
+    if total_trades >= 3 and ev_per_trade <= 0:
+        lessons.append("EV/trade belum positif; fokus ke pair yang lolos veto bersih dan skip setup abu-abu.")
+        risks.append("Trade tambahan dengan expectancy negatif akan memperdalam fee bleed.")
+    elif total_trades >= 3 and win_rate >= 0.6 and ev_per_trade > 0:
+        lessons.append("Expectancy 30 menit terakhir positif; lanjutkan pada cluster pair yang win-rate-nya konsisten.")
+
+    rejected = int(veto_metrics.get("rejected") or 0)
+    approved = int(veto_metrics.get("approved") or 0)
+    if rejected > max(approved * 2, 6):
+        lessons.append("Mayoritas scan masih tertolak veto; threshold scan perlu fokus ke pair paling likuid dan paling sinkron.")
+        strategy_parts.append("prioritaskan kualitas di atas frekuensi")
+
+    if why_not_counts:
+        top_reason = sorted(why_not_counts.items(), key=lambda item: item[1], reverse=True)[0][0]
+        risks.append(f"Why-not terbanyak saat ini: {top_reason}.")
+
+    if active_pairs:
+        lessons.append(f"Review posisi aktif: {', '.join(pair.upper() for pair in active_pairs[:4])}. Exit harus didahulukan sebelum rotasi baru.")
+
+    if top_screen_candidates:
+        screen_focus = ", ".join(
+            candidate["pair"].upper()
+            for candidate in top_screen_candidates
+            if isinstance(candidate, dict) and candidate.get("pair")
+        )
+        if screen_focus:
+            strategy_parts.append(f"pantau fokus scan {screen_focus}")
+
+    if top_whatif:
+        strategy_parts.append(
+            "sinkronkan peluang scan dengan what-if terbaik " + ", ".join(str(pair).upper() for pair in top_whatif[:3])
+        )
+
+    if not lessons:
+        lessons.append("Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.")
+    if not risks:
+        risks.append("Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat.")
+    if not strategy_parts:
+        strategy_parts.append("pertahankan risk gate sekarang")
+
+    summary = " | ".join(lessons[:2])
+    strategy = "; ".join(dict.fromkeys(strategy_parts))
+    return {
+        "summary": summary,
+        "strategy": strategy,
+        "lessons": lessons[:5],
+        "risks": risks[:5],
+        "source": "heuristic_fallback",
+    }
+
+
 def _run_strategy_learning_review() -> Dict[str, Any]:
     snapshot = _collect_learning_review_snapshot()
-    fallback_summary = "Belum cukup data 30 menit terakhir; pertahankan risk gate saat ini."
+    fallback = _build_learning_review_fallback(snapshot)
     result = {
         "at": snapshot["at_utc"],
         "wib_date": snapshot["wib_date"],
-        "summary": fallback_summary,
-        "strategy": "Jaga modal, prioritaskan pair dengan why-not rendah dan veto rejection minim.",
-        "lessons": [],
-        "risks": [],
-        "source": "fallback",
+        "summary": str(fallback.get("summary") or "Belum cukup data 30 menit terakhir; pertahankan risk gate saat ini."),
+        "strategy": str(fallback.get("strategy") or "Jaga modal, prioritaskan pair dengan why-not rendah dan veto rejection minim."),
+        "lessons": list(fallback.get("lessons") or []),
+        "risks": list(fallback.get("risks") or []),
+        "source": str(fallback.get("source") or "fallback"),
     }
     if AI_ROUTER_ENABLED:
         prompt = (
             "Kamu adalah assistant pembelajaran strategi untuk bot trading crypto.\n"
             "PENTING: dilarang memberi instruksi BUY/SELL langsung. Fokusmu hanya evaluasi belajar, guardrail, dan strategi 30 menit berikutnya.\n"
+            "Gunakan pendekatan refleksi cepat: ringkas apa yang gagal, apa yang bekerja, kenapa veto/why-not muncul, dan bagaimana menyesuaikan strategi 30 menit berikutnya tanpa memberi instruksi trading langsung.\n"
             "Jawab JSON dengan keys: summary, strategy, lessons, risks.\n\n"
             f"Data 30 menit terakhir:\n{json.dumps(snapshot, ensure_ascii=False, indent=2)}"
         )
@@ -3793,8 +3908,8 @@ def _run_strategy_learning_review() -> Dict[str, Any]:
                 result = {
                     "at": snapshot["at_utc"],
                     "wib_date": snapshot["wib_date"],
-                    "summary": str(parsed.get("summary") or fallback_summary).strip(),
-                    "strategy": str(parsed.get("strategy") or "Pertahankan mode sekarang sambil fokus ke kualitas entry dan exit.").strip(),
+                    "summary": str(parsed.get("summary") or result["summary"]).strip(),
+                    "strategy": str(parsed.get("strategy") or result["strategy"]).strip(),
                     "lessons": [str(item).strip() for item in list(parsed.get("lessons") or []) if str(item).strip()][:5],
                     "risks": [str(item).strip() for item in list(parsed.get("risks") or []) if str(item).strip()][:5],
                     "source": provider or "ai_router",
@@ -6314,31 +6429,34 @@ def _state_server_loop() -> None:
         _http_server = None
 
 def _pair_screen_loop() -> None:
-    """
-    Background thread for Phase 2: Dynamic Screener.
-    """
+    global _screen_cache, _last_screen_time
     print("[KIBOT] Screener loop started.", flush=True)
     while not _shutdown_event.is_set():
         try:
-            recommended = screen_all_pairs()
-            if recommended:
-                msg = f"🔍 TRINITY SCREENER FOUND {len(recommended)} PAIRS:\n"
-                for r in recommended[:3]:
-                    msg += f"• {r.pair_id}: Score {r.legitimacy_score} ({r.pump_phase}) - {r.entry_recommendation}\n"
-                _telegram_send(msg)
-                
-                # Auto-entry for top tier signals
-                best = recommended[0]
-                if best.legitimacy_score >= 75 and best.entry_recommendation == "ENTER_NOW" and not _full_stop_active:
-                    # Verify we don't already have it
-                    if best.pair_id not in _active_positions_cache:
-                        trace_id = f"screener-{best.pair_id}-{int(time.time())}"
-                        smart_entry(best.pair_id, best, budget_idr=MAXIMUM_POSITION_SIZE_IDR, trace_id=trace_id)
-            
-        except Exception as e:
-            print(f"[KIBOT][WARN] pair_screen_loop error: {e}", flush=True)
-            
-        if _shutdown_event.wait(timeout=900): # 15 minutes
+            now = time.time()
+            if (now - _last_screen_time) >= 900.0:
+                _last_screen_time = now
+                _screen_cache = screen_all_pairs()
+                if _screen_cache:
+                    top = _screen_cache[0]
+                    print(
+                        f"[KIBOT][SCREEN] top={top['pair_id']} score={top['analysis'].legitimacy_score:.1f} phase={top['analysis'].pump_phase}",
+                        flush=True,
+                    )
+                    _append_runtime_event(
+                        "pair_screen_update",
+                        {
+                            "top_pair": top["pair_id"],
+                            "score": top["analysis"].legitimacy_score,
+                            "phase": top["analysis"].pump_phase,
+                            "count": len(_screen_cache),
+                        },
+                    )
+                    _write_runtime_note()
+        except Exception as error:
+            print(f"[KIBOT][WARN] pair_screen_loop error: {error}", flush=True)
+
+        if _shutdown_event.wait(timeout=30.0):
             break
 
 def _simulation_loop() -> None:
@@ -6346,10 +6464,11 @@ def _simulation_loop() -> None:
     Background thread for Bayesian What-If simulation.
     Runs every 15 minutes.
     """
-    if not _WHATIF_AVAILABLE:
+    simulation_runner = globals().get("run_simulation")
+    if not _WHATIF_AVAILABLE or not callable(simulation_runner):
         print("[KIBOT] Simulation engine not available (missing kibot_whatif_engine).", flush=True)
         return
-        
+
     print("[KIBOT] Simulation loop started.", flush=True)
     while not _shutdown_event.is_set():
         try:
@@ -6367,31 +6486,39 @@ def _simulation_loop() -> None:
             # 2. Run simulation
             if market_prices:
                 print(f"[KIBOT][SIM] Analyzing {len(market_prices)} pairs...", flush=True)
-                run_simulation(market_prices)
-            
-        except Exception as e:
-            print(f"[KIBOT][WARN] simulation_loop error: {e}", flush=True)
-        
-        if _shutdown_event.wait(timeout=900): # Run every 15 minutes
+                simulation_runner(market_prices)
+
+        except Exception as error:
+            print(f"[KIBOT][WARN] simulation_loop error: {error}", flush=True)
+
+        if _shutdown_event.wait(timeout=900):
             break
 
 def _math_review_loop() -> None:
-    """
-    Background thread for Phase 5: Math Review.
-    """
+    global _last_math_review_at, _math_review_last_action, _math_review_last_reason
     print("[KIBOT] Math review loop started.", flush=True)
     while not _shutdown_event.is_set():
         try:
-            run_30min_math_review()
-        except Exception as e:
-            print(f"[KIBOT][WARN] math_review_loop error: {e}", flush=True)
-        
-        if _shutdown_event.wait(timeout=60): # Check every minute
+            now = time.time()
+            if (now - _last_math_review_at) >= 1800.0:
+                _last_math_review_at = now
+                result = _run_math_review()
+                _math_review_last_action = str(result.get("action") or "UNKNOWN")
+                _math_review_last_reason = str(result.get("reason") or "")
+        except Exception as error:
+            print(f"[KIBOT][MATH_REVIEW][ERROR] {error}", flush=True)
+
+        if _shutdown_event.wait(timeout=60.0):
             break
 
 def _maybe_run_30min_math_review() -> None:
-    # Helper for the main wait loop
-    run_30min_math_review()
+    global _last_math_review_at, _math_review_last_action, _math_review_last_reason
+    now = time.time()
+    if (now - _last_math_review_at) >= 1800.0:
+        _last_math_review_at = now
+        result = _run_math_review()
+        _math_review_last_action = str(result.get("action") or "UNKNOWN")
+        _math_review_last_reason = str(result.get("reason") or "")
 import urllib.request
 from datetime import datetime, timedelta
 
@@ -6591,17 +6718,6 @@ def main() -> None:
                                 print(f"[SCREEN-B] {top['pair_id']} score={top['conv']['score']:.3f} phase={top['conv']['phase']} ev=Rp{top['sim']['ev_idr']:.0f}", flush=True)
                         except Exception as e:
                             print(f"[SCREEN] {e}", flush=True)
-
-                # 30-min review
-                if now - _last_review > REVIEW_INTERVAL_S:
-                    _last_review = now
-                    try:
-                        equity = float(_metrics.get("total_equity_idr", 60000.0))
-                        pnl = float(_metrics.get("daily_pnl_pct", 0.0))
-                        msg = run_math_review(equity, pnl)
-                        _telegram_send(msg)
-                    except Exception as e:
-                        print(f"[REVIEW] {e}", flush=True)
 
                 continue
             except OSError as e:

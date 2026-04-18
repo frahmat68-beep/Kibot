@@ -125,6 +125,61 @@ def test_analyst_entrypoint():
         f"loop_entry={has_loop_entry} demo_seed={has_demo_seed}",
     )
 
+
+def test_workflow_deploy_mode():
+    """Verify deploy workflows do not auto-SSH on every push to main."""
+    workflows = [
+        ROOT / ".github" / "workflows" / "deploy-kidax.yml",
+        ROOT / ".github" / "workflows" / "deploy-kinance.yml",
+    ]
+    invalid = []
+    for workflow in workflows:
+        content = workflow.read_text()
+        if "push:" in content:
+            invalid.append(workflow.name)
+        if "disable --now ${RECOVERY_TIMER}" not in content and 'disable --now "${RECOVERY_TIMER}"' not in content:
+            invalid.append(f"{workflow.name}:missing_legacy_timer_disable")
+    return log_test("Workflow Deploy Mode", len(invalid) == 0, f"Issues: {invalid}" if invalid else "manual dispatch only")
+
+
+def test_service_env_wiring():
+    """Verify critical Python services inherit the live env files."""
+    service_files = [
+        ROOT / "infra" / "systemd" / "kibot-manager.service",
+        ROOT / "infra" / "systemd" / "kibot-notifier.service",
+        ROOT / "infra" / "systemd" / "kibot-analyst.service",
+        ROOT / "infra" / "systemd" / "kibot-guardian.service",
+        ROOT / "infra" / "systemd" / "kibot-auditor.service",
+        ROOT / "infra" / "systemd" / "kibot-orchestrator.service",
+        ROOT / "infra" / "systemd" / "kibot-security.service",
+    ]
+    missing = []
+    for service_file in service_files:
+        content = service_file.read_text()
+        for required in (".env.server", ".env.kibot", ".env.kibot_manager"):
+            if required not in content:
+                missing.append(f"{service_file.name}:{required}")
+    return log_test("Systemd Env Wiring", len(missing) == 0, f"Missing: {missing}" if missing else "all critical services inherit live env")
+
+
+def test_manager_runtime_overrides():
+    """Verify the last active manager loop definitions use the fixed runtime paths."""
+    manager_path = ROOT / "scripts" / "kibot_manager.py"
+    content = manager_path.read_text()
+    pair_idx = content.rfind("def _pair_screen_loop()")
+    math_idx = content.rfind("def _math_review_loop()")
+    main_idx = content.rfind("def main()")
+    pair_block = content[pair_idx:math_idx]
+    math_block = content[math_idx:main_idx]
+    main_block = content[main_idx:]
+    checks_ok = (
+        "top['pair_id']" in pair_block
+        and "r.pair_id" not in pair_block
+        and "_run_math_review()" in math_block
+        and "_telegram_send(msg)" not in main_block
+    )
+    return log_test("Manager Runtime Overrides", checks_ok, "late overrides aligned to runtime-safe paths")
+
 def run_all():
     print("=== Trinity v7.1 Production Pre-Flight Audit ===")
     print(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -138,6 +193,9 @@ def run_all():
         test_log_maintenance_logic(),
         test_ai_fallback_chain(),
         test_analyst_entrypoint(),
+        test_workflow_deploy_mode(),
+        test_service_env_wiring(),
+        test_manager_runtime_overrides(),
     ]
     
     print("-" * 60)

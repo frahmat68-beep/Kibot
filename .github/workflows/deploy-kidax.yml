@@ -1,13 +1,6 @@
 name: Deploy KiBot Indodax
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "packages/binance-client/**"
-      - ".github/workflows/deploy-kinance.yml"
-      - "infra/systemd/kinance-engine.service"
-      - "SSH_BINANCE/**"
   workflow_dispatch:
 
 concurrency:
@@ -158,7 +151,7 @@ jobs:
             ensure_env_in "${REMOTE_ROOT}/.env.server" KIDAX_UDP_HOST ${KIDAX_UDP_HOST}
             ensure_env_in "${REMOTE_ROOT}/.env.server" KINANCE_UDP_HOST ${KINANCE_UDP_HOST}
 
-            for unit in ${RECOVERY_TIMER} ${RECOVERY_SERVICE} ${BULKHEAD_SERVICES}; do
+            for unit in ${RECOVERY_TIMER} ${RECOVERY_SERVICE}; do
               sudo systemctl disable --now "${unit}" || true
             done
 
@@ -181,9 +174,7 @@ jobs:
             sudo systemctl stop ${SERVICE_NAME} || true
             sudo systemctl reset-failed ${SERVICE_NAME} || true
             sudo systemctl daemon-reload
-            sudo systemctl disable ${SERVICE_NAME} || true
-            sudo rm -f /etc/systemd/system/multi-user.target.wants/${SERVICE_NAME}.service
-            sudo systemctl reenable ${SERVICE_NAME}
+            sudo systemctl enable ${SERVICE_NAME} || true
             sudo systemctl restart ${SERVICE_NAME}
 
             echo "Waiting for health check on port ${RUNTIME_PORT}..."
@@ -194,15 +185,12 @@ jobs:
               exit 1
             fi
             for svc in ${BULKHEAD_SERVICES}; do
-              sudo systemctl disable ${svc} || true
-              sudo rm -f /etc/systemd/system/multi-user.target.wants/${svc}.service
-              sudo systemctl reenable ${svc}
+              sudo systemctl enable ${svc} || true
               sudo systemctl restart ${svc}
               sudo systemctl is-active ${svc}
             done
             if systemctl list-unit-files | grep -q "^${RECOVERY_TIMER}"; then
-              sudo systemctl reenable ${RECOVERY_TIMER}
-              sudo systemctl restart ${RECOVERY_TIMER}
+              sudo systemctl disable --now ${RECOVERY_TIMER} || true
             fi
             echo "✅ Deployment successful!"
             cat /tmp/kibot-state.json

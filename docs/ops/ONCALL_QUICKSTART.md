@@ -16,7 +16,7 @@ Target: decide safe action in under 10 minutes.
 Run on Node A:
 
 ```bash
-systemctl is-active kidax-engine kibot-manager kibot-analyst
+systemctl is-active kidax-engine kibot-manager
 curl -fsS http://localhost:8787/api/health || true
 ```
 
@@ -28,9 +28,19 @@ Green baseline:
 Run on Node B:
 
 ```bash
-systemctl is-active kinance-engine kibot-manager kibot-analyst kibot-notifier kibot-guardian kibot-auditor kibot-orchestrator kibot-security
+systemctl is-active kinance-engine kibot-manager kibot-notifier kibot-guardian kibot-auditor kibot-orchestrator kibot-security
 curl -fsS http://localhost:8788/api/health || true
 ```
+
+Optional sidecar:
+
+```bash
+systemctl is-active kibot-analyst || true
+```
+
+Deploy note:
+- workflow GitHub deploy sekarang manual-only (`workflow_dispatch`)
+- deploy harian pakai SSH/manual supaya tidak bentrok dengan soak dan audit pascadeploy
 
 Legacy services that should stay `inactive` or `not-found`:
 

@@ -13,9 +13,12 @@ Dokumen ini adalah checklist deploy untuk topologi aktif `main` / `kinance` / `k
 
 ## Active Systemd Set
 - Node A / `213.35.118.26`
-  - wajib aktif: `kidax-engine`, `kibot-manager`, `kibot-analyst`
+  - wajib aktif: `kidax-engine`, `kibot-manager`
 - Node B / `152.69.218.198`
-  - wajib aktif: `kinance-engine`, `kibot-manager`, `kibot-analyst`, `kibot-notifier`, `kibot-guardian`, `kibot-auditor`, `kibot-orchestrator`, `kibot-security`
+  - wajib aktif: `kinance-engine`, `kibot-manager`, `kibot-notifier`, `kibot-guardian`, `kibot-auditor`, `kibot-orchestrator`, `kibot-security`
+- sidecar opsional: `kibot-analyst`
+  - berguna untuk journaling dan ringkasan `state/analyst/*`
+  - bukan jalur kritis trading, midnight reset, atau daily Telegram report
 - `kibot_local_signal.py` sekarang dijalankan dari thread internal `kibot-manager`, bukan dari service `kibot-local-scanner.service`
 - AI routing / learning review utama sekarang dimiliki `kibot-manager`; service `kibot-coordinator.service` adalah legacy dan harus tetap mati pada topologi aktif 2 server
 
@@ -164,21 +167,22 @@ Verifikasi cepat:
 6. Restart `Kinance`.
 7. Restart `KiBot Commander` jika node commander aktif.
 8. Restart `KiDax` terakhir.
-9. Pastikan cron recovery aktif:
-   - `crontab -l | grep engine-recovery.sh`
+9. Pastikan workflow GitHub deploy tidak auto-run pada `push`; deploy harus `workflow_dispatch` atau manual SSH.
+10. Pastikan cron lama yang menunjuk ke path `Kinance/` atau `scripts/egress_mode.sh` yang sudah mati ikut dibersihkan.
 
 Alasan:
 - `Kinance` dulu supaya feed global dan heartbeat siap.
 - `KiBot Commander` kedua supaya veto/safe-mode layer aktif jika deployment memang memakai commander engine.
 - `KiDax` terakhir supaya executor tidak start sendirian tanpa partner.
-- Recovery check tetap jalan tiap 2 menit agar 1 server lebih tahan crash kecil.
+- Recovery engine cukup dijaga lewat unit engine aktif saja; timer/crontab legacy justru mudah bikin drift konfigurasi.
 
 ## Smoke Test Pasca Deploy
 1. Cek service hidup:
   - `sudo systemctl status kinance-engine --no-pager`
   - `sudo systemctl status kibot-engine --no-pager`
   - `sudo systemctl status kidax-engine --no-pager`
-  - `sudo systemctl status kibot-manager kibot-analyst kibot-notifier kibot-guardian kibot-auditor kibot-orchestrator kibot-security --no-pager`
+  - `sudo systemctl status kibot-manager kibot-notifier kibot-guardian kibot-auditor kibot-orchestrator kibot-security --no-pager`
+  - `sudo systemctl status kibot-analyst --no-pager || true`
   - `systemctl is-active kibot-recovery kibot-local-scanner kibot-coordinator kibot-engine-recovery.timer kinance-engine-recovery.timer || true`
 2. Cek dashboard state:
   - `curl http://127.0.0.1:8787/api/state`

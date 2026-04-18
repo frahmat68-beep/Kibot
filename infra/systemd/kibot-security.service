@@ -7,6 +7,10 @@ Wants=network-online.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/KiBot
+EnvironmentFile=-/home/ubuntu/KiBot/.env.server
+EnvironmentFile=-/home/ubuntu/KiBot/.env.kibot
+EnvironmentFile=-/home/ubuntu/KiBot/.env.kibot_manager
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 scripts/kibot_security.py
 Restart=on-failure
 RestartSec=60

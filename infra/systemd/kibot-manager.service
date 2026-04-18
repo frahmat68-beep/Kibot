@@ -11,6 +11,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/KiBot
 EnvironmentFile=-/home/ubuntu/KiBot/.env.server
+EnvironmentFile=-/home/ubuntu/KiBot/.env.kibot
 EnvironmentFile=-/home/ubuntu/KiBot/.env.kibot_manager
 Environment=PYTHONUNBUFFERED=1
 Environment=KIBOT_MANAGER_STATE_DIR=/home/ubuntu/KiBot/state

@@ -12,6 +12,7 @@ import java.util.concurrent.CompletableFuture
 class TelegramNotifier(
     private val botToken: String?,
     private val chatId: String?,
+    private val tradeAlertsEnabled: Boolean,
     private val minExitAlertProfitPct: Double,
     private val minExitAlertProfitIdr: Double,
 ) {
@@ -27,6 +28,7 @@ class TelegramNotifier(
         profitIdr: Double,
         bucketType: String,
     ) {
+        if (!tradeAlertsEnabled) return
         if (!enabled) return
         val text = buildString {
             appendLine("📈 TP ${pair.uppercase()}")
@@ -42,6 +44,7 @@ class TelegramNotifier(
         pnlIdr: Double?,
         pnlPct: Double?,
     ) {
+        if (!tradeAlertsEnabled) return
         if (!enabled) return
         val profitIdr = pnlIdr ?: 0.0
         val profitPct = pnlPct ?: 0.0
@@ -135,6 +138,10 @@ class TelegramNotifier(
             chatId = System.getenv("KIBOT_TELEGRAM_CHAT_ID")
                 ?: System.getenv("TELEGRAM_CHAT_ID")
                 ?: System.getenv("KICRYP_TELEGRAM_CHAT_ID"),
+            tradeAlertsEnabled = (System.getenv("KIBOT_TELEGRAM_TRADE_ALERTS_ENABLED")
+                ?: System.getenv("KICRYP_TELEGRAM_TRADE_ALERTS_ENABLED"))
+                ?.equals("true", ignoreCase = true)
+                ?: false,
             minExitAlertProfitPct = (System.getenv("KIBOT_TELEGRAM_MIN_EXIT_ALERT_PROFIT_PCT")
                 ?: System.getenv("KICRYP_TELEGRAM_MIN_EXIT_ALERT_PROFIT_PCT"))
                 ?.toDoubleOrNull()

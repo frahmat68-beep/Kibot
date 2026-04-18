@@ -20,8 +20,20 @@ ROOT = Path(os.getenv("KIBOT_RUNTIME_ROOT", Path(__file__).resolve().parent.pare
 STATE_DIR = ROOT / "state"
 EVENTS_DIR = STATE_DIR / "events"
 NOTIFY_STATE = STATE_DIR / "notifier_state.json"
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_USER_ID", "")).strip()
+DAILY_REPORT_PATH = STATE_DIR / "daily_report.json"
+TELEGRAM_BOT_TOKEN = (
+    os.getenv("TELEGRAM_BOT_TOKEN")
+    or os.getenv("KIBOT_TELEGRAM_BOT_TOKEN")
+    or os.getenv("KICRYP_TELEGRAM_BOT_TOKEN")
+    or ""
+).strip()
+TELEGRAM_CHAT_ID = (
+    os.getenv("TELEGRAM_CHAT_ID")
+    or os.getenv("TELEGRAM_USER_ID")
+    or os.getenv("KIBOT_TELEGRAM_CHAT_ID")
+    or os.getenv("KICRYP_TELEGRAM_CHAT_ID")
+    or ""
+).strip()
 
 MAX_MSGS_PER_MINUTE = 5
 WIB_UTC_OFFSET_HOURS = int(os.getenv("KIBOT_WIB_UTC_OFFSET_HOURS", "7"))
@@ -134,7 +146,28 @@ def flush_message_queue() -> None:
 
 def _send_daily_report() -> None:
     try:
+        if DAILY_REPORT_PATH.exists():
+            payload = json.loads(DAILY_REPORT_PATH.read_text(encoding="utf-8"))
+            lines = [
+                f"📘 KiBot Midnight Report — {payload.get('report_date', '?')} WIB",
+                "",
+                f"Saldo akhir hari: Rp{float(payload.get('end_balance_idr') or 0.0):,.0f}",
+                f"PnL hari ini: {float(payload.get('daily_pnl_pct') or 0.0) * 100:+.2f}% (Rp{float(payload.get('daily_pnl_idr') or 0.0):,.0f})",
+                f"PnL 7 hari: {float(payload.get('weekly_pnl_pct') or 0.0) * 100:+.2f}% (Rp{float(payload.get('weekly_pnl_idr') or 0.0):,.0f})",
+                "Koin dibeli hari ini: "
+                + (", ".join(str(item).upper() for item in list(payload.get("coins_bought_today") or [])[:8]) or "tidak ada"),
+            ]
+            lessons = [str(item).strip() for item in list(payload.get("lessons") or []) if str(item).strip()][:3]
+            if lessons:
+                lines.extend(["", "Pelajaran untuk sesi berikutnya:"])
+                lines.extend(f"• {item}" for item in lessons)
+            strategy = str(payload.get("next_strategy") or "").strip()
+            if strategy:
+                lines.extend(["", f"Fokus besok: {strategy}"])
+            notify("\n".join(lines), bypass_rate=True)
+            return
         from kibot_analyst import generate_daily_report
+
         report = generate_daily_report()
         if "Belum ada data trading" not in report:
             notify(report, bypass_rate=True)
