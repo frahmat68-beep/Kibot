@@ -3797,10 +3797,11 @@ def _broadcast_udp(payload: Dict[str, Any]) -> None:
             sock.sendto(data, (host, port))
     finally:
         sock.close()
-    print(
-        f"[KIBOT][UDP_BROADCAST] msgType={payload.get('msgType')} pair={payload.get('pairId')} trace={payload.get('traceId')}",
-        flush=True,
-    )
+    if payload.get("msgType") != "HEARTBEAT":
+        print(
+            f"[KIBOT][UDP_BROADCAST] msgType={payload.get('msgType')} pair={payload.get('pairId')} trace={payload.get('traceId')}",
+            flush=True,
+        )
 
 
 def _emit_trinity_heartbeat() -> None:
