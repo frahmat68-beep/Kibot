@@ -6143,18 +6143,28 @@ def _signal_handler(signum: int, frame: Any) -> None:
 
 def _http_state_payload() -> Dict[str, Any]:
     with _state_lock:
+        runtime_state = _fetch_local_runtime_state(timeout_sec=1.0)
+        manager_trading_allowed = (not _entry_state_is_suspended()) and not bool(_daily_guard_state.get("hard_stopped"))
+        runtime_trading_allowed = runtime_state.get("tradingAllowed")
+        effective_state = str(runtime_state.get("effectiveState") or ("RUNNING" if manager_trading_allowed else "DEGRADED"))
+        trading_allowed = (
+            manager_trading_allowed and bool(runtime_trading_allowed)
+            if isinstance(runtime_trading_allowed, bool)
+            else manager_trading_allowed
+        )
+        equity_estimate = _get_total_equity_estimate()
         return {
             "ok": True,
             "service": "kibot-manager",
             "system_state": str(_gate_state.get("entry_state") or "HEALTHY"),
             "trading_mode": str(_gate_state.get("mode") or "CONSERVATIVE"),
-            "effectiveState": "RUNNING" if not _entry_state_is_suspended() else "DEGRADED",
-            "tradingAllowed": (not _entry_state_is_suspended()) and not bool(_daily_guard_state.get("hard_stopped")),
+            "effectiveState": effective_state,
+            "tradingAllowed": trading_allowed,
             "marketRegime": _daily_summary_market_regime() if DAILY_SUMMARY_ENABLED else "UNKNOWN",
             "degradedReason": str(_gate_state.get("reason") or _daily_guard_state.get("reason") or ""),
             "healthDecision": str(_gate_state.get("reason") or ""),
-            "statusMessage": "Server monitor connected to live feed",
-            "nodeStatus": "active",
+            "statusMessage": str(runtime_state.get("statusMessage") or "Server monitor connected to live feed"),
+            "nodeStatus": str(runtime_state.get("nodeStatus") or "active"),
             "hard_stop_active": bool(_daily_guard_state.get("hard_stopped")),
             "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
             "api_fail_streak": _api_fail_streak,
@@ -6162,15 +6172,15 @@ def _http_state_payload() -> Dict[str, Any]:
             "pair_memory_count": len(_pair_memory),
             "pairs_on_cooldown": [pair for pair in _pair_memory.keys() if _is_pair_on_cooldown(pair)],
             "capital_health": {
-                "total_equity_est_idr": _get_total_equity_estimate(),
+                "total_equity_est_idr": equity_estimate,
                 "minimum_viable_idr": MINIMUM_VIABLE_CAPITAL_IDR,
-                "is_capital_sufficient": _check_minimum_capital(),
+                "is_capital_sufficient": _capital_is_sufficient(),
                 "fee_round_trip_pct": round(_effective_fee_pct() * 2.0, 4),
                 "breakeven_per_trade_pct": round((_effective_fee_pct() * 2.0) + 0.015, 4),
                 "status": (
                     "VIABLE"
-                    if (_get_total_equity_estimate() or 0.0) >= MINIMUM_VIABLE_CAPITAL_IDR
-                    else f"INSUFFICIENT — add Rp{max(0.0, MINIMUM_VIABLE_CAPITAL_IDR - (_get_total_equity_estimate() or 0.0)):,.0f} more"
+                    if (equity_estimate or 0.0) >= MINIMUM_VIABLE_CAPITAL_IDR
+                    else f"INSUFFICIENT — add Rp{max(0.0, MINIMUM_VIABLE_CAPITAL_IDR - (equity_estimate or 0.0)):,.0f} more"
                 ),
             },
             "metrics": {
