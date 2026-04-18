@@ -9,6 +9,7 @@ import socket
 import sys
 import threading
 import time
+import ast
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -3875,6 +3876,45 @@ def _build_learning_review_fallback(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _coerce_learning_text(value: Any) -> str:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith(("{", "[")) and stripped.endswith(("}", "]")):
+            try:
+                parsed = ast.literal_eval(stripped)
+                if parsed is not value:
+                    return _coerce_learning_text(parsed)
+            except Exception:
+                pass
+        return stripped
+    if isinstance(value, dict):
+        for key in ("summary", "strategy", "action", "reason", "status", "message"):
+            nested = _coerce_learning_text(value.get(key))
+            if nested:
+                return nested
+        flattened = [f"{key}: {_coerce_learning_text(item)}" for key, item in value.items() if _coerce_learning_text(item)]
+        return "; ".join(flattened)
+    if isinstance(value, list):
+        return "; ".join(filter(None, (_coerce_learning_text(item) for item in value)))
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _coerce_learning_list(value: Any) -> List[str]:
+    if isinstance(value, list):
+        items = value
+    else:
+        parsed = _coerce_learning_text(value)
+        return [parsed] if parsed else []
+    out: List[str] = []
+    for item in items:
+        text = _coerce_learning_text(item)
+        if text:
+            out.append(text)
+    return out
+
+
 def _run_strategy_learning_review() -> Dict[str, Any]:
     snapshot = _collect_learning_review_snapshot()
     fallback = _build_learning_review_fallback(snapshot)
@@ -3908,10 +3948,10 @@ def _run_strategy_learning_review() -> Dict[str, Any]:
                 result = {
                     "at": snapshot["at_utc"],
                     "wib_date": snapshot["wib_date"],
-                    "summary": str(parsed.get("summary") or result["summary"]).strip(),
-                    "strategy": str(parsed.get("strategy") or result["strategy"]).strip(),
-                    "lessons": [str(item).strip() for item in list(parsed.get("lessons") or []) if str(item).strip()][:5],
-                    "risks": [str(item).strip() for item in list(parsed.get("risks") or []) if str(item).strip()][:5],
+                    "summary": _coerce_learning_text(parsed.get("summary") or result["summary"]),
+                    "strategy": _coerce_learning_text(parsed.get("strategy") or result["strategy"]),
+                    "lessons": _coerce_learning_list(parsed.get("lessons") or result["lessons"])[:5],
+                    "risks": _coerce_learning_list(parsed.get("risks") or result["risks"])[:5],
                     "source": provider or "ai_router",
                 }
         except Exception as error:
