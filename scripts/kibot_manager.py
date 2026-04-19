@@ -3213,7 +3213,9 @@ def _trigger_daily_hard_stop(current_equity: float | None, daily_pnl_pct: float)
 
 def _check_daily_loss_limit(current_equity: float | None = None) -> None:
     if current_equity is None:
-        current_equity = float(_daily_guard_state.get("current_equity") or 0.0) or None
+        current_equity = _get_total_equity_estimate()
+        if current_equity is None:
+            current_equity = float(_daily_guard_state.get("current_equity") or 0.0) or None
     _refresh_daily_guard_from_equity(current_equity)
     actual_today = _wib_today_str()
     if _daily_guard_state.get("hard_stopped") and _daily_guard_reset_due():
@@ -3323,6 +3325,14 @@ def _hours_until_midnight_wib() -> float:
 
 def _get_trade_metrics_today() -> Dict[str, Any]:
     trades = list(_math_review_trade_journal)
+    if not trades:
+        for row in _trade_records_for_wib_date(_operational_wib_date()):
+            if str(row.get("side") or "").upper() != "SELL":
+                continue
+            pnl_pct = _normalized_trade_net_pnl_pct(row)
+            if pnl_pct is None:
+                continue
+            trades.append({"gross_pnl_pct": pnl_pct})
     total_trades = len(trades)
     wins = sum(1 for row in trades if float(row.get("gross_pnl_pct") or 0.0) > 0)
     losses = total_trades - wins
@@ -3371,6 +3381,7 @@ def _run_math_review() -> Dict[str, Any]:
         action = "HARD_STOP"
         reason = f"Recovery too far: need {trades_to_recover:.1f}, possible {trades_possible:.1f}"
         _set_conservative_mode("math_review_recovery_impossible")
+        _suspend_new_entries("math_review_recovery_impossible")
     elif trades_to_recover > trades_possible:
         action = "DEFENSIVE"
         reason = f"Recovery tight: need {trades_to_recover:.1f}, possible {trades_possible:.1f}"
@@ -3619,6 +3630,35 @@ def _load_trade_log_records() -> List[Dict[str, Any]]:
     return records
 
 
+def _extract_reason_pnl_pct(exit_reason: Any) -> float | None:
+    text = str(exit_reason or "").strip()
+    if not text:
+        return None
+    for pattern in (
+        r"pnl=([+-]?\d+(?:\.\d+)?)%",
+        r"at ([+-]?\d+(?:\.\d+)?)%",
+    ):
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            try:
+                return float(match.group(1)) / 100.0
+            except Exception:
+                return None
+    return None
+
+
+def _normalized_trade_net_pnl_pct(record: Dict[str, Any]) -> float | None:
+    direct = _parse_numeric(record.get("netPnlPct") or record.get("net_pnl_pct") or record.get("pnl_pct"))
+    filled_price = _parse_numeric(record.get("filledPrice") or record.get("filled_price"))
+    inferred = _extract_reason_pnl_pct(record.get("exitReason") or record.get("exit_reason"))
+    if inferred is not None:
+        if direct is None:
+            return inferred
+        if filled_price is None or filled_price <= 0.0 or (direct < -0.90 and inferred > 0):
+            return inferred
+    return direct
+
+
 def _trade_records_for_wib_date(target_date: str) -> List[Dict[str, Any]]:
     if not target_date:
         return []
@@ -3682,19 +3722,28 @@ def _active_position_pairs() -> List[str]:
 
 def _extract_state_holdings(payload: Dict[str, Any]) -> List[str]:
     holdings = payload.get("holdingsDetailed")
-    if not isinstance(holdings, list):
-        return []
     pairs: List[str] = []
-    for item in holdings:
-        if not isinstance(item, dict):
-            continue
-        pair = str(item.get("pairId") or "").lower().strip()
-        if pair:
-            pairs.append(pair)
-            continue
-        asset = str(item.get("assetCode") or item.get("symbol") or "").lower().strip()
-        if asset and asset != "idr":
-            pairs.append(f"{asset}_idr")
+    if isinstance(holdings, list):
+        for item in holdings:
+            if not isinstance(item, dict):
+                continue
+            pair = str(item.get("pairId") or "").lower().strip()
+            if pair:
+                pairs.append(pair)
+                continue
+            asset = str(item.get("assetCode") or item.get("symbol") or "").lower().strip()
+            if asset and asset != "idr":
+                pairs.append(f"{asset}_idr")
+    active_positions = payload.get("activePositions")
+    if isinstance(active_positions, list):
+        for item in active_positions:
+            if not isinstance(item, dict):
+                continue
+            pair = str(item.get("pairId") or item.get("pair") or "").lower().strip()
+            if pair:
+                if "_" not in pair and pair != "idr":
+                    pair = f"{pair}_idr"
+                pairs.append(pair)
     return sorted(dict.fromkeys(pairs))
 
 
@@ -3741,6 +3790,8 @@ def _build_daily_report_payload(report_date: str) -> Dict[str, Any]:
     daily_pnl_pct = _parse_numeric(report_guard.get("daily_pnl_pct"))
     if daily_pnl_pct is None and start_balance and end_balance is not None and start_balance > 0:
         daily_pnl_pct = (end_balance - start_balance) / start_balance
+    if start_balance is not None and end_balance is not None:
+        daily_pnl_idr = end_balance - start_balance
 
     report_day = datetime.fromisoformat(report_date).date()
     weekly_sells: List[Dict[str, Any]] = []
@@ -5582,28 +5633,40 @@ def _check_kinance_health() -> bool:
 def _process_signal(msg: Dict[str, Any]) -> None:
     msg_type = str(msg.get("msgType") or "").upper()
 
-    try:
-        _check_daily_loss_limit()
-        if _is_hard_stop_active():
-            _metric_inc("entries_blocked_hard_stop")
-            print(
-                f"[KIBOT][BLOCK] Blocking {msg_type} - daily hard stop active",
-                flush=True,
-            )
-            return
-    except Exception as error:
-        _metric_inc("entries_blocked_hard_stop")
-        print(f"[KIBOT][BLOCK] Blocking {msg_type} - hard stop guard failed reason={error}", flush=True)
-        return
-
-    if not _check_minimum_capital():
-        print(f"[KIBOT][BLOCK] Blocking {msg_type} - minimum viable capital not met", flush=True)
-        return
-
     # === HANDLE KINANCE HEARTBEAT ===
     if msg_type == "HEARTBEAT" and msg.get("source") == "kinance":
         _on_kinance_heartbeat_received()
         return
+
+    if msg_type == "EXECUTION_FILLED":
+        _book_entry_from_execution(msg)
+        return
+    if msg_type == "ACTIVE_POSITIONS":
+        _process_active_positions(msg)
+        return
+    if msg_type == "ORDERBOOK_COLLAPSE":
+        _process_orderbook_collapse(msg)
+        return
+
+    if msg_type in SAFE_ENTRY_MSG_TYPES:
+        try:
+            _check_daily_loss_limit()
+            if _is_hard_stop_active():
+                _metric_inc("entries_blocked_hard_stop")
+                print(
+                    f"[KIBOT][BLOCK] Blocking {msg_type} - daily hard stop active",
+                    flush=True,
+                )
+                return
+        except Exception as error:
+            _metric_inc("entries_blocked_hard_stop")
+            print(f"[KIBOT][BLOCK] Blocking {msg_type} - hard stop guard failed reason={error}", flush=True)
+            return
+
+        if not _check_minimum_capital():
+            print(f"[KIBOT][BLOCK] Blocking {msg_type} - minimum viable capital not met", flush=True)
+            _suspend_new_entries("minimum_viable_capital_not_met")
+            return
 
     if msg_type in EXIT_MSG_TYPES:
         pass
@@ -5627,15 +5690,6 @@ def _process_signal(msg: Dict[str, Any]) -> None:
             print(f"[KIBOT][BLOCK] Blocking {msg_type} - KINANCE unhealthy", flush=True)
             return
 
-    if msg_type == "ACTIVE_POSITIONS":
-        _process_active_positions(msg)
-        return
-    if msg_type == "ORDERBOOK_COLLAPSE":
-        _process_orderbook_collapse(msg)
-        return
-    if msg_type == "EXECUTION_FILLED":
-        _book_entry_from_execution(msg)
-        return
     if msg_type not in (SAFE_ENTRY_MSG_TYPES | EXIT_MSG_TYPES):
         return
     # Relay original detector signal so KiDax can hold KiNance-side evidence for double-confirmation.

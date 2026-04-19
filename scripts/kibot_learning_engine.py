@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+import re
 
 STATE_PATH = Path(os.getenv("KIBOT_LEARNING_STATE_PATH", "state/learning_state.json"))
 INDODAX_TAKER_FEE = 0.003
@@ -160,9 +161,46 @@ class LearningEngine:
                         if pair:
                             if pair not in self._stats:
                                 self._stats[pair] = PairStats(pair=pair)
-                            self._stats[pair].record_trade(trade.get("netPnlPct", 0.0))
+                            pnl_pct = self._normalize_trade_pnl_pct(trade)
+                            if pnl_pct is None:
+                                continue
+                            self._stats[pair].record_trade(pnl_pct)
         except Exception as e:
             print(f"Failed to ingest trade log: {e}")
+
+    @staticmethod
+    def _extract_reason_pnl_pct(exit_reason: object) -> float | None:
+        text = str(exit_reason or "").strip()
+        if not text:
+            return None
+        for pattern in (r"pnl=([+-]?\d+(?:\.\d+)?)%", r"at ([+-]?\d+(?:\.\d+)?)%"):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                try:
+                    return float(match.group(1)) / 100.0
+                except Exception:
+                    return None
+        return None
+
+    @classmethod
+    def _normalize_trade_pnl_pct(cls, trade: dict) -> float | None:
+        direct = trade.get("netPnlPct")
+        try:
+            direct_val = float(direct) if direct is not None else None
+        except Exception:
+            direct_val = None
+        filled_price = trade.get("filledPrice")
+        try:
+            filled_price_val = float(filled_price) if filled_price is not None else None
+        except Exception:
+            filled_price_val = None
+        inferred = cls._extract_reason_pnl_pct(trade.get("exitReason"))
+        if inferred is not None:
+            if direct_val is None:
+                return inferred
+            if filled_price_val is None or filled_price_val <= 0.0 or (direct_val < -0.90 and inferred > 0.0):
+                return inferred
+        return direct_val
 
     def _save(self) -> None:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")

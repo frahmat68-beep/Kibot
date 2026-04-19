@@ -7394,7 +7394,7 @@ class MacEngineDaemon(
                 val detectedAtMs = leadLagDetectedAtByPair[pairKey]
                 val sentAtMs = leadLagOriginSentAtByPair[pairKey]
                 val receivedAt = leadLagReceivedAtByPair[pairKey]
-                val sellPrice = result.order?.price?.toDoubleOrZero()
+                val sellPrice = result.order?.price?.toDoubleOrZero()?.takeIf { it > 0.0 }
                 val sellQty = result.order?.executedQuantity?.toDoubleOrZero()
                     ?.takeIf { it > 0.0 }
                     ?: result.order?.originalQuantity?.toDoubleOrZero()?.takeIf { it > 0.0 }
@@ -7406,8 +7406,20 @@ class MacEngineDaemon(
                     .maxByOrNull { it.updatedAt.toEpochMilliseconds() }
                     ?.price
                     ?.toDoubleOrZero()
-                val pnlIdr = if (buyPrice != null && sellPrice != null && sellQty != null && sellQty > 0.0) {
-                    (sellPrice - buyPrice) * sellQty
+                    ?.takeIf { it > 0.0 }
+                val resolvedBuyPrice = buyPrice
+                    ?: filteredExitDecision.position.averageEntryPrice.toDoubleOrZero().takeIf { it > 0.0 }
+                val exitQuote = marketQuotes.firstOrNull { it.pairId == filteredExitDecision.executionPlan.signal.pairId }
+                val exitExpectedPrice = filteredExitDecision.executionPlan.limitPrice?.toDoubleOrZero()
+                    ?.takeIf { it > 0.0 }
+                    ?: filteredExitDecision.executionPlan.signal.entryPrice?.toDoubleOrZero()
+                    ?.takeIf { it > 0.0 }
+                    ?: exitQuote?.bestBid?.toDoubleOrZero()
+                    ?.takeIf { it > 0.0 }
+                    ?: 0.0
+                val resolvedSellPrice = sellPrice ?: exitExpectedPrice.takeIf { it > 0.0 }
+                val pnlIdr = if (resolvedBuyPrice != null && resolvedSellPrice != null && sellQty != null && sellQty > 0.0) {
+                    (resolvedSellPrice - resolvedBuyPrice) * sellQty
                 } else {
                     null
                 }
@@ -7420,8 +7432,8 @@ class MacEngineDaemon(
 
                     // Calculate net profit (PnL minus estimated fees)
                     // Indodax fee: 0.3% taker per side = 0.6% total round-trip
-                    val estimatedFees = (buyPrice ?: 0.0) * (sellQty ?: 0.0) * 0.003 +
-                                       (sellPrice ?: 0.0) * (sellQty ?: 0.0) * 0.003
+                    val estimatedFees = (resolvedBuyPrice ?: 0.0) * (sellQty ?: 0.0) * 0.003 +
+                                       (resolvedSellPrice ?: 0.0) * (sellQty ?: 0.0) * 0.003
                     val netProfit = pnlIdr - estimatedFees
 
                     // Deposit profit + original capital back to bucket
@@ -7433,8 +7445,8 @@ class MacEngineDaemon(
                     )
 
                     // [TELEGRAM NOTIFICATION] Send profit alert to Telegram
-                    val sellPnlPct = if (buyPrice != null && buyPrice > 0.0 && (sellQty ?: 0.0) > 0.0) {
-                        (netProfit / (buyPrice * (sellQty ?: 0.0))) * 100.0
+                    val sellPnlPct = if (resolvedBuyPrice != null && resolvedBuyPrice > 0.0 && (sellQty ?: 0.0) > 0.0) {
+                        (netProfit / (resolvedBuyPrice * (sellQty ?: 0.0))) * 100.0
                     } else {
                         null
                     }
@@ -7445,8 +7457,8 @@ class MacEngineDaemon(
                                 timestamp = now.toEpochMilliseconds(),
                                 lossIdr = kotlin.math.abs(netProfit),
                                 lossPct = kotlin.math.abs(sellPnlPct ?: 0.0),
-                                entryPrice = buyPrice ?: 0.0,
-                                exitPrice = sellPrice ?: 0.0,
+                                entryPrice = resolvedBuyPrice ?: 0.0,
+                                exitPrice = resolvedSellPrice ?: 0.0,
                                 holdMinutes = ((exitAt.toEpochMilliseconds() - filteredExitDecision.position.openedAt.toEpochMilliseconds()).coerceAtLeast(0L) / 60_000.0),
                                 reason = filteredExitDecision.message,
                             ),
@@ -7458,26 +7470,17 @@ class MacEngineDaemon(
                         pnlIdr = netProfit,
                         pnlPct = sellPnlPct,
                     )
-                    val exitQuote = marketQuotes.firstOrNull { it.pairId == filteredExitDecision.executionPlan.signal.pairId }
                     val entryExpectedPrice = filteredExitDecision.position.averageEntryPrice.toDoubleOrZero()
                         .takeIf { it > 0.0 }
-                        ?: buyPrice
+                        ?: resolvedBuyPrice
                         ?: 0.0
-                    val exitExpectedPrice = filteredExitDecision.executionPlan.limitPrice?.toDoubleOrZero()
-                        ?.takeIf { it > 0.0 }
-                        ?: filteredExitDecision.executionPlan.signal.entryPrice?.toDoubleOrZero()
-                        ?.takeIf { it > 0.0 }
-                        ?: exitQuote?.bestBid?.toDoubleOrZero()
-                        ?.takeIf { it > 0.0 }
-                        ?: sellPrice
-                        ?: 0.0
-                    val entrySlippageIdr = if (entryExpectedPrice > 0.0 && buyPrice != null) {
-                        kotlin.math.abs(buyPrice - entryExpectedPrice) * (sellQty ?: requestedSellQty.coerceAtLeast(0.0))
+                    val entrySlippageIdr = if (entryExpectedPrice > 0.0 && resolvedBuyPrice != null) {
+                        kotlin.math.abs(resolvedBuyPrice - entryExpectedPrice) * (sellQty ?: requestedSellQty.coerceAtLeast(0.0))
                     } else {
                         0.0
                     }
-                    val exitSlippageIdr = if (exitExpectedPrice > 0.0 && sellPrice != null) {
-                        kotlin.math.abs(sellPrice - exitExpectedPrice) * (sellQty ?: requestedSellQty.coerceAtLeast(0.0))
+                    val exitSlippageIdr = if (exitExpectedPrice > 0.0 && resolvedSellPrice != null) {
+                        kotlin.math.abs(resolvedSellPrice - exitExpectedPrice) * (sellQty ?: requestedSellQty.coerceAtLeast(0.0))
                     } else {
                         0.0
                     }
@@ -7488,8 +7491,8 @@ class MacEngineDaemon(
                         } else {
                             com.kibot.core.PositionStrategy.STABLE
                         },
-                        entryPrice = buyPrice ?: 0.0,
-                        exitPrice = sellPrice ?: 0.0,
+                        entryPrice = resolvedBuyPrice ?: 0.0,
+                        exitPrice = resolvedSellPrice ?: 0.0,
                         quantity = sellQty ?: requestedSellQty.coerceAtLeast(0.0),
                         entryFeeIdr = estimatedFees / 2.0,
                         exitFeeIdr = estimatedFees / 2.0,
@@ -7509,18 +7512,18 @@ class MacEngineDaemon(
                             bucketType = if (wasAggressiveTrade) "AGGRESSIVE" else "STABLE",
                             orderType = smartRoutedExitPlan.orderType.name,
                             entryExpectedPrice = entryExpectedPrice,
-                            entryRealizedPrice = buyPrice ?: entryExpectedPrice,
+                            entryRealizedPrice = resolvedBuyPrice ?: entryExpectedPrice,
                             exitExpectedPrice = exitExpectedPrice,
-                            exitRealizedPrice = sellPrice ?: exitExpectedPrice,
+                            exitRealizedPrice = resolvedSellPrice ?: exitExpectedPrice,
                             spreadPctAtEntry = exitQuote?.spreadPct ?: 0.0,
                             spreadPctAtExit = exitQuote?.spreadPct ?: 0.0,
-                            entrySlippagePct = if (entryExpectedPrice > 0.0 && buyPrice != null) {
-                                kotlin.math.abs(buyPrice - entryExpectedPrice) / entryExpectedPrice * 100.0
+                            entrySlippagePct = if (entryExpectedPrice > 0.0 && resolvedBuyPrice != null) {
+                                kotlin.math.abs(resolvedBuyPrice - entryExpectedPrice) / entryExpectedPrice * 100.0
                             } else {
                                 0.0
                             },
-                            exitSlippagePct = if (exitExpectedPrice > 0.0 && sellPrice != null) {
-                                kotlin.math.abs(sellPrice - exitExpectedPrice) / exitExpectedPrice * 100.0
+                            exitSlippagePct = if (exitExpectedPrice > 0.0 && resolvedSellPrice != null) {
+                                kotlin.math.abs(resolvedSellPrice - exitExpectedPrice) / exitExpectedPrice * 100.0
                             } else {
                                 0.0
                             },
@@ -7538,9 +7541,9 @@ class MacEngineDaemon(
                         side = "SELL",
                         orderType = smartRoutedExitPlan.orderType.name,
                         requestedPrice = exitExpectedPrice,
-                        filledPrice = sellPrice ?: exitExpectedPrice,
+                        filledPrice = resolvedSellPrice ?: exitExpectedPrice,
                         filledAmount = executionFillQty,
-                        filledIdr = (sellPrice ?: exitExpectedPrice) * executionFillQty,
+                        filledIdr = (resolvedSellPrice ?: exitExpectedPrice) * executionFillQty,
                         feeIdr = estimatedFees / 2.0,
                         feeType = if (smartRoutedExitPlan.orderType.name == "LIMIT") "MAKER" else "TAKER",
                         grossPnlPct = (sellPnlPct ?: 0.0) / 100.0,
@@ -7556,10 +7559,10 @@ class MacEngineDaemon(
 
                     notifyManagerExecutionFilled(
                         pairId = pairKey,
-                        entryPrice = buyPrice ?: 0.0,
+                        entryPrice = resolvedBuyPrice ?: 0.0,
                         executedQty = executionFillQty,
                         budgetIdr = positionEntryCapitalByPair[pairKey] ?: 0.0,
-                        actualSlippagePct = ((entrySlippageIdr + exitSlippageIdr) / maxOf(1.0, (buyPrice ?: 0.0) * executionFillQty)) * 100.0,
+                        actualSlippagePct = ((entrySlippageIdr + exitSlippageIdr) / maxOf(1.0, (resolvedBuyPrice ?: 0.0) * executionFillQty)) * 100.0,
                         entryTimestampMs = filteredExitDecision.position.openedAt.toEpochMilliseconds(),
                         bucketType = if (wasAggressiveTrade) "AGGRESSIVE" else "STABLE",
                         pnlIdr = pnlIdr,
@@ -8315,9 +8318,17 @@ class MacEngineDaemon(
                     side = "BUY",
                     orderType = finalExecutionPlan.orderType.name,
                     requestedPrice = finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0,
-                    filledPrice = result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0,
+                    filledPrice = result.order?.price?.toDoubleOrZero()?.takeIf { it > 0.0 }
+                        ?: finalExecutionPlan.limitPrice?.toDoubleOrZero()
+                        ?: effectiveExecutionPlan.signal.entryPrice?.toDoubleOrZero()
+                        ?: 0.0,
                     filledAmount = finalQuantity,
-                    filledIdr = (result.order?.price?.toDoubleOrZero() ?: finalExecutionPlan.limitPrice?.toDoubleOrZero() ?: 0.0) * finalQuantity,
+                    filledIdr = (
+                        result.order?.price?.toDoubleOrZero()?.takeIf { it > 0.0 }
+                            ?: finalExecutionPlan.limitPrice?.toDoubleOrZero()
+                            ?: effectiveExecutionPlan.signal.entryPrice?.toDoubleOrZero()
+                            ?: 0.0
+                    ) * finalQuantity,
                     feeIdr = 0.0,
                     feeType = if (finalExecutionPlan.orderType.name == "LIMIT") "MAKER" else "TAKER",
                     grossPnlPct = 0.0,
