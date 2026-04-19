@@ -924,7 +924,13 @@ class MacEngineDaemonTest {
         )
 
         val exchange = FakeExchangeGateway(
-            marketQuotes = mutableListOf(marketQuote("doge_idr", 103.0, 0.78)),
+            marketQuotes = mutableListOf(
+                marketQuote("doge_idr", 103.0, 0.78).copy(
+                    bestBid = DecimalValue("100.20"),
+                    bestAsk = DecimalValue("100.30"),
+                    midPrice = DecimalValue("100.25"),
+                ),
+            ),
             balances = mutableListOf(
                 BalanceSnapshot("idr", DecimalValue("10000")),
                 BalanceSnapshot("doge", DecimalValue("100")),
@@ -970,7 +976,13 @@ class MacEngineDaemonTest {
         controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
         val repository = MacStateRepository()
         val exchange = FakeExchangeGateway(
-            marketQuotes = mutableListOf(marketQuote("doge_idr", 103.0, 0.78)),
+            marketQuotes = mutableListOf(
+                marketQuote("doge_idr", 103.0, 0.78).copy(
+                    bestBid = DecimalValue("100.20"),
+                    bestAsk = DecimalValue("100.30"),
+                    midPrice = DecimalValue("100.25"),
+                ),
+            ),
             balances = mutableListOf(BalanceSnapshot("idr", DecimalValue("10000"))),
         )
         val daemon = MacEngineDaemon(
