@@ -221,10 +221,16 @@ class LocalDashboardServer(
             get("/api/health") {
                 applyDashboardSecurityHeaders(call)
                 val state = repository.state.value
+                val dailyPnlPct = state.pnlTodayPctLabel
+                    .replace("%", "")
+                    .replace("+", "")
+                    .toDoubleOrNull()
+                val dailyLossHardStop = state.liveExecutionEnabled.not() && (dailyPnlPct ?: 0.0) <= -3.0
                 val hardStopActive =
                     state.statusMessage.contains("hard stop", ignoreCase = true) ||
                         state.healthSummary.contains("hard stop", ignoreCase = true) ||
-                        state.healthSummary.contains("daily_loss_limit", ignoreCase = true)
+                        state.healthSummary.contains("daily_loss_limit", ignoreCase = true) ||
+                        dailyLossHardStop
                 val degraded = hardStopActive ||
                     state.effectiveState.name == "SAFE_MODE" ||
                     state.effectiveState.name == "STOPPED" ||
@@ -491,15 +497,18 @@ class LocalDashboardServer(
         val state = repository.state.value
         val whatIfJson = readJsonFileOrEmpty(Path.of("state/whatif_results.json"))
         val tradeSummaryJson = readJsonFileOrEmpty(Path.of("state/trade_summary.json"))
+        val dailyPnlPct = state.pnlTodayPctLabel.replace("%", "").replace("+", "").toDoubleOrNull() ?: 0.0
+        val dailyLossHardStop = state.liveExecutionEnabled.not() && dailyPnlPct <= -3.0
         return DashboardStateResponse(
             portfolioValueIdr = state.portfolioValueIdr,
-            dailyPnlPct = state.pnlTodayPctLabel.replace("%", "").replace("+", "").toDoubleOrNull() ?: 0.0,
+            dailyPnlPct = dailyPnlPct,
             dailyPnlIdr = state.pnlTodayIdr.replace(Regex("[^0-9-]"), "").toDoubleOrNull() ?: 0.0,
             tradingAllowed = state.liveExecutionEnabled,
             hardStopActive =
                 state.statusMessage.contains("hard stop", ignoreCase = true) ||
                     state.healthSummary.contains("hard stop", ignoreCase = true) ||
-                    state.healthSummary.contains("daily_loss_limit", ignoreCase = true),
+                    state.healthSummary.contains("daily_loss_limit", ignoreCase = true) ||
+                    dailyLossHardStop,
             botMode = state.operatingMode,
             lastUpdate = java.time.Instant.ofEpochMilli(state.lastUpdatedEpochMs).toString(),
             connections = DashboardConnections(
