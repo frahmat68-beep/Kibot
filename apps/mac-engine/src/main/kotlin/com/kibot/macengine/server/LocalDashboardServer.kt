@@ -221,7 +221,10 @@ class LocalDashboardServer(
             get("/api/health") {
                 applyDashboardSecurityHeaders(call)
                 val state = repository.state.value
-                val hardStopActive = state.statusMessage.contains("hard stop", ignoreCase = true)
+                val hardStopActive =
+                    state.statusMessage.contains("hard stop", ignoreCase = true) ||
+                        state.healthSummary.contains("hard stop", ignoreCase = true) ||
+                        state.healthSummary.contains("daily_loss_limit", ignoreCase = true)
                 val degraded = hardStopActive ||
                     state.effectiveState.name == "SAFE_MODE" ||
                     state.effectiveState.name == "STOPPED" ||
@@ -493,7 +496,10 @@ class LocalDashboardServer(
             dailyPnlPct = state.pnlTodayPctLabel.replace("%", "").replace("+", "").toDoubleOrNull() ?: 0.0,
             dailyPnlIdr = state.pnlTodayIdr.replace(Regex("[^0-9-]"), "").toDoubleOrNull() ?: 0.0,
             tradingAllowed = state.liveExecutionEnabled,
-            hardStopActive = state.statusMessage.contains("hard stop", ignoreCase = true),
+            hardStopActive =
+                state.statusMessage.contains("hard stop", ignoreCase = true) ||
+                    state.healthSummary.contains("hard stop", ignoreCase = true) ||
+                    state.healthSummary.contains("daily_loss_limit", ignoreCase = true),
             botMode = state.operatingMode,
             lastUpdate = java.time.Instant.ofEpochMilli(state.lastUpdatedEpochMs).toString(),
             connections = DashboardConnections(
