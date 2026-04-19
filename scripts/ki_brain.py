@@ -193,7 +193,10 @@ class BrainManager:
 
     def _optional_modules(self) -> Dict[str, Dict[str, Any]]:
         def has_module(name: str) -> bool:
-            return importlib.util.find_spec(name) is not None
+            try:
+                return importlib.util.find_spec(name) is not None
+            except ModuleNotFoundError:
+                return False
 
         return {
             "google.generativeai": {
