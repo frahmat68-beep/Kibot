@@ -227,3 +227,32 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
     - midnight rollover mengembalikan node ke state sehat,
     - guard modal/hard-stop tetap disiplin,
     - tidak ada crash baru pada soak final.
+
+## 2026-04-20 01:54 WIB — Adaptive Capital Brain + Local-First Storage
+- Temuan:
+  - `minimum_viable_capital` statis masih membuat SG menahan entry meski saldo kecil sebenarnya masih bisa dikelola secara disiplin.
+  - Budget yang sudah diperkecil oleh jalur `what-if` belum selalu dipakai lagi saat lewat survival filter.
+  - Snapshot brain belum menyajikan strategi lanjutan yang menyesuaikan mode modal harian.
+  - Manager masih melakukan beberapa write Supabase non-esensial padahal mode operasional yang lebih hemat adalah local-first.
+- Perbaikan:
+  - `scripts/kibot_manager.py`
+    - Ganti guard modal statis menjadi `_adaptive_capital_profile()` berbasis equity, free cash, dan daily PnL.
+    - Hapus ketergantungan praktis pada `KIBOT_MINIMUM_VIABLE_CAPITAL_IDR`; default sekarang `0`.
+    - Tambahkan mode modal `MICRO/BUILDUP/RECOVERY/NORMAL/EXPANSION` dengan adaptive cap per trade dan alasan runtime yang jelas.
+    - Clamp `budgetIdr` entry ke adaptive cap sebelum what-if/survival filter, lalu tulis balik ke payload runtime.
+    - `capital_health` dan `runtime_note` sekarang mempublikasikan `adaptive_profile`.
+    - Tambahkan mode storage `KIBOT_LOCAL_FIRST_STORAGE=true` dan `KIBOT_SUPABASE_BACKUP_ENABLED=false` untuk mematikan write Supabase non-esensial.
+  - `scripts/ki_brain.py`
+    - `daily_target` sekarang membawa `capital_profile` dan `strategy_next`, sehingga otak benar-benar memberi arahan situasional untuk modal kecil/recovery.
+  - `scripts/test_offline.py`, `scripts/test_brain_integration.py`
+    - Tambah regression untuk adaptive capital dan strategy snapshot.
+- Verifikasi lokal:
+  - `python3 -m py_compile scripts/kibot_manager.py scripts/ki_brain.py scripts/test_offline.py scripts/test_brain_integration.py`
+  - `python3 scripts/test_offline.py` → `30 PASS 0 FAIL`
+  - `python3 scripts/test_brain_integration.py`
+  - `python3 tests/test_whatif_complete.py` → `200/200 PASS`
+  - `python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
+- Expected deploy impact:
+  - SG tidak lagi berhenti hanya karena gagal memenuhi ambang modal statis.
+  - Sistem tetap disiplin karena adaptive profile masih bisa pause saat free cash di bawah floor atau hard stop aktif.
+  - Supabase free tier lebih hemat karena history/snapshot non-kritis tidak lagi di-push terus-menerus.

@@ -2,6 +2,7 @@ import json
 import os
 import random
 import sys
+from datetime import datetime, timezone
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -103,11 +104,19 @@ if manager is not None:
         }) or 0.0) - (-0.1328)) < 1e-9,
     )
 
-    with patch("kibot_manager._get_total_equity_estimate", return_value=84_000):
-        check("minimum capital blocks tiny equity", not manager._check_minimum_capital())
+    with (
+        patch("kibot_manager._get_total_equity_estimate", return_value=84_000),
+        patch("kibot_manager._current_balance_snapshot", return_value={"equity_idr": 84_000, "free_cash_idr": 60_000, "holdings_pairs": [], "payload": {}}),
+    ):
+        profile = manager._adaptive_capital_profile()
+        check("adaptive capital micro mode", profile.get("mode") == "BUILDUP" or profile.get("mode") == "MICRO", str(profile))
+        check("adaptive capital allows small balance", manager._check_minimum_capital())
 
-    with patch("kibot_manager._get_total_equity_estimate", return_value=500_000):
-        check("minimum capital allows viable equity", manager._check_minimum_capital())
+    with (
+        patch("kibot_manager._get_total_equity_estimate", return_value=12_000),
+        patch("kibot_manager._current_balance_snapshot", return_value={"equity_idr": 12_000, "free_cash_idr": 7_000, "holdings_pairs": [], "payload": {}}),
+    ):
+        check("adaptive capital blocks low free cash", not manager._check_minimum_capital())
 
     what_if = manager._simulate_what_if(
         pair_id="btc_idr",
@@ -300,9 +309,18 @@ with (
     patch.object(brain, "_get_serper_market_brief", return_value={}),
     patch.object(brain, "_get_serper_symbol_brief", return_value={}),
 ):
-    snapshot = brain.think(["BTC"], context={"daily_pnl_pct": -0.002, "equity_idr": 120_000, "free_cash_idr": 50_000})
+    snapshot = brain.think(
+        ["BTC"],
+        context={
+            "daily_pnl_pct": -0.002,
+            "equity_idr": 120_000,
+            "free_cash_idr": 50_000,
+            "capital_profile": {"mode": "BUILDUP", "reason": "small_balance_build_up", "max_position_idr": 12_000},
+        },
+    )
     check("brain snapshot provider status", "tavily" in snapshot.get("provider_status", {}))
     check("brain target recovery mode", snapshot.get("daily_target", {}).get("status") == "RECOVERY_MODE")
+    check("brain target strategy next", bool(snapshot.get("daily_target", {}).get("strategy_next")))
     check("brain market pulse headline", bool(snapshot.get("market_pulse", {}).get("top_headlines")))
     check("brain watch review headline count", int(snapshot.get("watch_reviews", [{}])[0].get("headline_count") or 0) >= 1)
 

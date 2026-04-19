@@ -470,12 +470,22 @@ class BrainManager:
     def _daily_target_snapshot(self, context: Dict[str, Any]) -> Dict[str, Any]:
         daily_pnl_pct = self._safe_float(context.get("daily_pnl_pct"))
         target_gap_pct = max(self.green_target_daily_pct - daily_pnl_pct, 0.0)
+        capital_profile = context.get("capital_profile") if isinstance(context.get("capital_profile"), dict) else {}
         if daily_pnl_pct >= self.green_target_daily_pct:
             status = "AHEAD"
         elif daily_pnl_pct >= 0.0:
             status = "CHASING_GREEN"
         else:
             status = "RECOVERY_MODE"
+        mode = str(capital_profile.get("mode") or "UNKNOWN")
+        if mode in {"MICRO", "BUILDUP"}:
+            strategy = "Trade smaller, favor liquid high-trust pairs, and require cleaner scanner confirmation."
+        elif mode == "RECOVERY":
+            strategy = "Freeze aggressive rotation, demand strong veto alignment, and prioritize capital protection."
+        elif mode == "EXPANSION":
+            strategy = "Keep discipline, but allow normal rotation when scanner and local flow confirm."
+        else:
+            strategy = "Stay selective and let market pulse decide whether to press or wait."
         return {
             "daily_pnl_pct": round(daily_pnl_pct, 4),
             "target_pct": round(self.green_target_daily_pct, 4),
@@ -483,6 +493,8 @@ class BrainManager:
             "status": status,
             "equity_idr": self._safe_float(context.get("equity_idr")),
             "free_cash_idr": self._safe_float(context.get("free_cash_idr")),
+            "capital_profile": capital_profile,
+            "strategy_next": strategy,
         }
 
     def _get_json(self, url: str, *, params: Optional[Dict[str, Any]] = None) -> Any:

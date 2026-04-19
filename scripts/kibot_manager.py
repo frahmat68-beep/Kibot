@@ -709,6 +709,8 @@ class TradeLogger:
 
     def _sync_to_supabase(self, trade: dict):
         """Sync ke Supabase async (non-blocking)."""
+        if LOCAL_FIRST_STORAGE and not SUPABASE_BACKUP_ENABLED:
+            return
         import threading
         def do_sync():
             try:
@@ -1549,6 +1551,8 @@ def run_30min_math_review():
 
 def _sync_snapshot_to_supabase(pnl_pct, equity, stats, action):
     """Sync performance snapshot ke Supabase non-blocking."""
+    if LOCAL_FIRST_STORAGE and not SUPABASE_BACKUP_ENABLED:
+        return
     import threading
     def do_sync():
         try:
@@ -2742,13 +2746,23 @@ POST_MORTEM_BLACKLIST_ENABLED = os.getenv("KIBOT_POST_MORTEM_BLACKLIST_ENABLED",
 POST_MORTEM_BLACKLIST_MINUTES = int(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_MINUTES", "30"))
 POST_MORTEM_BLACKLIST_NET_LOSS_IDR = float(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_NET_LOSS_IDR", "500"))
 POST_MORTEM_BLACKLIST_PNL_PCT = float(os.getenv("KIBOT_POST_MORTEM_BLACKLIST_PNL_PCT", "-1.0"))
-MINIMUM_VIABLE_CAPITAL_IDR = float(os.getenv("KIBOT_MINIMUM_VIABLE_CAPITAL_IDR", "300000"))
+MINIMUM_VIABLE_CAPITAL_IDR = float(os.getenv("KIBOT_MINIMUM_VIABLE_CAPITAL_IDR", "0"))
 MINIMUM_POSITION_SIZE_IDR = float(os.getenv("KIBOT_MINIMUM_POSITION_SIZE_IDR", "10000"))
 MAXIMUM_POSITION_SIZE_IDR = float(os.getenv("KIBOT_MAXIMUM_POSITION_SIZE_IDR", "15000"))
 MAXIMUM_ACTIVE_POSITIONS = int(os.getenv("KIBOT_MAXIMUM_ACTIVE_POSITIONS", "2"))
 INDODAX_ALL_IN_TAKER_FEE_PCT = float(os.getenv("KIBOT_INDODAX_ALL_IN_TAKER_FEE_PCT", "0.0055"))
 INDODAX_ALL_IN_MAKER_FEE_PCT = float(os.getenv("KIBOT_INDODAX_ALL_IN_MAKER_FEE_PCT", "0.0004"))
 INDODAX_LIMIT_FILL_RATE = float(os.getenv("KIBOT_INDODAX_LIMIT_FILL_RATE", "0.70"))
+ADAPTIVE_CAPITAL_ENABLED = os.getenv("KIBOT_ADAPTIVE_CAPITAL_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+LOCAL_FIRST_STORAGE = os.getenv("KIBOT_LOCAL_FIRST_STORAGE", "true").lower() in {"1", "true", "yes", "on"}
+SUPABASE_BACKUP_ENABLED = os.getenv("KIBOT_SUPABASE_BACKUP_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+ABSOLUTE_MIN_POSITION_SIZE_IDR = float(os.getenv("KIBOT_ABSOLUTE_MIN_POSITION_SIZE_IDR", str(MINIMUM_POSITION_SIZE_IDR)))
+ADAPTIVE_MICRO_MAX_POSITION_PCT = float(os.getenv("KIBOT_ADAPTIVE_MICRO_MAX_POSITION_PCT", "0.18"))
+ADAPTIVE_BUILDUP_MAX_POSITION_PCT = float(os.getenv("KIBOT_ADAPTIVE_BUILDUP_MAX_POSITION_PCT", "0.15"))
+ADAPTIVE_NORMAL_MAX_POSITION_PCT = float(os.getenv("KIBOT_ADAPTIVE_NORMAL_MAX_POSITION_PCT", "0.12"))
+ADAPTIVE_EXPANSION_MAX_POSITION_PCT = float(os.getenv("KIBOT_ADAPTIVE_EXPANSION_MAX_POSITION_PCT", "0.10"))
+ADAPTIVE_FREE_CASH_BUFFER_PCT = float(os.getenv("KIBOT_ADAPTIVE_FREE_CASH_BUFFER_PCT", "0.35"))
+ADAPTIVE_RECOVERY_MAX_POSITION_PCT = float(os.getenv("KIBOT_ADAPTIVE_RECOVERY_MAX_POSITION_PCT", "0.10"))
 SURVIVAL_MODE = os.getenv("KIBOT_SURVIVAL_MODE", "true").lower() in {"1", "true", "yes", "on"}
 SURVIVAL_MODE_EQUITY_THRESHOLD_IDR = float(os.getenv("KIBOT_SURVIVAL_MODE_EQUITY_THRESHOLD_IDR", "200000"))
 SURVIVAL_ALLOWED_PAIRS = tuple(
@@ -4623,6 +4637,7 @@ def _write_runtime_note(*, force: bool = False) -> None:
         },
         "pair_cooldowns": _pair_cooldown_state,
         "remote_scanner_feed": dict(_remote_scanner_feed_state),
+        "capital_profile": _adaptive_capital_profile(),
         "veto_metrics": _veto_metrics,
         "sector_count": len(_last_sector_map),
         "sector_preview": {key: value[:5] for key, value in list(_last_sector_map.items())[:5]},
@@ -5327,23 +5342,135 @@ def _get_total_equity_estimate() -> float:
         return 0.0
 
 
-def _check_minimum_capital() -> bool:
-    equity = _get_total_equity_estimate()
-    if equity is None:
-        print("[KIBOT][CAPITAL][WARN] unable to read equity; allowing entry fail-open", flush=True)
-        return True
-    if equity < MINIMUM_VIABLE_CAPITAL_IDR:
-        print(
-            f"[KIBOT][CAPITAL] equity Rp{equity:,.0f} < minimum Rp{MINIMUM_VIABLE_CAPITAL_IDR:,.0f}; entry suspended",
-            flush=True,
+def _adaptive_capital_profile(
+    *,
+    equity: Optional[float] = None,
+    free_cash: Optional[float] = None,
+    daily_pnl_pct: Optional[float] = None,
+) -> Dict[str, Any]:
+    equity_val = _parse_numeric(equity)
+    if equity_val is None:
+        equity_val = _get_total_equity_estimate()
+    balance_snapshot = _current_balance_snapshot()
+    free_cash_val = _parse_numeric(free_cash)
+    if free_cash_val is None:
+        free_cash_val = _parse_numeric(balance_snapshot.get("free_cash_idr"))
+    if free_cash_val is None:
+        free_cash_val = equity_val
+    pnl_val = _parse_numeric(daily_pnl_pct)
+    if pnl_val is None:
+        pnl_val = _parse_numeric(_daily_guard_state.get("daily_pnl_pct")) or 0.0
+
+    profile = {
+        "enabled": ADAPTIVE_CAPITAL_ENABLED,
+        "equity_idr": round(float(equity_val or 0.0), 2),
+        "free_cash_idr": round(float(free_cash_val or 0.0), 2),
+        "daily_pnl_pct": round(float(pnl_val or 0.0), 4),
+        "mode": "NORMAL",
+        "reason": "capital_adaptive_normal",
+        "risk_pct_per_trade": 0.12,
+        "min_position_idr": float(ABSOLUTE_MIN_POSITION_SIZE_IDR),
+        "max_position_idr": float(MAXIMUM_POSITION_SIZE_IDR),
+        "daily_loss_limit_pct": round(_current_daily_loss_limit_pct(), 4),
+        "trading_allowed": True,
+    }
+    if not ADAPTIVE_CAPITAL_ENABLED:
+        return profile
+
+    equity_now = float(equity_val or 0.0)
+    free_cash_now = max(float(free_cash_val or 0.0), 0.0)
+    if equity_now <= 0.0:
+        profile.update(
+            {
+                "mode": "PAUSED",
+                "reason": "missing_equity_snapshot",
+                "max_position_idr": 0.0,
+                "trading_allowed": False,
+            }
         )
-        return False
-    return True
+        return profile
+
+    if bool(_daily_guard_state.get("hard_stopped")):
+        profile.update(
+            {
+                "mode": "HARD_STOP",
+                "reason": "daily_loss_limit_hit",
+                "max_position_idr": 0.0,
+                "trading_allowed": False,
+            }
+        )
+        return profile
+
+    if free_cash_now < ABSOLUTE_MIN_POSITION_SIZE_IDR:
+        profile.update(
+            {
+                "mode": "PAUSED",
+                "reason": f"free_cash_below_floor:{free_cash_now:.0f}",
+                "max_position_idr": 0.0,
+                "trading_allowed": False,
+            }
+        )
+        return profile
+
+    if pnl_val <= -0.015:
+        mode = "RECOVERY"
+        risk_pct = ADAPTIVE_RECOVERY_MAX_POSITION_PCT
+        reason = "daily_drawdown_recovery"
+    elif equity_now < 75_000:
+        mode = "MICRO"
+        risk_pct = ADAPTIVE_MICRO_MAX_POSITION_PCT
+        reason = "micro_balance_preservation"
+    elif equity_now < 150_000:
+        mode = "BUILDUP"
+        risk_pct = ADAPTIVE_BUILDUP_MAX_POSITION_PCT
+        reason = "small_balance_build_up"
+    elif equity_now < 500_000:
+        mode = "NORMAL"
+        risk_pct = ADAPTIVE_NORMAL_MAX_POSITION_PCT
+        reason = "normal_balance_discipline"
+    else:
+        mode = "EXPANSION"
+        risk_pct = ADAPTIVE_EXPANSION_MAX_POSITION_PCT
+        reason = "capital_expansion_discipline"
+
+    max_position = min(
+        MAXIMUM_POSITION_SIZE_IDR,
+        equity_now * risk_pct,
+        free_cash_now * ADAPTIVE_FREE_CASH_BUFFER_PCT,
+    )
+    min_position = min(ABSOLUTE_MIN_POSITION_SIZE_IDR, max_position)
+    trading_allowed = max_position >= ABSOLUTE_MIN_POSITION_SIZE_IDR
+    if not trading_allowed:
+        reason = f"{reason}:position_floor_unmet"
+
+    profile.update(
+        {
+            "mode": mode,
+            "reason": reason,
+            "risk_pct_per_trade": round(risk_pct, 4),
+            "min_position_idr": round(max(min_position, 0.0), 2),
+            "max_position_idr": round(max(max_position, 0.0), 2),
+            "trading_allowed": trading_allowed,
+        }
+    )
+    return profile
+
+
+def _check_minimum_capital() -> bool:
+    profile = _adaptive_capital_profile()
+    if profile.get("trading_allowed"):
+        return True
+    print(
+        f"[KIBOT][CAPITAL] entry suspended mode={profile.get('mode')} "
+        f"equity=Rp{profile.get('equity_idr', 0):,.0f} free_cash=Rp{profile.get('free_cash_idr', 0):,.0f} "
+        f"reason={profile.get('reason')}",
+        flush=True,
+    )
+    return False
 
 
 def _capital_is_sufficient() -> bool:
-    equity = _get_total_equity_estimate()
-    return equity is not None and equity >= MINIMUM_VIABLE_CAPITAL_IDR
+    return bool(_adaptive_capital_profile().get("trading_allowed"))
 
 
 def _maybe_auto_promote_trading_mode() -> None:
@@ -5358,7 +5485,7 @@ def _maybe_auto_promote_trading_mode() -> None:
         return
     if not _capital_is_sufficient():
         _capital_sufficient_since_at = 0.0
-        _set_conservative_mode("capital insufficient")
+        _set_conservative_mode(str(_adaptive_capital_profile().get("reason") or "capital_insufficient"))
         return
     if _capital_sufficient_since_at <= 0.0:
         _capital_sufficient_since_at = time.time()
@@ -5387,6 +5514,15 @@ def _is_survival_mode() -> bool:
 
 
 def _apply_survival_filters(pair_id: str, budget_idr: float, spread_pct: float = 0.0, slippage_pct: float = 0.0) -> tuple[bool, str]:
+    capital_profile = _adaptive_capital_profile()
+    min_position_idr = float(capital_profile.get("min_position_idr") or ABSOLUTE_MIN_POSITION_SIZE_IDR)
+    max_position_idr = float(capital_profile.get("max_position_idr") or 0.0)
+    if not bool(capital_profile.get("trading_allowed")):
+        return False, f"capital_profile:{capital_profile.get('reason')}"
+    if budget_idr < min_position_idr:
+        return False, f"capital_profile: budget {budget_idr:.0f} below adaptive floor {min_position_idr:.0f}"
+    if max_position_idr > 0 and budget_idr > max_position_idr:
+        return False, f"capital_profile: budget {budget_idr:.0f} above adaptive cap {max_position_idr:.0f}"
     if not _is_survival_mode():
         return True, "normal_mode"
     pair_key = str(pair_id or "").lower().strip()
@@ -5399,10 +5535,10 @@ def _apply_survival_filters(pair_id: str, budget_idr: float, spread_pct: float =
     min_target_profit_pct = float(pair_cfg.get("min_target_profit_pct") or SURVIVAL_TARGET_PROFIT_PCT)
     max_spread_pct = float(pair_cfg.get("max_spread_pct") or SURVIVAL_MAX_SPREAD_PCT)
     max_slippage_pct = float(pair_cfg.get("max_slippage_pct") or SURVIVAL_MAX_SLIPPAGE_PCT)
-    if budget_idr < MINIMUM_POSITION_SIZE_IDR:
-        return False, f"survival_mode: budget {budget_idr:.0f} below min position {MINIMUM_POSITION_SIZE_IDR:.0f}"
-    if budget_idr > min(MAXIMUM_POSITION_SIZE_IDR, max_size_idr):
-        return False, f"survival_mode: budget {budget_idr:.0f} above max position {min(MAXIMUM_POSITION_SIZE_IDR, max_size_idr):.0f}"
+    if budget_idr < min_position_idr:
+        return False, f"survival_mode: budget {budget_idr:.0f} below min position {min_position_idr:.0f}"
+    if budget_idr > min(max_position_idr or MAXIMUM_POSITION_SIZE_IDR, max_size_idr):
+        return False, f"survival_mode: budget {budget_idr:.0f} above max position {min(max_position_idr or MAXIMUM_POSITION_SIZE_IDR, max_size_idr):.0f}"
     if spread_pct > max_spread_pct:
         return False, f"survival_mode: spread {spread_pct:.3%} too wide"
     if slippage_pct > max_slippage_pct:
@@ -5783,6 +5919,8 @@ def _current_daily_loss_limit_pct() -> float:
 
 
 def _upsert_trade_history(entry: Dict[str, Any]) -> None:
+    if LOCAL_FIRST_STORAGE and not SUPABASE_BACKUP_ENABLED:
+        return
     headers = _headers()
     headers["Prefer"] = "return=minimal"
     primary_url = f"{SUPABASE_URL}/rest/v1/trade_history"
@@ -6105,11 +6243,12 @@ def _process_signal(msg: Dict[str, Any]) -> None:
             return
 
         if not _check_minimum_capital():
-            print(f"[KIBOT][BLOCK] Blocking {msg_type} - minimum viable capital not met", flush=True)
-            _set_conservative_mode("minimum_viable_capital_not_met")
+            capital_profile = _adaptive_capital_profile()
+            print(f"[KIBOT][BLOCK] Blocking {msg_type} - adaptive capital guard {capital_profile.get('reason')}", flush=True)
+            _set_conservative_mode(str(capital_profile.get("reason") or "adaptive_capital_guard"))
             _append_runtime_event(
                 "entry_blocked",
-                {"reason": "minimum_viable_capital_not_met", "msg_type": msg_type},
+                {"reason": str(capital_profile.get("reason") or "adaptive_capital_guard"), "msg_type": msg_type},
             )
             return
 
@@ -6174,6 +6313,23 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         spread_pct = float(msg.get("spreadPct") or msg.get("spread_pct") or 0.0)
         slippage_pct = float(msg.get("slippagePct") or msg.get("slippage_pct") or 0.0)
         pair_cfg = _get_pair_config(pair)
+        capital_profile = _adaptive_capital_profile()
+        adaptive_cap = float(capital_profile.get("max_position_idr") or 0.0)
+        adaptive_floor = float(capital_profile.get("min_position_idr") or ABSOLUTE_MIN_POSITION_SIZE_IDR)
+        if adaptive_cap > 0.0 and budget_idr > adaptive_cap:
+            print(
+                f"[KIBOT][CAPITAL] pair={pair} budget reduced Rp{budget_idr:,.0f} -> Rp{adaptive_cap:,.0f} "
+                f"mode={capital_profile.get('mode')} reason={capital_profile.get('reason')}",
+                flush=True,
+            )
+            budget_idr = adaptive_cap
+        if budget_idr < adaptive_floor:
+            print(
+                f"[KIBOT][CAPITAL] pair={pair} budget Rp{budget_idr:,.0f} below adaptive floor Rp{adaptive_floor:,.0f} "
+                f"mode={capital_profile.get('mode')} reason={capital_profile.get('reason')}",
+                flush=True,
+            )
+            return
         target_profit_pct = float(msg.get("targetProfitPct") or msg.get("target_profit_pct") or pair_cfg.get("min_target_profit_pct") or SURVIVAL_TARGET_PROFIT_PCT)
         capital_bucket = _capital_bucket_tiers()
         if pair_cfg.get("tier") == "D":
@@ -6209,9 +6365,11 @@ def _process_signal(msg: Dict[str, Any]) -> None:
                 use_market = True
             elif use_market and what_if["recommendation"] == "REDUCE_SIZE":
                 budget_idr *= 0.5
+        msg["budgetIdr"] = round(float(budget_idr), 2)
+        msg["quoteBudgetIdr"] = round(float(budget_idr), 2)
         allowed, reason = _apply_survival_filters(
             pair_id=pair,
-            budget_idr=float(msg.get("budgetIdr") or msg.get("budget_idr") or msg.get("quoteBudgetIdr") or 0.0),
+            budget_idr=budget_idr,
             spread_pct=spread_pct,
             slippage_pct=slippage_pct,
         )
@@ -6914,8 +7072,9 @@ def _signal_handler(signum: int, frame: Any) -> None:
 def _http_state_payload() -> Dict[str, Any]:
     runtime_state = _fetch_local_runtime_state(timeout_sec=0.35, max_cache_age_sec=2.5)
     equity_estimate = _extract_equity_estimate(runtime_state)
+    capital_profile = _adaptive_capital_profile(equity=equity_estimate)
     with _state_lock:
-        capital_sufficient = equity_estimate is not None and equity_estimate >= MINIMUM_VIABLE_CAPITAL_IDR
+        capital_sufficient = bool(capital_profile.get("trading_allowed"))
         manager_trading_allowed = (
             (not _entry_state_is_suspended())
             and not bool(_daily_guard_state.get("hard_stopped"))
@@ -6953,10 +7112,11 @@ def _http_state_payload() -> Dict[str, Any]:
                 "is_capital_sufficient": capital_sufficient,
                 "fee_round_trip_pct": round(_effective_fee_pct() * 2.0, 4),
                 "breakeven_per_trade_pct": round((_effective_fee_pct() * 2.0) + 0.015, 4),
+                "adaptive_profile": capital_profile,
                 "status": (
-                    "VIABLE"
+                    f"ADAPTIVE_{capital_profile.get('mode')}"
                     if capital_sufficient
-                    else f"INSUFFICIENT — add Rp{max(0.0, MINIMUM_VIABLE_CAPITAL_IDR - (equity_estimate or 0.0)):,.0f} more"
+                    else f"PAUSED — {capital_profile.get('reason')}"
                 ),
             },
             "metrics": {
@@ -7210,6 +7370,8 @@ def run_daily_data_sync():
     print(f"[LIFECYCLE] Sync: {synced} files, deleted: {deleted_local} files", flush=True)
 
 def _sync_trades_to_supabase(data_file: Path) -> bool:
+    if LOCAL_FIRST_STORAGE and not SUPABASE_BACKUP_ENABLED:
+        return False
     try:
         trades = json.loads(data_file.read_text())
         if not trades: return True
@@ -7222,6 +7384,8 @@ def _sync_trades_to_supabase(data_file: Path) -> bool:
     except Exception: return False
 
 def _cleanup_supabase_old_data():
+    if LOCAL_FIRST_STORAGE and not SUPABASE_BACKUP_ENABLED:
+        return
     try:
         url = os.environ.get("SUPABASE_URL", "")
         key = os.environ.get("SUPABASE_ANON_KEY", "")
@@ -7232,6 +7396,8 @@ def _cleanup_supabase_old_data():
     except Exception: pass
 
 def keep_supabase_alive():
+    if LOCAL_FIRST_STORAGE and not SUPABASE_BACKUP_ENABLED:
+        return
     try:
         url = os.environ.get("SUPABASE_URL", "")
         key = os.environ.get("SUPABASE_ANON_KEY", "")
@@ -7290,6 +7456,7 @@ def _brain_thinking_loop():
                         "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
                         "equity_idr": _current_balance_snapshot().get("equity_idr"),
                         "free_cash_idr": _current_balance_snapshot().get("free_cash_idr"),
+                        "capital_profile": _adaptive_capital_profile(),
                     },
                 )
                 last_think = time.time()

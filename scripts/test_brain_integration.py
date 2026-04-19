@@ -57,11 +57,25 @@ def test_brain():
         print(f"Mindset Approval: {approved}")
         print(f"Reason: {reason}")
 
-        snapshot = brain.think(["BTC", "ETH"], context={"daily_pnl_pct": -0.0045, "equity_idr": 125000, "free_cash_idr": 62000})
+        snapshot = brain.think(
+            ["BTC", "ETH"],
+            context={
+                "daily_pnl_pct": -0.0045,
+                "equity_idr": 125000,
+                "free_cash_idr": 62000,
+                "capital_profile": {
+                    "mode": "BUILDUP",
+                    "reason": "small_balance_build_up",
+                    "max_position_idr": 12000,
+                    "risk_pct_per_trade": 0.15,
+                },
+            },
+        )
         print(f"Brain snapshot keys: {list(snapshot.keys())}")
         print(f"Provider status: {snapshot.get('provider_status')}")
         print(f"Daily target: {snapshot.get('daily_target')}")
         print(f"Market pulse: {snapshot.get('market_pulse')}")
+        print(f"Strategy next: {snapshot.get('daily_target', {}).get('strategy_next')}")
         print("✅ Brain advisory loop works.")
 
 if __name__ == "__main__":
