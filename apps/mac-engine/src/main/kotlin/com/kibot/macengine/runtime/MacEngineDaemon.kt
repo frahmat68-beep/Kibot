@@ -4193,6 +4193,12 @@ class MacEngineDaemon(
             if (!dynamicConfigStarted.getAndSet(true)) {
                 dynamicConfigReloader.startPolling { newParams ->
                     logger.info("[CONFIG] Live-loaded new params from Supabase: $newParams")
+                    // Map DynamicParams to RiskConfig or ExecutionConfig
+                    // For now, update RiskConfig with AI Approval Min Score if needed
+                    val currentRisk = exchangeRiskConfig(config.exchangeKind)
+                    strategyOrchestrator.updateRiskConfig(currentRisk.copy(
+                        // Add more mappings as needed
+                    ))
                 }
             }
 
@@ -13885,6 +13891,18 @@ class MacEngineDaemon(
                 val prelimBudget = minOf(current, budgetCapIdr)
 
                 // [70/30] Apply capital allocation from bucket
+                // [POLICY GATE] Keep entry math-positive
+                val policyDecision = alwaysInvestedPolicy.shouldEnter(
+                    expectedMovePercent = executionPlan.expectedNetEdgePct,
+                    spreadPercent = 0.05,
+                    slippagePercent = 0.03,
+                    feePercent = 0.1,
+                )
+                if (!policyDecision.allowed) {
+                    logger.info("[POLICY_REJECTED] ${executionPlan.signal.pairId}: ${policyDecision.rationale}")
+                    return executionPlan.copy(quoteBudget = DecimalValue.Zero)
+                }
+
                 val allocatedBudget = allocateCapitalForEntry(
                     requestedAmountIdr = prelimBudget,
                     isLeadLag = !isAnomalyCoin,

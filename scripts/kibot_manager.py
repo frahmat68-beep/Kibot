@@ -112,6 +112,8 @@ _signal_seen: Dict[str, float] = {}  # {key: timestamp}
 _ai_healthy: bool = True
 _ai_last_success: float = time.time()
 _ai_failure_streak: int = 0
+_kinance_healthy: bool = True
+_last_kinance_heartbeat_at: float = 0.0
 _initial_capital_idr: float = 0.0
 
 
@@ -167,7 +169,7 @@ def _can_enter(pair: str, msg_type: str) -> Tuple[bool, str]:
     """
     Trinity Gate 0: Centralized discipline gate.
     """
-    global _ai_healthy, _entry_loss_count, _last_entry
+    global _ai_healthy, _kinance_healthy, _entry_loss_count, _last_entry
 
     # 1. Hard Stop Guard
     loss_pct = _get_daily_loss_pct()
@@ -184,6 +186,10 @@ def _can_enter(pair: str, msg_type: str) -> Tuple[bool, str]:
     # 3. AI Health Guard
     if not _ai_healthy:
         return False, "AI_HEALTH: Sources offline"
+
+    # 3.1 KiNance Health Guard (Fix #4)
+    if not _kinance_healthy:
+        return False, "KINANCE_OFFLINE: No heartbeat from source"
 
     # 4. Quarantine Guard
     if pair:
@@ -3407,6 +3413,7 @@ def _trigger_daily_hard_stop(current_equity: float | None, daily_pnl_pct: float)
     _gate_state["daily_hard_stop_reset_at"] = reset_at
     _gate_state["daily_hard_stop_reason"] = "daily_loss_limit_hit"
     _save_gate_state()
+    _set_level_3_mode("Daily Hard Stop")
     _suspend_new_entries("daily_loss_limit_hit", daily_hard_stop=True)
     _append_runtime_event("daily_hard_stop", {"daily_pnl_pct": daily_pnl_pct, "reset_at": reset_at})
     _metric_inc("entries_blocked_hard_stop")
@@ -7123,7 +7130,11 @@ def main() -> None:
                 if _is_duplicate_signal(msg):
                     continue
 
-                mtype = msg.get("type", "")
+                mtype = msg.get("type", msg.get("msgType", ""))
+                if mtype == "HEARTBEAT" and msg.get("source") == "kinance":
+                    _on_kinance_heartbeat_received()
+                    continue
+
                 if mtype == "MULTI_SCANNER_SIGNAL":
                     _msc_engine.process_and_relay(msg, _relay_to_kidax)
 

@@ -24,9 +24,13 @@ data class RiskDecision(
 )
 
 class RiskEngine(
-    private val config: RiskConfig = RiskConfig(),
+    private var config: RiskConfig = RiskConfig(),
     private val profitProtectionEngine: ProfitProtectionEngine = ProfitProtectionEngine(),
 ) {
+    fun updateConfig(newConfig: RiskConfig) {
+        this.config = newConfig
+    }
+
     fun evaluate(
         portfolio: PortfolioSnapshot,
         dailyRisk: DailyRiskSnapshot,

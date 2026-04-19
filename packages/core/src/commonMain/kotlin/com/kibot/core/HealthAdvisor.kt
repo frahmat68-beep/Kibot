@@ -11,8 +11,12 @@ data class EntryHealthDecision(
 )
 
 class HealthAdvisor(
-    private val config: RiskConfig = RiskConfig(),
+    private var config: RiskConfig = RiskConfig(),
 ) {
+    fun updateConfig(newConfig: RiskConfig) {
+        this.config = newConfig
+    }
+
     fun evaluate(snapshot: EngineHealthSnapshot): EntryHealthDecision {
         val reasons = mutableListOf<String>()
 

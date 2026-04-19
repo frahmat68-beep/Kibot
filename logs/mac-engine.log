@@ -1,0 +1,81 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.7/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+
+> Configure project :packages:ai-support
+Unable to initialize metrics, ensure /Users/kiki/.android is writable, details: /Users/kiki/.android/analytics.settings (Operation not permitted)
+
+> Task :packages:core:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :packages:ai-support:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :packages:binance-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :packages:indodax-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :packages:shared-models:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :apps:mac-engine:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :packages:control-plane:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :packages:core:jvmProcessResources NO-SOURCE
+> Task :packages:indodax-client:jvmProcessResources NO-SOURCE
+> Task :packages:ai-support:jvmProcessResources NO-SOURCE
+> Task :packages:control-plane:jvmProcessResources NO-SOURCE
+> Task :packages:indodax-client:processJvmMainResources SKIPPED
+> Task :packages:control-plane:processJvmMainResources SKIPPED
+> Task :packages:core:processJvmMainResources SKIPPED
+> Task :packages:ai-support:processJvmMainResources SKIPPED
+> Task :packages:binance-client:jvmProcessResources NO-SOURCE
+> Task :packages:binance-client:processJvmMainResources SKIPPED
+> Task :apps:mac-engine:processResources UP-TO-DATE
+> Task :packages:shared-models:compileKotlinJvm UP-TO-DATE
+> Task :packages:shared-models:compileJvmMainJava NO-SOURCE
+> Task :packages:shared-models:jvmProcessResources NO-SOURCE
+> Task :packages:shared-models:processJvmMainResources SKIPPED
+> Task :packages:shared-models:jvmMainClasses UP-TO-DATE
+> Task :packages:shared-models:jvmJar UP-TO-DATE
+> Task :packages:ai-support:compileKotlinJvm UP-TO-DATE
+> Task :packages:ai-support:compileJvmMainJava NO-SOURCE
+> Task :packages:ai-support:jvmMainClasses UP-TO-DATE
+> Task :packages:ai-support:jvmJar UP-TO-DATE
+> Task :packages:core:compileKotlinJvm UP-TO-DATE
+> Task :packages:core:compileJvmMainJava NO-SOURCE
+> Task :packages:core:jvmMainClasses UP-TO-DATE
+> Task :packages:core:jvmJar UP-TO-DATE
+> Task :packages:indodax-client:compileKotlinJvm UP-TO-DATE
+> Task :packages:binance-client:compileKotlinJvm UP-TO-DATE
+> Task :packages:control-plane:compileKotlinJvm UP-TO-DATE
+> Task :packages:indodax-client:compileJvmMainJava NO-SOURCE
+> Task :packages:binance-client:compileJvmMainJava NO-SOURCE
+> Task :packages:control-plane:compileJvmMainJava NO-SOURCE
+> Task :packages:indodax-client:jvmMainClasses UP-TO-DATE
+> Task :packages:control-plane:jvmMainClasses UP-TO-DATE
+> Task :packages:binance-client:jvmMainClasses UP-TO-DATE
+> Task :packages:indodax-client:jvmJar UP-TO-DATE
+> Task :packages:control-plane:jvmJar UP-TO-DATE
+> Task :packages:binance-client:jvmJar UP-TO-DATE
+> Task :apps:mac-engine:compileKotlin UP-TO-DATE
+> Task :apps:mac-engine:compileJava NO-SOURCE
+> Task :apps:mac-engine:classes UP-TO-DATE
+
+> Task :apps:mac-engine:run FAILED
+Exception in thread "main" java.lang.IllegalStateException: Missing required environment variable: SUPABASE_URL
+	at com.kibot.macengine.config.MacRuntimeConfigLoader.load$required(MacRuntimeConfig.kt:155)
+	at com.kibot.macengine.config.MacRuntimeConfigLoader.load(MacRuntimeConfig.kt:204)
+	at com.kibot.macengine.config.MacRuntimeConfigLoader.load$default(MacRuntimeConfig.kt:126)
+	at com.kibot.macengine.MainKt.main(Main.kt:31)
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':apps:mac-engine:run'.
+> Process 'command '/Users/kiki/Documents/Web Develop/KiBot/.tooling/openjdk@21/21.0.10/libexec/openjdk.jdk/Contents/Home/bin/java'' finished with non-zero exit value 1
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.7/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD FAILED in 25s
+15 actionable tasks: 1 executed, 14 up-to-date

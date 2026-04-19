@@ -1,0 +1,13 @@
+/Users/kiki/Documents/Web Develop/KiBot/.deploy-venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+✅ kibot_engine_v2.py OK
+[KIBOT][WARN] defusedxml not installed, using stdlib xml (XXE risk)
+[KIBOT][LEARN] mathematical learning engine loaded
+Traceback (most recent call last):
+  File "/Users/kiki/Documents/Web Develop/KiBot/scripts/kibot_manager.py", line 7166, in <module>
+    main()
+  File "/Users/kiki/Documents/Web Develop/KiBot/scripts/kibot_manager.py", line 6995, in main
+    _ensure_env()
+  File "/Users/kiki/Documents/Web Develop/KiBot/scripts/kibot_manager.py", line 4912, in _ensure_env
+    raise RuntimeError(f"Missing env: {', '.join(missing)}")
+RuntimeError: Missing env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY/SUPABASE_ANON_KEY

@@ -58,9 +58,16 @@ class StrategyOrchestrator(
     private val deploymentEngine: CapitalDeploymentEngine = CapitalDeploymentEngine(),
     private val vetoService: VetoService = VetoService(),
     private val executionConfig: StrategyExecutionConfig = StrategyExecutionConfig(),
-    private val riskConfig: RiskConfig = RiskConfig(),
+    private var riskConfig: RiskConfig = RiskConfig(),
     private val dualEngineConfig: DualEngineConfig = DualEngineConfig(),
 ) {
+    fun updateRiskConfig(newConfig: RiskConfig) {
+        this.riskConfig = newConfig
+        riskEngine.updateConfig(newConfig)
+        deploymentEngine.updateConfig(newConfig)
+        healthAdvisor.updateConfig(newConfig)
+    }
+
     private val recentPairExitTimestampsMs = mutableMapOf<PairId, Long>()
     private var lastObservedHeldPairs: Set<PairId> = emptySet()
 

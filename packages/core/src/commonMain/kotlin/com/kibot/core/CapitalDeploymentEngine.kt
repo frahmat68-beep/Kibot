@@ -14,8 +14,12 @@ import kotlin.math.absoluteValue
 import kotlin.math.max
 
 class CapitalDeploymentEngine(
-    private val config: RiskConfig = RiskConfig(),
+    private var config: RiskConfig = RiskConfig(),
 ) {
+    fun updateConfig(newConfig: RiskConfig) {
+        this.config = newConfig
+    }
+
     fun plan(
         portfolio: PortfolioSnapshot,
         rankedPairs: List<PairScore>,
