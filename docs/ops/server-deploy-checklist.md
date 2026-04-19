@@ -44,7 +44,7 @@ Dokumen ini adalah checklist deploy untuk topologi aktif `main` / `kinance` / `k
 - `KIBOT_LEAD_LAG_UDP_ENABLED=true`
 - `KIBOT_LEAD_LAG_UDP_HEARTBEAT_ENABLED=true`
 - `KIBOT_LEAD_LAG_UDP_HEARTBEAT_INTERVAL_MS=100`
-- `KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=500`
+- `KIBOT_LEAD_LAG_UDP_HEARTBEAT_TIMEOUT_MS=5000`
 
 ### KiBot Manager Ringan
 - gunakan `kibot-manager.service` Python untuk commander ringan jika RAM server tipis

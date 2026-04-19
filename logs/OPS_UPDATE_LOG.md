@@ -39,3 +39,43 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
   - Akan diverifikasi lagi lewat build/test/deploy/soak 10 menit setelah patch terpasang.
 - Hasil:
   - Menunggu verifikasi runtime pascadeploy.
+
+### 2026-04-19 14:55 WIB — Deploy 2 Server, Soak 10 Menit, dan Audit Penutup
+- Status: FIXED
+- Temuan:
+  - Node Tokyo `kinance` sebelumnya terjebak loop `DEGRADED` karena node scanner-only tetap ikut memproses manager gate lokal yang sedang `SUSPENDED`.
+  - Endpoint `kibot-manager /api/state` di SG sebelumnya rawan lambat/timeout karena satu response memicu fetch runtime ganda.
+  - Parsing angka `DecimalValue` dan fallback label IDR berisiko salah baca format grouped integer atau scientific notation, yang bisa merusak equity/PnL baseline.
+  - Test heartbeat guard sempat salah skenario sehingga panic-sell regression tidak teruji dengan benar.
+  - Checklist deploy repo drift dari kondisi server live: wording heartbeat masih menyiratkan panic sell dan timeout masih tertulis `500ms`, padahal unit live memakai `5000ms`.
+- Akar masalah:
+  - `resolveManagerEntryBlockReason()` belum membedakan node executor vs report-only/scanner-only.
+  - Manager state payload masih melakukan readback runtime berulang.
+  - Normalisasi angka terlalu agresif dan tidak memprioritaskan parse numerik native.
+  - Fixture test heartbeat memakai quote helper default yang menghasilkan profit palsu besar.
+  - Dokumentasi operasional tertinggal dari konfigurasi systemd aktif.
+- Perbaikan:
+  - Runtime gate diperketat: node report-only/shadow tidak lagi ikut terseret manager gate untuk health derivation.
+  - `kibot_manager.py` sekarang memakai cache ringan + reuse runtime snapshot untuk payload state/equity.
+  - Parser angka diperkeras untuk locale campuran, grouped IDR, dan scientific notation.
+  - Test heartbeat safe-mode distabilkan agar benar-benar menguji `suspend entry without panic sell`.
+  - Checklist deploy dirapikan agar konsisten dengan guardrail live (`no panic sell on heartbeat timeout`, timeout `5000ms`).
+- Verifikasi:
+  - Local:
+    - `python3 tests/test_whatif_complete.py` → `200/200 pass`
+    - `python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
+    - `./gradlew :packages:shared-models:jvmTest --tests com.kibot.shared.models.DecimalValueTest ... :apps:mac-engine:fatJar --no-daemon`
+    - `./gradlew :apps:mac-engine:test --tests "com.kibot.macengine.MacEngineDaemonTest.missing trinity heartbeat suspends entry without panic sell" --tests "com.kibot.macengine.MacEngineDaemonTest.report only binance node ignores manager gate availability for health state" --no-daemon`
+  - Deploy manual SSH:
+    - Host disentuh: `213.35.118.26` dan `152.69.218.198`
+    - Repo head saat push: `e201dd1c`
+    - Artifact deployed: `482067af14bc5eb4f050e219d610bf6f9b9decc5f699c242a126fb09eed83955`
+    - Files deployed: `server/mac-engine-all.jar`, `scripts/kibot_manager.py`
+    - Restart: `kibot-manager` + `kidax-engine` (SG), `kibot-manager` + `kinance-engine` (Tokyo)
+  - Soak:
+    - SG `213.35.118.26`: setelah boot recovery, `kidax-engine` menetap di `SAFE_MODE` dengan `tradingAllowed=false` dan `hardStopActive=true`; tidak ada `EXECUTION_BUY` baru selama soak.
+    - Tokyo `152.69.218.198`: `kinance-engine` menetap `RUNNING/HEALTHY`, `tradingAllowed=false` by design, dan loop `DEGRADED` lama berhenti setelah restart baru.
+- Hasil:
+  - Topologi aktif 2 server kembali sinkron sesuai peran: SG sebagai executor yang patuh hard-stop, Tokyo sebagai scanner/radar yang sehat tanpa terseret suspend manager lokal.
+  - Tidak ada bukti BUY/Sell liar baru selama soak pascadeploy.
+  - Repo sekarang punya logbook operasi wajib + checklist deploy yang lebih jujur terhadap runtime aktif.
