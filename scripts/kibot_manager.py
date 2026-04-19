@@ -7170,12 +7170,20 @@ def _http_state_payload() -> Dict[str, Any]:
 
 
 class _ManagerStateHandler(BaseHTTPRequestHandler):
+    def _safe_write(self, raw: bytes) -> None:
+        try:
+            self.wfile.write(raw)
+        except BrokenPipeError:
+            print("[KIBOT][HTTP] client closed response early", flush=True)
+        except ConnectionResetError:
+            print("[KIBOT][HTTP] client reset response stream", flush=True)
+
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/" or self.path == "/dashboard":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
+            self._safe_write(DASHBOARD_HTML.encode("utf-8"))
             return
 
         if self.path.startswith("/api/state"):
@@ -7185,7 +7193,7 @@ class _ManagerStateHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
-            self.wfile.write(raw)
+            self._safe_write(raw)
             return
         if self.path.startswith("/api/scanner-feed"):
             payload = _load_local_scanner_feed()
@@ -7194,7 +7202,7 @@ class _ManagerStateHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
-            self.wfile.write(raw)
+            self._safe_write(raw)
             return
         self.send_response(404)
         self.end_headers()
