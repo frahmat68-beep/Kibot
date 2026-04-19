@@ -199,5 +199,21 @@ Daftar komponen sistem yang telah diaudit dan diperkeras untuk produksi 100%:
 - **Server**: SG
 - **Diubah**: 2026-04-19
 
+### [BrainAssist] — ✅ Production
+- **File**: `scripts/ki_brain.py`
+- **Fungsi**: Riset internet advisory-only untuk health check dan review simbol tanpa mengunci jalur order live.
+- **Dipanggil oleh**: `scripts/kibot_manager.py` dari thread `kibot-brain-thinking` untuk update status `brain_assist`.
+- **Log tag**: `[KIBOT][BRAIN]`
+- **Server**: Keduanya
+- **Diubah**: 2026-04-19
+
+### [KiStats] — ✅ Production
+- **File**: `scripts/ki_stats.py`
+- **Fungsi**: Utility statistik ringan berbasis stdlib untuk sanity check z-score tanpa dependency berat.
+- **Dipanggil oleh**: `scripts/kibot_manager.py` saat discipline gate mengecek spike statistik lokal.
+- **Log tag**: `STATS_REJECT`
+- **Server**: SG
+- **Diubah**: 2026-04-19
+
 ---
-*Blueprint updated: 2026-04-18*
+*Blueprint updated: 2026-04-19*

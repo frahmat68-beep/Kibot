@@ -24,6 +24,8 @@ captures/
 .venv-kicryp/
 .venv/
 venv/
+.brain-venv/
+.state/
 apps/mac-engine/.env
 apps/mac-engine/bin/
 infra/supabase/.temp/

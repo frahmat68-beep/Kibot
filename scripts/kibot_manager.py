@@ -14,6 +14,22 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+
+def _load_dotenv_early():
+    import os
+    candidates = [Path(".env"), Path("scripts/.env"), Path("../.env")]
+    if os.getenv("KIBOT_MANAGER_ENV_FILE"):
+        candidates.insert(0, Path(os.getenv("KIBOT_MANAGER_ENV_FILE")))
+    for p in candidates:
+        if p.exists():
+            for line in p.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip().strip("'").strip('"')
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+_load_dotenv_early()
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import asyncio
 import requests
@@ -25,6 +41,8 @@ from ki_capital_engine import (
 )
 import kibot_engine_v2 as engine
 from dashboard_template import DASHBOARD_HTML
+from ki_brain import BrainManager
+from ki_stats import calculate_z_score
 
 _WHATIF_AVAILABLE = True
 try:
@@ -101,6 +119,7 @@ _partial_tp    = PartialTPManager()
 _profit_lock   = ProfitLockManager()
 _trailing_stop = AdaptiveTrailingStop()
 _hard_stop     = HardStopGuard()
+_brain         = BrainManager()
 
 # --- TRINITY CRITICAL FIX STATE ---
 import pytz
@@ -199,11 +218,20 @@ def _can_enter(pair: str, msg_type: str) -> Tuple[bool, str]:
         if (time.time() - last_t) < cooldown_s:
             return False, f"QUARANTINE: {pair} cooldown"
 
-        # 4.2 Max Loss Blacklist (2x)
-        loss_cnt = _entry_loss_count.get(pair, 0)
-        max_loss = int(os.environ.get("KIBOT_MAX_PAIR_LOSS", "2"))
-        if loss_cnt >= max_loss:
-            return False, f"BLACKLIST: {pair} reached {loss_cnt} losses"
+        # 4.2 Blacklist (Max 2 losses)
+        if _entry_loss_count.get(pair, 0) >= int(os.environ.get("KIBOT_MAX_PAIR_LOSS", "2")):
+            return False, f"BLACKLIST: {pair} too many losses"
+
+    # 5. Statistical sanity check.
+    # Brain/AI research stays advisory-only in background loops so the live
+    # entry path never blocks on internet calls.
+    if pair:
+        prices = _price_history.get(pair, [])
+        if prices and len(prices) >= 20:
+            z_val = calculate_z_score(prices)
+            z_thresh = float(os.environ.get("KIBOT_Z_SCORE_THRESHOLD", "2.2"))
+            if abs(z_val) > z_thresh:
+                return False, f"STATS_REJECT: Z-Score {z_val:.2f} too extreme (> {z_thresh})"
 
     return True, "ok"
 
@@ -328,28 +356,7 @@ def _on_fill_v7(fill: dict):
     # 5. Persist State (Bug #6)
     _save_daily_state()
 
-def _load_dotenv_if_exists() -> None:
-    candidates = []
-    explicit = os.getenv("KIBOT_MANAGER_ENV_FILE")
-    if explicit:
-        candidates.append(Path(explicit))
-    cwd = Path.cwd()
-    candidates.extend([cwd / ".env", cwd.parent / ".env", cwd / "apps/mac-engine/.env"])
-    for path in candidates:
-        if not path.exists():
-            continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            raw = line.strip()
-            if not raw or raw.startswith("#") or "=" not in raw:
-                continue
-            key, val = raw.split("=", 1)
-            key = key.strip()
-            val = val.strip().strip("'").strip('"')
-            if key and key not in os.environ:
-                os.environ[key] = val
-
-
-_load_dotenv_if_exists()
+# Dotenv already loaded early.
 
 try:
     from kibot_learning_engine import get_engine as _get_learning_engine, get_regime_detector as _get_regime_detector
@@ -4521,6 +4528,7 @@ def _write_runtime_note(*, force: bool = False) -> None:
         "sector_count": len(_last_sector_map),
         "sector_preview": {key: value[:5] for key, value in list(_last_sector_map.items())[:5]},
         "latest_learning_review": _load_json_file(LEARNING_REVIEW_PATH, {}),
+        "brain_assist": _brain.snapshot(),
         "recent_events": list(_recent_runtime_events[-15:]),
     }
     try:
@@ -6759,6 +6767,7 @@ def _http_state_payload() -> Dict[str, Any]:
                     / max(float(_metrics.get("whatif_enters_today", 0)) + float(_metrics.get("whatif_skips_today", 0)), 1.0)
                 ),
             },
+            "brain_assist": _brain.snapshot(),
             "math_review": {
                 "last_action": _math_review_last_action,
                 "last_reason": _math_review_last_reason,
@@ -7028,6 +7037,20 @@ def _save_daily_state():
         print(f"[v7][STATE_ERR] {e}", flush=True)
 
 
+def _brain_thinking_loop():
+    """Advisory-only conscience loop."""
+    last_think = 0
+    interval = int(os.environ.get("KIBOT_THINKING_INTERVAL_MINUTES", "15")) * 60
+    while not _shutdown_event.is_set():
+        try:
+            if time.time() - last_think > interval:
+                _brain.think()
+                last_think = time.time()
+                _write_runtime_note(force=True)
+        except Exception as error:
+            print(f"[KIBOT][BRAIN][WARN] advisory loop error: {error}", flush=True)
+        time.sleep(10)
+
 def main() -> None:
     global _main_socket
 
@@ -7097,6 +7120,9 @@ def main() -> None:
 
     signal_mgr_thread = threading.Thread(target=run_local_signal_engine_manager, name="kibot-signal-mgr", daemon=True)
     signal_mgr_thread.start()
+
+    brain_thread = threading.Thread(target=_brain_thinking_loop, name="kibot-brain-thinking", daemon=True)
+    brain_thread.start()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # Allow socket reuse for quick restarts
