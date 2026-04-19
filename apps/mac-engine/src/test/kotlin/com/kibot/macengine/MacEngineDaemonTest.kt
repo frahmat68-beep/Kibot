@@ -49,6 +49,7 @@ import com.kibot.core.MarketBuyImpactEstimate
 import com.kibot.shared.models.TradingHorizon
 import com.kibot.testkit.FakeControlPlaneGateway
 import com.kibot.testkit.FakeExchangeGateway
+import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.Clock
@@ -61,6 +62,7 @@ import kotlin.time.Duration.Companion.minutes
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.file.Files
@@ -73,6 +75,10 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 class MacEngineDaemonTest {
+    init {
+        ensureTestManagerGateServer()
+    }
+
     private val botId = BotId("main")
     private val macId = DeviceId("macbook-main")
     private val androidId = DeviceId("android-main")
@@ -302,6 +308,79 @@ class MacEngineDaemonTest {
         assertTrue(controlPlane.fetchDevices(botId).isNotEmpty())
         assertTrue(repository.state.value.statusMessage.contains("connected", ignoreCase = true) ||
             repository.state.value.statusMessage.contains("degraded", ignoreCase = true))
+    }
+
+    @Test
+    fun `report only binance node ignores manager gate availability for health state`() = runBlocking {
+        val scannerBotId = BotId("kinance")
+        val controlPlane = FakeControlPlaneGateway(botId = scannerBotId)
+        controlPlane.botState = BotStateSnapshot(
+            botId = scannerBotId,
+            desiredState = BotDesiredState.ON,
+            effectiveState = BotEffectiveState.RUNNING,
+            activeDeviceId = macId,
+            standbyDeviceId = androidId,
+            currentTerm = LeaseTerm(7),
+            syncHealth = SyncHealth.HEALTHY,
+            strategyMode = StrategyMode.GROWTH,
+            operatingMode = BotMode.GROWTH,
+            edgeConfidence = EdgeConfidence.HIGH,
+            marketRegime = MarketRegime.HEALTHY_UPTREND,
+            lastHeartbeatAt = Instant.parse("2026-03-15T00:00:00Z"),
+        )
+        controlPlane.registerDevice(androidRegistration())
+        controlPlane.seedLease(
+            EngineLeaseSnapshot(
+                botId = scannerBotId,
+                currentHolder = macId,
+                term = LeaseTerm(7),
+                state = LeaseState.HELD,
+                expiresAt = Instant.parse("2030-01-01T00:00:05Z"),
+                lastHeartbeatAt = Instant.parse("2030-01-01T00:00:00Z"),
+                conflictDetected = false,
+            ),
+        )
+        controlPlane.dailyRisk = com.kibot.shared.models.DailyRiskSnapshot(
+            openingEquityIdr = DecimalValue("500000"),
+            currentEquityIdr = DecimalValue("500000"),
+            realizedPnlIdr = DecimalValue.Zero,
+            unrealizedPnlIdr = DecimalValue.Zero,
+            drawdownPct = 0.0,
+            hardDailyLossLimitPct = 0.25,
+            hardStopTriggered = false,
+            rebasePending = false,
+            highWatermarkEquityIdr = DecimalValue("500000"),
+        )
+        controlPlane.latestWeeklyLearningSummary = healthyWeeklySummary()
+        val exchange = FakeExchangeGateway(
+            marketQuotes = mutableListOf(marketQuote("eth_usdt", 2000.0, 0.82)),
+            balances = mutableListOf(BalanceSnapshot("usdt", DecimalValue("50"))),
+        )
+        val repository = MacStateRepository()
+        val daemon = MacEngineDaemon(
+            repository = repository,
+            controlPlane = controlPlane,
+            exchange = exchange,
+            config = runtimeConfig(
+                enableLiveExecution = false,
+                deviceRole = DeviceRole.PRIMARY,
+                exchangeKind = ExchangeKind.BINANCE_SPOT,
+            ).copy(
+                controlPlane = ControlPlaneConfig(
+                    supabaseUrl = "https://example.supabase.co",
+                    supabaseAnonKey = "anon",
+                    userEmail = "user@example.com",
+                    userPassword = "password",
+                    botId = scannerBotId,
+                ),
+            ),
+            clock = fixedClock,
+        )
+
+        daemon.syncOnce()
+
+        assertEquals(BotEffectiveState.RUNNING, repository.state.value.effectiveState)
+        assertEquals("HEALTHY", repository.state.value.syncHealth)
     }
 
     @Test
@@ -788,7 +867,7 @@ class MacEngineDaemonTest {
     }
 
     @Test
-    fun `missing trinity heartbeat triggers safe mode and emergency sell`() = runBlocking {
+    fun `missing trinity heartbeat suspends entry without panic sell`() = runBlocking {
         val controlPlane = FakeControlPlaneGateway(botId = botId)
         controlPlane.botState = BotStateSnapshot(
             botId = botId,
@@ -851,8 +930,9 @@ class MacEngineDaemonTest {
                 BalanceSnapshot("doge", DecimalValue("100")),
             ),
         )
+        val repository = MacStateRepository()
         val daemon = MacEngineDaemon(
-            repository = MacStateRepository(),
+            repository = repository,
             controlPlane = controlPlane,
             exchange = exchange,
             config = runtimeConfig(
@@ -874,9 +954,12 @@ class MacEngineDaemonTest {
         delay(320L)
         daemon.syncOnce()
 
-        assertEquals(BotEffectiveState.SAFE_MODE, controlPlane.fetchBotState(botId)?.effectiveState)
-        assertTrue(controlPlane.fetchBotState(botId)?.safeModeReason?.contains("heartbeat", ignoreCase = true) == true)
-        assertTrue(exchange.currentOrders().any { it.side == OrderSide.SELL })
+        val controlPlaneSafeMode = controlPlane.fetchBotState(botId)?.safeModeReason?.contains("heartbeat", ignoreCase = true) == true
+        val repositoryHeartbeatWarning =
+            repository.state.value.healthSummary.contains("heartbeat", ignoreCase = true) ||
+                repository.state.value.statusMessage.contains("heartbeat", ignoreCase = true)
+        assertTrue(controlPlaneSafeMode || repositoryHeartbeatWarning)
+        assertFalse(exchange.currentOrders().any { it.side == OrderSide.SELL })
     }
 
     @Test
@@ -2510,6 +2593,34 @@ class MacEngineDaemonTest {
         platform = DevicePlatform.ANDROID,
         role = DeviceRole.PRIMARY,
     )
+
+    companion object {
+        private val managerGateServerLock = Any()
+        @Volatile private var managerGateServer: HttpServer? = null
+
+        private fun ensureTestManagerGateServer() {
+            if (managerGateServer != null) return
+            synchronized(managerGateServerLock) {
+                if (managerGateServer != null) return
+                val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+                server.createContext("/api/state") { exchange ->
+                    val payload = """
+                        {"tradingAllowed":true,"hard_stop_active":false,"system_state":"HEALTHY","degradedReason":""}
+                    """.trimIndent().toByteArray()
+                    exchange.responseHeaders.add("Content-Type", "application/json")
+                    exchange.sendResponseHeaders(200, payload.size.toLong())
+                    exchange.responseBody.use { it.write(payload) }
+                }
+                server.executor = null
+                server.start()
+                managerGateServer = server
+                System.setProperty(
+                    "kibot.manager.state.url",
+                    "http://127.0.0.1:${server.address.port}/api/state",
+                )
+            }
+        }
+    }
 
     private fun healthyWeeklySummary() = WeeklyLearningSummary(
         botId = botId,

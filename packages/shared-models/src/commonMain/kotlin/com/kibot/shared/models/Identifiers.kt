@@ -49,7 +49,8 @@ value class PairId(val value: String)
 @Serializable
 @JvmInline
 value class DecimalValue(val value: String) {
-    fun toDoubleOrZero(): Double = value.toDoubleOrNull() ?: 0.0
+    fun toDoubleOrZero(): Double = value.trim().toDoubleOrNull()
+        ?: parseFlexibleDecimal(value, singleSeparatorLikelyGrouping = false)
     fun toDouble(): Double = toDoubleOrZero()
     fun toInt(): Int = toDoubleOrZero().toInt()
     fun toLong(): Long = toDoubleOrZero().toLong()
@@ -117,6 +118,77 @@ value class DecimalValue(val value: String) {
         fun fromInt(value: Int): DecimalValue = DecimalValue(value.toString())
         fun fromScaledLong(scaled: Long): DecimalValue = DecimalValue((scaled.toDouble() / SCALE).toString())
         fun parse(value: String?): DecimalValue = DecimalValue(value ?: "0")
+    }
+}
+
+private fun parseFlexibleDecimal(
+    rawValue: String,
+    singleSeparatorLikelyGrouping: Boolean,
+): Double {
+    val filtered = rawValue
+        .trim()
+        .filter { it.isDigit() || it == '.' || it == ',' || it == '-' || it == '+' }
+    if (filtered.isBlank()) return 0.0
+
+    val sign = if (filtered.startsWith("-")) "-" else ""
+    val unsigned = filtered.removePrefix("-").removePrefix("+")
+    if (unsigned.isBlank()) return 0.0
+
+    val normalized = when {
+        unsigned.contains('.') && unsigned.contains(',') -> {
+            val decimalSeparator = if (unsigned.lastIndexOf('.') > unsigned.lastIndexOf(',')) '.' else ','
+            normalizeWithExplicitDecimal(unsigned, decimalSeparator)
+        }
+        unsigned.count { it == '.' } > 1 -> normalizeRepeatedSeparator(unsigned, '.')
+        unsigned.count { it == ',' } > 1 -> normalizeRepeatedSeparator(unsigned, ',')
+        unsigned.contains('.') -> normalizeSingleSeparator(unsigned, '.', singleSeparatorLikelyGrouping)
+        unsigned.contains(',') -> normalizeSingleSeparator(unsigned, ',', singleSeparatorLikelyGrouping)
+        else -> unsigned
+    }
+
+    return (sign + normalized).toDoubleOrNull() ?: 0.0
+}
+
+private fun normalizeWithExplicitDecimal(unsigned: String, decimalSeparator: Char): String {
+    val groupingSeparator = if (decimalSeparator == '.') ',' else '.'
+    return buildString(unsigned.length) {
+        unsigned.forEachIndexed { index, char ->
+            when {
+                char == groupingSeparator -> Unit
+                char == decimalSeparator && index == unsigned.lastIndexOf(decimalSeparator) -> append('.')
+                char.isDigit() -> append(char)
+            }
+        }
+    }
+}
+
+private fun normalizeRepeatedSeparator(unsigned: String, separator: Char): String {
+    val parts = unsigned.split(separator)
+    if (parts.isEmpty()) return unsigned
+    val tailGroups = parts.drop(1)
+    return if (tailGroups.isNotEmpty() && tailGroups.all { it.length == 3 }) {
+        parts.joinToString(separator = "")
+    } else {
+        val decimalPart = parts.last()
+        val integerPart = parts.dropLast(1).joinToString(separator = "")
+        if (decimalPart.isEmpty()) integerPart else "$integerPart.$decimalPart"
+    }
+}
+
+private fun normalizeSingleSeparator(
+    unsigned: String,
+    separator: Char,
+    singleSeparatorLikelyGrouping: Boolean,
+): String {
+    val parts = unsigned.split(separator)
+    if (parts.size != 2) return unsigned
+    val integerPart = parts[0]
+    val suffix = parts[1]
+    if (suffix.isEmpty()) return integerPart
+    return if (singleSeparatorLikelyGrouping && suffix.length == 3) {
+        integerPart + suffix
+    } else {
+        "$integerPart.$suffix"
     }
 }
 

@@ -14,6 +14,8 @@ This file is the source of truth for:
 - known failure modes and root causes,
 - post-deploy validation procedure.
 
+Operational update log wajib ditulis di [logs/OPS_UPDATE_LOG.md](logs/OPS_UPDATE_LOG.md) setiap ada temuan, patch, deploy, atau hasil soak baru.
+
 KiBot Trinity is a next-generation autonomous trading system designed to run on ultra-low resource environments (Oracle Micro 1GB RAM) while maintaining institutional-grade risk management and high-frequency execution.
 
 ---

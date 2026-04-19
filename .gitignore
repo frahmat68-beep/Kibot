@@ -46,6 +46,8 @@ build_log.txt
 state/
 simulation_report.json
 logs/
+!logs/
+!logs/OPS_UPDATE_LOG.md
 state/trade_log.jsonl
 state/*.tmp
 *.tmp.*

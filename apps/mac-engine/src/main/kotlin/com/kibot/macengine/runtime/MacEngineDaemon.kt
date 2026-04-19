@@ -2845,7 +2845,8 @@ class MacEngineDaemon(
                 currentValueIdr = DecimalValue.fromDouble(snapshot.currentBid * quantity.toDoubleOrZero()),
                 unrealizedPnlIdr = DecimalValue.Zero,
                 unrealizedPnlPct = if (snapshot.entryPrice > 0.0) {
-                    ((snapshot.currentBid - snapshot.entryPrice) / snapshot.entryPrice) * 100.0
+                    val rawPnl = ((snapshot.currentBid - snapshot.entryPrice) / snapshot.entryPrice) * 100.0
+                    if (kotlin.math.abs(rawPnl) > 500.0) 0.0 else rawPnl
                 } else {
                     0.0
                 },
@@ -3245,7 +3246,8 @@ class MacEngineDaemon(
             val pairKey = position.pairId.value.lowercase()
             val peakPrice = localAutonomyPeakBidByPair[pairKey] ?: position.currentBidPrice.toDoubleOrZero()
             val entryPrice = position.averageEntryPrice.toDoubleOrZero().coerceAtLeast(0.0000001)
-            val peakGainPct = ((peakPrice - entryPrice) / entryPrice) * 100.0
+            val rawPeakGain = ((peakPrice - entryPrice) / entryPrice) * 100.0
+            val peakGainPct = if (kotlin.math.abs(rawPeakGain) > 500.0) 0.0 else rawPeakGain
             if (peakGainPct >= 3.0 && btcEthCrash) {
                 logger.info("[CRASH_GUARD_EXEMPT] ${position.pairId.value} had peak profit ${formatDecimal(peakGainPct, 2)}% - trailing stop active")
                 return@firstOrNull false
@@ -6361,7 +6363,7 @@ class MacEngineDaemon(
         }
         return runCatching {
             val request = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:9998/api/state"))
+                .uri(URI.create(managerEntryGateUrl()))
                 .timeout(Duration.ofSeconds(2))
                 .header("Accept", "application/json")
                 .GET()
@@ -6399,7 +6401,15 @@ class MacEngineDaemon(
         }
     }
 
+    private fun managerEntryGateUrl(): String =
+        System.getProperty("kibot.manager.state.url")
+            ?.takeIf { it.isNotBlank() }
+            ?: "http://127.0.0.1:9998/api/state"
+
     private fun resolveManagerEntryBlockReason(now: Instant): String? {
+        if (!config.enableLiveExecution || config.shadowMode) {
+            return null
+        }
         val snapshot = fetchManagerEntryGate(now) ?: return "manager_gate_unavailable"
         val normalizedState = snapshot.systemState?.trim()?.uppercase()
         val degradedReason = snapshot.degradedReason?.trim()?.takeIf { it.isNotBlank() }

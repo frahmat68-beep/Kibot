@@ -102,19 +102,107 @@ _profit_lock   = ProfitLockManager()
 _trailing_stop = AdaptiveTrailingStop()
 _hard_stop     = HardStopGuard()
 
+# --- TRINITY CRITICAL FIX STATE ---
+_last_entry: Dict[str, float] = {}   # {pair: timestamp}
+_entry_loss_count: Dict[str, int] = {}  # {pair: count}
+_signal_seen: Dict[str, float] = {}  # {key: timestamp}
+_ai_healthy: bool = True
+_ai_last_success: float = time.time()
+_ai_failure_streak: int = 0
+
 
 def _relay_to_kidax(msg: dict):
-    """Kirim perintah ke KiDax via UDP. Ini yang membuat sistem take action nyata."""
+    """
+    Central UDP Relay - Enforces all Trinity Gate 0 Guardrails.
+    Checks for Hard Stop, AI Health, and Quarantine before sending signals.
+    """
     global _main_socket
+    mtype = str(msg.get("type") or msg.get("msgType") or "").upper()
+    pair  = str(msg.get("pair") or msg.get("pairId") or "").lower()
+
+    # GUARD 0: Entry Gate (Only for signals that create new exposure)
+    if "SIGNAL" in mtype or "DETECTOR_HIT" in mtype or "SMART_ENTRY" in mtype:
+        can_enter, reason = _can_enter(pair, mtype)
+        if not can_enter:
+            print(f"[v7][GATE_BLOCKED] {pair} ({mtype}): {reason}", flush=True)
+            _metric_inc(f"entries_blocked_{reason.split(':')[0]}")
+            return
+
+        # Record entry for quarantine
+        if pair:
+            _last_entry[pair] = time.time()
+            print(f"[v7][ENTRY_RECORDED] {pair} quarantined for 30m.", flush=True)
+
+    # Actual Transmission
     kidax_host = os.environ.get("KIDAX_HOST", "127.0.0.1")
     kidax_port = int(os.environ.get("KIDAX_PORT", "8787"))
     try:
         payload = json.dumps(msg).encode()
         if _main_socket:
             _main_socket.sendto(payload, (kidax_host, kidax_port))
-        print(f"[v7][RELAY→KIDAX] type={msg.get('type')} pair={msg.get('pair','?')}", flush=True)
+        if "POSITION" not in mtype: # Reduce log noise for frequent updates
+            print(f"[v7][RELAY\u2192KIDAX] {mtype} pair={pair or '?'}", flush=True)
     except Exception as e:
         print(f"[v7][RELAY_ERR] {e}", flush=True)
+
+
+def _can_enter(pair: str, mtype: str) -> Tuple[bool, str]:
+    """
+    TRINITY V7 CENTRAL ENTRY GATE.
+    True = Pass, False = Block.
+    """
+    # 1. Hard Stop Guard
+    if _hard_stop.hard_stopped or bool(_gate_state.get("daily_hard_stop")):
+        return False, "hard_stop"
+
+    # 2. AI Failure Guard (Bug #2)
+    if not _ai_healthy:
+        # AI Offline + Mode LEVEL_3 = Full Freeze
+        if _gate_state.get("mode") == "LEVEL_3":
+            return False, "ai_offline_level_3_freeze"
+        return False, "ai_offline"
+
+    # 3. Quarantine Guard (Bug #3)
+    if pair:
+        # 3.1 Cooldown (30 mins)
+        last_t = _last_entry.get(pair, 0.0)
+        cooldown_min = int(os.environ.get("KIBOT_QUARANTINE_MINUTES", "30"))
+        if (time.time() - last_t) < (cooldown_min * 60):
+            return False, f"quarantine_cooldown"
+
+        # 3.2 Max Loss Blacklist (2x daily)
+        loss_cnt = _entry_loss_count.get(pair, 0)
+        max_loss = int(os.environ.get("KIBOT_QUARANTINE_MAX_LOSS", "2"))
+        if loss_cnt >= max_loss:
+            return False, "quarantine_loss_blacklist"
+
+    # 4. Global entry state (Legacy/Suspended)
+    if _entry_state_is_suspended():
+        return False, "entry_suspended"
+
+    return True, "ok"
+
+
+def _is_duplicate_signal(msg: dict) -> bool:
+    """
+    Sliding window signal deduplication (Bug #5).
+    """
+    pair = str(msg.get("pair") or msg.get("pair_indodax") or msg.get("pairId") or "").lower()
+    mtype = str(msg.get("type") or msg.get("msgType") or "").upper()
+    source = str(msg.get("exchange") or msg.get("source") or "unknown").upper()
+    if not pair or not mtype: return False
+
+    key = f"{source}:{mtype}:{pair}"
+    now = time.time()
+    last = _signal_seen.get(key, 0.0)
+    dedup_s = int(os.environ.get("KIBOT_SIGNAL_DEDUP_S", "60"))
+
+    if (now - last) < dedup_s:
+        # print(f"[v7][DEDUP_SKIP] {key} received {now-last:.1f}s ago", flush=True)
+        return True
+
+    _signal_seen[key] = now
+    return False
 
 def _on_position_update_v7(pos: dict):
     """Check exit conditions setiap update posisi dari KiDax."""
@@ -144,23 +232,36 @@ def _on_fill_v7(fill: dict):
     """Setelah order fill, update semua tracker."""
     net_profit = fill.get("netProfitIdr", 0.0)
     bucket     = fill.get("bucketType", "LOCAL_PUMP")
-    pair       = fill.get("pairId", "?")
+    pair       = fill.get("pairId", "?").lower()
     entry_idr  = fill.get("entryBudgetIdr", 0.0)
 
-    # Profit lock
+    # 1. Quarantine & Loss Tracking (Bug #3)
+    if net_profit < 0:
+        _entry_loss_count[pair] = _entry_loss_count.get(pair, 0) + 1
+        print(f"[v7][LOSS_TRACKER] {pair} loss count: {_entry_loss_count[pair]}", flush=True)
+    else:
+        # Reset loss count on win? USER said "loss 2x hari ini — blacklist"
+        # Usually it's better to keep it for the day or reset on win.
+        # Screenshot shows repeat fails, so I'll keep it as "loss today".
+        pass
+
+    # 2. Profit lock
     lock_result = _profit_lock.lock(net_profit, bucket)
     print(f"[v7][PROFIT_LOCK] {pair}: net=Rp{net_profit:.0f} "
           f"locked=Rp{lock_result['locked']:.0f} "
           f"redeploy=Rp{lock_result['redeployable']:.0f}", flush=True)
 
-    # Release capital (hanya yang redeployable)
+    # 3. Release capital (hanya yang redeployable)
     _capital.release(bucket, entry_idr + lock_result["redeployable"])
 
-    # Update hard stop tracker
+    # 4. Update hard stop tracker
     triggered = _hard_stop.update_pnl(net_profit)
     if triggered:
-        print(f"[v7][HARD_STOP] Daily loss limit reached — all entries blocked!", flush=True)
-        # TODO: send telegram alert if needed here
+        print(f"[v7][HARD_STOP] Daily loss limit reached \u2014 all entries blocked!", flush=True)
+        _telegram_send(f"\ud83d\udea8 HARD STOP TRIGGERED\nLoss PnL: Rp{_hard_stop.daily_pnl:,.0f}\nAll new entries BLOCKED.")
+
+    # 5. Persist State (Bug #6)
+    _save_daily_state()
 
 def _load_dotenv_if_exists() -> None:
     candidates = []
@@ -586,12 +687,8 @@ trade_logger = TradeLogger()
 
 def _broadcast_udp(msg: dict):
     """Kirim perintah ke executor (KIDAX)."""
-    global _main_socket
-    if _main_socket and KIDAX_UDP_HOST:
-        try:
-            _main_socket.sendto(json.dumps(msg).encode(), (KIDAX_UDP_HOST, KIDAX_UDP_PORT))
-        except Exception as e:
-            print(f"[UDP][ERR] send failed: {e}", flush=True)
+    # Dipanggil oleh logic Legacy v6. Teruskan ke v7 relay terpusat.
+    _relay_to_kidax(msg)
 
 def _get_total_equity_estimate() -> float:
     """Estimasi total aset (IDR + Koin) dari KiDax."""
@@ -2829,6 +2926,9 @@ _daily_cycle_state: Dict[str, Any] = _load_json_file(
     },
 )
 _pair_memory: Dict[str, Dict[str, Any]] = _load_json_file(PAIR_MEMORY_PATH, {})
+_local_runtime_state_cache: Dict[str, Any] = {}
+_local_runtime_state_cache_at: float = 0.0
+_local_runtime_state_cache_ttl_sec = float(os.getenv("KIBOT_MANAGER_RUNTIME_CACHE_TTL_SEC", "2.5"))
 
 
 def _clean_pair_memory() -> None:
@@ -2876,7 +2976,37 @@ def _midnight_reset_pending() -> bool:
     return bool(str(_daily_cycle_state.get("pending_new_date") or "").strip())
 
 
-def _fetch_local_runtime_state(timeout_sec: float = 2.0) -> Dict[str, Any]:
+def _extract_equity_estimate(runtime_state: Dict[str, Any]) -> float | None:
+    if runtime_state:
+        for field in (
+            "totalEquityIdr",
+            "total_equity_idr",
+            "portfolioValueIdr",
+            "portfolio_value_idr",
+            "balanceIdr",
+            "balance_idr",
+            "totalValueIdr",
+            "total_value_idr",
+        ):
+            numeric = _parse_numeric(runtime_state.get(field))
+            if numeric is not None and numeric > 0:
+                return numeric
+    current_equity = _daily_guard_state.get("current_equity")
+    if isinstance(current_equity, (int, float)) and float(current_equity) > 0:
+        return float(current_equity)
+    for payload_key in ("totalValueIdr", "portfolioValueIdr", "total_value_idr", "balanceIdr", "balance_idr"):
+        value = _daily_guard_state.get(payload_key)
+        if isinstance(value, (int, float)) and float(value) > 0:
+            return float(value)
+    return None
+
+
+def _fetch_local_runtime_state(timeout_sec: float = 2.0, max_cache_age_sec: float | None = None) -> Dict[str, Any]:
+    global _local_runtime_state_cache, _local_runtime_state_cache_at
+    now = time.time()
+    cache_ttl = _local_runtime_state_cache_ttl_sec if max_cache_age_sec is None else max(max_cache_age_sec, 0.0)
+    if _local_runtime_state_cache and (now - _local_runtime_state_cache_at) <= cache_ttl:
+        return dict(_local_runtime_state_cache)
     for url in LOCAL_RUNTIME_STATE_URLS:
         try:
             response = requests.get(url, timeout=timeout_sec)
@@ -2884,9 +3014,15 @@ def _fetch_local_runtime_state(timeout_sec: float = 2.0) -> Dict[str, Any]:
             payload = response.json()
             if isinstance(payload, dict) and payload:
                 payload.setdefault("_state_url", url)
+                _local_runtime_state_cache = dict(payload)
+                _local_runtime_state_cache_at = now
                 return payload
         except Exception:
             continue
+    if _local_runtime_state_cache:
+        stale_payload = dict(_local_runtime_state_cache)
+        stale_payload["_state_cache_stale"] = True
+        return stale_payload
     return {}
 
 
@@ -3063,6 +3199,16 @@ def _set_conservative_mode(reason: str) -> None:
     print(f"[KIBOT][MODE] switched to CONSERVATIVE reason={reason}", flush=True)
 
 
+def _set_level_3_mode(reason: str) -> None:
+    if str(_gate_state.get("mode") or "").upper() == "LEVEL_3":
+        return
+    _gate_state["mode"] = "LEVEL_3"
+    _gate_state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _gate_state["reason"] = reason
+    _save_gate_state()
+    _append_runtime_event("trading_mode_changed", {"mode": "LEVEL_3", "reason": reason})
+    print(f"[v7][MODE] switched to LEVEL_3 reason={reason}", flush=True)
+
 def _set_normal_mode(reason: str) -> None:
     if str(_gate_state.get("mode") or "CONSERVATIVE").upper() == "NORMAL":
         return
@@ -3137,9 +3283,19 @@ def _refresh_daily_guard_from_equity(current_equity: float | None) -> None:
 
 
 def _reconcile_daily_guard_day_rollover() -> None:
+    global _ai_failure_streak, _ai_healthy
     today = _operational_wib_date()
     if _daily_guard_state.get("date") == today:
         return
+
+    # NEW DAY - Reset Trinity Fixed State
+    _entry_loss_count.clear()
+    _last_entry.clear()
+    _signal_seen.clear()
+    _hard_stop.daily_reset()
+    _ai_failure_streak = 0
+    _ai_healthy = True
+
     if not _daily_guard_state.get("date"):
         _daily_guard_state.update(
             {
@@ -3153,6 +3309,8 @@ def _reconcile_daily_guard_day_rollover() -> None:
             }
         )
         _save_daily_guard_state()
+        _hard_stop.initial_capital = float(_daily_guard_state.get("start_of_day_equity") or 0.0)
+        _save_daily_state()
         return
     _append_runtime_event(
         "daily_rollover_pending",
@@ -3289,6 +3447,16 @@ def _health_gate_loop() -> None:
             _check_daily_loss_limit()
             _ensure_hard_stop_consistency()
             _maybe_auto_promote_trading_mode()
+
+            # Bug #2: AI Persistent Offline Check
+            global _ai_healthy
+            now = time.time()
+            if (now - _ai_last_success) > 900 and _ai_failure_streak >= 3:
+                if _ai_healthy:
+                    _ai_healthy = False
+                    print("[v7][AI_SILENCE] No AI success in 15m. Suspending entry.", flush=True)
+                    _telegram_send("\ud83d\udea8 AI SILENCE: No response in 15m. Suspended.")
+
         except Exception as error:
             print(f"[KIBOT][HEALTH][ERROR] gate loop failed reason={error}", flush=True)
         _shutdown_event.wait(API_HEALTH_CHECK_INTERVAL_SEC)
@@ -4626,6 +4794,7 @@ def _call_ai_router(
     model_hint: str = "",
     timeout_sec: float = AI_REQUEST_TIMEOUT_SEC,
 ) -> Tuple[str, str]:
+    global _ai_healthy, _ai_failure_streak, _ai_last_success
     if not AI_ROUTER_ENABLED:
         return "", ""
     provider_errors: Dict[str, str] = {}
@@ -4659,6 +4828,12 @@ def _call_ai_router(
                 },
             )
             _remember_provider_success(provider, task)
+            if not _ai_healthy:
+                _ai_healthy = True
+                _telegram_send(f"\u2705 AI RECOVERED: {provider} is back online.")
+            _ai_failure_streak = 0
+            _ai_last_success = time.time()
+
             _append_runtime_event(
                 "ai_provider_success",
                 {"provider": provider, "task": task},
@@ -4708,6 +4883,13 @@ def _call_ai_router(
         {"task": task, "errors": provider_errors},
     )
     _write_runtime_note(force=True)
+
+    # ALL AI FAILED (Bug #2)
+    _ai_failure_streak += 1
+    if _ai_healthy:
+        _ai_healthy = False
+        _telegram_send("\ud83d\udea8 AI OFFLINE: All providers failed. Entry suspended.")
+
     return "", ""
 
 
@@ -4874,20 +5056,7 @@ def _effective_fee_pct() -> float:
 
 
 def _get_total_equity_estimate() -> float | None:
-    data = _fetch_local_runtime_state(timeout_sec=3.0)
-    if data:
-        for field in ("totalEquityIdr", "total_equity_idr", "portfolioValueIdr", "portfolio_value_idr", "balanceIdr", "balance_idr", "totalValueIdr", "total_value_idr"):
-            numeric = _parse_numeric(data.get(field))
-            if numeric is not None and numeric > 0:
-                return numeric
-    current_equity = _daily_guard_state.get("current_equity")
-    if isinstance(current_equity, (int, float)) and float(current_equity) > 0:
-        return float(current_equity)
-    for payload_key in ("totalValueIdr", "portfolioValueIdr", "total_value_idr", "balanceIdr", "balance_idr"):
-        value = _daily_guard_state.get(payload_key)
-        if isinstance(value, (int, float)) and float(value) > 0:
-            return float(value)
-    return None
+    return _extract_equity_estimate(_fetch_local_runtime_state(timeout_sec=2.0, max_cache_age_sec=5.0))
 
 
 def _check_minimum_capital() -> bool:
@@ -4928,6 +5097,12 @@ def _maybe_auto_promote_trading_mode() -> None:
     if (time.time() - _capital_sufficient_since_at) < _normal_mode_promotion_grace_sec:
         _set_conservative_mode("capital sufficient grace period")
         return
+
+    # Bug #2 & #4: AI Health Mode Sync
+    if not _ai_healthy:
+        _set_level_3_mode("AI Offline/Silent")
+        return
+
     if _is_survival_mode():
         _set_conservative_mode("survival mode active")
         return
@@ -6462,8 +6637,9 @@ def _signal_handler(signum: int, frame: Any) -> None:
 
 
 def _http_state_payload() -> Dict[str, Any]:
+    runtime_state = _fetch_local_runtime_state(timeout_sec=0.35, max_cache_age_sec=2.5)
+    equity_estimate = _extract_equity_estimate(runtime_state)
     with _state_lock:
-        runtime_state = _fetch_local_runtime_state(timeout_sec=1.0)
         manager_trading_allowed = (not _entry_state_is_suspended()) and not bool(_daily_guard_state.get("hard_stopped"))
         runtime_trading_allowed = runtime_state.get("tradingAllowed")
         effective_state = str(runtime_state.get("effectiveState") or ("RUNNING" if manager_trading_allowed else "DEGRADED"))
@@ -6472,7 +6648,7 @@ def _http_state_payload() -> Dict[str, Any]:
             if isinstance(runtime_trading_allowed, bool)
             else manager_trading_allowed
         )
-        equity_estimate = _get_total_equity_estimate()
+        capital_sufficient = equity_estimate is not None and equity_estimate >= MINIMUM_VIABLE_CAPITAL_IDR
         return {
             "ok": True,
             "service": "kibot-manager",
@@ -6494,12 +6670,12 @@ def _http_state_payload() -> Dict[str, Any]:
             "capital_health": {
                 "total_equity_est_idr": equity_estimate,
                 "minimum_viable_idr": MINIMUM_VIABLE_CAPITAL_IDR,
-                "is_capital_sufficient": _capital_is_sufficient(),
+                "is_capital_sufficient": capital_sufficient,
                 "fee_round_trip_pct": round(_effective_fee_pct() * 2.0, 4),
                 "breakeven_per_trade_pct": round((_effective_fee_pct() * 2.0) + 0.015, 4),
                 "status": (
                     "VIABLE"
-                    if (equity_estimate or 0.0) >= MINIMUM_VIABLE_CAPITAL_IDR
+                    if capital_sufficient
                     else f"INSUFFICIENT — add Rp{max(0.0, MINIMUM_VIABLE_CAPITAL_IDR - (equity_estimate or 0.0)):,.0f} more"
                 ),
             },
@@ -6774,6 +6950,41 @@ def keep_supabase_alive():
         urllib.request.urlopen(req, timeout=5)
     except Exception: pass
 
+def _save_daily_state():
+    """Bug #6: Persist baseline for hard stop and quarantine."""
+    try:
+        path = STATE_ROOT / "daily_state.json"
+        data = {
+            "date": _operational_wib_date(),
+            "initial_capital_idr": _hard_stop.initial_capital,
+            "daily_pnl": _hard_stop.daily_pnl,
+            "entry_loss_count": _entry_loss_count,
+            "hard_stopped": _hard_stop.hard_stopped
+        }
+        _write_json_file(path, data)
+    except Exception as e:
+        print(f"[v7][STATE_ERR] {e}", flush=True)
+
+def _load_daily_state():
+    """Bug #6: Load baseline on boot."""
+    try:
+        path = STATE_ROOT / "daily_state.json"
+        if not path.exists(): return
+        data = _load_json_file(path, {})
+        if data.get("date") == _operational_wib_date():
+            _hard_stop.initial_capital = float(data.get("initial_capital_idr") or 0.0)
+            _hard_stop.daily_pnl = float(data.get("daily_pnl") or 0.0)
+            _hard_stop.hard_stopped = bool(data.get("hard_stopped"))
+
+            global _entry_loss_count
+            loaded_loss = data.get("entry_loss_count", {})
+            if isinstance(loaded_loss, dict):
+                _entry_loss_count.update(loaded_loss)
+
+            print(f"[v7][BOOT] Daily state loaded. Initial=Rp{_hard_stop.initial_capital:,.0f}", flush=True)
+    except Exception as e:
+        print(f"[v7][BOOT_ERR] {e}", flush=True)
+
 def main() -> None:
     global _main_socket
 
@@ -6783,7 +6994,13 @@ def main() -> None:
 
     _ensure_env()
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    _load_daily_state()
     _reconcile_daily_guard_day_rollover()
+
+    # Sync state guard to daily state
+    _hard_stop.hard_stopped = bool(_daily_guard_state.get("hard_stopped") or _hard_stop.hard_stopped)
+    if _daily_guard_state.get("start_of_day_equity"):
+        _hard_stop.initial_capital = float(_daily_guard_state.get("start_of_day_equity"))
     _ensure_hard_stop_consistency()
     _write_json_file(PROVIDER_STATE_PATH, _provider_runtime_state)
     _save_pair_cooldown_state()
@@ -6866,8 +7083,11 @@ def main() -> None:
                 raw, addr = sock.recvfrom(65535)
                 msg = json.loads(raw.decode("utf-8"))
 
-                mtype = msg.get("type", "")
+                # DEDUP CHECK (Bug #5)
+                if _is_duplicate_signal(msg):
+                    continue
 
+                mtype = msg.get("type", "")
                 if mtype == "MULTI_SCANNER_SIGNAL":
                     _msc_engine.process_and_relay(msg, _relay_to_kidax)
 

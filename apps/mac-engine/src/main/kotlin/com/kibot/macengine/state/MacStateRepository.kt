@@ -411,13 +411,67 @@ class MacStateRepository {
 }
 
 private fun parseMonetaryLabel(label: String): Double {
-    val cleaned = label
+    val stripped = label
         .replace("Rp", "", ignoreCase = true)
-        .replace(".", "")
-        .replace(",", ".")
         .replace("+", "")
         .trim()
-    return cleaned.toDoubleOrNull() ?: 0.0
+    if (stripped.isBlank()) return 0.0
+
+    val numeric = stripped.filter { it.isDigit() || it == '.' || it == ',' || it == '-' }
+    if (numeric.isBlank()) return 0.0
+
+    val normalized = when {
+        numeric.contains('.') && numeric.contains(',') -> {
+            val decimalSeparator = if (numeric.lastIndexOf('.') > numeric.lastIndexOf(',')) '.' else ','
+            normalizeMonetaryWithExplicitDecimal(numeric, decimalSeparator)
+        }
+        numeric.count { it == '.' } > 1 -> normalizeRepeatedMonetarySeparator(numeric, '.')
+        numeric.count { it == ',' } > 1 -> normalizeRepeatedMonetarySeparator(numeric, ',')
+        numeric.contains('.') -> normalizeSingleMonetarySeparator(numeric, '.')
+        numeric.contains(',') -> normalizeSingleMonetarySeparator(numeric, ',')
+        else -> numeric
+    }
+
+    return normalized.toDoubleOrNull() ?: 0.0
+}
+
+private fun normalizeMonetaryWithExplicitDecimal(numeric: String, decimalSeparator: Char): String {
+    val groupingSeparator = if (decimalSeparator == '.') ',' else '.'
+    return buildString(numeric.length) {
+        numeric.forEachIndexed { index, char ->
+            when {
+                char == groupingSeparator -> Unit
+                char == decimalSeparator && index == numeric.lastIndexOf(decimalSeparator) -> append('.')
+                char.isDigit() || char == '-' -> append(char)
+            }
+        }
+    }
+}
+
+private fun normalizeRepeatedMonetarySeparator(numeric: String, separator: Char): String {
+    val parts = numeric.split(separator)
+    if (parts.isEmpty()) return numeric
+    val tailGroups = parts.drop(1)
+    return if (tailGroups.isNotEmpty() && tailGroups.all { it.length == 3 }) {
+        parts.joinToString(separator = "")
+    } else {
+        val decimalPart = parts.last()
+        val integerPart = parts.dropLast(1).joinToString(separator = "")
+        if (decimalPart.isEmpty()) integerPart else "$integerPart.$decimalPart"
+    }
+}
+
+private fun normalizeSingleMonetarySeparator(numeric: String, separator: Char): String {
+    val parts = numeric.split(separator)
+    if (parts.size != 2) return numeric
+    val integerPart = parts[0]
+    val suffix = parts[1]
+    if (suffix.isEmpty()) return integerPart
+    return if (suffix.length == 3) {
+        integerPart + suffix
+    } else {
+        "$integerPart.$suffix"
+    }
 }
 
 private fun MacCommand.defaultStatusMessage(): String = when (this) {
