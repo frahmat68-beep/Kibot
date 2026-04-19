@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
@@ -119,6 +120,7 @@ class BrainManager:
         snapshot = {
             "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "mode": "advisory_only",
+            "optional_modules": self._optional_modules(),
             "internet_checks": {
                 "binance": self._status_code("https://api.binance.com/api/v3/ping"),
                 "bybit": self._status_code("https://api.bybit.com/v5/market/tickers?category=spot"),
@@ -188,6 +190,41 @@ class BrainManager:
     def _default_watch_symbols(self) -> Iterable[str]:
         raw = os.getenv("KIBOT_BRAIN_WATCH_SYMBOLS", "BTC,ETH,SOL")
         return [item.strip() for item in raw.split(",")]
+
+    def _optional_modules(self) -> Dict[str, Dict[str, Any]]:
+        def has_module(name: str) -> bool:
+            return importlib.util.find_spec(name) is not None
+
+        return {
+            "google.generativeai": {
+                "installed": has_module("google.generativeai"),
+                "api_key_present": bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")),
+            },
+            "tavily": {
+                "installed": has_module("tavily"),
+                "api_key_present": bool(os.getenv("TAVILY_API_KEY")),
+            },
+            "duckduckgo_search": {
+                "installed": has_module("duckduckgo_search"),
+                "api_key_present": False,
+            },
+            "finnhub": {
+                "installed": has_module("finnhub"),
+                "api_key_present": bool(os.getenv("FINNHUB_API_KEY")),
+            },
+            "numpy": {
+                "installed": has_module("numpy"),
+                "api_key_present": False,
+            },
+            "pandas": {
+                "installed": has_module("pandas"),
+                "api_key_present": False,
+            },
+            "talib": {
+                "installed": has_module("talib"),
+                "api_key_present": False,
+            },
+        }
 
     def _load_snapshot(self) -> Dict[str, Any]:
         if not self.state_file.exists():

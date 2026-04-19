@@ -11,6 +11,7 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,7 +21,8 @@ ROOT = Path(os.getenv("KIBOT_RUNTIME_ROOT", Path(__file__).resolve().parent.pare
 STATE_DIR = ROOT / "state"
 ANALYST_DIR = STATE_DIR / "analyst"
 EVENTS_DIR = STATE_DIR / "events"
-TRADE_LOG = ANALYST_DIR / "trade_log.jsonl"
+TRADE_LOG = STATE_DIR / "trade_log.jsonl"
+LEGACY_ANALYST_TRADE_LOG = ANALYST_DIR / "trade_log.jsonl"
 BALANCE_LOG = ANALYST_DIR / "balance_snapshots.jsonl"
 FAILURE_LOG = ANALYST_DIR / "failures.jsonl"
 BEHAVIOR_LOG = ANALYST_DIR / "behavior.jsonl"
@@ -181,6 +183,67 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
     return records
 
 
+def _read_trade_log_records() -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in (TRADE_LOG, LEGACY_ANALYST_TRADE_LOG):
+        for record in _read_jsonl(path):
+            signature = json.dumps(
+                {
+                    "ts": record.get("timestamp") or record.get("ts"),
+                    "pair": record.get("pair"),
+                    "side": record.get("side"),
+                    "filled_price": record.get("filledPrice") or record.get("filled_price"),
+                    "filled_idr": record.get("filledIdr") or record.get("filled_idr"),
+                    "net_pnl_pct": record.get("netPnlPct") or record.get("net_pnl_pct"),
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+            if signature in seen:
+                continue
+            seen.add(signature)
+            records.append(record)
+    return records
+
+
+def _extract_reason_pnl_pct(exit_reason: Any) -> float | None:
+    text = str(exit_reason or "").strip()
+    if not text:
+        return None
+    match = re.search(r"\bpnl=([+-]?\d+(?:\.\d+)?)%", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return float(match.group(1)) / 100.0
+    except Exception:
+        return None
+
+
+def _normalized_trade_net_pnl_pct(record: Dict[str, Any]) -> float | None:
+    direct = record.get("netPnlPct")
+    if direct is None:
+        direct = record.get("net_pnl_pct")
+    try:
+        direct_val = float(direct) if direct is not None else None
+    except Exception:
+        direct_val = None
+    filled_price = record.get("filledPrice")
+    if filled_price is None:
+        filled_price = record.get("filled_price")
+    try:
+        filled_price_val = float(filled_price) if filled_price is not None else None
+    except Exception:
+        filled_price_val = None
+    inferred = _extract_reason_pnl_pct(record.get("exitReason") or record.get("exit_reason"))
+    if inferred is not None:
+        if direct_val is None:
+            return inferred
+        if filled_price_val is None or filled_price_val <= 0.0 or (direct_val < -0.90 and inferred > 0.0):
+            return inferred
+    return direct_val
+
+
 def _rewrite_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
@@ -224,12 +287,13 @@ def _is_demo_failure(record: Dict[str, Any]) -> bool:
 def purge_demo_fixture_records() -> None:
     removed = 0
 
-    if TRADE_LOG.exists():
-        trades = _read_jsonl(TRADE_LOG)
-        filtered_trades = [row for row in trades if not _is_demo_trade(row)]
-        removed += len(trades) - len(filtered_trades)
-        if len(filtered_trades) != len(trades):
-            _rewrite_jsonl(TRADE_LOG, filtered_trades)
+    for trade_log_path in (TRADE_LOG, LEGACY_ANALYST_TRADE_LOG):
+        if trade_log_path.exists():
+            trades = _read_jsonl(trade_log_path)
+            filtered_trades = [row for row in trades if not _is_demo_trade(row)]
+            removed += len(trades) - len(filtered_trades)
+            if len(filtered_trades) != len(trades):
+                _rewrite_jsonl(trade_log_path, filtered_trades)
 
     if FAILURE_LOG.exists():
         failures = _read_jsonl(FAILURE_LOG)
@@ -245,8 +309,8 @@ def purge_demo_fixture_records() -> None:
 def _read_today_trades() -> List[Dict[str, Any]]:
     today = today_wib_str()
     rows: List[Dict[str, Any]] = []
-    for record in _read_jsonl(TRADE_LOG):
-        ts = str(record.get("ts", "")).strip()
+    for record in _read_trade_log_records():
+        ts = str(record.get("timestamp") or record.get("ts") or "").strip()
         if not ts:
             continue
         try:
@@ -280,28 +344,43 @@ def _update_daily_summary() -> Dict[str, Any]:
     if not sells:
         summary = {"date": today_wib_str(), "no_trades": True}
     else:
-        wins = [sell for sell in sells if float(sell.get("net_pnl_pct", 0.0)) > 0.0]
-        losses = [sell for sell in sells if float(sell.get("net_pnl_pct", 0.0)) <= 0.0]
-        total_fee = sum(float(trade.get("fee_idr", 0.0)) for trade in trades)
-        market_orders = [trade for trade in trades if trade.get("order_type") == "MARKET"]
+        normalized_sells = []
+        for sell in sells:
+            pnl = _normalized_trade_net_pnl_pct(sell)
+            if pnl is None:
+                pnl = 0.0
+            normalized_sells.append((sell, pnl))
+        wins = [(sell, pnl) for sell, pnl in normalized_sells if pnl > 0.0]
+        losses = [(sell, pnl) for sell, pnl in normalized_sells if pnl <= 0.0]
+        total_fee = sum(float(trade.get("fee_idr") or trade.get("feeIdr") or 0.0) for trade in trades)
+        market_orders = [
+            trade
+            for trade in trades
+            if str(trade.get("order_type") or trade.get("orderType") or "").upper() == "MARKET"
+        ]
         summary = {
             "date": today_wib_str(),
             "total_trades": len(sells),
             "wins": len(wins),
             "losses": len(losses),
             "win_rate": round(len(wins) / max(1, len(sells)), 3),
-            "total_net_pnl_pct": round(sum(float(sell.get("net_pnl_pct", 0.0)) for sell in sells), 4),
+            "total_net_pnl_pct": round(sum(pnl for _, pnl in normalized_sells), 4),
             "total_net_pnl_idr": round(sum(float(sell.get("net_pnl_idr", 0.0)) for sell in sells), 0),
             "total_fee_idr": round(total_fee, 0),
             "market_order_count": len(market_orders),
             "market_order_rate": round(len(market_orders) / max(1, len(trades)), 3),
-            "avg_holding_min": round(sum(int(sell.get("holding_ms", 0)) for sell in sells) / max(1, len(sells)) / 60000, 1),
+            "avg_holding_min": round(
+                sum(int(sell.get("holding_ms") or sell.get("holdingDurationMs") or 0) for sell in sells)
+                / max(1, len(sells))
+                / 60000,
+                1,
+            ),
             "top_losers": sorted(
-                [{"pair": sell.get("pair", "?"), "pnl": float(sell.get("net_pnl_pct", 0.0)), "exit": sell.get("exit_reason", "?")} for sell in losses],
+                [{"pair": sell.get("pair", "?"), "pnl": pnl, "exit": sell.get("exit_reason") or sell.get("exitReason") or "?"} for sell, pnl in losses],
                 key=lambda item: item["pnl"],
             )[:5],
             "top_winners": sorted(
-                [{"pair": sell.get("pair", "?"), "pnl": float(sell.get("net_pnl_pct", 0.0))} for sell in wins],
+                [{"pair": sell.get("pair", "?"), "pnl": pnl} for sell, pnl in wins],
                 key=lambda item: -item["pnl"],
             )[:5],
             "bucket_breakdown": {

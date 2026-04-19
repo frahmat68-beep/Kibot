@@ -173,13 +173,12 @@ class LearningEngine:
         text = str(exit_reason or "").strip()
         if not text:
             return None
-        for pattern in (r"pnl=([+-]?\d+(?:\.\d+)?)%", r"at ([+-]?\d+(?:\.\d+)?)%"):
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if match:
-                try:
-                    return float(match.group(1)) / 100.0
-                except Exception:
-                    return None
+        match = re.search(r"\bpnl=([+-]?\d+(?:\.\d+)?)%", text, flags=re.IGNORECASE)
+        if match:
+            try:
+                return float(match.group(1)) / 100.0
+            except Exception:
+                return None
         return None
 
     @classmethod
@@ -212,7 +211,7 @@ class LearningEngine:
             self._stats[pair] = PairStats(pair=pair)
         return self._stats[pair]
 
-    def record_trade(self, pair: str, net_pnl_pct: float) -> PairStats:
+    def record_trade(self, pair: str, net_pnl_pct: float, used_limit_order: bool | None = None) -> PairStats:
         stats = self.get(pair)
         stats.record_trade(net_pnl_pct)
         self._save()

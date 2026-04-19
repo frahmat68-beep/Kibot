@@ -3592,7 +3592,9 @@ def _run_math_review() -> Dict[str, Any]:
     avg_trades_per_hour = metrics["total_trades"] / max((time.time() - _bot_start_time) / 3600.0, 0.5)
     trades_possible = avg_trades_per_hour * hours_left
     ev_per_trade = float(metrics["ev_per_trade"])
-    if ev_per_trade > 0 and current_loss_idr > 0:
+    if current_loss_idr <= 0:
+        trades_to_recover = 0.0
+    elif ev_per_trade > 0:
         trades_to_recover = current_loss_idr / ev_per_trade
     elif ev_per_trade <= 0:
         trades_to_recover = float("inf")
@@ -3603,12 +3605,12 @@ def _run_math_review() -> Dict[str, Any]:
         action = "TIGHTEN_FILTER"
         reason = f"EV/trade <= 0 after {metrics['total_trades']} trades"
         _set_conservative_mode("math_review_ev_negative")
-    elif trades_to_recover > trades_possible * 1.5:
+    elif current_loss_idr > 0 and trades_to_recover > trades_possible * 1.5:
         action = "HARD_STOP"
         reason = f"Recovery too far: need {trades_to_recover:.1f}, possible {trades_possible:.1f}"
         _set_conservative_mode("math_review_recovery_impossible")
         _suspend_new_entries("math_review_recovery_impossible")
-    elif trades_to_recover > trades_possible:
+    elif current_loss_idr > 0 and trades_to_recover > trades_possible:
         action = "DEFENSIVE"
         reason = f"Recovery tight: need {trades_to_recover:.1f}, possible {trades_possible:.1f}"
     elif metrics["win_rate"] >= 0.60 and ev_per_trade > 0:
@@ -3860,16 +3862,12 @@ def _extract_reason_pnl_pct(exit_reason: Any) -> float | None:
     text = str(exit_reason or "").strip()
     if not text:
         return None
-    for pattern in (
-        r"pnl=([+-]?\d+(?:\.\d+)?)%",
-        r"at ([+-]?\d+(?:\.\d+)?)%",
-    ):
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            try:
-                return float(match.group(1)) / 100.0
-            except Exception:
-                return None
+    match = re.search(r"\bpnl=([+-]?\d+(?:\.\d+)?)%", text, flags=re.IGNORECASE)
+    if match:
+        try:
+            return float(match.group(1)) / 100.0
+        except Exception:
+            return None
     return None
 
 

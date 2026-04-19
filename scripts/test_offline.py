@@ -12,6 +12,10 @@ try:
     import kibot_manager as manager
 except Exception:
     manager = None
+try:
+    import kibot_analyst as analyst
+except Exception:
+    analyst = None
 from kibot_learning_engine import (
     LearningEngine,
     PairStats,
@@ -72,6 +76,22 @@ check("engine kelly capped", engine.kelly_size("eth_idr") <= 0.12)
 if manager is not None:
     check("effective fee pct sane", 0.0004 < manager._effective_fee_pct() < 0.0055)
     check("parse numeric idr thousand", manager._parse_numeric("Rp 63.365") == 63365)
+    check(
+        "normalize pnl ignores generic at-percent",
+        (manager._normalized_trade_net_pnl_pct({
+            "netPnlPct": -1.3459292962955511,
+            "filledPrice": 0.0,
+            "exitReason": "REPEAT_LOSER forced sell req_idr at 33.36%.",
+        }) or 0.0) < 0.0,
+    )
+    check(
+        "normalize pnl trusts explicit pnl marker",
+        (manager._normalized_trade_net_pnl_pct({
+            "netPnlPct": -1.1941871202069578,
+            "filledPrice": 0.0,
+            "exitReason": "EXIT PROFIT_EXIT req_idr qty=5.07552141 pnl=19.20% age=0.06h",
+        }) or 0.0) > 0.0,
+    )
 
     with patch("kibot_manager._get_total_equity_estimate", return_value=84_000):
         check("minimum capital blocks tiny equity", not manager._check_minimum_capital())
@@ -172,6 +192,53 @@ if manager is not None:
             manager._daily_guard_state.clear()
             manager._daily_guard_state.update(old_guard_state)
 
+    with (
+        patch("kibot_manager._get_trade_metrics_today", return_value={
+            "total_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": 0.0,
+            "avg_win": 0.0,
+            "avg_loss": 0.0,
+            "ev_per_trade": 0.0,
+            "profit_factor": 0.0,
+            "total_gross_pnl": 0.0,
+        }),
+        patch("kibot_manager._get_total_equity_estimate", return_value=100_000.0),
+        patch("kibot_manager._hours_until_midnight_wib", return_value=6.0),
+        patch("kibot_manager._telegram_send", return_value=None),
+        patch("kibot_manager._append_runtime_event", return_value=None),
+        patch("kibot_manager._set_conservative_mode", return_value=None),
+        patch("kibot_manager._suspend_new_entries", return_value=None),
+        patch("kibot_manager._set_normal_mode", return_value=None),
+    ):
+        old_guard_state = dict(manager._daily_guard_state)
+        try:
+            manager._daily_guard_state.update({"daily_pnl_pct": 0.0, "hard_stopped": False})
+            result = manager._run_math_review()
+            check("math review no loss avoids impossible recovery", result["action"] != "HARD_STOP", str(result))
+        finally:
+            manager._daily_guard_state.clear()
+            manager._daily_guard_state.update(old_guard_state)
+
+if analyst is not None:
+    check(
+        "analyst normalize ignores generic at-percent",
+        (analyst._normalized_trade_net_pnl_pct({
+            "netPnlPct": -1.3459292962955511,
+            "filledPrice": 0.0,
+            "exitReason": "REPEAT_LOSER forced sell req_idr at 33.36%.",
+        }) or 0.0) < 0.0,
+    )
+    check(
+        "analyst normalize trusts explicit pnl marker",
+        (analyst._normalized_trade_net_pnl_pct({
+            "netPnlPct": -1.1941871202069578,
+            "filledPrice": 0.0,
+            "exitReason": "EXIT PROFIT_EXIT req_idr qty=5.07552141 pnl=19.20% age=0.06h",
+        }) or 0.0) > 0.0,
+    )
+
 detector = VWAPRegimeDetector()
 bullish = [{"close": 100 + i, "high": 101 + i, "low": 99 + i, "volume": 2000} for i in range(15)]
 bearish = [{"close": 200 - i, "high": 201 - i, "low": 199 - i, "volume": 2500} for i in range(15)]
@@ -187,16 +254,25 @@ check("panic regime", detector.detect(panic) == "BREAKDOWN_PANIC")
 try:
     guard_path = Path("state/daily_guard.json")
     gate_path = Path("state/manager_gate.json")
-    if not guard_path.exists():
-        guard_path.parent.mkdir(parents=True, exist_ok=True)
+    guard_path.parent.mkdir(parents=True, exist_ok=True)
+    old_guard_text = guard_path.read_text() if guard_path.exists() else None
+    old_gate_text = gate_path.read_text() if gate_path.exists() else None
+    try:
         guard_path.write_text(json.dumps({"hard_stopped": True, "daily_pnl_pct": -0.07, "reset_at": "2099-01-01T00:00:00Z"}))
-    if not gate_path.exists():
-        gate_path.parent.mkdir(parents=True, exist_ok=True)
         gate_path.write_text(json.dumps({"entry_state": "SUSPENDED"}))
-    guard = json.loads(guard_path.read_text())
-    gate = json.loads(gate_path.read_text())
-    check("hard stop active", guard.get("hard_stopped") is True)
-    check("manager suspended", gate.get("entry_state") == "SUSPENDED")
+        guard = json.loads(guard_path.read_text())
+        gate = json.loads(gate_path.read_text())
+        check("hard stop active", guard.get("hard_stopped") is True)
+        check("manager suspended", gate.get("entry_state") == "SUSPENDED")
+    finally:
+        if old_guard_text is None:
+            guard_path.unlink(missing_ok=True)
+        else:
+            guard_path.write_text(old_guard_text)
+        if old_gate_text is None:
+            gate_path.unlink(missing_ok=True)
+        else:
+            gate_path.write_text(old_gate_text)
 except Exception as error:
     check("state readable", False, str(error))
 

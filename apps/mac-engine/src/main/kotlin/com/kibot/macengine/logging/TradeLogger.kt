@@ -6,6 +6,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.time.Instant
+import java.time.ZoneId
 
 @Serializable
 data class TradeRecord(
@@ -34,25 +35,33 @@ data class TradeRecord(
 
 object TradeLogger {
     private val logPath = File("state/trade_log.jsonl")
+    private val analystMirrorPath = File("state/analyst/trade_log.jsonl")
     private val summaryPath = File("state/trade_summary.json")
     private val json = Json { ignoreUnknownKeys = true }
+    private val wibZone: ZoneId = ZoneId.of("Asia/Jakarta")
 
     init {
         logPath.parentFile?.mkdirs()
+        analystMirrorPath.parentFile?.mkdirs()
     }
 
     fun record(trade: TradeRecord) {
         try {
-            logPath.appendText(json.encodeToString(trade) + "\n")
-            updateSummary(trade)
+            val normalized = normalize(trade)
+            val encoded = json.encodeToString(normalized) + "\n"
+            logPath.appendText(encoded)
+            analystMirrorPath.appendText(encoded)
+            updateSummary(normalized)
         } catch (e: Exception) {
             System.err.println("[TRADE_LOGGER] Failed to write trade: ${e.message}")
         }
     }
 
     fun getTodayTrades(): List<TradeRecord> {
-        val today = Instant.now().toString().take(10) // "2026-04-14"
-        return readAll().filter { it.timestamp.startsWith(today) }
+        val today = Instant.now().atZone(wibZone).toLocalDate()
+        return readAll().filter { trade ->
+            runCatching { Instant.parse(trade.timestamp).atZone(wibZone).toLocalDate() == today }.getOrDefault(false)
+        }
     }
 
     fun getLast7DaysTrades(): List<TradeRecord> {
@@ -70,6 +79,24 @@ object TradeLogger {
         return logPath.readLines()
             .filter { it.isNotBlank() }
             .mapNotNull { runCatching { json.decodeFromString<TradeRecord>(it) }.getOrNull() }
+    }
+
+    private fun normalize(trade: TradeRecord): TradeRecord {
+        val normalizedFilledPrice = when {
+            trade.filledPrice > 0.0 -> trade.filledPrice
+            trade.requestedPrice > 0.0 -> trade.requestedPrice
+            trade.filledAmount > 0.0 && trade.filledIdr > 0.0 -> trade.filledIdr / trade.filledAmount
+            else -> 0.0
+        }
+        val normalizedFilledIdr = when {
+            trade.filledIdr > 0.0 -> trade.filledIdr
+            normalizedFilledPrice > 0.0 && trade.filledAmount > 0.0 -> normalizedFilledPrice * trade.filledAmount
+            else -> 0.0
+        }
+        return trade.copy(
+            filledPrice = normalizedFilledPrice,
+            filledIdr = normalizedFilledIdr,
+        )
     }
 
     private fun updateSummary(trade: TradeRecord) {
