@@ -163,49 +163,41 @@ def _relay_to_kidax(msg: dict):
     except Exception as e:
         print(f"[v7][EGRESS_ERR] {pair}: {e}", flush=True)
 
+def _can_enter(pair: str, msg_type: str) -> Tuple[bool, str]:
+    """
+    Trinity Gate 0: Centralized discipline gate.
+    """
+    global _ai_healthy, _entry_loss_count, _last_entry
 
-def _can_enter(pair: str, mtype: str) -> Tuple[bool, str]:
-    """
-    CENTRAL ENTRY GATE — SATU-SATUNYA TEMPAT yang boleh approve entry (Trinity v7).
-    """
-    # 1. Hard Stop Check
+    # 1. Hard Stop Guard
     loss_pct = _get_daily_loss_pct()
-    hard_limit = float(os.environ.get("KIBOT_HARD_DAILY_LOSS_PCT", "3.0"))
-    if _hard_stop.hard_stopped or loss_pct >= hard_limit:
-        _send_critical_alert("HARD_STOP", {"loss_pct": loss_pct, "current": _get_current_balance(), "initial": _initial_capital_idr})
-        return False, f"HARD_STOP: loss={loss_pct:.2f}%"
+    if _hard_stop.hard_stopped:
+        return False, f"HARD_STOP: Daily loss limit reached ({loss_pct:.2f}%)"
 
-    # 2. Risk Mode Check (LEVEL_3 / FULL_FREEZE)
+    # 2. Risk Mode Guard
     mode = _get_effective_mode()
     if mode == "FULL_FREEZE":
-        _send_critical_alert("LEVEL_3_FREEZE", {"loss_pct": loss_pct, "ai_ok": _ai_healthy})
-        return False, "MODE_FULL_FREEZE"
+        return False, "MODE: FULL_FREEZE (Level 3 + AI Offline)"
     if mode == "EXIT_ONLY":
-        return False, "MODE_EXIT_ONLY"
+        return False, "MODE: EXIT_ONLY (Level 3)"
 
     # 3. AI Health Guard
     if not _ai_healthy:
-        return False, "AI_OFFLINE"
+        return False, "AI_HEALTH: Sources offline"
 
-    # 4. Quarantine Guard (Anti Averaging-Down)
+    # 4. Quarantine Guard
     if pair:
-        # 4.1 Cooldown check (45m default)
+        # 4.1 Cooldown (45m)
         last_t = _last_entry.get(pair, 0.0)
-        cooldown_min = int(os.environ.get("KIBOT_QUARANTINE_MINUTES", "45"))
-        if (time.time() - last_t) < (cooldown_min * 60):
-            elapsed = (time.time() - last_t) / 60
-            return False, f"QUARANTINE_COOLDOWN: {elapsed:.1f}m passed"
-        
-        # 4.2 Max Loss Blacklist check (2x daily)
+        cooldown_s = int(os.environ.get("KIBOT_QUARANTINE_SECONDS", "2700"))
+        if (time.time() - last_t) < cooldown_s:
+            return False, f"QUARANTINE: {pair} cooldown"
+
+        # 4.2 Max Loss Blacklist (2x)
         loss_cnt = _entry_loss_count.get(pair, 0)
         max_loss = int(os.environ.get("KIBOT_MAX_PAIR_LOSS", "2"))
         if loss_cnt >= max_loss:
-            _send_critical_alert("AVERAGING_DOWN_BLOCKED", {"pair": pair, "count": loss_cnt})
-            return False, f"PAIR_BLACKLIST: {loss_cnt} losses"
-
-    # 5. Global state check
-    if _entry_state_is_suspended():
-        return False, "ENTRY_SUSPENDED_LEGACY"
+            return False, f"BLACKLIST: {pair} reached {loss_cnt} losses"
 
     return True, "ok"
 
@@ -599,11 +591,14 @@ class TradeLogger:
                         t = json.loads(line.strip())
                         if t.get("trade_id") == trade_id and t.get("status") == "OPEN":
                             # Hitung PnL
-                            entry = t["entry_price"]
-                            budget = t["budget_idr"]
-                            pnl_pct = (exit_price - entry) / entry
-                            # Fee Indodax: maker 0.04% entry + 0.21% PPh sell + 0.04% exit
-                            fee_cost = 0.0004 + 0.0021 + 0.0004  # total ~0.69% round trip
+                            # Numerical stability protection (Fix #9)
+                            pnl_pct = ((exit_price - entry) / entry) if entry > 0 else 0.0
+                            if abs(pnl_pct) > 5.0: # 500% sanity check
+                                print(f"[v7][WARN] Suspicious PnL detected: {pnl_pct:.2%}. Resetting to 0.0 for safety.", flush=True)
+                                pnl_pct = 0.0
+
+                            # Fee Indodax approx
+                            fee_cost = 0.0004 + 0.0021 + 0.0004  
                             net_pct = pnl_pct - fee_cost
                             pnl_idr = budget * net_pct
                             entry_at = datetime.fromisoformat(t["entry_at"])
@@ -7025,25 +7020,6 @@ def _save_daily_state():
     except Exception as e:
         print(f"[v7][STATE_ERR] {e}", flush=True)
 
-def _load_daily_state():
-    """Bug #6: Load baseline on boot."""
-    try:
-        path = STATE_ROOT / "daily_state.json"
-        if not path.exists(): return
-        data = _load_json_file(path, {})
-        if data.get("date") == _operational_wib_date():
-            _hard_stop.initial_capital = float(data.get("initial_capital_idr") or 0.0)
-            _hard_stop.daily_pnl = float(data.get("daily_pnl") or 0.0)
-            _hard_stop.hard_stopped = bool(data.get("hard_stopped"))
-
-            global _entry_loss_count
-            loaded_loss = data.get("entry_loss_count", {})
-            if isinstance(loaded_loss, dict):
-                _entry_loss_count.update(loaded_loss)
-
-            print(f"[v7][BOOT] Daily state loaded. Initial=Rp{_hard_stop.initial_capital:,.0f}", flush=True)
-    except Exception as e:
-        print(f"[v7][BOOT_ERR] {e}", flush=True)
 
 def main() -> None:
     global _main_socket
