@@ -1,10 +1,6 @@
-"""
-KiBot Capital Engine — Enforce 50/50, PartialTP, ProfitLock
-Dipanggil dari kibot_manager.py saat entry dan exit.
-Semua fungsi harus menghasilkan action nyata ke KiDax.
-"""
 import os, time, json
 from datetime import datetime
+from typing import Optional, Dict, List, Tuple, Any
 
 # ═══ CAPITAL ALLOCATION (50/50) ════════════════════════════
 
@@ -27,7 +23,7 @@ class CapitalAllocator:
     def update_total(self, new_total: float):
         self.total = new_total
 
-    def allocate(self, bucket: str, requested_idr: float, msc_multiplier: float = 1.0) -> float | None:
+    def allocate(self, bucket: str, requested_idr: float, msc_multiplier: float = 1.0) -> Optional[float]:
         """
         Return alokasi dalam IDR, atau None jika bucket habis.
         msc_multiplier: dari MSC engine (0.6x - 1.2x)
@@ -78,7 +74,7 @@ class PartialTPManager:
         ],
     }
 
-    def check(self, position: dict, current_profit_pct: float) -> dict | None:
+    def check(self, position: dict, current_profit_pct: float) -> Optional[dict]:
         """
         Return sell action dict jika ada TP level yang terpenuhi, else None.
         position harus punya: pairId, remainingQty, bucketType, executedTpLevels (set)
