@@ -4874,6 +4874,12 @@ def _effective_fee_pct() -> float:
 
 
 def _get_total_equity_estimate() -> float | None:
+    data = _fetch_local_runtime_state(timeout_sec=3.0)
+    if data:
+        for field in ("totalEquityIdr", "total_equity_idr", "portfolioValueIdr", "portfolio_value_idr", "balanceIdr", "balance_idr", "totalValueIdr", "total_value_idr"):
+            numeric = _parse_numeric(data.get(field))
+            if numeric is not None and numeric > 0:
+                return numeric
     current_equity = _daily_guard_state.get("current_equity")
     if isinstance(current_equity, (int, float)) and float(current_equity) > 0:
         return float(current_equity)
@@ -4881,13 +4887,6 @@ def _get_total_equity_estimate() -> float | None:
         value = _daily_guard_state.get(payload_key)
         if isinstance(value, (int, float)) and float(value) > 0:
             return float(value)
-    data = _fetch_local_runtime_state(timeout_sec=3.0)
-    if not data:
-        return None
-    for field in ("totalEquityIdr", "total_equity_idr", "portfolioValueIdr", "portfolio_value_idr", "balanceIdr", "balance_idr", "totalValueIdr", "total_value_idr"):
-        numeric = _parse_numeric(data.get(field))
-        if numeric is not None and numeric > 0:
-            return numeric
     return None
 
 
