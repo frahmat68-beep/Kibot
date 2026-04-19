@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 MANAGER_HOST = os.environ.get("KIBOT_MANAGER_HOST", "213.35.118.26")
-MANAGER_UDP_PORT = int(os.environ.get("KIBOT_MANAGER_UDP_PORT", "9999"))
+MANAGER_UDP_PORT = int(os.environ.get("KIBOT_MANAGER_UDP_PORT", "9998"))
 SCAN_INTERVAL_S = int(os.environ.get("SCAN_INTERVAL_S", "30"))
 RUNTIME_ROOT = Path(os.environ.get("KIBOT_RUNTIME_ROOT", str(Path(__file__).resolve().parent.parent)))
 SCANNER_STATE_ROOT = Path(

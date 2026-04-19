@@ -15,7 +15,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=KIBOT_RUNTIME_ROOT=/home/ubuntu/KiBot
 Environment=KIBOT_SCANNER_STATE_DIR=/home/ubuntu/KiBot/state/scanners
 Environment=KIBOT_MANAGER_HOST=213.35.118.26
-Environment=KIBOT_MANAGER_UDP_PORT=9999
+Environment=KIBOT_MANAGER_UDP_PORT=9998
 Environment=SCAN_INTERVAL_S=30
 ExecStart=/usr/bin/python3 /home/ubuntu/KiBot/scripts/ki_%i_scanner.py
 Restart=on-failure

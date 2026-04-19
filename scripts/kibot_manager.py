@@ -170,19 +170,30 @@ def _relay_to_kidax(msg: dict):
                 print(f"[v7][ENTRY_APPROVED] {pair}: gate passed, relaying to egress", flush=True)
 
     # Actual Transmission to multiple peers
+    transient_socket = None
     try:
         payload = json.dumps(msg, ensure_ascii=False).encode("utf-8")
         peers = []
         if KINANCE_UDP_HOST: peers.append((KINANCE_UDP_HOST, KINANCE_UDP_PORT))
         if KIDAX_UDP_HOST:    peers.append((KIDAX_UDP_HOST, KIDAX_UDP_PORT))
-        
+        udp_socket = _main_socket
+        if udp_socket is None:
+            transient_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp_socket = transient_socket
+
         for host, port in peers:
-            _main_socket.sendto(payload, (host, port))
+            udp_socket.sendto(payload, (host, port))
             
         if "POSITION" not in msg_type and "HEARTBEAT" not in msg_type:
             print(f"[v7][EGRESS] {msg_type} {pair or ''}", flush=True)
     except Exception as e:
         print(f"[v7][EGRESS_ERR] {pair}: {e}", flush=True)
+    finally:
+        if transient_socket is not None:
+            try:
+                transient_socket.close()
+            except Exception:
+                pass
 
 def _can_enter(pair: str, msg_type: str) -> Tuple[bool, str]:
     """
