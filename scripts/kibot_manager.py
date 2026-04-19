@@ -103,84 +103,151 @@ _trailing_stop = AdaptiveTrailingStop()
 _hard_stop     = HardStopGuard()
 
 # --- TRINITY CRITICAL FIX STATE ---
+import pytz
+WIB = pytz.timezone('Asia/Jakarta')
+
 _last_entry: Dict[str, float] = {}   # {pair: timestamp}
 _entry_loss_count: Dict[str, int] = {}  # {pair: count}
 _signal_seen: Dict[str, float] = {}  # {key: timestamp}
 _ai_healthy: bool = True
 _ai_last_success: float = time.time()
 _ai_failure_streak: int = 0
+_initial_capital_idr: float = 0.0
 
 
 def _relay_to_kidax(msg: dict):
     """
-    Central UDP Relay - Enforces all Trinity Gate 0 Guardrails.
-    Checks for Hard Stop, AI Health, and Quarantine before sending signals.
+    SATU-SATUNYA fungsi yang relay ke KiDax/KiNance.
+    BUY signal HARUS lewat _can_enter dulu (Trinity Gate 0).
+    SELL signal tidak perlu (exit harus selalu bisa berjalan).
     """
     global _main_socket
-    mtype = str(msg.get("type") or msg.get("msgType") or "").upper()
-    pair  = str(msg.get("pair") or msg.get("pairId") or "").lower()
+    msg_type = str(msg.get("type") or msg.get("msgType") or "").upper()
+    pair     = str(msg.get("pair") or msg.get("pairId") or "").lower()
 
-    # GUARD 0: Entry Gate (Only for signals that create new exposure)
-    if "SIGNAL" in mtype or "DETECTOR_HIT" in mtype or "SMART_ENTRY" in mtype:
-        can_enter, reason = _can_enter(pair, mtype)
-        if not can_enter:
-            print(f"[v7][GATE_BLOCKED] {pair} ({mtype}): {reason}", flush=True)
-            _metric_inc(f"entries_blocked_{reason.split(':')[0]}")
-            return
+    # Guard 0.1: Stale Signal Check
+    if _is_signal_stale(msg):
+        return
 
-        # Record entry for quarantine
-        if pair:
-            _last_entry[pair] = time.time()
-            print(f"[v7][ENTRY_RECORDED] {pair} quarantined for 30m.", flush=True)
+    # Guard 0.2: Duplicate Signal Check
+    if _is_duplicate_signal(msg):
+        return
 
-    # Actual Transmission
-    kidax_host = os.environ.get("KIDAX_HOST", "127.0.0.1")
-    kidax_port = int(os.environ.get("KIDAX_PORT", "8787"))
+    # Semua tipe BUY/ENTRY harus cek gate
+    entries = ("SIGNAL", "DETECTOR_HIT", "SMART_ENTRY", "ANOMALY", "PUMP", "VETO_APPROVED")
+    if any(k in msg_type for k in entries):
+        # Kecuali kalau sinyal tersebut mengandung 'REJECTED' atau 'VETO_REJECTED'
+        if "REJECTED" not in msg_type:
+            can_enter, reason = _can_enter(pair, msg_type)
+            if not can_enter:
+                print(f"[v7][ENTRY_BLOCKED] {pair} ({msg_type}): {reason}", flush=True)
+                return  # STOP — tidak relay ke KiDax
+
+            # Catat entry untuk quarantine dan repeat blocker
+            if pair:
+                _last_entry[pair] = time.time()
+                print(f"[v7][ENTRY_APPROVED] {pair}: gate passed, relaying to egress", flush=True)
+
+    # Actual Transmission to multiple peers
     try:
-        payload = json.dumps(msg).encode()
-        if _main_socket:
-            _main_socket.sendto(payload, (kidax_host, kidax_port))
-        if "POSITION" not in mtype: # Reduce log noise for frequent updates
-            print(f"[v7][RELAY\u2192KIDAX] {mtype} pair={pair or '?'}", flush=True)
+        payload = json.dumps(msg, ensure_ascii=False).encode("utf-8")
+        peers = []
+        if KINANCE_UDP_HOST: peers.append((KINANCE_UDP_HOST, KINANCE_UDP_PORT))
+        if KIDAX_UDP_HOST:    peers.append((KIDAX_UDP_HOST, KIDAX_UDP_PORT))
+        
+        for host, port in peers:
+            _main_socket.sendto(payload, (host, port))
+            
+        if "POSITION" not in msg_type and "HEARTBEAT" not in msg_type:
+            print(f"[v7][EGRESS] {msg_type} {pair or ''}", flush=True)
     except Exception as e:
-        print(f"[v7][RELAY_ERR] {e}", flush=True)
+        print(f"[v7][EGRESS_ERR] {pair}: {e}", flush=True)
 
 
 def _can_enter(pair: str, mtype: str) -> Tuple[bool, str]:
     """
-    TRINITY V7 CENTRAL ENTRY GATE.
-    True = Pass, False = Block.
+    CENTRAL ENTRY GATE — SATU-SATUNYA TEMPAT yang boleh approve entry (Trinity v7).
     """
-    # 1. Hard Stop Guard
-    if _hard_stop.hard_stopped or bool(_gate_state.get("daily_hard_stop")):
-        return False, "hard_stop"
+    # 1. Hard Stop Check
+    loss_pct = _get_daily_loss_pct()
+    hard_limit = float(os.environ.get("KIBOT_HARD_DAILY_LOSS_PCT", "3.0"))
+    if _hard_stop.hard_stopped or loss_pct >= hard_limit:
+        _send_critical_alert("HARD_STOP", {"loss_pct": loss_pct, "current": _get_current_balance(), "initial": _initial_capital_idr})
+        return False, f"HARD_STOP: loss={loss_pct:.2f}%"
 
-    # 2. AI Failure Guard (Bug #2)
+    # 2. Risk Mode Check (LEVEL_3 / FULL_FREEZE)
+    mode = _get_effective_mode()
+    if mode == "FULL_FREEZE":
+        _send_critical_alert("LEVEL_3_FREEZE", {"loss_pct": loss_pct, "ai_ok": _ai_healthy})
+        return False, "MODE_FULL_FREEZE"
+    if mode == "EXIT_ONLY":
+        return False, "MODE_EXIT_ONLY"
+
+    # 3. AI Health Guard
     if not _ai_healthy:
-        # AI Offline + Mode LEVEL_3 = Full Freeze
-        if _gate_state.get("mode") == "LEVEL_3":
-            return False, "ai_offline_level_3_freeze"
-        return False, "ai_offline"
+        return False, "AI_OFFLINE"
 
-    # 3. Quarantine Guard (Bug #3)
+    # 4. Quarantine Guard (Anti Averaging-Down)
     if pair:
-        # 3.1 Cooldown (30 mins)
+        # 4.1 Cooldown check (45m default)
         last_t = _last_entry.get(pair, 0.0)
-        cooldown_min = int(os.environ.get("KIBOT_QUARANTINE_MINUTES", "30"))
+        cooldown_min = int(os.environ.get("KIBOT_QUARANTINE_MINUTES", "45"))
         if (time.time() - last_t) < (cooldown_min * 60):
-            return False, f"quarantine_cooldown"
-
-        # 3.2 Max Loss Blacklist (2x daily)
+            elapsed = (time.time() - last_t) / 60
+            return False, f"QUARANTINE_COOLDOWN: {elapsed:.1f}m passed"
+        
+        # 4.2 Max Loss Blacklist check (2x daily)
         loss_cnt = _entry_loss_count.get(pair, 0)
-        max_loss = int(os.environ.get("KIBOT_QUARANTINE_MAX_LOSS", "2"))
+        max_loss = int(os.environ.get("KIBOT_MAX_PAIR_LOSS", "2"))
         if loss_cnt >= max_loss:
-            return False, "quarantine_loss_blacklist"
+            _send_critical_alert("AVERAGING_DOWN_BLOCKED", {"pair": pair, "count": loss_cnt})
+            return False, f"PAIR_BLACKLIST: {loss_cnt} losses"
 
-    # 4. Global entry state (Legacy/Suspended)
+    # 5. Global state check
     if _entry_state_is_suspended():
-        return False, "entry_suspended"
+        return False, "ENTRY_SUSPENDED_LEGACY"
 
     return True, "ok"
+
+def _send_critical_alert(event: str, data: dict = None):
+    """Alert kritis ke Telegram owner."""
+    d = data or {}
+    ts = datetime.now(WIB).strftime('%H:%M:%S WIB')
+    templates = {
+        "HARD_STOP": f"🛑 HARD STOP [{ts}]\nLoss: {d.get('loss_pct',0):.2f}%\nModal: Rp{d.get('current',0):,.0f}\nENTRY DIBLOKIR harian",
+        "AI_OFFLINE": f"🔴 AI OFFLINE [{ts}]\nSemua provider gagal. Entry baru DITANGGUHKAN.",
+        "AVERAGING_DOWN_BLOCKED": f"⚠️ ANTI AVERAGING-DOWN [{ts}]\nPair: {d.get('pair','?')}\nSudah loss {d.get('count',0)}x hari ini. Diblokir.",
+        "LEVEL_3_FREEZE": f"🔒 LEVEL 3 FREEZE [{ts}]\nLoss: {d.get('loss_pct',0):.2f}%\nAI: {'Ok' if d.get('ai_ok') else 'OFFLINE'}\nStop entry total.",
+    }
+    msg = templates.get(event, f"⚠️ {event} [{ts}]: {d}")
+    print(f"[v7][ALERT] {msg}", flush=True)
+    _telegram_send(msg)
+
+def _on_position_closed_with_loss(pair: str, loss_idr: float):
+    """Callback for loss tracking (Fix #6)."""
+    _entry_loss_count[pair] = _entry_loss_count.get(pair, 0) + 1
+    print(f"[v7][LOSS_RECORDED] {pair}: loss_count={_entry_loss_count[pair]} loss=Rp{loss_idr:.0f}", flush=True)
+
+def _get_effective_mode() -> str:
+    """Consolidates Risk Level and AI Health into a final operation mode."""
+    level = _gate_state.get("mode") # LEVEL_1, LEVEL_2, LEVEL_3
+    ai_ok = _ai_healthy
+    
+    if level == "LEVEL_3" and not ai_ok:
+        return "FULL_FREEZE"
+    if level == "LEVEL_3":
+        return "EXIT_ONLY"
+    return "NORMAL"
+
+def _is_signal_stale(signal: dict) -> bool:
+    """Drops signals older than STALE_SIGNAL_ABORT_MS (Fix #1)."""
+    ts = signal.get("timestamp_ms") or signal.get("ts") or (signal.get("last_update", 0) * 1000)
+    if ts == 0: return False
+    age_ms = (time.time() * 1000) - ts
+    if age_ms > STALE_SIGNAL_ABORT_MS:
+        print(f"[v7][STALE_DROP] {signal.get('pair','?')} age={age_ms:.0f}ms > {STALE_SIGNAL_ABORT_MS}ms", flush=True)
+        return True
+    return False
 
 
 def _is_duplicate_signal(msg: dict) -> bool:
@@ -195,7 +262,7 @@ def _is_duplicate_signal(msg: dict) -> bool:
     key = f"{source}:{mtype}:{pair}"
     now = time.time()
     last = _signal_seen.get(key, 0.0)
-    dedup_s = int(os.environ.get("KIBOT_SIGNAL_DEDUP_S", "60"))
+    dedup_s = int(os.environ.get("KIBOT_SIGNAL_DEDUP_S", "90"))
 
     if (now - last) < dedup_s:
         # print(f"[v7][DEDUP_SKIP] {key} received {now-last:.1f}s ago", flush=True)
@@ -686,27 +753,9 @@ trade_logger = TradeLogger()
 # =============================================
 
 def _broadcast_udp(msg: dict):
-    """Kirim perintah ke executor (KIDAX)."""
-    # Dipanggil oleh logic Legacy v6. Teruskan ke v7 relay terpusat.
+    """Legacy v6 egress - redirected to Trinity v7 Gate."""
     _relay_to_kidax(msg)
 
-def _get_total_equity_estimate() -> float:
-    """Estimasi total aset (IDR + Koin) dari KiDax."""
-    # Prioritas 1: Daily Guard state
-    eq = _daily_guard_state.get("current_equity")
-    if eq: return float(eq)
-
-    # Prioritas 2: Fetch langsung (Cache bypass)
-    try:
-        import urllib.request
-        with urllib.request.urlopen("http://127.0.0.1:8787/api/state", timeout=2) as r:
-            payload = json.loads(r.read())
-            val = payload.get("totalValueIdr", 0)
-            if isinstance(val, str):
-                val = re.sub(r"[^\d.,-]", "", val).replace(".", "").replace(",", ".")
-            return float(val)
-    except:
-        return 0.0
 
 def _load_indodax_ticker_snapshot() -> dict:
     """Shorthand untuk ambil ticker snapshot."""
@@ -2629,7 +2678,7 @@ KIDAX_UDP_HOST = os.getenv("KIDAX_UDP_HOST", "127.0.0.1")
 KIDAX_UDP_PORT = int(os.getenv("KIDAX_UDP_PORT", "9999"))
 MANAGER_HEARTBEAT_INTERVAL_SEC = float(os.getenv("KIBOT_MANAGER_HEARTBEAT_INTERVAL_SEC", "1.0"))
 TAKER_FEE_PCT = float(os.getenv("KIDAX_TAKER_FEE_PCT", "0.51"))
-STALE_SIGNAL_ABORT_MS = int(os.getenv("KIBOT_STALE_SIGNAL_ABORT_MS", "500"))
+STALE_SIGNAL_ABORT_MS = int(os.getenv("KIBOT_STALE_SIGNAL_MS", "800"))
 FOMO_GUARD_PCT = float(os.getenv("KIBOT_FOMO_GUARD_PCT", "15.0"))
 FOMO_LIMIT_CORRECTION_PCT = float(os.getenv("KIBOT_FOMO_LIMIT_CORRECTION_PCT", "4.0"))
 COINGECKO_BASE = os.getenv("COINGECKO_BASE_URL", "https://api.coingecko.com/api/v3")
@@ -2647,10 +2696,10 @@ POST_MORTEM_API_URL = os.getenv("KIBOT_POST_MORTEM_API_URL", "")
 POST_MORTEM_API_KEY = os.getenv("KIBOT_POST_MORTEM_API_KEY", "")
 POST_MORTEM_MODEL = os.getenv("KIBOT_POST_MORTEM_MODEL", "llama-3.1-8b-instant")
 POST_MORTEM_TIMEOUT_SEC = float(os.getenv("KIBOT_POST_MORTEM_TIMEOUT_SEC", "12"))
-AI_APPROVAL_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_MIN_SCORE", "0.62"))
-AI_APPROVAL_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_MIN_EXPECTED_NET_PCT", "0.0018"))
-AI_APPROVAL_INSTANT_MIN_SCORE = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_SCORE", "0.62"))
-AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT = float(os.getenv("KIBOT_AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT", "0.0018"))
+AI_APPROVAL_MIN_SCORE = float(os.getenv("AI_APPROVAL_MIN_SCORE", "0.58"))
+AI_APPROVAL_MIN_EXPECTED_NET_PCT = float(os.getenv("AI_APPROVAL_MIN_EXPECTED_NET_PCT", "0.0025"))
+AI_APPROVAL_INSTANT_MIN_SCORE = 0.52
+AI_APPROVAL_INSTANT_MIN_EXPECTED_NET_PCT = 0.0010
 INDODAX_TAKER_FEE = float(os.getenv("KIBOT_INDODAX_TAKER_FEE", "0.003"))
 INDODAX_MAKER_FEE = float(os.getenv("KIBOT_INDODAX_MAKER_FEE", "0.0015"))
 ROUND_TRIP_TAKER_COST = float(os.getenv("KIBOT_ROUND_TRIP_TAKER_COST", "0.006"))
@@ -4913,18 +4962,8 @@ def _ensure_env() -> None:
 
 
 def _broadcast_udp(payload: Dict[str, Any]) -> None:
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    peers = []
-    if KINANCE_UDP_HOST:
-        peers.append((KINANCE_UDP_HOST, KINANCE_UDP_PORT))
-    if KIDAX_UDP_HOST:
-        peers.append((KIDAX_UDP_HOST, KIDAX_UDP_PORT))
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        for host, port in peers:
-            sock.sendto(data, (host, port))
-    finally:
-        sock.close()
+    """Low-level egress redirected to Trinity v7 Gate."""
+    _relay_to_kidax(payload)
     if payload.get("msgType") != "HEARTBEAT":
         print(
             f"[KIBOT][UDP_BROADCAST] msgType={payload.get('msgType')} pair={payload.get('pairId')} trace={payload.get('traceId')}",
@@ -5055,8 +5094,26 @@ def _effective_fee_pct() -> float:
     )
 
 
-def _get_total_equity_estimate() -> float | None:
-    return _extract_equity_estimate(_fetch_local_runtime_state(timeout_sec=2.0, max_cache_age_sec=5.0))
+def _get_total_equity_estimate() -> float:
+    """Estimasi total aset (IDR + Koin) dari KiDax."""
+    # Try high-level extract first
+    try:
+        e = _extract_equity_estimate(_fetch_local_runtime_state(timeout_sec=2.0, max_cache_age_sec=5.0))
+        if e is not None: return float(e)
+    except:
+        pass
+
+    # Fallback to direct HTTP (Cache bypass)
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:8787/api/state", timeout=2) as r:
+            payload = json.loads(r.read())
+            val = payload.get("totalValueIdr", 0)
+            if isinstance(val, str):
+                val = re.sub(r"[^\d.,-]", "", val).replace(".", "").replace(",", ".")
+            return float(val)
+    except:
+        return 0.0
 
 
 def _check_minimum_capital() -> bool:
@@ -5768,16 +5825,15 @@ def force_evaluate_recent_loss() -> None:
 
 def _get_dynamic_fomo_guard(price_idr: float) -> float:
     """
-    Micro-cap (< Rp50): Boleh pump sampai 35% karena masih early
-    Mid-cap (Rp50-500): Standard 22%
-    Big-cap (> Rp500): Ketat 15%
+    FOMO guard = seberapa jauh pump yang masih boleh dikejar.
+    Prinsip: masuk early, bukan saat sudah puncak (Tekan Kerugian).
     """
     if price_idr < 50.0:
-        return 35.0
+        return 18.0   # Micro-cap: max 18% (was 35%)
     elif price_idr < 500.0:
-        return 22.0
+        return 12.0   # Mid-cap: max 12% (was 22%)
     else:
-        return 15.0
+        return 8.0    # Big-cap: max 8% (was 15%)
 
 
 def _on_kinance_heartbeat_received():
@@ -6027,6 +6083,10 @@ def _process_signal(msg: Dict[str, Any]) -> None:
 
     # Dynamic FOMO guard based on price tier
     current_price_idr = float(msg.get("lastPrice") or msg.get("currentPrice") or 0.0)
+    if _is_signal_stale(msg):
+        return
+    if _is_duplicate_signal(msg):
+        return
     fomo_limit = _get_dynamic_fomo_guard(current_price_idr)
 
     if msg_type == "DETECTOR_HIT":
@@ -7162,5 +7222,45 @@ def main() -> None:
     sys.exit(0)
 
 
+def _load_daily_state():
+    """Restores daily capital metrics with WIB context (Fix #5)."""
+    global _initial_capital_idr
+    try:
+        state_file = Path("state/daily_state.json")
+        if state_file.exists():
+            state = json.loads(state_file.read_text())
+            today = datetime.now(WIB).date().isoformat()
+            if state.get("date") == today:
+                _initial_capital_idr = float(state.get("initial_capital_idr", 0))
+                _hard_stop.initial_capital = _initial_capital_idr
+                print(f"[BOOT] Daily state restored: Rp{_initial_capital_idr:,.0f}", flush=True)
+                return
+    except Exception as e:
+        print(f"[BOOT][ERROR] Failed to load daily state: {e}", flush=True)
+    _daily_reset_state()
+
+def _daily_reset_state():
+    """Daily reset at midnight WIB."""
+    global _initial_capital_idr
+    balance = _get_total_equity_estimate()
+    today = datetime.now(WIB).date().isoformat()
+    state = {
+        "date": today,
+        "initial_capital_idr": balance,
+        "reset_at": time.time()
+    }
+    Path("state").mkdir(exist_ok=True)
+    Path("state/daily_state.json").write_text(json.dumps(state))
+    _initial_capital_idr = balance
+    _hard_stop.initial_capital = balance
+    _entry_loss_count.clear()
+    print(f"[DAILY_RESET] Initial capital: Rp{balance:,.0f}", flush=True)
+
+def _get_daily_loss_pct() -> float:
+    if _initial_capital_idr <= 0: return 0.0
+    current = _get_current_balance()
+    return max(0.0, (_initial_capital_idr - current) / _initial_capital_idr * 100)
+
 if __name__ == "__main__":
+    _load_daily_state()
     main()
