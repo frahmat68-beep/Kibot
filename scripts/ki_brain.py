@@ -6,16 +6,63 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
 logger = logging.getLogger("KiBrain")
 
+POSITIVE_HEADLINE_KEYWORDS = {
+    "approval",
+    "breakout",
+    "bull",
+    "gain",
+    "greenlight",
+    "growth",
+    "inflow",
+    "launch",
+    "listing",
+    "partnership",
+    "rally",
+    "record",
+    "recovery",
+    "surge",
+    "upgrade",
+}
+
+NEGATIVE_HEADLINE_KEYWORDS = {
+    "attack",
+    "ban",
+    "breach",
+    "crackdown",
+    "delist",
+    "downtime",
+    "dump",
+    "exploit",
+    "fraud",
+    "hack",
+    "halt",
+    "investigation",
+    "lawsuit",
+    "liquidation",
+    "loss",
+    "outage",
+    "risk",
+    "scam",
+    "selloff",
+}
+
 
 def _load_dotenv_early() -> None:
-    candidates = [Path(".env"), Path("scripts/.env"), Path("../.env")]
+    candidates = [
+        Path(".env.server"),
+        Path(".env.kibot"),
+        Path(".env.kibot_manager"),
+        Path(".env"),
+        Path("scripts/.env"),
+        Path("../.env"),
+    ]
     explicit = os.getenv("KIBOT_MANAGER_ENV_FILE")
     if explicit:
         candidates.insert(0, Path(explicit))
@@ -40,11 +87,12 @@ class BrainManager:
     """
     Advisory-only research helper.
 
-    Rules:
-    - Never block the live trading hot path on external network calls.
-    - Keep all internet access bounded by short timeouts.
-    - Persist a lightweight heartbeat/status file so operators can see whether
-      research connectivity is alive.
+    Design principles:
+    - Never block the live entry hot path on external network calls.
+    - Keep search/news usage bounded with short timeouts and long TTLs.
+    - Prefer lightweight REST calls over heavy SDK dependencies on small servers.
+    - Provide a compact, operator-readable snapshot of market context and progress
+      toward the daily green target.
     """
 
     def __init__(self) -> None:
@@ -55,8 +103,19 @@ class BrainManager:
             float(os.getenv("KIBOT_BRAIN_CONNECT_TIMEOUT_SEC", "2.0")),
             float(os.getenv("KIBOT_BRAIN_READ_TIMEOUT_SEC", "4.0")),
         )
-        self.review_ttl_sec = int(os.getenv("KIBOT_BRAIN_REVIEW_TTL_SEC", "300"))
+        self.review_ttl_sec = int(os.getenv("KIBOT_BRAIN_REVIEW_TTL_SEC", "900"))
+        self.market_pulse_ttl_sec = int(os.getenv("KIBOT_BRAIN_MARKET_PULSE_TTL_SEC", "900"))
+        self.tavily_ttl_sec = int(os.getenv("KIBOT_BRAIN_TAVILY_TTL_SEC", "7200"))
+        self.serper_ttl_sec = int(os.getenv("KIBOT_BRAIN_SERPER_TTL_SEC", "5400"))
+        self.finnhub_ttl_sec = int(os.getenv("KIBOT_BRAIN_FINNHUB_TTL_SEC", "900"))
+        self.max_watch_symbols = max(1, int(os.getenv("KIBOT_BRAIN_MAX_WATCH_SYMBOLS", "5")))
+        self.max_external_symbols = max(1, int(os.getenv("KIBOT_BRAIN_NEWS_MAX_SYMBOLS", "2")))
+        self.green_target_daily_pct = float(os.getenv("KIBOT_GREEN_TARGET_DAILY_PCT", "0.003"))
+        self.external_research_enabled = os.getenv("KIBOT_BRAIN_ENABLE_EXTERNAL_RESEARCH", "true").lower() == "true"
+        self.search_country = os.getenv("KIBOT_BRAIN_SEARCH_COUNTRY", "indonesia")
+        self.search_lang = os.getenv("KIBOT_BRAIN_SEARCH_LANG", "id")
         self._pair_cache: Dict[str, Dict[str, Any]] = {}
+        self._provider_cache: Dict[str, Dict[str, Any]] = {}
         self._last_snapshot: Dict[str, Any] = self._load_snapshot()
 
     def get_market_intel(self, symbol: str) -> Dict[str, Any]:
@@ -70,21 +129,30 @@ class BrainManager:
             return dict(cached)
 
         pair = f"{symbol}USDT"
+        binance = self._get_json(
+            "https://api.binance.com/api/v3/ticker/24hr",
+            params={"symbol": pair},
+        )
+        indodax_pairs = self._get_json("https://indodax.com/api/pairs")
+        coingecko = self._get_json(
+            "https://api.coingecko.com/api/v3/search",
+            params={"query": symbol},
+        )
+        listed_on_indodax = self._listed_on_indodax(symbol, indodax_pairs)
+        quote_volume = self._safe_float(binance.get("quoteVolume"))
+        external_research = self._symbol_external_intel(symbol)
         intel = {
             "symbol": symbol,
             "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
-            "binance": self._get_json(
-                "https://api.binance.com/api/v3/ticker/24hr",
-                params={"symbol": pair},
-            ),
-            "indodax_pairs": self._get_json("https://indodax.com/api/pairs"),
-            "coingecko_search": self._get_json(
-                "https://api.coingecko.com/api/v3/search",
-                params={"query": symbol},
-            ),
+            "binance": binance,
+            "indodax_pairs": indodax_pairs,
+            "coingecko_search": coingecko,
+            "listed_on_indodax": listed_on_indodax,
+            "quote_volume_usdt": quote_volume,
+            "external_research": external_research,
+            "ok": True,
             "ts": now,
         }
-        intel["ok"] = True
         self._pair_cache[symbol] = intel
         return dict(intel)
 
@@ -97,29 +165,36 @@ class BrainManager:
             return False, "technical_score_too_weak"
 
         intel = self.get_market_intel(symbol)
-        listed_on_indodax = self._listed_on_indodax(symbol, intel.get("indodax_pairs"))
-        if not listed_on_indodax:
+        if not intel.get("listed_on_indodax"):
             return False, "symbol_not_listed_on_indodax"
 
-        binance = intel.get("binance") or {}
-        try:
-            quote_volume = float(binance.get("quoteVolume") or 0.0)
-        except (TypeError, ValueError):
-            quote_volume = 0.0
+        quote_volume = self._safe_float(intel.get("quote_volume_usdt"))
         if quote_volume <= 0:
             return False, "missing_or_zero_quote_volume"
 
+        research = intel.get("external_research") if isinstance(intel.get("external_research"), dict) else {}
+        risk_bias = str(research.get("risk_bias") or "UNKNOWN")
+        if risk_bias == "RISK_OFF" and tech_score < 0.75:
+            return False, "external_research_risk_off"
+
         return True, "brain_advisory_ok"
 
-    def think(self, watch_symbols: Optional[Iterable[str]] = None) -> Dict[str, Any]:
+    def think(
+        self,
+        watch_symbols: Optional[Iterable[str]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Background connectivity / research pulse.
         Safe to run in a background thread with short network timeouts.
         """
-        symbols = [s.strip().upper() for s in (watch_symbols or self._default_watch_symbols()) if str(s).strip()]
+        context = context or {}
+        symbols = self._normalize_symbols(watch_symbols or self._default_watch_symbols())[: self.max_watch_symbols]
+        market_pulse = self._get_market_pulse(symbols)
         snapshot = {
             "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "mode": "advisory_only",
+            "provider_status": self._provider_status(),
             "optional_modules": self._optional_modules(),
             "internet_checks": {
                 "binance": self._status_code("https://api.binance.com/api/v3/ping"),
@@ -128,18 +203,28 @@ class BrainManager:
                 "mexc": self._status_code("https://api.mexc.com/api/v3/ticker/24hr"),
                 "indodax": self._status_code("https://indodax.com/api/pairs"),
             },
-            "watch_symbols": symbols[:5],
+            "daily_target": self._daily_target_snapshot(context),
+            "market_pulse": market_pulse,
+            "watch_symbols": symbols,
             "watch_reviews": [],
         }
-        for symbol in symbols[:5]:
-            approved, reason = self.vet_signal(symbol, 0.7)
-            snapshot["watch_reviews"].append(
-                {
-                    "symbol": symbol,
-                    "approved": approved,
-                    "reason": reason,
-                }
-            )
+        for symbol in symbols[: self.max_external_symbols]:
+            intel = self.get_market_intel(symbol)
+            approved, reason = self.vet_signal(symbol, 0.70)
+            research = intel.get("external_research") if isinstance(intel.get("external_research"), dict) else {}
+            watch_review = {
+                "symbol": symbol,
+                "approved": approved,
+                "reason": reason,
+                "listed_on_indodax": bool(intel.get("listed_on_indodax")),
+                "quote_volume_usdt": round(self._safe_float(intel.get("quote_volume_usdt")), 2),
+                "risk_bias": str(research.get("risk_bias") or "UNKNOWN"),
+                "research_provider": str(research.get("provider") or "none"),
+                "research_summary": str(research.get("summary") or "")[:280],
+                "headline_count": len(list(research.get("headlines") or [])),
+                "top_headlines": list(research.get("headlines") or [])[:3],
+            }
+            snapshot["watch_reviews"].append(watch_review)
 
         self._last_snapshot = snapshot
         self._write_snapshot(snapshot)
@@ -151,15 +236,320 @@ class BrainManager:
         self._last_snapshot = self._load_snapshot()
         return dict(self._last_snapshot)
 
+    def _get_market_pulse(self, symbols: Sequence[str]) -> Dict[str, Any]:
+        def loader() -> Dict[str, Any]:
+            finnhub_news = self._get_finnhub_crypto_news()
+            tavily_brief = self._get_tavily_market_brief()
+            serper_brief = self._get_serper_market_brief() if not tavily_brief else {}
+
+            top_headlines: List[str] = []
+            for row in finnhub_news[:6]:
+                if isinstance(row, dict):
+                    headline = str(row.get("headline") or "").strip()
+                    if headline:
+                        top_headlines.append(headline)
+            if tavily_brief.get("answer"):
+                top_headlines.append(str(tavily_brief.get("answer")).strip())
+            for item in list(tavily_brief.get("results") or [])[:2]:
+                if isinstance(item, dict):
+                    headline = str(item.get("title") or "").strip()
+                    if headline:
+                        top_headlines.append(headline)
+            for item in list(serper_brief.get("organic") or [])[:2]:
+                if isinstance(item, dict):
+                    headline = str(item.get("title") or "").strip()
+                    if headline:
+                        top_headlines.append(headline)
+
+            deduped_headlines = self._dedupe_texts(top_headlines)[:5]
+            positive_hits, negative_hits = self._sentiment_counts(deduped_headlines)
+            if negative_hits > positive_hits + 1:
+                risk_bias = "RISK_OFF"
+            elif positive_hits > negative_hits + 1:
+                risk_bias = "RISK_ON"
+            else:
+                risk_bias = "MIXED"
+
+            summary = ""
+            if tavily_brief.get("answer"):
+                summary = str(tavily_brief.get("answer")).strip()
+            elif serper_brief.get("organic"):
+                first = serper_brief.get("organic")[0]
+                if isinstance(first, dict):
+                    summary = str(first.get("snippet") or first.get("title") or "").strip()
+            elif deduped_headlines:
+                summary = deduped_headlines[0]
+
+            return {
+                "risk_bias": risk_bias,
+                "headline_count": len(finnhub_news),
+                "top_headlines": deduped_headlines,
+                "summary": summary[:320],
+                "providers_used": [name for name, used in {
+                    "finnhub": bool(finnhub_news),
+                    "tavily": bool(tavily_brief),
+                    "serper": bool(serper_brief),
+                }.items() if used],
+                "watch_symbols": list(symbols)[: self.max_external_symbols],
+            }
+
+        return self._cached_payload("market_pulse", self.market_pulse_ttl_sec, loader)
+
+    def _symbol_external_intel(self, symbol: str) -> Dict[str, Any]:
+        def loader() -> Dict[str, Any]:
+            news_hits = self._filter_news_for_symbol(symbol, self._get_finnhub_crypto_news())
+            tavily_brief = self._get_tavily_symbol_brief(symbol)
+            serper_brief = self._get_serper_symbol_brief(symbol) if not tavily_brief else {}
+
+            texts: List[str] = []
+            headlines = []
+            for row in news_hits[:4]:
+                headline = str(row.get("headline") or "").strip()
+                if headline:
+                    headlines.append(headline)
+                    texts.append(headline)
+                summary = str(row.get("summary") or "").strip()
+                if summary:
+                    texts.append(summary)
+            if tavily_brief.get("answer"):
+                texts.append(str(tavily_brief.get("answer")).strip())
+            for item in list(tavily_brief.get("results") or [])[:2]:
+                if isinstance(item, dict):
+                    title = str(item.get("title") or "").strip()
+                    content = str(item.get("content") or "").strip()
+                    if title:
+                        headlines.append(title)
+                        texts.append(title)
+                    if content:
+                        texts.append(content)
+            for item in list(serper_brief.get("organic") or [])[:2]:
+                if isinstance(item, dict):
+                    title = str(item.get("title") or "").strip()
+                    snippet = str(item.get("snippet") or "").strip()
+                    if title:
+                        headlines.append(title)
+                        texts.append(title)
+                    if snippet:
+                        texts.append(snippet)
+
+            positive_hits, negative_hits = self._sentiment_counts(texts)
+            if negative_hits > positive_hits + 1:
+                risk_bias = "RISK_OFF"
+            elif positive_hits > negative_hits + 1:
+                risk_bias = "RISK_ON"
+            else:
+                risk_bias = "MIXED"
+
+            summary = ""
+            provider = "finnhub"
+            if tavily_brief.get("answer"):
+                summary = str(tavily_brief.get("answer")).strip()
+                provider = "tavily"
+            elif serper_brief.get("organic"):
+                first = serper_brief.get("organic")[0]
+                if isinstance(first, dict):
+                    summary = str(first.get("snippet") or first.get("title") or "").strip()
+                    provider = "serper"
+            elif headlines:
+                summary = headlines[0]
+
+            return {
+                "provider": provider,
+                "risk_bias": risk_bias,
+                "headlines": self._dedupe_texts(headlines)[:3],
+                "summary": summary[:320],
+                "news_hit_count": len(news_hits),
+            }
+
+        return self._cached_payload(f"symbol_external:{symbol}", self.review_ttl_sec, loader)
+
+    def _get_tavily_market_brief(self) -> Dict[str, Any]:
+        if not self.external_research_enabled or not os.getenv("TAVILY_API_KEY"):
+            return {}
+        return self._cached_payload(
+            "tavily_market",
+            self.tavily_ttl_sec,
+            lambda: self._post_json(
+                "https://api.tavily.com/search",
+                body={
+                    "query": "crypto market today bitcoin altcoin risk catalysts regulation exploit exchange",
+                    "topic": "finance",
+                    "search_depth": "basic",
+                    "max_results": 3,
+                    "include_answer": "basic",
+                    "include_usage": True,
+                },
+                headers={"Authorization": f"Bearer {os.getenv('TAVILY_API_KEY', '')}"},
+            ),
+        )
+
+    def _get_tavily_symbol_brief(self, symbol: str) -> Dict[str, Any]:
+        if not self.external_research_enabled or not os.getenv("TAVILY_API_KEY"):
+            return {}
+        return self._cached_payload(
+            f"tavily_symbol:{symbol}",
+            self.tavily_ttl_sec,
+            lambda: self._post_json(
+                "https://api.tavily.com/search",
+                body={
+                    "query": f"{symbol} crypto latest news catalyst risk",
+                    "topic": "finance",
+                    "search_depth": "basic",
+                    "max_results": 3,
+                    "include_answer": "basic",
+                    "include_usage": True,
+                },
+                headers={"Authorization": f"Bearer {os.getenv('TAVILY_API_KEY', '')}"},
+            ),
+        )
+
+    def _get_serper_market_brief(self) -> Dict[str, Any]:
+        if not self.external_research_enabled or not os.getenv("SERPER_API_KEY"):
+            return {}
+        return self._cached_payload(
+            "serper_market",
+            self.serper_ttl_sec,
+            lambda: self._post_json(
+                "https://google.serper.dev/search",
+                body={
+                    "q": "crypto market today bitcoin altcoin risk catalysts",
+                    "gl": "id",
+                    "hl": self.search_lang,
+                },
+                headers={"X-API-KEY": os.getenv("SERPER_API_KEY", "")},
+            ),
+        )
+
+    def _get_serper_symbol_brief(self, symbol: str) -> Dict[str, Any]:
+        if not self.external_research_enabled or not os.getenv("SERPER_API_KEY"):
+            return {}
+        return self._cached_payload(
+            f"serper_symbol:{symbol}",
+            self.serper_ttl_sec,
+            lambda: self._post_json(
+                "https://google.serper.dev/search",
+                body={
+                    "q": f"{symbol} crypto latest news catalyst risk",
+                    "gl": "id",
+                    "hl": self.search_lang,
+                },
+                headers={"X-API-KEY": os.getenv("SERPER_API_KEY", "")},
+            ),
+        )
+
+    def _get_finnhub_crypto_news(self) -> List[Dict[str, Any]]:
+        if not self.external_research_enabled or not os.getenv("FINNHUB_API_KEY"):
+            return []
+        payload = self._cached_payload(
+            "finnhub_crypto_news",
+            self.finnhub_ttl_sec,
+            lambda: self._get_json(
+                "https://finnhub.io/api/v1/news",
+                params={"category": "crypto", "token": os.getenv("FINNHUB_API_KEY", "")},
+            ),
+        )
+        return payload if isinstance(payload, list) else []
+
+    def _provider_status(self) -> Dict[str, Dict[str, Any]]:
+        out: Dict[str, Dict[str, Any]] = {}
+        for name, env_key in (
+            ("tavily", "TAVILY_API_KEY"),
+            ("serper", "SERPER_API_KEY"),
+            ("finnhub", "FINNHUB_API_KEY"),
+            ("gemini", "GOOGLE_API_KEY"),
+        ):
+            last = self._provider_cache.get(name) or {}
+            out[name] = {
+                "configured": bool(os.getenv(env_key)),
+                "last_ok": bool(last.get("ok")) if last else None,
+                "last_checked_at": last.get("checked_at"),
+                "last_error": last.get("error", ""),
+            }
+        return out
+
+    def _daily_target_snapshot(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        daily_pnl_pct = self._safe_float(context.get("daily_pnl_pct"))
+        target_gap_pct = max(self.green_target_daily_pct - daily_pnl_pct, 0.0)
+        if daily_pnl_pct >= self.green_target_daily_pct:
+            status = "AHEAD"
+        elif daily_pnl_pct >= 0.0:
+            status = "CHASING_GREEN"
+        else:
+            status = "RECOVERY_MODE"
+        return {
+            "daily_pnl_pct": round(daily_pnl_pct, 4),
+            "target_pct": round(self.green_target_daily_pct, 4),
+            "gap_pct": round(target_gap_pct, 4),
+            "status": status,
+            "equity_idr": self._safe_float(context.get("equity_idr")),
+            "free_cash_idr": self._safe_float(context.get("free_cash_idr")),
+        }
+
     def _get_json(self, url: str, *, params: Optional[Dict[str, Any]] = None) -> Any:
+        request_url = f"{url}?{urlencode(params)}" if params else url
+        return self._request_json(request_url)
+
+    def _post_json(self, url: str, *, body: Dict[str, Any], headers: Optional[Dict[str, str]] = None) -> Any:
+        merged_headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "KiBot-Brain/1.0",
+        }
+        if headers:
+            merged_headers.update(headers)
+        return self._request_json(url, body=body, headers=merged_headers)
+
+    def _request_json(
+        self,
+        url: str,
+        *,
+        body: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Any:
+        request_headers = {"User-Agent": "KiBot-Brain/1.0"}
+        if headers:
+            request_headers.update(headers)
+        data = json.dumps(body).encode("utf-8") if body is not None else None
         try:
-            request_url = f"{url}?{urlencode(params)}" if params else url
-            request = Request(request_url, headers={"User-Agent": "KiBot-Brain/1.0"})
+            request = Request(url, data=data, headers=request_headers)
             with urlopen(request, timeout=max(self.request_timeout)) as response:
                 return json.loads(response.read().decode("utf-8"))
         except Exception as error:
             logger.warning("Brain fetch failed url=%s reason=%s", url, error)
-            return {}
+            raise
+
+    def _cached_payload(self, key: str, ttl_sec: int, loader) -> Any:
+        now = time.time()
+        cached = self._provider_cache.get(key)
+        if cached and (now - float(cached.get("ts") or 0.0)) < ttl_sec:
+            return cached.get("data")
+        try:
+            data = loader()
+            self._provider_cache[key] = {
+                "ts": now,
+                "data": data,
+                "ok": True,
+                "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            }
+            provider_root = key.split(":", 1)[0].split("_", 1)[0]
+            self._provider_cache[provider_root] = {
+                "ts": now,
+                "ok": True,
+                "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            }
+            return data
+        except Exception as error:
+            cached_data = cached.get("data") if cached else {}
+            provider_root = key.split(":", 1)[0].split("_", 1)[0]
+            error_payload = {
+                "ts": now,
+                "data": cached_data,
+                "ok": False,
+                "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+                "error": f"{type(error).__name__}: {error}",
+            }
+            self._provider_cache[key] = error_payload
+            self._provider_cache[provider_root] = dict(error_payload)
+            return cached_data
 
     def _status_code(self, url: str) -> int:
         try:
@@ -191,6 +581,67 @@ class BrainManager:
         raw = os.getenv("KIBOT_BRAIN_WATCH_SYMBOLS", "BTC,ETH,SOL")
         return [item.strip() for item in raw.split(",")]
 
+    def _normalize_symbols(self, watch_symbols: Iterable[str]) -> List[str]:
+        out: List[str] = []
+        for raw in watch_symbols:
+            text = str(raw or "").strip().upper()
+            if not text:
+                continue
+            if "_" in text:
+                text = text.split("_", 1)[0]
+            if text.endswith("IDR"):
+                text = text[:-3]
+            if text.endswith("USDT"):
+                text = text[:-4]
+            if text and text not in out:
+                out.append(text)
+        return out
+
+    def _filter_news_for_symbol(self, symbol: str, news_items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        symbol = symbol.upper()
+        out: List[Dict[str, Any]] = []
+        for row in news_items:
+            if not isinstance(row, dict):
+                continue
+            related = str(row.get("related") or "").upper()
+            headline = str(row.get("headline") or "").upper()
+            summary = str(row.get("summary") or "").upper()
+            if symbol in related or symbol in headline or symbol in summary:
+                out.append(row)
+        return out
+
+    def _sentiment_counts(self, texts: Iterable[str]) -> Tuple[int, int]:
+        positive_hits = 0
+        negative_hits = 0
+        for text in texts:
+            lowered = str(text or "").lower()
+            positive_hits += sum(1 for word in POSITIVE_HEADLINE_KEYWORDS if word in lowered)
+            negative_hits += sum(1 for word in NEGATIVE_HEADLINE_KEYWORDS if word in lowered)
+        return positive_hits, negative_hits
+
+    def _dedupe_texts(self, texts: Iterable[str]) -> List[str]:
+        seen = set()
+        out: List[str] = []
+        for text in texts:
+            cleaned = str(text or "").strip()
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(cleaned)
+        return out
+
+    def _safe_float(self, value: Any) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if number != number or number in (float("inf"), float("-inf")):
+            return 0.0
+        return number
+
     def _optional_modules(self) -> Dict[str, Dict[str, Any]]:
         def has_module(name: str) -> bool:
             try:
@@ -199,9 +650,14 @@ class BrainManager:
                 return False
 
         return {
+            "google.genai": {
+                "installed": has_module("google.genai"),
+                "api_key_present": bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")),
+            },
             "google.generativeai": {
                 "installed": has_module("google.generativeai"),
                 "api_key_present": bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")),
+                "legacy_sdk": True,
             },
             "tavily": {
                 "installed": has_module("tavily"),

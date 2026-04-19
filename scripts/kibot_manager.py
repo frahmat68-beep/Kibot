@@ -4067,6 +4067,15 @@ def _build_daily_report_payload(report_date: str) -> Dict[str, Any]:
         "lessons": list(latest_learning.get("lessons") or []),
         "next_strategy": str(latest_learning.get("strategy") or latest_learning.get("summary") or "Prioritaskan pair high-trust, tekan kerugian, dan jaga rotasi modal tetap cepat.").strip(),
         "risks": list(latest_learning.get("risks") or []),
+        "green_target": {
+            "target_pct": float(os.getenv("KIBOT_GREEN_TARGET_DAILY_PCT", "0.003")),
+            "gap_pct": max(float(os.getenv("KIBOT_GREEN_TARGET_DAILY_PCT", "0.003")) - float(daily_pnl_pct or 0.0), 0.0),
+            "status": (
+                "AHEAD"
+                if float(daily_pnl_pct or 0.0) >= float(os.getenv("KIBOT_GREEN_TARGET_DAILY_PCT", "0.003"))
+                else ("CHASING_GREEN" if float(daily_pnl_pct or 0.0) >= 0.0 else "RECOVERY_MODE")
+            ),
+        },
     }
     _store_daily_report(report)
     return report
@@ -4075,6 +4084,9 @@ def _build_daily_report_payload(report_date: str) -> Dict[str, Any]:
 def _render_daily_report_text(report: Dict[str, Any]) -> str:
     daily_pct = (_parse_numeric(report.get("daily_pnl_pct")) or 0.0) * 100.0
     weekly_pct = (_parse_numeric(report.get("weekly_pnl_pct")) or 0.0) * 100.0
+    green_target = report.get("green_target") if isinstance(report.get("green_target"), dict) else {}
+    green_target_pct = (_parse_numeric(green_target.get("target_pct")) or 0.0) * 100.0
+    green_gap_pct = (_parse_numeric(green_target.get("gap_pct")) or 0.0) * 100.0
     bought = ", ".join(str(item).upper() for item in list(report.get("coins_bought_today") or [])[:8]) or "tidak ada"
     lessons = list(report.get("lessons") or [])[:3]
     if not lessons:
@@ -4085,6 +4097,7 @@ def _render_daily_report_text(report: Dict[str, Any]) -> str:
         f"Saldo akhir hari: Rp{(_parse_numeric(report.get('end_balance_idr')) or 0.0):,.0f}",
         f"PnL hari ini: {daily_pct:+.2f}% (Rp{(_parse_numeric(report.get('daily_pnl_idr')) or 0.0):,.0f})",
         f"PnL 7 hari: {weekly_pct:+.2f}% (Rp{(_parse_numeric(report.get('weekly_pnl_idr')) or 0.0):,.0f})",
+        f"Target hijau harian: +{green_target_pct:.2f}% | gap tersisa: {green_gap_pct:.2f}%",
         f"Trade tutup: {int(report.get('closed_trades') or 0)} | Win rate: {float(report.get('win_rate') or 0.0) * 100:.0f}%",
         f"Koin dibeli hari ini: {bought}",
         "",
@@ -4148,6 +4161,7 @@ def _collect_learning_review_snapshot() -> Dict[str, Any]:
         for pair, row in list(_active_positions_cache.items())[:8]
         if isinstance(row, dict)
     ]
+    brain_snapshot = _brain.snapshot() if hasattr(_brain, "snapshot") else {}
     return {
         "at_utc": now.isoformat(),
         "wib_date": _operational_wib_date(),
@@ -4169,6 +4183,12 @@ def _collect_learning_review_snapshot() -> Dict[str, Any]:
             "reason": str(_daily_guard_state.get("reason") or ""),
             "reset_at": str(_daily_guard_state.get("reset_at") or ""),
         },
+        "brain_context": {
+            "daily_target": brain_snapshot.get("daily_target", {}),
+            "market_pulse": brain_snapshot.get("market_pulse", {}),
+            "watch_reviews": list(brain_snapshot.get("watch_reviews") or [])[:3],
+            "provider_status": brain_snapshot.get("provider_status", {}),
+        },
         "math_review": {
             "last_action": _math_review_last_action,
             "last_reason": _math_review_last_reason,
@@ -4183,6 +4203,9 @@ def _build_learning_review_fallback(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     why_not_counts = snapshot.get("why_not_counts") if isinstance(snapshot.get("why_not_counts"), dict) else {}
     top_screen_candidates = snapshot.get("top_screen_candidates") if isinstance(snapshot.get("top_screen_candidates"), list) else []
     top_whatif = snapshot.get("whatif_top_opportunities") if isinstance(snapshot.get("whatif_top_opportunities"), list) else []
+    brain_context = snapshot.get("brain_context") if isinstance(snapshot.get("brain_context"), dict) else {}
+    brain_market_pulse = brain_context.get("market_pulse") if isinstance(brain_context.get("market_pulse"), dict) else {}
+    brain_daily_target = brain_context.get("daily_target") if isinstance(brain_context.get("daily_target"), dict) else {}
     daily_pnl_pct = _parse_numeric(snapshot.get("daily_pnl_pct")) or 0.0
     active_pairs = [str(item).lower() for item in list(snapshot.get("active_position_pairs") or []) if str(item).strip()]
 
@@ -4197,6 +4220,19 @@ def _build_learning_review_fallback(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     elif daily_pnl_pct >= 0.01:
         lessons.append("PnL masih sehat; pertahankan tempo tapi jangan longgarkan threshold terlalu cepat.")
         strategy_parts.append("kunci profit yang sudah ada")
+
+    if str(brain_market_pulse.get("risk_bias") or "").upper() == "RISK_OFF":
+        lessons.append("Market pulse eksternal sedang risk-off; naikkan standar entry dan prioritaskan proteksi modal.")
+        risks.append("Headline eksternal mengarah ke risk-off, jadi breakout palsu lebih berbahaya.")
+    elif str(brain_market_pulse.get("risk_bias") or "").upper() == "RISK_ON":
+        strategy_parts.append("manfaatkan risk-on hanya pada pair yang tetap lolos veto")
+
+    target_status = str(brain_daily_target.get("status") or "")
+    target_gap_pct = (_parse_numeric(brain_daily_target.get("gap_pct")) or 0.0) * 100.0
+    if target_status == "RECOVERY_MODE":
+        strategy_parts.append("recovery bertahap untuk kembali hijau")
+    elif target_status == "CHASING_GREEN" and target_gap_pct > 0:
+        strategy_parts.append(f"kejar target hijau dengan gap {target_gap_pct:.2f}% tanpa longgarkan guardrail")
 
     total_trades = int(trade_metrics.get("total_trades") or 0)
     win_rate = float(trade_metrics.get("win_rate") or 0.0)
@@ -5911,7 +5947,11 @@ def _process_signal(msg: Dict[str, Any]) -> None:
 
         if not _check_minimum_capital():
             print(f"[KIBOT][BLOCK] Blocking {msg_type} - minimum viable capital not met", flush=True)
-            _suspend_new_entries("minimum_viable_capital_not_met")
+            _set_conservative_mode("minimum_viable_capital_not_met")
+            _append_runtime_event(
+                "entry_blocked",
+                {"reason": "minimum_viable_capital_not_met", "msg_type": msg_type},
+            )
             return
 
     if msg_type in EXIT_MSG_TYPES:
@@ -7043,6 +7083,27 @@ def _save_daily_state():
         print(f"[v7][STATE_ERR] {e}", flush=True)
 
 
+def _brain_watch_symbols() -> List[str]:
+    symbols: List[str] = []
+    for pair in _active_position_pairs()[:4]:
+        base = str(pair or "").lower().split("_", 1)[0].upper()
+        if base and base not in symbols:
+            symbols.append(base)
+    for pair in list((_load_json_file(WHATIF_RESULTS_PATH, {}) or {}).get("topOpportunities") or [])[:4]:
+        base = str(pair or "").lower().split("_", 1)[0].upper()
+        if base and base not in symbols:
+            symbols.append(base)
+    for item in list(_screen_cache or [])[:4]:
+        if not isinstance(item, dict):
+            continue
+        pair = str(item.get("pair_id") or "").lower().split("_", 1)[0].upper()
+        if pair and pair not in symbols:
+            symbols.append(pair)
+    if not symbols:
+        symbols.extend(["BTC", "ETH", "SOL"])
+    return symbols[:5]
+
+
 def _brain_thinking_loop():
     """Advisory-only conscience loop."""
     last_think = 0
@@ -7050,7 +7111,14 @@ def _brain_thinking_loop():
     while not _shutdown_event.is_set():
         try:
             if time.time() - last_think > interval:
-                _brain.think()
+                _brain.think(
+                    _brain_watch_symbols(),
+                    context={
+                        "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+                        "equity_idr": _current_balance_snapshot().get("equity_idr"),
+                        "free_cash_idr": _current_balance_snapshot().get("free_cash_idr"),
+                    },
+                )
                 last_think = time.time()
                 _write_runtime_note(force=True)
         except Exception as error:

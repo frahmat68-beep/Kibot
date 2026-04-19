@@ -16,6 +16,8 @@ try:
     import kibot_analyst as analyst
 except Exception:
     analyst = None
+from ki_brain import BrainManager
+from ki_global_scanner_mesh import GlobalScannerMesh
 from kibot_learning_engine import (
     LearningEngine,
     PairStats,
@@ -228,6 +230,51 @@ if manager is not None:
         finally:
             manager._daily_guard_state.clear()
             manager._daily_guard_state.update(old_guard_state)
+
+brain = BrainManager()
+with (
+    patch.object(brain, "_get_json", side_effect=[
+        {"quoteVolume": "1234567.89"},
+        [{"traded_currency": "btc", "base_currency": "idr", "ticker_id": "btc_idr"}],
+        {"coins": [{"id": "bitcoin"}]},
+    ]),
+    patch.object(brain, "_status_code", return_value=200),
+    patch.object(brain, "_get_finnhub_crypto_news", return_value=[
+        {"headline": "Bitcoin rally gains strength", "summary": "BTC breakout extends", "related": "BTC,ETH"},
+        {"headline": "Altcoins recover after selloff", "summary": "market stabilizes", "related": "BTC,SOL"},
+    ]),
+    patch.object(brain, "_get_tavily_market_brief", return_value={"answer": "Market turning constructive but still selective.", "results": []}),
+    patch.object(brain, "_get_tavily_symbol_brief", return_value={"answer": "BTC has positive catalysts with controlled risk.", "results": []}),
+    patch.object(brain, "_get_serper_market_brief", return_value={}),
+    patch.object(brain, "_get_serper_symbol_brief", return_value={}),
+):
+    snapshot = brain.think(["BTC"], context={"daily_pnl_pct": -0.002, "equity_idr": 120_000, "free_cash_idr": 50_000})
+    check("brain snapshot provider status", "tavily" in snapshot.get("provider_status", {}))
+    check("brain target recovery mode", snapshot.get("daily_target", {}).get("status") == "RECOVERY_MODE")
+    check("brain market pulse headline", bool(snapshot.get("market_pulse", {}).get("top_headlines")))
+    check("brain watch review headline count", int(snapshot.get("watch_reviews", [{}])[0].get("headline_count") or 0) >= 1)
+
+class _FakeScanner:
+    def __init__(self, exchange: str):
+        self.exchange = exchange
+        self.sent = []
+
+    def fetch_tickers(self):
+        return {"BTC": {"price": 1.0, "vol_usdt_24h": 10_000_000.0, "change_24h": 4.0, "change_1h": 3.0}}
+
+    def detect_signal(self, **kwargs):
+        return {"pair_indodax": "btc_idr", "exchange": self.exchange, "detection_score": 0.8}
+
+    def send_signal(self, signal):
+        self.sent.append(signal)
+
+    def _save_state(self):
+        return None
+
+mesh = GlobalScannerMesh(scanners=[_FakeScanner("BYBIT"), _FakeScanner("KUCOIN")], interval_s=1)
+cycle = mesh.run_once()
+check("scanner mesh scanned", cycle["total_scanned"] == 2)
+check("scanner mesh sent", cycle["total_sent"] == 2)
 
 if analyst is not None:
     check(

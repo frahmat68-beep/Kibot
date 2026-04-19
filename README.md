@@ -201,11 +201,19 @@ Daftar komponen sistem yang telah diaudit dan diperkeras untuk produksi 100%:
 
 ### [BrainAssist] — ✅ Production
 - **File**: `scripts/ki_brain.py`
-- **Fungsi**: Riset internet advisory-only untuk health check dan review simbol tanpa mengunci jalur order live.
+- **Fungsi**: Riset internet advisory-only untuk health check, market pulse, target hijau harian, dan review simbol via Finnhub/Tavily/Serper tanpa mengunci jalur order live.
 - **Dipanggil oleh**: `scripts/kibot_manager.py` dari thread `kibot-brain-thinking` untuk update status `brain_assist`.
 - **Log tag**: `[KIBOT][BRAIN]`
 - **Server**: Keduanya
-- **Diubah**: 2026-04-19
+- **Diubah**: 2026-04-20
+
+### [GlobalScannerMesh] — ✅ Production
+- **File**: `scripts/ki_global_scanner_mesh.py`
+- **Fungsi**: Menjalankan 4 scanner tambahan (Bybit, KuCoin, Crypto.com, MEXC) secara berurutan dalam satu proses hemat memori untuk melengkapi radar 5+1.
+- **Dipanggil oleh**: `infra/systemd/ki-global-scanner-mesh.service` saat node Tokyo butuh coverage global penuh tanpa 4 daemon terpisah.
+- **Log tag**: `[GLOBAL_SCANNER_MESH]`
+- **Server**: Tokyo
+- **Diubah**: 2026-04-20
 
 ### [KiStats] — ✅ Production
 - **File**: `scripts/ki_stats.py`
