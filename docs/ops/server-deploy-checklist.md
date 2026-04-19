@@ -8,7 +8,7 @@ Dokumen ini adalah checklist deploy untuk topologi aktif `main` / `kinance` / `k
 - Jalur yang sudah diverifikasi langsung:
   - breakout chart entry
   - hyper entry + trailing exit
-  - heartbeat timeout -> safe mode + emergency sell
+  - heartbeat timeout -> safe mode + suspend entry without panic sell
   - local position snapshot -> startup recovery fallback
 
 ## Active Systemd Set
