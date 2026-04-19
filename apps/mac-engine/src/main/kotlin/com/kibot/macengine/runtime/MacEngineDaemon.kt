@@ -32,6 +32,7 @@ import com.kibot.core.LeaseProtocolConfig
 import com.kibot.core.LiveLearningReviewBuilder
 import com.kibot.core.LiveRolloutGuard
 import com.kibot.core.LiveExecutionCoordinator
+import com.kibot.core.LiveExecutionResult
 import com.kibot.core.MarketRegimeAnalyzer
 import com.kibot.core.PairSelectionPolicy
 import com.kibot.core.PairSelector
@@ -871,8 +872,17 @@ class MacEngineDaemon(
     @Volatile private var pendingFatalAlertSince: Instant? = null
     @Volatile private var pendingFatalAlertKey: String? = null
     @Volatile private var fatalAlertSentForCurrentIncident: Boolean = false
+    @Volatile private var cachedManagerEntryGate: ManagerEntryGateSnapshot? = null
+    @Volatile private var managerEntryGateFetchedAt: Instant? = null
     private val toxicFlowStateByPair = loadToxicFlowState().entries.associateBy { it.pairId.lowercase() }.toMutableMap()
     private data class RecentExitSignal(val at: Instant, val reason: String)
+    private data class ManagerEntryGateSnapshot(
+        val fetchedAt: Instant,
+        val tradingAllowed: Boolean?,
+        val hardStopActive: Boolean,
+        val systemState: String?,
+        val degradedReason: String?,
+    )
     private val recentExitSignalByPair = java.util.concurrent.ConcurrentHashMap<String, RecentExitSignal>()
     private val hiveExtraUdpPeers: List<Pair<String, Int>> = run {
         val raw = System.getenv("KIBOT_HIVE_UDP_PEERS")
@@ -4844,11 +4854,18 @@ class MacEngineDaemon(
         }
 
         val lastHeartbeatAt = lastControlPlaneHeartbeatAt
-        val derivedEffectiveState = deriveEffectiveState(now, runtimeBotState, runtimeLease, healthDecision)
-        val derivedSyncHealth = if (healthDecision.reasons.isEmpty()) {
-            SyncHealth.HEALTHY
-        } else {
-            localHealth.syncHealth
+        val managerEntryBlockReason = resolveManagerEntryBlockReason(now)
+        val derivedEffectiveState = deriveEffectiveState(
+            now = now,
+            botState = runtimeBotState,
+            lease = runtimeLease,
+            healthDecision = healthDecision,
+            managerEntryBlockReason = managerEntryBlockReason,
+        )
+        val derivedSyncHealth = when {
+            managerEntryBlockReason != null && healthDecision.reasons.isEmpty() -> SyncHealth.DEGRADED
+            healthDecision.reasons.isEmpty() -> SyncHealth.HEALTHY
+            else -> localHealth.syncHealth
         }
         val displayBotState = runtimeBotState.copy(
             effectiveState = derivedEffectiveState,
@@ -4872,17 +4889,27 @@ class MacEngineDaemon(
                 weeklyReview = effectiveWeeklyReview,
                 recentOrders = effectiveRecentOrders,
                 supportEval = aiSupportEvaluation,
-                healthDecisionSummary = if (healthDecision.reasons.isEmpty()) {
-                    if (runtimeLease.isHeldBy(config.device.deviceId, now)) {
-                        strategyCycle?.summary?.joinToString(" ") ?: "Master healthy. Lease fenced and heartbeat current."
-                    } else {
-                        strategyCycle?.summary?.firstOrNull()
-                            ?: "Standby healthy, takeover ready when lease expires."
+                healthDecisionSummary = buildString {
+                    if (managerEntryBlockReason != null) {
+                        append("Manager gate blocked new entries: ")
+                        append(managerEntryBlockReason.replace('_', ' '))
+                        append(". ")
                     }
-                } else {
-                    healthDecision.reasons.joinToString(" ")
-                },
+                    append(
+                        if (healthDecision.reasons.isEmpty()) {
+                            if (runtimeLease.isHeldBy(config.device.deviceId, now)) {
+                                strategyCycle?.summary?.joinToString(" ") ?: "Master healthy. Lease fenced and heartbeat current."
+                            } else {
+                                strategyCycle?.summary?.firstOrNull()
+                                    ?: "Standby healthy, takeover ready when lease expires."
+                            }
+                        } else {
+                            healthDecision.reasons.joinToString(" ")
+                        },
+                    )
+                }.trim(),
                 upstreamMarker = lastPipelineMarkerLabel,
+                managerEntryBlockReason = managerEntryBlockReason,
             ),
         )
         maybeNotifyOperatorAlert(
@@ -6309,6 +6336,121 @@ class MacEngineDaemon(
                 )
             }
         }.getOrElse { emptyList() }
+    }
+
+    private fun parseJsonBoolean(value: String?): Boolean? = when (value?.trim()?.lowercase()) {
+        "true" -> true
+        "false" -> false
+        else -> null
+    }
+
+    private fun sanitizeManagerGateReason(reason: String): String = reason
+        .trim()
+        .lowercase()
+        .replace(Regex("[^a-z0-9]+"), "_")
+        .trim('_')
+        .ifBlank { "blocked" }
+
+    private fun fetchManagerEntryGate(now: Instant, force: Boolean = false): ManagerEntryGateSnapshot? {
+        val cached = cachedManagerEntryGate
+        val lastFetchedAt = managerEntryGateFetchedAt
+        if (!force && cached != null && lastFetchedAt != null) {
+            if ((now - lastFetchedAt).inWholeMilliseconds <= 1_500L) {
+                return cached
+            }
+        }
+        return runCatching {
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:9998/api/state"))
+                .timeout(Duration.ofSeconds(2))
+                .header("Accept", "application/json")
+                .GET()
+                .build()
+            val response = indodaxHistoryHttpClient.send(request, HttpResponse.BodyHandlers.ofString())
+            if (response.statusCode() !in 200..299) {
+                throw IllegalStateException("manager_http_${response.statusCode()}")
+            }
+            val root = json.parseToJsonElement(response.body()).jsonObject
+            ManagerEntryGateSnapshot(
+                fetchedAt = now,
+                tradingAllowed = parseJsonBoolean(root["tradingAllowed"]?.jsonPrimitive?.contentOrNull),
+                hardStopActive = parseJsonBoolean(root["hard_stop_active"]?.jsonPrimitive?.contentOrNull) == true,
+                systemState = root["system_state"]?.jsonPrimitive?.contentOrNull,
+                degradedReason = root["degradedReason"]?.jsonPrimitive?.contentOrNull,
+            )
+        }.onSuccess { snapshot ->
+            cachedManagerEntryGate = snapshot
+            managerEntryGateFetchedAt = now
+        }.getOrElse { error ->
+            if (cached != null) {
+                logger.warn(
+                    "MANAGER_GATE_FETCH_FAILED: using cached gate reason={} ageMs={}",
+                    error.message ?: error::class.simpleName ?: "unknown",
+                    lastFetchedAt?.let { (now - it).inWholeMilliseconds } ?: -1L,
+                )
+                cached
+            } else {
+                logger.error(
+                    "MANAGER_GATE_FETCH_FAILED: no cached gate available reason={}",
+                    error.message ?: error::class.simpleName ?: "unknown",
+                )
+                null
+            }
+        }
+    }
+
+    private fun resolveManagerEntryBlockReason(now: Instant): String? {
+        val snapshot = fetchManagerEntryGate(now) ?: return "manager_gate_unavailable"
+        val normalizedState = snapshot.systemState?.trim()?.uppercase()
+        val degradedReason = snapshot.degradedReason?.trim()?.takeIf { it.isNotBlank() }
+        if (snapshot.hardStopActive) {
+            return degradedReason ?: "manager_hard_stop_active"
+        }
+        if (snapshot.tradingAllowed == false) {
+            return degradedReason ?: normalizedState?.lowercase() ?: "manager_trading_disallowed"
+        }
+        if (normalizedState in setOf("SUSPENDED", "HALTED", "STOPPED")) {
+            return degradedReason ?: normalizedState?.lowercase() ?: "manager_state_blocked"
+        }
+        return null
+    }
+
+    private suspend fun submitEntryWithManagerGate(
+        now: Instant,
+        context: String,
+        executionPlan: com.kibot.shared.models.ExecutionPlan,
+        existingPersistedOrders: List<com.kibot.shared.models.OrderSnapshot>,
+        term: LeaseTerm,
+        bypassLeaseValidation: Boolean,
+    ): LiveExecutionResult {
+        resolveManagerEntryBlockReason(now)?.let { reason ->
+            val pairValue = executionPlan.signal.pairId.value
+            val normalizedReason = sanitizeManagerGateReason(reason)
+            lastRejectedReasonLabel = "MANAGER_GATE_BLOCKED[$context]: $reason"
+            lastRejectedReasonAt = now
+            logger.warn(
+                "[MANAGER_GATE_BLOCK] context={} pair={} reason={} bypassLeaseValidation={}",
+                context,
+                pairValue,
+                reason,
+                bypassLeaseValidation,
+            )
+            logWhyNotBuy(now, pairValue, "manager_gate_blocked_${normalizedReason}")
+            return LiveExecutionResult(
+                submitted = false,
+                message = "Manager gate blocked entry for $pairValue: $reason",
+            )
+        }
+        return liveExecutionCoordinator.submitEntry(
+            botId = config.controlPlane.botId,
+            deviceId = config.device.deviceId,
+            term = term,
+            executionPlan = executionPlan,
+            existingPersistedOrders = existingPersistedOrders,
+            exchange = exchange,
+            controlPlane = controlPlane,
+            bypassLeaseValidation = bypassLeaseValidation,
+        )
     }
 
     private fun maybeScheduleAsyncHoldingsResearch(
@@ -8285,15 +8427,12 @@ class MacEngineDaemon(
             )
 
             acquirePerSymbolExecutionLease(effectiveExecutionPlan.signal.pairId, now)
-            val result = liveExecutionCoordinator.submitEntry(
-                botId = config.controlPlane.botId,
-
-                deviceId = config.device.deviceId,
-                term = submissionLease.term,
+            val result = submitEntryWithManagerGate(
+                now = now,
+                context = "prioritized_main_loop",
                 executionPlan = finalExecutionPlan,
                 existingPersistedOrders = workingOrders,
-                exchange = exchange,
-                controlPlane = controlPlane,
+                term = submissionLease.term,
                 bypassLeaseValidation = earlyEmergencyOverride || pairScopedLeaseBypass,
             )
             result.order?.let {
@@ -8887,14 +9026,12 @@ class MacEngineDaemon(
             marketQuotes = marketQuotes,
         )
 
-        val result = liveExecutionCoordinator.submitEntry(
-            botId = config.controlPlane.botId,
-            deviceId = config.device.deviceId,
-            term = lease.term,
+        val result = submitEntryWithManagerGate(
+            now = now,
+            context = "buy_momentum_direct",
             executionPlan = finalPlan2,
             existingPersistedOrders = activePersistedOrders,
-            exchange = exchange,
-            controlPlane = controlPlane,
+            term = lease.term,
             bypassLeaseValidation = isEmergencyOverrideActive(now),
         )
         appendAuditLog(
@@ -9373,14 +9510,12 @@ class MacEngineDaemon(
         acquirePerSymbolExecutionLease(targetQuote.pairId, now)
         val result = try {
             logger.info("MARKER: SUBMITTING_LIVE_ORDER_TO_EXCHANGE pair={}", targetQuote.pairId.value)
-            liveExecutionCoordinator.submitEntry(
-                botId = config.controlPlane.botId,
-                deviceId = config.device.deviceId,
-                term = submissionLease.term,
+            submitEntryWithManagerGate(
+                now = now,
+                context = "dynamic_vip_entry",
                 executionPlan = finalPlan3,
                 existingPersistedOrders = activePersistedOrders,
-                exchange = exchange,
-                controlPlane = controlPlane,
+                term = submissionLease.term,
                 bypassLeaseValidation = bypassLeaseForEmergency,
             )
         } catch (e: Throwable) {
@@ -9741,14 +9876,12 @@ class MacEngineDaemon(
         acquirePerSymbolExecutionLease(targetQuote.pairId, now)
         val result = try {
             logger.info("MARKER: SUBMITTING_LIVE_ORDER_TO_EXCHANGE pair={}", targetQuote.pairId.value)
-            liveExecutionCoordinator.submitEntry(
-                botId = config.controlPlane.botId,
-                deviceId = config.device.deviceId,
-                term = submissionLease.term,
+            submitEntryWithManagerGate(
+                now = now,
+                context = "light_scalping_entry",
                 executionPlan = finalPlan4,
                 existingPersistedOrders = activePersistedOrders,
-                exchange = exchange,
-                controlPlane = controlPlane,
+                term = submissionLease.term,
                 bypassLeaseValidation = bypassLeaseForEmergency,
             )
         } catch (e: Throwable) {
@@ -10277,14 +10410,12 @@ class MacEngineDaemon(
                                     marketQuotes = marketQuotes,
                                 )
 
-                                val chaseResult = liveExecutionCoordinator.submitEntry(
-                                    botId = config.controlPlane.botId,
-                                    deviceId = config.device.deviceId,
-                                    term = lease.term,
+                                val chaseResult = submitEntryWithManagerGate(
+                                    now = now,
+                                    context = "order_chase_reprice",
                                     executionPlan = finalPlan5,
                                     existingPersistedOrders = recentOrders,
-                                    exchange = exchange,
-                                    controlPlane = controlPlane,
+                                    term = lease.term,
                                     bypassLeaseValidation = isEmergencyOverrideActive(now),
                                 )
                                 if (chaseResult.submitted) {
@@ -10295,14 +10426,12 @@ class MacEngineDaemon(
                                 return@forEach
                             }
                         }
-                        val chaseResult = liveExecutionCoordinator.submitEntry(
-                            botId = config.controlPlane.botId,
-                            deviceId = config.device.deviceId,
-                            term = lease.term,
+                        val chaseResult = submitEntryWithManagerGate(
+                            now = now,
+                            context = "order_chase_direct",
                             executionPlan = slicedChasePlan,
                             existingPersistedOrders = recentOrders,
-                            exchange = exchange,
-                            controlPlane = controlPlane,
+                            term = lease.term,
                             bypassLeaseValidation = isEmergencyOverrideActive(now),
                         )
                         if (chaseResult.submitted) {
@@ -10628,10 +10757,15 @@ class MacEngineDaemon(
         botState: BotStateSnapshot,
         lease: EngineLeaseSnapshot?,
         healthDecision: com.kibot.core.EntryHealthDecision,
+        managerEntryBlockReason: String?,
     ): BotEffectiveState {
         if (botState.desiredState == BotDesiredState.OFF) return BotEffectiveState.STOPPED
         val leaseHeld = lease.isHeldBy(config.device.deviceId, clock.now())
         return when {
+            managerEntryBlockReason != null &&
+                (managerEntryBlockReason.contains("hard_stop", ignoreCase = true) ||
+                    managerEntryBlockReason.contains("daily_loss_limit", ignoreCase = true)) -> BotEffectiveState.SAFE_MODE
+            managerEntryBlockReason != null -> BotEffectiveState.DEGRADED
             healthDecision.tradingAllowed -> BotEffectiveState.RUNNING
             leaseHeld -> BotEffectiveState.DEGRADED
             else -> BotEffectiveState.DEGRADED
@@ -10709,6 +10843,7 @@ class MacEngineDaemon(
         supportEval: com.kibot.aisupport.GeminiSupportEvaluation?,
         healthDecisionSummary: String,
         upstreamMarker: String,
+        managerEntryBlockReason: String? = null,
     ): com.kibot.macengine.state.MacDashboardState {
         val heartbeatInstant = botState.lastHeartbeatAt ?: lease?.lastHeartbeatAt
         val filteredRadarPairs = buildDisplayRadarPairs(
@@ -10969,10 +11104,21 @@ class MacEngineDaemon(
 	        val shouldSurfaceRecentOrder = latestRecentOrder != null && latestRecentOrderAgeMs <= 15 * 60 * 1000L
 	        val explicitRejectedReason = lastRejectedReasonForState(now)
 	        val forcedSafeModeActive = forcedSafeModeAt?.let { (now - it).inWholeMilliseconds <= 10.minutes.inWholeMilliseconds } == true
-	        val baseStatusMessage = when {
-	            forcedSafeModeActive ->
-	                "🛡️ Safe mode - ${forcedSafeModeReason ?: "waiting for clean conditions"}"
-	            botState.effectiveState == BotEffectiveState.SAFE_MODE ->
+		        val managerGateDisplayReason = managerEntryBlockReason
+		            ?.replace('_', ' ')
+		            ?.trim()
+		            ?.takeIf { it.isNotBlank() }
+		        val managerHardStopActive = managerGateDisplayReason != null &&
+		            (managerGateDisplayReason.contains("hard stop", ignoreCase = true) ||
+		                managerGateDisplayReason.contains("daily loss limit", ignoreCase = true))
+		        val baseStatusMessage = when {
+                    managerHardStopActive ->
+                        "🛑 Hard stop active - $managerGateDisplayReason"
+                    managerGateDisplayReason != null ->
+                        "🛡️ Entry suspended - $managerGateDisplayReason"
+		            forcedSafeModeActive ->
+		                "🛡️ Safe mode - ${forcedSafeModeReason ?: "waiting for clean conditions"}"
+		            botState.effectiveState == BotEffectiveState.SAFE_MODE ->
 	                "🛡️ Safe mode - waiting for clean conditions"
 	            localHealth.status == HealthStatus.CRITICAL ->
 	                "⚠️ Server problem: ${localHealth.warnings.firstOrNull().orEmpty()}".trim()
@@ -11194,7 +11340,7 @@ class MacEngineDaemon(
             }
         }.sortedByDescending { parseMonetaryLabel(it.valueIdrLabel) }
 
-        return com.kibot.macengine.state.MacDashboardState(
+	        return com.kibot.macengine.state.MacDashboardState(
             isBotRunning = botState.effectiveState != BotEffectiveState.STOPPED,
             effectiveState = botState.effectiveState,
             operatingMode = strategyCycle?.modeSnapshot?.mode?.name ?: botState.operatingMode.name,
@@ -11205,7 +11351,7 @@ class MacEngineDaemon(
             radarPairs = filteredRadarPairs,
             scanUniverseCount = scanUniverseCount,
             releaseLabel = if (config.releaseLabel.startsWith("#")) config.releaseLabel else "#${config.releaseLabel}",
-            liveExecutionEnabled = config.enableLiveExecution,
+	            liveExecutionEnabled = config.enableLiveExecution && managerEntryBlockReason == null,
             portfolioValueIdr = formatMonetary(portfolioValue),
             freeIdrLabel = formatMonetary(freeIdr),
             totalValueIdr = formatMonetary(portfolioValue),
@@ -13556,14 +13702,12 @@ class MacEngineDaemon(
             formatDecimal(allocatedIdr, 0),
         )
         acquirePerSymbolExecutionLease(bypassPair, now)
-        val result = liveExecutionCoordinator.submitEntry(
-            botId = config.controlPlane.botId,
-            deviceId = config.device.deviceId,
-            term = submissionLease.term,
+        val result = submitEntryWithManagerGate(
+            now = now,
+            context = "emergency_bypass_entry",
             executionPlan = normalized,
             existingPersistedOrders = activePersistedOrders,
-            exchange = exchange,
-            controlPlane = controlPlane,
+            term = submissionLease.term,
             bypassLeaseValidation = bypassLeaseValidation,
         )
         if (!result.submitted) {
