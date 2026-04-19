@@ -179,6 +179,14 @@ class LearningEngine:
                 return float(match.group(1)) / 100.0
             except Exception:
                 return None
+        match = re.search(r"\bat ([+-]?\d+(?:\.\d+)?)%", text, flags=re.IGNORECASE)
+        if match:
+            try:
+                value = float(match.group(1))
+            except Exception:
+                return None
+            if value < 0.0:
+                return value / 100.0
         return None
 
     @classmethod

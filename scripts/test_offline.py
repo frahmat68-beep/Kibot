@@ -92,6 +92,14 @@ if manager is not None:
             "exitReason": "EXIT PROFIT_EXIT req_idr qty=5.07552141 pnl=19.20% age=0.06h",
         }) or 0.0) > 0.0,
     )
+    check(
+        "normalize pnl accepts negative at-percent",
+        abs((manager._normalized_trade_net_pnl_pct({
+            "netPnlPct": -1.003,
+            "filledPrice": 0.0,
+            "exitReason": "ABSOLUTE_HARD_LOSS_CAP forced sell gtc_idr at -13.28%.",
+        }) or 0.0) - (-0.1328)) < 1e-9,
+    )
 
     with patch("kibot_manager._get_total_equity_estimate", return_value=84_000):
         check("minimum capital blocks tiny equity", not manager._check_minimum_capital())
@@ -238,6 +246,23 @@ if analyst is not None:
             "exitReason": "EXIT PROFIT_EXIT req_idr qty=5.07552141 pnl=19.20% age=0.06h",
         }) or 0.0) > 0.0,
     )
+    check(
+        "analyst normalize accepts negative at-percent",
+        abs((analyst._normalized_trade_net_pnl_pct({
+            "netPnlPct": -1.003,
+            "filledPrice": 0.0,
+            "exitReason": "ABSOLUTE_HARD_LOSS_CAP forced sell gtc_idr at -13.28%.",
+        }) or 0.0) - (-0.1328)) < 1e-9,
+    )
+    est_idr = analyst._normalized_trade_net_pnl_idr({
+        "netPnlIdr": -12731.96068354923,
+        "netPnlPct": -1.1941871202069578,
+        "filledPrice": 0.0,
+        "requestedPrice": 2504.0,
+        "filledAmount": 5.07552141,
+        "exitReason": "EXIT PROFIT_EXIT req_idr qty=5.07552141 pnl=19.20% age=0.06h",
+    })
+    check("analyst estimated idr repairs zero-price profit record", (est_idr or 0.0) > 0.0)
 
 detector = VWAPRegimeDetector()
 bullish = [{"close": 100 + i, "high": 101 + i, "low": 99 + i, "volume": 2000} for i in range(15)]

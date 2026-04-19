@@ -213,6 +213,15 @@ def _extract_reason_pnl_pct(exit_reason: Any) -> float | None:
         return None
     match = re.search(r"\bpnl=([+-]?\d+(?:\.\d+)?)%", text, flags=re.IGNORECASE)
     if not match:
+        match = re.search(r"\bat ([+-]?\d+(?:\.\d+)?)%", text, flags=re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            value = float(match.group(1))
+        except Exception:
+            return None
+        if value < 0.0:
+            return value / 100.0
         return None
     try:
         return float(match.group(1)) / 100.0
@@ -241,6 +250,66 @@ def _normalized_trade_net_pnl_pct(record: Dict[str, Any]) -> float | None:
             return inferred
         if filled_price_val is None or filled_price_val <= 0.0 or (direct_val < -0.90 and inferred > 0.0):
             return inferred
+    return direct_val
+
+
+def _normalized_trade_net_pnl_idr(record: Dict[str, Any]) -> float | None:
+    direct = record.get("netPnlIdr")
+    if direct is None:
+        direct = record.get("net_pnl_idr")
+    try:
+        direct_val = float(direct) if direct is not None else None
+    except Exception:
+        direct_val = None
+
+    pnl_pct = _normalized_trade_net_pnl_pct(record)
+    if pnl_pct is None:
+        return direct_val
+
+    requested_price = record.get("requestedPrice")
+    if requested_price is None:
+        requested_price = record.get("requested_price")
+    filled_price = record.get("filledPrice")
+    if filled_price is None:
+        filled_price = record.get("filled_price")
+    filled_amount = record.get("filledAmount")
+    if filled_amount is None:
+        filled_amount = record.get("filled_amount")
+    filled_idr = record.get("filledIdr")
+    if filled_idr is None:
+        filled_idr = record.get("filled_idr")
+    try:
+        requested_price_val = float(requested_price) if requested_price is not None else 0.0
+    except Exception:
+        requested_price_val = 0.0
+    try:
+        filled_price_val = float(filled_price) if filled_price is not None else 0.0
+    except Exception:
+        filled_price_val = 0.0
+    try:
+        filled_amount_val = float(filled_amount) if filled_amount is not None else 0.0
+    except Exception:
+        filled_amount_val = 0.0
+    try:
+        filled_idr_val = float(filled_idr) if filled_idr is not None else 0.0
+    except Exception:
+        filled_idr_val = 0.0
+
+    effective_notional = filled_idr_val
+    if effective_notional <= 0.0 and filled_price_val > 0.0 and filled_amount_val > 0.0:
+        effective_notional = filled_price_val * filled_amount_val
+    if effective_notional <= 0.0 and requested_price_val > 0.0 and filled_amount_val > 0.0:
+        effective_notional = requested_price_val * filled_amount_val
+    estimated = None
+    if effective_notional > 0.0 and pnl_pct > -0.95:
+        estimated = (effective_notional * pnl_pct) / (1.0 + pnl_pct)
+
+    if direct_val is None:
+        return estimated
+    if estimated is None:
+        return direct_val
+    if filled_price_val <= 0.0 and ((direct_val < 0.0 < pnl_pct) or abs(direct_val) <= 1e-9 or abs(direct_val) > effective_notional * 1.5):
+        return estimated
     return direct_val
 
 
@@ -365,7 +434,7 @@ def _update_daily_summary() -> Dict[str, Any]:
             "losses": len(losses),
             "win_rate": round(len(wins) / max(1, len(sells)), 3),
             "total_net_pnl_pct": round(sum(pnl for _, pnl in normalized_sells), 4),
-            "total_net_pnl_idr": round(sum(float(sell.get("net_pnl_idr", 0.0)) for sell in sells), 0),
+            "total_net_pnl_idr": round(sum((_normalized_trade_net_pnl_idr(sell) or 0.0) for sell in sells), 0),
             "total_fee_idr": round(total_fee, 0),
             "market_order_count": len(market_orders),
             "market_order_rate": round(len(market_orders) / max(1, len(trades)), 3),
