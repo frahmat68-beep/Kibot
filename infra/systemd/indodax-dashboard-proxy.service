@@ -6,11 +6,11 @@ Wants=network-online.target kidax-engine.service
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/KiDax
+WorkingDirectory=/home/ubuntu/KiBot
 Environment=KIBOT_PROXY_UPSTREAM=http://127.0.0.1:8788
 Environment=KIBOT_PROXY_LISTEN_HOST=0.0.0.0
 Environment=KIBOT_PROXY_LISTEN_PORT=8787
-ExecStart=/usr/bin/python3 /home/ubuntu/KiDax/infra/scripts/indodax_dashboard_proxy.py
+ExecStart=/usr/bin/python3 /home/ubuntu/KiBot/infra/scripts/indodax_dashboard_proxy.py
 Restart=always
 RestartSec=2
 StandardOutput=journal

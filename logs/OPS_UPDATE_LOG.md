@@ -79,3 +79,39 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
   - Topologi aktif 2 server kembali sinkron sesuai peran: SG sebagai executor yang patuh hard-stop, Tokyo sebagai scanner/radar yang sehat tanpa terseret suspend manager lokal.
   - Tidak ada bukti BUY/Sell liar baru selama soak pascadeploy.
   - Repo sekarang punya logbook operasi wajib + checklist deploy yang lebih jujur terhadap runtime aktif.
+
+### 2026-04-19 22:27 WIB — Brain Advisory Hardening, Path Cleanup, dan Soak Manager 10 Menit
+- Status: FIXED
+- Temuan:
+  - Worktree lokal sempat berisi integrasi `ki_brain.py` yang memanggil web/LLM research sinkron langsung dari `_can_enter()`.
+  - Modul `ki_brain.py` / `ki_stats.py` awal bergantung pada paket yang tidak tersedia default (`google.generativeai`, `tavily`, `duckduckgo_search`, `finnhub`, `numpy`, `pandas`), sehingga rawan membuat manager gagal start jika langsung dideploy.
+  - Ada split-brain dokumentasi antara `ops_update_logs.md` dan `logs/OPS_UPDATE_LOG.md`.
+  - Beberapa doc dan script operasional masih menunjuk path lama `KiDax/` / `Kinance/`, padahal topologi aktif sekarang memakai `/home/ubuntu/KiBot`.
+- Akar masalah:
+  - Brain assist baru dipasang di hot path trading, bukan di jalur advisory/review.
+  - Integrasi baru tidak mematuhi prinsip dependency-light untuk runtime manager.
+  - Logbook operasi tidak punya satu sumber kebenaran yang jelas.
+  - Dokumen deploy/recovery belum seluruhnya mengikuti penempatan server aktif terbaru.
+- Perbaikan:
+  - Brain assist dipindah jadi advisory-only background loop; jalur entry live sekarang hanya memakai stat sanity check lokal (`STATS_REJECT`) dan tidak lagi menunggu web research.
+  - `ki_brain.py` ditulis ulang jadi ringan berbasis stdlib/`urllib` + timeout ketat; `ki_stats.py` ditulis ulang ke stdlib tanpa `numpy/pandas`.
+  - Manager sekarang mengekspos `brain_assist` ke `runtime_note.json` dan `/api/state`.
+  - `ops_update_logs.md` dijadikan pointer ke logbook kanonik `logs/OPS_UPDATE_LOG.md`.
+  - Doc dan script operasional aktif dirapikan ke root `/home/ubuntu/KiBot`.
+- Verifikasi:
+  - Local:
+    - `python3 -m py_compile scripts/kibot_manager.py scripts/ki_brain.py scripts/ki_stats.py scripts/test_brain_integration.py`
+    - `python3 scripts/test_brain_integration.py`
+    - `python3 tests/test_whatif_complete.py`
+    - `python3 scripts/trinity_production_test.py`
+  - Deploy:
+    - Push head: `8475aa82`
+    - Files deployed manual via SSH ke dua server: `scripts/kibot_manager.py`, `scripts/ki_brain.py`, `scripts/ki_stats.py`
+    - Service restarted: `kibot-manager` pada `213.35.118.26` dan `152.69.218.198`
+  - Soak 10 menit:
+    - SG: manager tetap `SUSPENDED` karena `daily_loss_limit_hit`, `brain_assist` tampil normal di `/api/state`, executor tetap `tradingAllowed=false`/`hardStopActive=true`, tidak ada `EXECUTION_BUY` baru.
+    - Tokyo: manager tetap `SUSPENDED` karena `math_review_recovery_impossible`, `brain_assist` tampil normal di `/api/state`, `kinance-engine` tetap `RUNNING/HEALTHY`.
+- Hasil:
+  - Otak sistem tetap hidup, sadar internet, dan terlihat di state API, tetapi tidak lagi mengganggu jalur order live.
+  - Topologi aktif tetap disiplin: SG menjaga modal lewat hard-stop, Tokyo tetap sehat sebagai radar/scanner, dan tidak muncul traceback baru dari manager pascadeploy.
+  - Penempatan operasional aktif sekarang lebih konsisten antara repo, script deploy, dan server live.

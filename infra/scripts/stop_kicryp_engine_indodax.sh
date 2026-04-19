@@ -6,7 +6,7 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-KIDAX_ENV="/home/ubuntu/KiDax/.env.kidax"
+KIDAX_ENV="/home/ubuntu/KiBot/.env.kibot"
 BINANCE_HOST="152.69.218.198"
 KIDAX_DROPIN_DIR="/etc/systemd/system/kidax-engine.service.d"
 KIDAX_DROPIN_FILE="${KIDAX_DROPIN_DIR}/binance-kibot-routing.conf"

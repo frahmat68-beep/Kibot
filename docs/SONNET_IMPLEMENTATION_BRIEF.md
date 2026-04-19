@@ -374,8 +374,8 @@ private fun classifyBucket(
 
 | Node | IP | Key Path | Deploy Path |
 |------|-----|----------|-------------|
-| KiDax | 213.35.118.26 | `SSH_INDODAX/ssh-key-2026-03-22.key` | `/home/ubuntu/KiDax/` |
-| Kinance | 152.69.218.198 | `SSH_BINANCE/ssh-key-2026-03-27.key` | `/home/ubuntu/Kinance/` |
+| KiDax | 213.35.118.26 | `SSH_INDODAX/ssh-key-2026-03-22.key` | `/home/ubuntu/KiBot/` |
+| Kinance | 152.69.218.198 | `SSH_BINANCE/ssh-key-2026-03-27.key` | `/home/ubuntu/KiBot/` |
 
 **SSH Commands:**
 ```bash
@@ -388,12 +388,12 @@ ssh -i SSH_BINANCE/ssh-key-2026-03-27.key ubuntu@152.69.218.198
 
 **Restart Services:**
 ```bash
-# After kicryp_manager.py changes:
-sudo systemctl restart kicryp-manager
+# After kibot_manager.py changes:
+sudo systemctl restart kibot-manager
 
 # After Kotlin changes (rebuild JAR first):
 ./gradlew :apps:mac-engine:shadowJar
-scp apps/mac-engine/build/libs/mac-engine-all.jar ubuntu@213.35.118.26:/home/ubuntu/KiDax/server/
+scp apps/mac-engine/build/libs/mac-engine-all.jar ubuntu@213.35.118.26:/home/ubuntu/KiBot/server/
 ssh ubuntu@213.35.118.26 "sudo systemctl restart kidax-engine"
 ```
 
@@ -404,8 +404,8 @@ ssh ubuntu@213.35.118.26 "sudo systemctl restart kidax-engine"
 Setelah setiap task, **WAJIB** verifikasi dengan log:
 
 ```bash
-# Check kicryp_manager logs
-ssh ubuntu@213.35.118.26 "journalctl -u kicryp-manager -f --no-pager -n 50"
+# Check kibot_manager logs
+ssh ubuntu@213.35.118.26 "journalctl -u kibot-manager -f --no-pager -n 50"
 
 # Check kidax logs
 ssh ubuntu@213.35.118.26 "journalctl -u kidax-engine -f --no-pager -n 50"

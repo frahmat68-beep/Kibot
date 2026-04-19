@@ -31,9 +31,9 @@ deploy_kinance() {
   echo "==> Deploy KiNance ($KINANCE_HOST)"
   ssh_run "$KINANCE_KEY" "$KINANCE_USER" "$KINANCE_HOST" "$KINANCE_PORT" "bash -se" <<'REMOTE'
 set -euo pipefail
-APP_ROOT="/home/ubuntu/KiNance"
-REPO_ROOT="/home/ubuntu/KiNance/repo"
-ENV_FILE="/home/ubuntu/KiNance/.env.kinance"
+APP_ROOT="/home/ubuntu/KiBot"
+REPO_ROOT="/home/ubuntu/KiBot/repo"
+ENV_FILE="/home/ubuntu/KiBot/.env.kibot"
 SERVICE_NAME="kinance-engine"
 RUNTIME_PORT="8788"
 REPO_URL="https://github.com/frahmat68-beep/Kibot.git"
@@ -140,8 +140,8 @@ deploy_kidax() {
   echo "==> Deploy KiDax ($KIDAX_HOST)"
   ssh_run "$KIDAX_KEY" "$KIDAX_USER" "$KIDAX_HOST" "$KIDAX_PORT" "bash -se" <<'REMOTE'
 set -euo pipefail
-APP_ROOT="/home/ubuntu/KiDax"
-ENV_FILE="/home/ubuntu/KiDax/.env.kidax"
+APP_ROOT="/home/ubuntu/KiBot"
+ENV_FILE="/home/ubuntu/KiBot/.env.kibot"
 SERVICE_NAME="kidax-engine"
 RUNTIME_PORT="8788"
 BRANCH="main"

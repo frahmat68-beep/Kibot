@@ -20,14 +20,14 @@
 - `BOT_ID=kidax`
 - `BOT_PROFILE_KEY=kidax`
 - `KIBOT_EXCHANGE_KIND=INDODAX`
-- root `/home/ubuntu/KiDax`
+- root `/home/ubuntu/KiBot`
 - port `8787`
 
 ### Kinance
 - `BOT_ID=kinance`
 - `BOT_PROFILE_KEY=kinance`
 - `KIBOT_EXCHANGE_KIND=BINANCE_SPOT`
-- root `/home/ubuntu/Kinance`
+- root `/home/ubuntu/KiBot`
 - port `8788`
 
 ### KiCryp

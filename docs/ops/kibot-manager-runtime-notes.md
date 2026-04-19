@@ -30,7 +30,7 @@ Dokumen ini menjelaskan state ringan yang dipakai `KiCryp manager` supaya keputu
 - `recent_events`
   - event terakhir seperti `ai_provider_success`, `ai_provider_failure`, `emergency_veto_sell`, `active_positions_snapshot`
 - `trinity_heartbeat_emit`
-  - heartbeat UDP ringan dari `kicryp-manager` supaya node lain tidak masuk safe mode karena peer `kicryp` dianggap hilang
+  - heartbeat UDP ringan dari `kibot-manager` supaya node lain tidak masuk safe mode karena peer Python commander dianggap hilang
 - `lastLeadLagSignalAgeMs`
   - age sinyal lead-lag terakhir yang diproses engine, buat audit freshness feed dan stale signal
 
@@ -49,7 +49,7 @@ Dokumen ini menjelaskan state ringan yang dipakai `KiCryp manager` supaya keputu
 - Provider yang paling sering sukses akan naik prioritas otomatis di routing berikutnya.
 
 ## Catatan Operasional
-- Jika `runtime_note.json` berhenti update padahal `kicryp-manager.service` hidup, curigai loop AI/router macet.
+- Jika `runtime_note.json` berhenti update padahal `kibot-manager.service` hidup, curigai loop AI/router macet.
 - Jika semua provider masuk cooldown, KiCryp tetap jalan sebagai veto/watchdog dasar, tapi kualitas correlation AI akan turun sementara.
 - Cek `daily_summary.json` untuk lihat provider mana yang sering gagal, berapa veto reject, dan pair apa yang sempat masuk blacklist hari ini.
 - Untuk server RAM kecil, target aman KiCryp manager adalah tetap di bawah `MemoryMax=192M`.

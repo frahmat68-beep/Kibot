@@ -11,7 +11,7 @@ TEMP_DIR="$(mktemp -d)"
 REMOTE_TMP_DIR="/tmp/kibot-deploy-$$"
 trap 'rm -rf "${TEMP_DIR}"' EXIT
 
-KIDAX_ROOT="/home/ubuntu/KiDax"
+KIDAX_ROOT="/home/ubuntu/KiBot"
 KIBOT_ROOT="/home/ubuntu/KiBot"
 KIDAX_PORT="8787"
 KIBOT_PORT="8789"

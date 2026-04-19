@@ -6,7 +6,7 @@ ENV_LOCAL="${ROOT_DIR}/.env"
 SSH_KEY="${ROOT_DIR}/ssh-key-2026-03-22.key"
 HOST="${KIBOT_SSH_HOST:-213.35.118.26}"
 USER_NAME="${KIBOT_SSH_USER:-ubuntu}"
-REMOTE_ENV="/home/ubuntu/KiDax/.env.kidax"
+REMOTE_ENV="/home/ubuntu/KiBot/.env.kibot"
 REMOTE_SERVICE="${KIBOT_REMOTE_SERVICE:-kidax-engine}"
 REMOTE_RESTART_DELAY="${KIBOT_REMOTE_RESTART_DELAY:-4}"
 

@@ -19,16 +19,16 @@
 
 ## Remote Layout
 ### KiDax
-- root: `/home/ubuntu/KiDax`
-- env: `/home/ubuntu/KiDax/.env.kidax`
+- root: `/home/ubuntu/KiBot`
+- env: `/home/ubuntu/KiBot/.env.kibot`
 - service: `kidax-engine.service`
 - dashboard port: `8787`
 - exchange kind: `INDODAX`
 - bot id: `kidax`
 
 ### Kinance
-- root: `/home/ubuntu/Kinance`
-- env: `/home/ubuntu/Kinance/.env.kinance`
+- root: `/home/ubuntu/KiBot`
+- env: `/home/ubuntu/KiBot/.env.kibot`
 - service: `kinance-engine.service`
 - dashboard port: `8788`
 - exchange kind: `BINANCE_SPOT`

@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-RUNTIME_ROOT="${KIBOT_RUNTIME_ROOT:-/home/ubuntu/KiDax}"
+RUNTIME_ROOT="${KIBOT_RUNTIME_ROOT:-/home/ubuntu/KiBot}"
 SERVICE_NAME="${KIBOT_SERVICE_NAME:-kidax-engine}"
 DASHBOARD_PORT="${KIBOT_DASHBOARD_PORT:-8787}"
 LOG_FILE="${KIBOT_RECOVERY_LOG_FILE:-${RUNTIME_ROOT}/kibot-recovery.log}"

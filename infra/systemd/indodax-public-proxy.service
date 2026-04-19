@@ -6,8 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/KiDax
-ExecStart=/usr/bin/python3 /home/ubuntu/KiDax/scripts/indodax_public_proxy.py
+WorkingDirectory=/home/ubuntu/KiBot
+ExecStart=/usr/bin/python3 /home/ubuntu/KiBot/infra/scripts/indodax_public_proxy.py
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal
