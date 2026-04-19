@@ -115,3 +115,50 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
   - Otak sistem tetap hidup, sadar internet, dan terlihat di state API, tetapi tidak lagi mengganggu jalur order live.
   - Topologi aktif tetap disiplin: SG menjaga modal lewat hard-stop, Tokyo tetap sehat sebagai radar/scanner, dan tidak muncul traceback baru dari manager pascadeploy.
   - Penempatan operasional aktif sekarang lebih konsisten antara repo, script deploy, dan server live.
+
+### 2026-04-19 23:34 WIB — Legacy PnL Repair, Analyst Sync, dan Soak Final 10 Menit
+- Status: FIXED
+- Temuan:
+  - Log trade hari ini masih mengandung SELL yang tertulis seperti untung padahal `netPnlPct`/`netPnlIdr` negatif, dan banyak fill market tercatat `filledPrice=0.0`.
+  - `kibot-analyst` sebelumnya membaca log yang salah (`state/analyst/trade_log.jsonl`), sehingga ringkasan harian bisa kosong/template walau trade live sudah terjadi.
+  - `math_review` di manager bisa salah menghitung `trades_to_recover = inf` saat loss hari itu sebenarnya nol, lalu masuk loop `math_review_recovery_impossible`.
+  - Jalur `record_trade(...)` ke learning engine punya mismatch signature tersembunyi, sehingga event fill berisiko gagal masuk ke otak belajar.
+- Akar masalah:
+  - Parser lama terlalu permisif: string alasan seperti `forced sell ... at 33.36%` bisa dianggap PnL walau itu bukan field `pnl=...%`.
+  - Historis log live hari ini sudah terkorup oleh fill price nol, jadi summarizer lama membaca data mentah yang salah.
+  - Rumus review matematika tidak memisahkan kondisi `current_loss_idr <= 0`.
+  - `kibot_learning_engine.record_trade()` belum menerima metadata `used_limit_order` yang sudah dikirim manager.
+- Perbaikan:
+  - Disiplin parser diperketat di manager, learning engine, dan analyst:
+    - hanya percaya `pnl=...%`
+    - masih menerima pola `at -...%` untuk loss legacy
+    - mengabaikan pola `at +...%` generik yang sering menipu.
+  - `kibot_analyst.py` sekarang memakai log kanonik `state/trade_log.jsonl`, tetap merge file legacy analyst bila ada, lalu normalisasi ulang PnL pct/IDR untuk record historis yang rusak.
+  - `TradeLogger.kt` dikeraskan agar fill price/nilai nol di masa depan difallback ke `requestedPrice` dan `price * amount`, plus mirror log ke path analyst agar tidak split-brain lagi.
+  - `math_review` diperbaiki supaya loss nol tidak memicu `need inf`/`recovery impossible`.
+  - `record_trade(...)` dibuat backward-compatible dengan argumen metadata dari manager.
+  - `ki_brain.py` optional dependency probe dibungkus aman supaya tidak memunculkan warning namespace `google` di runtime.
+- Verifikasi:
+  - Local:
+    - `python3 -m py_compile scripts/kibot_manager.py scripts/kibot_learning_engine.py scripts/kibot_analyst.py scripts/ki_brain.py scripts/test_offline.py`
+    - `python3 scripts/test_offline.py` → `RESULT 21 PASS 0 FAIL`
+    - `python3 tests/test_whatif_complete.py` → `200/200`
+    - `python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
+    - `./gradlew :apps:mac-engine:compileKotlin :apps:mac-engine:fatJar --no-daemon`
+  - Deploy:
+    - Push head berurutan: `c705fdb0`, `82c8c2b0`, `56a56a5d`
+    - Host disentuh: `213.35.118.26` dan `152.69.218.198`
+    - Artifact deployed: `8c72dee8c6cb457bff750fa21f25ef5f6fe799d089f37dae87401f502be935ae`
+    - Files deployed manual via SSH: `server/mac-engine-all.jar`, `scripts/kibot_manager.py`, `scripts/kibot_learning_engine.py`, `scripts/kibot_analyst.py`, `scripts/ki_brain.py`
+    - Restart:
+      - SG: `kibot-manager`, `kibot-analyst`, `kidax-engine`
+      - Tokyo: `kibot-manager`, `kibot-analyst`, `kinance-engine`
+  - Soak 10 menit:
+    - SG `213.35.118.26`: manager tetap `SUSPENDED` karena `daily_loss_limit_hit`, engine `tradingAllowed=false` dan `hardStopActive=true`, tidak ada `EXECUTION_BUY` baru selama soak.
+    - SG analyst summary tidak lagi `no_trades`, tetapi membaca 14 trade hari ini dengan total PnL yang selaras ke arah rugi, bukan template untung palsu.
+    - Tokyo `152.69.218.198`: false loop `need inf` / `Recovery too far` tidak muncul lagi; `kinance-engine` tetap `RUNNING/HEALTHY`.
+    - Tidak ada warning baru dari `ki_brain.py` sesudah patch probe dependency.
+- Hasil:
+  - Jalur hitung untung/rugi, review matematika, analyst summary, dan feed learning sekarang jauh lebih jujur terhadap kondisi trade live.
+  - Sistem tetap disiplin: SG menahan entry sampai reset harian berikutnya, sementara patch logger/analyst yang baru membuat trade hari berikutnya tercatat lebih bersih dan lebih bisa dipelajari.
+  - Topologi aktif 2 server kembali normal dalam mode proteksi yang benar, bukan normal palsu karena salah baca log.

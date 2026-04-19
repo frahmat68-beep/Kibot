@@ -11,4 +11,4 @@ tidak salah arah. Log operasional runtime yang wajib di-update ada di:
 - Kalau ada file ini dibuka duluan, tulis update di log kanonik lalu opsional tambahkan pointer singkat di sini.
 
 ## Pointer Terakhir
-- Audit/deploy/soak terbaru: lihat entry `2026-04-19 14:55 WIB` di `logs/OPS_UPDATE_LOG.md`.
+- Audit/deploy/soak terbaru: lihat entry `2026-04-19 23:34 WIB` di `logs/OPS_UPDATE_LOG.md`.
