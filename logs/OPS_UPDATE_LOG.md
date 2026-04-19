@@ -256,3 +256,31 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
   - SG tidak lagi berhenti hanya karena gagal memenuhi ambang modal statis.
   - Sistem tetap disiplin karena adaptive profile masih bisa pause saat free cash di bawah floor atau hard stop aktif.
   - Supabase free tier lebih hemat karena history/snapshot non-kritis tidak lagi di-push terus-menerus.
+
+## 2026-04-20 02:12 WIB — Deploy Final Adaptive Capital + HTTP Noise Fix
+- Deploy:
+  - Push `main`:
+    - `6963cfba` `feat: make brain capital-adaptive and local-first`
+    - `14fd2fe7` `fix: suppress manager http broken pipe noise`
+  - Host deployed:
+    - `213.35.118.26` (`kibot-manager`, `kidax-engine`)
+    - `152.69.218.198` (`kibot-manager`, `kinance-engine`, `ki-global-scanner-mesh`)
+- Hasil live:
+  - SG:
+    - `/api/state` sekarang menunjukkan `tradingAllowed=true`, `hard_stop_active=false`, `system_state=HEALTHY`.
+    - `capital_health.status=ADAPTIVE_MICRO`.
+    - Adaptive profile aktif: equity sekitar `Rp56.183`, max position sekitar `Rp10.113`, reason `micro_balance_preservation`.
+    - `brain_assist.daily_target.strategy_next` terisi dan selaras dengan mode modal kecil.
+    - Remote scanner feed tetap hidup setelah restart: `cycles_seen` dan `signals_ingested` terus bertambah, log `MSC_RECV` muncul stabil.
+  - Tokyo:
+    - `kibot-manager`, `kinance-engine`, dan `ki-global-scanner-mesh` aktif.
+    - Mesh stabil scan `~3515` simbol tiap siklus dengan `sent` berubah dinamis sesuai kondisi.
+    - State lokal Tokyo tetap `tradingAllowed=false` karena node ini bukan executor dan tidak punya snapshot equity lokal, bukan karena crash.
+- Bug tambahan yang ketemu saat soak:
+  - `BrokenPipeError` dari HTTP `/api/state` ketika client menutup koneksi lebih dulu.
+- Perbaikan:
+  - Handler HTTP manager sekarang pakai safe writer dan hanya log ringan `[KIBOT][HTTP] ... closed/reset response`.
+- Verifikasi pasca-fix:
+  - Setelah redeploy ulang manager, soak tambahan bersih dari `Traceback` dan `BrokenPipeError`.
+  - SG tetap menerima feed scanner dan menjaga state `ADAPTIVE_MICRO`.
+  - Tokyo mesh tetap berjalan tanpa restart loop baru.
