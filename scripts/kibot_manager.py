@@ -6756,7 +6756,12 @@ def _http_state_payload() -> Dict[str, Any]:
     runtime_state = _fetch_local_runtime_state(timeout_sec=0.35, max_cache_age_sec=2.5)
     equity_estimate = _extract_equity_estimate(runtime_state)
     with _state_lock:
-        manager_trading_allowed = (not _entry_state_is_suspended()) and not bool(_daily_guard_state.get("hard_stopped"))
+        capital_sufficient = equity_estimate is not None and equity_estimate >= MINIMUM_VIABLE_CAPITAL_IDR
+        manager_trading_allowed = (
+            (not _entry_state_is_suspended())
+            and not bool(_daily_guard_state.get("hard_stopped"))
+            and capital_sufficient
+        )
         runtime_trading_allowed = runtime_state.get("tradingAllowed")
         effective_state = str(runtime_state.get("effectiveState") or ("RUNNING" if manager_trading_allowed else "DEGRADED"))
         trading_allowed = (
@@ -6764,7 +6769,6 @@ def _http_state_payload() -> Dict[str, Any]:
             if isinstance(runtime_trading_allowed, bool)
             else manager_trading_allowed
         )
-        capital_sufficient = equity_estimate is not None and equity_estimate >= MINIMUM_VIABLE_CAPITAL_IDR
         return {
             "ok": True,
             "service": "kibot-manager",
