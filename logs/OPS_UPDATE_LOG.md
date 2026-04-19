@@ -162,3 +162,68 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
   - Jalur hitung untung/rugi, review matematika, analyst summary, dan feed learning sekarang jauh lebih jujur terhadap kondisi trade live.
   - Sistem tetap disiplin: SG menahan entry sampai reset harian berikutnya, sementara patch logger/analyst yang baru membuat trade hari berikutnya tercatat lebih bersih dan lebih bisa dipelajari.
   - Topologi aktif 2 server kembali normal dalam mode proteksi yang benar, bukan normal palsu karena salah baca log.
+
+### 2026-04-20 01:01 WIB — External Brain Intel + 5+1 Scanner Feed Recovery
+- Status: FIXED
+- Temuan:
+  - Paket eksternal `google.generativeai`, `tavily`, `duckduckgo_search`, `finnhub`, `numpy`, `pandas`, dan `ta-lib` belum benar-benar dipakai di jalur produksi live.
+  - Topologi `5+1` belum nyambung penuh: `ki-global-scanner-mesh` di Tokyo aktif, tetapi feed auxiliary scanner tidak pernah sampai ke SG manager.
+  - Akar awalnya ada dua:
+    - push UDP Tokyo → SG sempat salah port (`9999` vs bind SG `9998`) lalu tetap tidak bisa diandalkan karena jalur publik lintas node setengah tertutup.
+    - mirror awal ke Supabase gagal `401 Unauthorized` karena anon key hanya boleh read, sedangkan insert ke `logs` kena RLS.
+- Akar masalah:
+  - Arsitektur lama terlalu percaya cross-server UDP publik untuk path kritis scanner.
+  - Manager state server di dua node hanya bind `127.0.0.1`, jadi fallback TCP/HTTP publik tidak bisa dipakai sebagai jalur stabil.
+  - Mirror scanner ke control-plane belum memakai bearer token owner yang sesuai policy Supabase.
+- Perbaikan:
+  - `ki_brain.py` tetap diposisikan advisory-only, tetapi sekarang benar-benar memakai intel eksternal yang ringan dan realistis untuk host 1 GB:
+    - `Tavily` dan `Finnhub` aktif via REST.
+    - `Serper` dipasang sebagai standby/fallback.
+    - `daily green target` dimasukkan ke snapshot brain agar sistem sadar target PnL hijau harian.
+  - `ki_global_scanner_mesh.py` diubah:
+    - tetap scan 4 auxiliary exchanges dalam satu proses hemat RAM.
+    - menulis feed lokal kanonik `state/scanners/global_scanner_feed.json`.
+    - mirror cycle scanner ke Supabase dengan login password grant + token cache, bukan anon key mentah.
+  - `kibot_manager.py` di SG diubah:
+    - background loop baru `REMOTE_SCANNER_FEED` menarik cycle scanner Tokyo dari control-plane.
+    - SG manager lalu memproses feed itu ke jalur nyata `MultiScannerEngine -> MSC -> relay`.
+    - state API dan runtime note sekarang menampilkan status `remote_scanner_feed`.
+  - State suspended/hard-stop setelah ganti hari tetap dibiarkan auto-reset sesuai guard yang sudah ada; audit live malam ini menunjukkan kedua node kembali `HEALTHY` setelah rollover.
+- Verifikasi:
+  - Riset/live connectivity:
+    - `Tavily` key teruji lewat REST search.
+    - `Serper` key teruji lewat Google Search API.
+    - `Finnhub` key teruji lewat endpoint crypto news/symbol.
+  - Local:
+    - `python3 -m py_compile scripts/ki_global_scanner_mesh.py scripts/kibot_manager.py scripts/test_offline.py scripts/test_brain_integration.py`
+    - `python3 scripts/test_offline.py` → `29 PASS 0 FAIL`
+    - `python3 scripts/test_brain_integration.py`
+    - `python3 tests/test_whatif_complete.py` → `200/200 PASS`
+    - `python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
+    - `./gradlew :apps:mac-engine:compileKotlin --no-daemon`
+  - Deploy manual SSH:
+    - Host disentuh: `213.35.118.26` dan `152.69.218.198`
+    - File deployed:
+      - SG: `scripts/kibot_manager.py`
+      - Tokyo: `scripts/kibot_manager.py`, `scripts/ki_global_scanner_mesh.py`
+    - Runtime env:
+      - SG: `KIBOT_REMOTE_SCANNER_FEED_ENABLED=true`
+      - Tokyo: `KIBOT_SCANNER_SUPABASE_MIRROR_ENABLED=true`
+  - Soak final 10 menit:
+    - SG:
+      - `kibot-manager` dan `kidax-engine` aktif.
+      - `/api/state` menunjukkan `system_state=HEALTHY`, `tradingAllowed=false` karena modal belum memenuhi `minimum_viable_capital`, bukan karena crash/suspend palsu.
+      - `remote_scanner_feed` hidup: `cycles_seen` bertambah, `signals_ingested` bertambah, dan log `MSC_RECV` dari feed Tokyo muncul terus.
+      - Tidak ada `Traceback`, `REMOTE_SCANNER_FEED WARN`, atau `EGRESS_ERR` baru selama soak final.
+    - Tokyo:
+      - `kibot-manager`, `kinance-engine`, `ki-global-scanner-mesh` aktif.
+      - Setelah restart auth fix, warning `401 Unauthorized` hilang dan mesh berjalan stabil tiap 30 detik.
+      - RAM masih ketat tetapi tetap stabil (`954 MiB` total, available sekitar `216 MiB`, swap terpakai `315 MiB` saat audit akhir).
+- Hasil:
+  - Jalur `5+1` sekarang benar-benar terintegrasi ke SG manager lewat control-plane yang survive terhadap limitasi jaringan publik antar node.
+  - Otak sistem sekarang punya intel eksternal yang nyata namun tetap ringan: AI dipakai untuk belajar, riset, dan framing strategi, bukan untuk memblok order path live.
+  - Sistem kembali normal untuk topologi aktif saat ini:
+    - scanner auxiliary hidup dan feed-nya sampai ke manager utama,
+    - midnight rollover mengembalikan node ke state sehat,
+    - guard modal/hard-stop tetap disiplin,
+    - tidak ada crash baru pada soak final.

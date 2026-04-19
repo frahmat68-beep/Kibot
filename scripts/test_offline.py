@@ -231,6 +231,58 @@ if manager is not None:
             manager._daily_guard_state.clear()
             manager._daily_guard_state.update(old_guard_state)
 
+    with (
+        patch("kibot_manager.REMOTE_SCANNER_FEED_ENABLED", True),
+        patch("kibot_manager.SUPABASE_URL", "https://example.supabase.co"),
+        patch("kibot_manager.SUPABASE_KEY", "anon"),
+        patch("kibot_manager.requests.get") as mocked_get,
+        patch("kibot_manager._relay_to_kidax", return_value=None),
+    ):
+        old_remote_state = dict(manager._remote_scanner_feed_state)
+        try:
+            mocked_get.return_value = MagicMock(
+                raise_for_status=lambda: None,
+                json=lambda: [
+                    {
+                        "created_at": "2026-04-20T10:00:00+00:00",
+                        "metadata": {
+                            "feed_id": "mesh-1",
+                            "summary": {"total_sent": 2, "total_scanned": 200},
+                            "signals": [
+                                {
+                                    "exchange": "BYBIT",
+                                    "pair_indodax": "btc_idr",
+                                    "base_symbol": "BTC",
+                                    "detection_score": 0.82,
+                                    "weighted_contrib": 0.205,
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "signal_uid": "BYBIT:btc_idr:test",
+                                }
+                            ],
+                        },
+                    }
+                ],
+            )
+            manager._remote_scanner_feed_state.update(
+                {
+                    "last_created_at": "",
+                    "last_feed_id": "",
+                    "last_success_at": "",
+                    "last_poll_at": "",
+                    "last_error": "",
+                    "cycles_seen": 0,
+                    "signals_ingested": 0,
+                    "recent_signal_ids": [],
+                }
+            )
+            rows = manager._fetch_remote_scanner_feed_cycles(limit=2)
+            check("remote scanner feed fetches rows", len(rows) == 1)
+            signal = manager._normalize_remote_scanner_signal(rows[0]["metadata"]["signals"][0])
+            check("remote scanner feed normalizes signal", signal is not None and signal["type"] == "MULTI_SCANNER_SIGNAL")
+        finally:
+            manager._remote_scanner_feed_state.clear()
+            manager._remote_scanner_feed_state.update(old_remote_state)
+
 brain = BrainManager()
 with (
     patch.object(brain, "_get_json", side_effect=[
@@ -271,10 +323,22 @@ class _FakeScanner:
     def _save_state(self):
         return None
 
-mesh = GlobalScannerMesh(scanners=[_FakeScanner("BYBIT"), _FakeScanner("KUCOIN")], interval_s=1)
-cycle = mesh.run_once()
-check("scanner mesh scanned", cycle["total_scanned"] == 2)
-check("scanner mesh sent", cycle["total_sent"] == 2)
+with TemporaryDirectory() as tmpdir, patch.dict(
+    os.environ,
+    {
+        "KIBOT_RUNTIME_ROOT": tmpdir,
+        "KIBOT_SCANNER_STATE_DIR": str(Path(tmpdir) / "state" / "scanners"),
+        "KIBOT_SCANNER_SUPABASE_MIRROR_ENABLED": "false",
+    },
+    clear=False,
+):
+    mesh = GlobalScannerMesh(scanners=[_FakeScanner("BYBIT"), _FakeScanner("KUCOIN")], interval_s=1)
+    cycle = mesh.run_once()
+    check("scanner mesh scanned", cycle["total_scanned"] == 2)
+    check("scanner mesh sent", cycle["total_sent"] == 2)
+    feed_snapshot = json.loads(mesh.feed_path.read_text(encoding="utf-8"))
+    check("scanner mesh writes feed", feed_snapshot.get("total_sent") == 2)
+    check("scanner mesh stores signals", len(feed_snapshot.get("signals") or []) == 2)
 
 if analyst is not None:
     check(

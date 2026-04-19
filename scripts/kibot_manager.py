@@ -82,6 +82,12 @@ _shutdown_event = threading.Event()
 _main_socket: Optional[socket.socket] = None
 _http_server: Optional[ThreadingHTTPServer] = None
 _bot_start_time = time.time()
+_supabase_auth_state: Dict[str, Any] = {
+    "access_token": "",
+    "expires_at": 0.0,
+    "last_error": "",
+    "last_ok_at": "",
+}
 _last_daily_guard_check_at = 0.0
 _learning_engine = None
 _regime_detector = None
@@ -2687,7 +2693,11 @@ def _env_first(*keys: str, default: str = "") -> str:
     return default
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY or ""
+SUPABASE_USER_EMAIL = os.getenv("SUPABASE_USER_EMAIL", "")
+SUPABASE_USER_PASSWORD = os.getenv("SUPABASE_USER_PASSWORD", "")
 TIMEOUT = float(os.getenv("KIBOT_MANAGER_HTTP_TIMEOUT_SEC", "12"))
 UDP_BIND_HOST = os.getenv("KIBOT_MANAGER_UDP_BIND_HOST", "0.0.0.0")
 UDP_BIND_PORT = int(os.getenv("KIBOT_MANAGER_UDP_BIND_PORT", "9998"))
@@ -2878,6 +2888,24 @@ TRADE_LOG_RUNTIME_PATH = Path(os.getenv("KIBOT_MANAGER_TRADE_LOG_FILE", str(Path
 TRADE_SUMMARY_RUNTIME_PATH = Path(os.getenv("KIBOT_MANAGER_TRADE_SUMMARY_FILE", str(Path.cwd() / "state/trade_summary.json")))
 PAIR_MEMORY_PATH = Path(os.getenv("KIBOT_MANAGER_PAIR_MEMORY_FILE", str(STATE_ROOT / "pair_memory.json")))
 WHATIF_RESULTS_PATH = Path(os.getenv("KIBOT_MANAGER_WHATIF_RESULTS_FILE", str(STATE_ROOT / "whatif_results.json")))
+SCANNER_FEED_LOCAL_PATH = Path(
+    os.getenv(
+        "KIBOT_MANAGER_SCANNER_FEED_FILE",
+        str(Path.cwd() / "state" / "scanners" / "global_scanner_feed.json"),
+    )
+)
+REMOTE_SCANNER_FEED_ENABLED = os.getenv("KIBOT_REMOTE_SCANNER_FEED_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+REMOTE_SCANNER_FEED_BOT_ID = os.getenv("KIBOT_REMOTE_SCANNER_FEED_BOT_ID", "kinance")
+REMOTE_SCANNER_FEED_CATEGORY = os.getenv("KIBOT_REMOTE_SCANNER_FEED_CATEGORY", "scanner_feed_cycle")
+REMOTE_SCANNER_FEED_POLL_SEC = int(os.getenv("KIBOT_REMOTE_SCANNER_FEED_POLL_SEC", "20"))
+REMOTE_SCANNER_FEED_MAX_AGE_SEC = int(os.getenv("KIBOT_REMOTE_SCANNER_FEED_MAX_AGE_SEC", "180"))
+REMOTE_SCANNER_FEED_MAX_SIGNALS = int(os.getenv("KIBOT_REMOTE_SCANNER_FEED_MAX_SIGNALS", "24"))
+REMOTE_SCANNER_FEED_STATE_PATH = Path(
+    os.getenv(
+        "KIBOT_REMOTE_SCANNER_FEED_STATE_FILE",
+        str(STATE_ROOT / "remote_scanner_feed_state.json"),
+    )
+)
 PAIR_MEMORY_ROLLING_WINDOW = int(os.getenv("KIBOT_PAIR_MEMORY_ROLLING_WINDOW", "50"))
 PAIR_MEMORY_MIN_TRADES_FOR_WINRATE = int(os.getenv("KIBOT_PAIR_MEMORY_MIN_TRADES_FOR_WINRATE", "3"))
 AI_BATCH_REVIEW_INTERVAL_SEC = int(os.getenv("KIBOT_AI_BATCH_REVIEW_INTERVAL_SEC", str(6 * 60 * 60)))
@@ -3014,10 +3042,27 @@ _clean_pair_memory()
 
 _provider_runtime_state: Dict[str, Dict[str, Any]] = _load_json_file(PROVIDER_STATE_PATH, {})
 _pair_cooldown_state: Dict[str, Dict[str, Any]] = _load_json_file(STATE_ROOT / "pair_cooldowns.json", {})
+_remote_scanner_feed_state: Dict[str, Any] = _load_json_file(
+    REMOTE_SCANNER_FEED_STATE_PATH,
+    {
+        "last_created_at": "",
+        "last_feed_id": "",
+        "last_success_at": "",
+        "last_poll_at": "",
+        "last_error": "",
+        "cycles_seen": 0,
+        "signals_ingested": 0,
+        "recent_signal_ids": [],
+    },
+)
 
 
 def _save_pair_cooldown_state() -> None:
     _write_json_file(STATE_ROOT / "pair_cooldowns.json", _pair_cooldown_state)
+
+
+def _save_remote_scanner_feed_state() -> None:
+    _write_json_file(REMOTE_SCANNER_FEED_STATE_PATH, _remote_scanner_feed_state)
 
 
 def _save_gate_state() -> None:
@@ -4577,6 +4622,7 @@ def _write_runtime_note(*, force: bool = False) -> None:
             for pair_id, memory in list(_pair_memory.items())[:10]
         },
         "pair_cooldowns": _pair_cooldown_state,
+        "remote_scanner_feed": dict(_remote_scanner_feed_state),
         "veto_metrics": _veto_metrics,
         "sector_count": len(_last_sector_map),
         "sector_preview": {key: value[:5] for key, value in list(_last_sector_map.items())[:5]},
@@ -5007,10 +5053,112 @@ def _call_ai_router(
 
 def _headers() -> Dict[str, str]:
     return {
-        "apikey": SUPABASE_KEY,
+        "apikey": SUPABASE_ANON_KEY or SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
     }
+
+
+def _supabase_bearer_token(force_refresh: bool = False) -> str:
+    if SUPABASE_SERVICE_ROLE_KEY:
+        return SUPABASE_SERVICE_ROLE_KEY
+    if (
+        not force_refresh
+        and _supabase_auth_state.get("access_token")
+        and float(_supabase_auth_state.get("expires_at") or 0.0) > time.time()
+    ):
+        return str(_supabase_auth_state.get("access_token"))
+    if not (SUPABASE_URL and SUPABASE_ANON_KEY and SUPABASE_USER_EMAIL and SUPABASE_USER_PASSWORD):
+        return SUPABASE_KEY
+    response = requests.post(
+        f"{SUPABASE_URL}/auth/v1/token?grant_type=password",
+        headers={
+            "apikey": SUPABASE_ANON_KEY,
+            "Content-Type": "application/json",
+        },
+        json={
+            "email": SUPABASE_USER_EMAIL,
+            "password": SUPABASE_USER_PASSWORD,
+        },
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    token = str(payload.get("access_token") or "")
+    expires_in = int(payload.get("expires_in") or 3600)
+    if token:
+        _supabase_auth_state["access_token"] = token
+        _supabase_auth_state["expires_at"] = time.time() + max(60, expires_in - 120)
+        _supabase_auth_state["last_error"] = ""
+        _supabase_auth_state["last_ok_at"] = _safe_isoformat()
+    return token or SUPABASE_KEY
+
+
+def _authenticated_headers() -> Dict[str, str]:
+    bearer = _supabase_bearer_token()
+    return {
+        "apikey": SUPABASE_ANON_KEY or SUPABASE_KEY,
+        "Authorization": f"Bearer {bearer}",
+        "Content-Type": "application/json",
+    }
+
+
+def _iso_to_epoch(value: str) -> float:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _load_local_scanner_feed() -> Dict[str, Any]:
+    return _load_json_file(SCANNER_FEED_LOCAL_PATH, {})
+
+
+def _normalize_remote_scanner_signal(signal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(signal, dict):
+        return None
+    pair_id = str(signal.get("pair_indodax") or "").strip().lower()
+    exchange = str(signal.get("exchange") or "").strip().upper()
+    if not pair_id or not exchange:
+        return None
+    normalized = dict(signal)
+    normalized["type"] = "MULTI_SCANNER_SIGNAL"
+    normalized["pair_indodax"] = pair_id
+    normalized["exchange"] = exchange
+    normalized["base_symbol"] = str(normalized.get("base_symbol") or "").upper()
+    normalized["timestamp"] = str(normalized.get("timestamp") or _safe_isoformat())
+    normalized["signal_uid"] = str(
+        normalized.get("signal_uid")
+        or f"{exchange}:{pair_id}:{normalized['timestamp']}"
+    )
+    return normalized
+
+
+def _fetch_remote_scanner_feed_cycles(limit: int = 6) -> List[Dict[str, Any]]:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return []
+    params: Dict[str, str] = {
+        "bot_id": f"eq.{REMOTE_SCANNER_FEED_BOT_ID}",
+        "category": f"eq.{REMOTE_SCANNER_FEED_CATEGORY}",
+        "select": "created_at,metadata,message",
+        "order": "created_at.asc",
+        "limit": str(max(1, limit)),
+    }
+    last_created_at = str(_remote_scanner_feed_state.get("last_created_at") or "").strip()
+    if last_created_at:
+        params["created_at"] = f"gt.{last_created_at}"
+    response = requests.get(
+        f"{SUPABASE_URL}/rest/v1/logs",
+        headers=_authenticated_headers(),
+        params=params,
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return payload if isinstance(payload, list) else []
 
 
 def _ensure_env() -> None:
@@ -6798,6 +6946,7 @@ def _http_state_payload() -> Dict[str, Any]:
             "control_plane_healthy": _control_plane_healthy,
             "pair_memory_count": len(_pair_memory),
             "pairs_on_cooldown": [pair for pair in _pair_memory.keys() if _is_pair_on_cooldown(pair)],
+            "remote_scanner_feed": dict(_remote_scanner_feed_state),
             "capital_health": {
                 "total_equity_est_idr": equity_estimate,
                 "minimum_viable_idr": MINIMUM_VIABLE_CAPITAL_IDR,
@@ -6871,6 +7020,15 @@ class _ManagerStateHandler(BaseHTTPRequestHandler):
 
         if self.path.startswith("/api/state"):
             payload = _http_state_payload()
+            raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
+        if self.path.startswith("/api/scanner-feed"):
+            payload = _load_local_scanner_feed()
             raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -7140,6 +7298,72 @@ def _brain_thinking_loop():
             print(f"[KIBOT][BRAIN][WARN] advisory loop error: {error}", flush=True)
         time.sleep(10)
 
+
+def _remote_scanner_feed_loop() -> None:
+    if not REMOTE_SCANNER_FEED_ENABLED:
+        print("[KIBOT][REMOTE_SCANNER_FEED] disabled", flush=True)
+        return
+    print(
+        f"[KIBOT][REMOTE_SCANNER_FEED] poll started bot_id={REMOTE_SCANNER_FEED_BOT_ID} "
+        f"category={REMOTE_SCANNER_FEED_CATEGORY} interval={REMOTE_SCANNER_FEED_POLL_SEC}s",
+        flush=True,
+    )
+    while not _shutdown_event.is_set():
+        try:
+            _remote_scanner_feed_state["last_poll_at"] = _safe_isoformat()
+            cycles = _fetch_remote_scanner_feed_cycles()
+            ingested_total = 0
+            latest_created_at = str(_remote_scanner_feed_state.get("last_created_at") or "")
+            recent_signal_ids = list(_remote_scanner_feed_state.get("recent_signal_ids") or [])
+            for cycle in cycles:
+                created_at = str(cycle.get("created_at") or "")
+                metadata = cycle.get("metadata") if isinstance(cycle.get("metadata"), dict) else {}
+                feed_id = str(metadata.get("feed_id") or created_at or "")
+                signals = metadata.get("signals") if isinstance(metadata.get("signals"), list) else []
+                summary = metadata.get("summary") if isinstance(metadata.get("summary"), dict) else {}
+                if created_at and created_at > latest_created_at:
+                    latest_created_at = created_at
+                ingested_this_cycle = 0
+                for signal in signals[:REMOTE_SCANNER_FEED_MAX_SIGNALS]:
+                    normalized = _normalize_remote_scanner_signal(signal)
+                    if not normalized:
+                        continue
+                    signal_uid = str(normalized.get("signal_uid") or "")
+                    if signal_uid in recent_signal_ids:
+                        continue
+                    signal_age_sec = time.time() - _iso_to_epoch(str(normalized.get("timestamp") or ""))
+                    if signal_age_sec > REMOTE_SCANNER_FEED_MAX_AGE_SEC:
+                        continue
+                    normalized["transport"] = "supabase_feed"
+                    normalized["feed_id"] = feed_id
+                    _msc_engine.process_and_relay(normalized, _relay_to_kidax)
+                    recent_signal_ids.append(signal_uid)
+                    ingested_total += 1
+                    ingested_this_cycle += 1
+                if ingested_this_cycle > 0 or signals:
+                    print(
+                        f"[KIBOT][REMOTE_SCANNER_FEED] feed={feed_id or '?'} "
+                        f"signals={len(signals)} ingested={ingested_this_cycle} "
+                        f"sent={summary.get('total_sent', 0)} scanned={summary.get('total_scanned', 0)}",
+                        flush=True,
+                    )
+                    _remote_scanner_feed_state["last_feed_id"] = feed_id
+                    _remote_scanner_feed_state["cycles_seen"] = int(_remote_scanner_feed_state.get("cycles_seen") or 0) + 1
+            if cycles:
+                _remote_scanner_feed_state["last_created_at"] = latest_created_at
+                _remote_scanner_feed_state["last_success_at"] = _safe_isoformat()
+                _remote_scanner_feed_state["last_error"] = ""
+                _remote_scanner_feed_state["signals_ingested"] = int(_remote_scanner_feed_state.get("signals_ingested") or 0) + ingested_total
+                _remote_scanner_feed_state["recent_signal_ids"] = recent_signal_ids[-256:]
+                _save_remote_scanner_feed_state()
+                _write_runtime_note()
+        except Exception as error:
+            _remote_scanner_feed_state["last_error"] = str(error)
+            _save_remote_scanner_feed_state()
+            print(f"[KIBOT][REMOTE_SCANNER_FEED][WARN] {error}", flush=True)
+        if _shutdown_event.wait(timeout=max(5, REMOTE_SCANNER_FEED_POLL_SEC)):
+            break
+
 def main() -> None:
     global _main_socket
 
@@ -7212,6 +7436,12 @@ def main() -> None:
 
     brain_thread = threading.Thread(target=_brain_thinking_loop, name="kibot-brain-thinking", daemon=True)
     brain_thread.start()
+    remote_scanner_feed_thread = threading.Thread(
+        target=_remote_scanner_feed_loop,
+        name="kibot-remote-scanner-feed",
+        daemon=True,
+    )
+    remote_scanner_feed_thread.start()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # Allow socket reuse for quick restarts
