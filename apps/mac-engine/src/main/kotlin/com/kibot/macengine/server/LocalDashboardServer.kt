@@ -234,13 +234,16 @@ class LocalDashboardServer(
                         state.healthSummary.contains("hard stop", ignoreCase = true) ||
                         state.healthSummary.contains("daily_loss_limit", ignoreCase = true) ||
                         dailyLossHardStop
-                val degraded = hardStopActive ||
-                    state.effectiveState.name == "SAFE_MODE" ||
-                    state.effectiveState.name == "STOPPED" ||
+                val safeOnly = hardStopActive || state.effectiveState.name == "SAFE_MODE"
+                val degraded = state.effectiveState.name == "STOPPED" ||
                     state.syncHealth.equals("BROKEN", ignoreCase = true) ||
-                    state.statusMessage.contains("safe mode", ignoreCase = true)
+                    (state.statusMessage.contains("safe mode", ignoreCase = true) && !safeOnly)
                 val payload = HealthResponse(
-                    status = if (degraded) "degraded" else "ok",
+                    status = when {
+                        safeOnly -> "safe"
+                        degraded -> "degraded"
+                        else -> "ok"
+                    },
                     timestamp = java.time.Instant.now().toString(),
                     uptimeMs = (System.currentTimeMillis() - startedAtMs),
                     botId = botId.value,

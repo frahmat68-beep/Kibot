@@ -98,6 +98,8 @@ _metrics: Dict[str, Union[float, int]] = {
     "entries_blocked_hard_stop": 0,
     "entries_blocked_learn_gate": 0,
     "entries_blocked_whatif": 0,
+    "entries_blocked_brain": 0,
+    "entries_brain_reduced": 0,
     "fee_bleed_est_idr": 0.0,
     "whatif_skips_today": 0,
     "whatif_enters_today": 0,
@@ -4053,6 +4055,8 @@ def _reset_intraday_metrics() -> None:
         "entries_blocked_hard_stop",
         "entries_blocked_learn_gate",
         "entries_blocked_whatif",
+        "entries_blocked_brain",
+        "entries_brain_reduced",
         "whatif_skips_today",
         "whatif_enters_today",
     ):
@@ -6379,6 +6383,45 @@ def _process_signal(msg: Dict[str, Any]) -> None:
                 flush=True,
             )
             return
+        brain_advisory = _brain_signal_advisory(pair, msg, budget_idr, capital_profile)
+        if not brain_advisory.get("allow", True):
+            _metric_inc("entries_blocked_brain")
+            print(
+                f"[KIBOT][BRAIN BLOCK] pair={pair} symbol={brain_advisory.get('symbol')} "
+                f"reason={brain_advisory.get('reason')} risk_bias={brain_advisory.get('risk_bias')}",
+                flush=True,
+            )
+            _append_runtime_event(
+                "brain_block",
+                {
+                    "pair": pair,
+                    "symbol": brain_advisory.get("symbol"),
+                    "reason": brain_advisory.get("reason"),
+                    "risk_bias": brain_advisory.get("risk_bias"),
+                    "strategy_next": brain_advisory.get("strategy_next"),
+                },
+            )
+            return
+        brain_budget = float(brain_advisory.get("budget_idr") or budget_idr)
+        if brain_budget < budget_idr:
+            _metric_inc("entries_brain_reduced")
+            print(
+                f"[KIBOT][BRAIN SIZE] pair={pair} budget reduced Rp{budget_idr:,.0f} -> Rp{brain_budget:,.0f} "
+                f"reason={brain_advisory.get('reason')}",
+                flush=True,
+            )
+            _append_runtime_event(
+                "brain_reduce",
+                {
+                    "pair": pair,
+                    "symbol": brain_advisory.get("symbol"),
+                    "from_budget_idr": budget_idr,
+                    "to_budget_idr": brain_budget,
+                    "reason": brain_advisory.get("reason"),
+                    "strategy_next": brain_advisory.get("strategy_next"),
+                },
+            )
+            budget_idr = brain_budget
         target_profit_pct = float(msg.get("targetProfitPct") or msg.get("target_profit_pct") or pair_cfg.get("min_target_profit_pct") or SURVIVAL_TARGET_PROFIT_PCT)
         capital_bucket = _capital_bucket_tiers()
         if pair_cfg.get("tier") == "D":
@@ -7180,7 +7223,9 @@ def _http_state_payload() -> Dict[str, Any]:
                     "hard_stop": _metrics.get("entries_blocked_hard_stop", 0),
                     "learn_gate": _metrics.get("entries_blocked_learn_gate", 0),
                     "whatif": _metrics.get("entries_blocked_whatif", 0),
+                    "brain": _metrics.get("entries_blocked_brain", 0),
                 },
+                "entries_brain_reduced": _metrics.get("entries_brain_reduced", 0),
                 "whatif_enter_rate": (
                     float(_metrics.get("whatif_enters_today", 0))
                     / max(float(_metrics.get("whatif_enters_today", 0)) + float(_metrics.get("whatif_skips_today", 0)), 1.0)
@@ -7498,6 +7543,105 @@ def _brain_watch_symbols() -> List[str]:
     if not symbols:
         symbols.extend(["BTC", "ETH", "SOL"])
     return symbols[:5]
+
+
+def _brain_signal_advisory(
+    pair: str,
+    msg: Dict[str, Any],
+    budget_idr: float,
+    capital_profile: Dict[str, Any],
+) -> Dict[str, Any]:
+    snapshot = _brain.snapshot() if hasattr(_brain, "snapshot") else {}
+    if not isinstance(snapshot, dict) or not snapshot:
+        return {
+            "allow": True,
+            "budget_idr": budget_idr,
+            "reason": "brain_snapshot_unavailable",
+            "symbol": "",
+            "risk_bias": "UNKNOWN",
+            "strategy_next": "",
+            "watch_review": {},
+        }
+
+    symbol = str(msg.get("base_symbol") or str(pair or "").split("_", 1)[0]).upper().strip()
+    score = _parse_numeric(msg.get("score")) or 0.0
+    market_pulse = snapshot.get("market_pulse") if isinstance(snapshot.get("market_pulse"), dict) else {}
+    daily_target = snapshot.get("daily_target") if isinstance(snapshot.get("daily_target"), dict) else {}
+    risk_bias = str(market_pulse.get("risk_bias") or "UNKNOWN").upper()
+    strategy_next = str(daily_target.get("strategy_next") or "").strip()
+    top_focus = {str(item).lower() for item in list(_load_json_file(WHATIF_RESULTS_PATH, {}).get("topOpportunities") or [])[:5]}
+
+    review = {}
+    for item in list(snapshot.get("watch_reviews") or []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("symbol") or "").upper() == symbol:
+            review = dict(item)
+            break
+    approved = review.get("approved") if isinstance(review.get("approved"), bool) else None
+    review_reason = str(review.get("reason") or "").strip()
+
+    budget_multiplier = 1.0
+    if risk_bias == "RISK_OFF":
+        budget_multiplier = min(budget_multiplier, 0.65 if score < 0.85 else 0.8)
+    elif risk_bias == "MIXED":
+        budget_multiplier = min(budget_multiplier, 0.9)
+
+    target_status = str(daily_target.get("status") or "").upper()
+    if target_status == "RECOVERY_MODE":
+        budget_multiplier = min(budget_multiplier, 0.75)
+    if str(capital_profile.get("mode") or "").upper() in {"MICRO", "BUILDUP"}:
+        budget_multiplier = min(budget_multiplier, 0.85)
+
+    if approved is False and review_reason in {
+        "external_research_risk_off",
+        "symbol_not_listed_on_indodax",
+        "missing_or_zero_quote_volume",
+    }:
+        return {
+            "allow": False,
+            "budget_idr": budget_idr,
+            "reason": review_reason or "brain_watch_rejected",
+            "symbol": symbol,
+            "risk_bias": risk_bias,
+            "strategy_next": strategy_next,
+            "watch_review": review,
+        }
+
+    if risk_bias == "RISK_OFF" and pair.lower() not in top_focus and score < 0.8:
+        return {
+            "allow": False,
+            "budget_idr": budget_idr,
+            "reason": "brain_risk_off_non_focus_pair",
+            "symbol": symbol,
+            "risk_bias": risk_bias,
+            "strategy_next": strategy_next,
+            "watch_review": review,
+        }
+
+    adjusted_budget = budget_idr
+    if budget_multiplier < 0.999:
+        adjusted_budget = max(ABSOLUTE_MIN_POSITION_SIZE_IDR, round(float(budget_idr) * budget_multiplier, 2))
+
+    reason_parts: List[str] = []
+    if risk_bias and risk_bias != "UNKNOWN":
+        reason_parts.append(f"risk_bias={risk_bias.lower()}")
+    if target_status:
+        reason_parts.append(f"target={target_status.lower()}")
+    if review_reason:
+        reason_parts.append(f"review={review_reason}")
+    if not reason_parts:
+        reason_parts.append("brain_neutral")
+
+    return {
+        "allow": True,
+        "budget_idr": adjusted_budget,
+        "reason": "+".join(reason_parts),
+        "symbol": symbol,
+        "risk_bias": risk_bias,
+        "strategy_next": strategy_next,
+        "watch_review": review,
+    }
 
 
 def _brain_thinking_loop():

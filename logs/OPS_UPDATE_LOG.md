@@ -421,3 +421,58 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
 - Langkah berikut:
   - Deploy jar baru ke SG dan Tokyo.
   - Soak ulang live untuk memastikan `/api/state` dan `/api/health` sinkron ke HP dengan status `SAFE` saat proteksi aktif.
+
+## 2026-04-20 14:24 WIB — Hybrid Brain Gate Wired Into Live Entry Path
+- Temuan:
+  - `brain_assist`, `market_pulse`, dan `watch_reviews` sudah hidup, tetapi dampaknya ke jalur `BUY` masih terlalu lemah.
+  - Manager sebelumnya hanya memakai brain untuk review/snapshot, belum cukup memengaruhi sizing atau penolakan entry lemah saat `risk-off`.
+- Perbaikan:
+  - Tambahkan `_brain_signal_advisory(...)` di `scripts/kibot_manager.py` untuk membaca snapshot brain lokal tanpa network call di hot path.
+  - Jalur entry kini:
+    - memblokir pair yang explicit ditolak `watch_reviews` (`external_research_risk_off`, `missing_or_zero_quote_volume`, `symbol_not_listed_on_indodax`)
+    - memblokir non-focus pair saat `risk-off` dan skor sinyal lemah
+    - mengecilkan `budgetIdr` saat `risk-off`, `RECOVERY_MODE`, dan modal `MICRO/BUILDUP`
+  - Tambahkan metric/state:
+    - `entries_blocked.brain`
+    - `entries_brain_reduced`
+- Verifikasi lokal:
+  - `./.brain-venv/bin/python3 scripts/test_offline.py` → `52 PASS 0 FAIL`
+  - `python3 scripts/test_brain_integration.py`
+  - `python3 tests/test_whatif_complete.py` → `200/200 PASS`
+  - `./.brain-venv/bin/python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
+- Dampak yang diharapkan:
+  - AI tetap advisory, tetapi sekarang benar-benar terlihat aksinya di runtime:
+    - weak entry bisa diblok
+    - sizing bisa otomatis diperkecil
+    - strategy `risk-off / recovery / micro capital` menempel ke jalur keputusan manager
+- Langkah berikut:
+  - Deploy `kibot_manager.py` ke SG dan Tokyo.
+  - Soak log 10 menit untuk membuktikan event `BRAIN BLOCK` / `BRAIN SIZE` / scanner feed berjalan normal.
+
+## 2026-04-20 14:36 WIB — SAFE_MODE Health Endpoint Semantics Repaired
+- Temuan:
+  - Setelah soak 10 menit selesai, SG terbukti sehat dalam proteksi `SAFE_MODE`, tetapi `/api/health` masih mengembalikan `503 Service Unavailable`.
+  - Ini bukan crash, tetapi semantik lama yang bisa membuat HP/monitor salah baca node aman sebagai node rusak.
+- Perbaikan:
+  - Patch `LocalDashboardServer.kt` agar:
+    - `SAFE_MODE / hardStopActive` => HTTP `200` dengan `status="safe"`
+    - hanya kondisi rusak nyata (`STOPPED` / `BROKEN`) yang tetap `503`
+  - Rebuild jar:
+    - `./gradlew :apps:mac-engine:compileKotlin :apps:mac-engine:fatJar --no-daemon`
+  - Redeploy manual ke SG dan Tokyo lalu restart `kidax-engine` / `kinance-engine`
+- Verifikasi:
+  - SG `/api/health` akhir:
+    - `HTTP/1.1 200 OK`
+    - `status="safe"`
+    - `effectiveState="SAFE_MODE"`
+    - `tradingAllowed=false`
+    - `hardStopActive=true`
+  - Tokyo `/api/health` akhir:
+    - `HTTP/1.1 200 OK`
+    - `status="ok"`
+    - `effectiveState="RUNNING"`
+    - `tradingAllowed=false`
+    - `hardStopActive=false`
+- Dampak:
+  - Hard-stop protektif sekarang tetap terlihat hidup dan sehat di layer health endpoint.
+  - HP/monitor tidak lagi perlu mengartikan proteksi valid sebagai downtime palsu.

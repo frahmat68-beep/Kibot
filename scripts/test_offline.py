@@ -357,6 +357,39 @@ with (
     check("brain market pulse headline", bool(snapshot.get("market_pulse", {}).get("top_headlines")))
     check("brain watch review headline count", int(snapshot.get("watch_reviews", [{}])[0].get("headline_count") or 0) >= 1)
 
+with patch.object(
+    manager._brain,
+    "snapshot",
+    return_value={
+        "market_pulse": {"risk_bias": "RISK_OFF"},
+        "daily_target": {"status": "RECOVERY_MODE", "strategy_next": "stay defensive"},
+        "watch_reviews": [
+            {"symbol": "BTC", "approved": True, "reason": "brain_advisory_ok"},
+            {"symbol": "REQ", "approved": False, "reason": "external_research_risk_off"},
+        ],
+    },
+), patch.object(
+    manager,
+    "_load_json_file",
+    side_effect=lambda path, default=None: {"topOpportunities": ["btc_idr"]} if str(path).endswith("whatif_results.json") else (default if default is not None else {}),
+):
+    advice = manager._brain_signal_advisory(
+        "btc_idr",
+        {"pair": "btc_idr", "score": 0.72, "base_symbol": "BTC"},
+        20_000.0,
+        {"mode": "MICRO", "reason": "micro_balance_preservation"},
+    )
+    check("brain advisory allows focus pair", advice.get("allow") is True, str(advice))
+    check("brain advisory reduces size in risk off", float(advice.get("budget_idr") or 0.0) < 20_000.0, str(advice))
+
+    blocked = manager._brain_signal_advisory(
+        "req_idr",
+        {"pair": "req_idr", "score": 0.7, "base_symbol": "REQ"},
+        20_000.0,
+        {"mode": "MICRO", "reason": "micro_balance_preservation"},
+    )
+    check("brain advisory blocks rejected review", blocked.get("allow") is False, str(blocked))
+
 class _FakeScanner:
     def __init__(self, exchange: str):
         self.exchange = exchange

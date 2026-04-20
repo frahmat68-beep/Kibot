@@ -13,7 +13,28 @@ tidak salah arah. Log operasional runtime yang wajib di-update ada di:
 ## RULE: Setiap pembaca WAJIB menulis update di logs/OPS_UPDATE_LOG.md setiap ada temuan, perbaikan, atau deploy, beserta hasil dan claim. Tidak boleh deploy/patch tanpa update log.
 
 ## Pointer Terakhir
-- Audit/deploy/soak terbaru: lihat entry `2026-04-20 13:27 WIB` di `logs/OPS_UPDATE_LOG.md`.
+- Audit/deploy/soak terbaru: lihat entry `2026-04-20 14:24 WIB` di `logs/OPS_UPDATE_LOG.md`.
+
+## [2026-04-20 14:24 WIB] - Hybrid Brain Gate Wired Into Live Entry Path
+- **Issue**: Brain sebelumnya hidup, tapi dampaknya ke BUY path masih terlalu lemah; AI belum cukup terlihat mengubah sizing atau memblokir entry lemah.
+- **Action**:
+  - Tambah `_brain_signal_advisory(...)` di manager.
+  - Risk-off / recovery / modal kecil sekarang bisa memblokir pair lemah atau mengecilkan budget.
+  - Tambah metrics `entries_blocked.brain` dan `entries_brain_reduced`.
+- **Result**:
+  - Test offline hybrid pass.
+  - Manager sekarang punya jalur advisory nyata tanpa membebani hot path dengan network call.
+- **Claim**: Hybrid model `AI strategist -> manager risk governor -> engine executor` sekarang mulai benar-benar hidup di jalur produksi.
+
+## [2026-04-20 14:36 WIB] - SAFE_MODE Health Endpoint Semantics Repaired
+- **Issue**: SG aman di hard-stop, tetapi `/api/health` masih `503`, sehingga layer health bisa salah baca node aman sebagai node rusak.
+- **Action**:
+  - Patch `LocalDashboardServer.kt` supaya `SAFE_MODE` dibalas `200 OK` dengan `status=safe`.
+  - Rebuild jar dan redeploy ke SG/Tokyo.
+- **Result**:
+  - SG health sekarang `200 OK` + `status=safe`.
+  - Tokyo health kembali `200 OK` + `status=ok`.
+- **Claim**: Semantik health endpoint sekarang selaras dengan status runtime sebenarnya.
 
 ## [2026-04-20 13:27 WIB] - SAFE_MODE Sync Repair For HP Visibility
 - **Issue**: SG engine masih tampil `DEGRADED` saat hard stop valid aktif, sehingga HP/UI terlihat seperti sistem rusak padahal sebenarnya sedang proteksi.
