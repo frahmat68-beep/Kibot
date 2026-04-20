@@ -476,3 +476,24 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
 - Dampak:
   - Hard-stop protektif sekarang tetap terlihat hidup dan sehat di layer health endpoint.
   - HP/monitor tidak lagi perlu mengartikan proteksi valid sebagai downtime palsu.
+
+## 2026-04-21 03:35 WIB — Top-Up Separated From Daily PnL + Brain Warm-On-Call
+- Temuan:
+  - Manager Python masih menghitung `daily_pnl_pct` dari delta equity mentah, sehingga top-up berisiko kebaca sebagai profit.
+  - Brain advisory sudah ada, tetapi bila snapshot mulai stale ia hanya menunggu loop periodik berikutnya; belum cukup on-call.
+- Perbaikan:
+  - Tambahkan deteksi `external cashflow` di `scripts/kibot_manager.py`.
+  - `daily_pnl_pct` sekarang dihitung dari `current_equity - external_cashflow_idr - start_of_day_equity`, bukan dari equity mentah.
+  - Cashflow eksternal otomatis ditandai saat ada lonjakan balance besar tanpa posisi aktif dan tanpa trade activity baru.
+  - Tambahkan metadata state:
+    - `external_cashflow_idr`
+    - `external_cashflow_reason`
+  - Tambahkan `BrainManager.ensure_warm(...)` + `snapshot_age_sec()` di `scripts/ki_brain.py`.
+  - Manager sekarang bisa memicu warm refresh brain di background saat snapshot stale, tanpa blocking hot path.
+- Verifikasi lokal:
+  - `./.brain-venv/bin/python3 scripts/test_offline.py` → `56 PASS 0 FAIL`
+  - `python3 tests/test_whatif_complete.py` → `200/200 PASS`
+  - `./.brain-venv/bin/python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
+- Dampak yang diharapkan:
+  - Top-up tidak lagi menaikkan PnL harian palsu.
+  - Otak/manager tetap bisa baca snapshot lokal instan, sambil background warm menjaga intel tetap siap pakai.

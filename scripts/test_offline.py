@@ -273,6 +273,34 @@ if manager is not None:
             manager._gate_state.clear()
             manager._gate_state.update(old_gate_state)
 
+    old_guard_state = dict(manager._daily_guard_state)
+    old_events = list(manager._recent_runtime_events)
+    old_active = dict(manager._active_positions_cache)
+    try:
+        manager._daily_guard_state.update(
+            {
+                "date": "2026-04-20",
+                "start_of_day_equity": 50_000.0,
+                "current_equity": 50_000.0,
+                "daily_pnl_pct": 0.0,
+                "external_cashflow_idr": 0.0,
+                "external_cashflow_reason": "",
+            }
+        )
+        manager._recent_runtime_events.clear()
+        manager._active_positions_cache.clear()
+        manager._maybe_register_external_cashflow(70_000.0)
+        check("external cashflow detected", (manager._daily_guard_state.get("external_cashflow_idr") or 0.0) >= 20_000.0, str(manager._daily_guard_state))
+        manager._check_daily_loss_limit(70_000.0)
+        check("topup excluded from daily pnl", abs(float(manager._daily_guard_state.get("daily_pnl_pct") or 0.0)) < 1e-9, str(manager._daily_guard_state))
+    finally:
+        manager._daily_guard_state.clear()
+        manager._daily_guard_state.update(old_guard_state)
+        manager._recent_runtime_events.clear()
+        manager._recent_runtime_events.extend(old_events)
+        manager._active_positions_cache.clear()
+        manager._active_positions_cache.update(old_active)
+
     with (
         patch("kibot_manager.REMOTE_SCANNER_FEED_ENABLED", True),
         patch("kibot_manager.SUPABASE_URL", "https://example.supabase.co"),
@@ -356,6 +384,8 @@ with (
     check("brain target strategy next", bool(snapshot.get("daily_target", {}).get("strategy_next")))
     check("brain market pulse headline", bool(snapshot.get("market_pulse", {}).get("top_headlines")))
     check("brain watch review headline count", int(snapshot.get("watch_reviews", [{}])[0].get("headline_count") or 0) >= 1)
+    check("brain snapshot age available", brain.snapshot_age_sec() is not None)
+    check("brain ensure warm skips fresh snapshot", brain.ensure_warm(["BTC"], {"daily_pnl_pct": 0.0}) is False)
 
 with patch.object(
     manager._brain,

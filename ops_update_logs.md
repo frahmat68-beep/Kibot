@@ -36,6 +36,16 @@ tidak salah arah. Log operasional runtime yang wajib di-update ada di:
   - Tokyo health kembali `200 OK` + `status=ok`.
 - **Claim**: Semantik health endpoint sekarang selaras dengan status runtime sebenarnya.
 
+## [2026-04-21 03:35 WIB] - Top-Up Separation + Brain Warm-On-Call
+- **Issue**: Top-up masih berisiko kebaca sebagai profit karena manager pakai delta equity mentah; snapshot brain juga belum cukup on-call saat mulai stale.
+- **Action**:
+  - Tambah deteksi `external cashflow` dan keluarkan dari rumus `daily_pnl_pct`.
+  - Tambah `BrainManager.ensure_warm(...)` agar refresh snapshot bisa dipicu background tanpa menahan jalur order.
+- **Result**:
+  - Test offline membuktikan top-up tidak lagi menambah PnL harian palsu.
+  - Brain sekarang lebih siap dipanggil kapan pun, tetap lewat snapshot/caching lokal.
+- **Claim**: Jalur top-up dan jalur profit sekarang lebih terpisah, dan otak lebih siap-siaga tanpa mengorbankan latency order path.
+
 ## [2026-04-20 13:27 WIB] - SAFE_MODE Sync Repair For HP Visibility
 - **Issue**: SG engine masih tampil `DEGRADED` saat hard stop valid aktif, sehingga HP/UI terlihat seperti sistem rusak padahal sebenarnya sedang proteksi.
 - **Action**:

@@ -3006,6 +3006,8 @@ LOCAL_RUNTIME_STATE_URLS = [
 LEARNING_REVIEW_INTERVAL_SEC = int(os.getenv("KIBOT_LEARNING_REVIEW_INTERVAL_SEC", "1800"))
 MIDNIGHT_RESET_RETRY_SEC = int(os.getenv("KIBOT_MIDNIGHT_RESET_RETRY_SEC", "60"))
 MIDNIGHT_RESET_ALERT_AFTER_SEC = int(os.getenv("KIBOT_MIDNIGHT_RESET_ALERT_AFTER_SEC", "600"))
+EXTERNAL_CASHFLOW_AUTO_DETECT_IDR = float(os.getenv("KIBOT_EXTERNAL_CASHFLOW_AUTO_DETECT_IDR", "10000"))
+EXTERNAL_CASHFLOW_AUTO_DETECT_PCT = float(os.getenv("KIBOT_EXTERNAL_CASHFLOW_AUTO_DETECT_PCT", "0.12"))
 SAFE_ENTRY_MSG_TYPES = {"DETECTOR_HIT", "INSTANT_BUY_ANOMALY"}
 EXIT_MSG_TYPES = {"SELL_WALL_SURGE", "MOMENTUM_LOSS", "TRAILING_STOP_HIT", "THESIS_INVALID_EXIT"}
 # Maximum size for unbounded caches
@@ -3048,6 +3050,9 @@ _daily_guard_state: Dict[str, Any] = _load_json_file(
         "start_of_day_equity": None,
         "current_equity": None,
         "daily_pnl_pct": None,
+        "external_cashflow_idr": 0.0,
+        "external_cashflow_detected_at": "",
+        "external_cashflow_reason": "",
         "hard_stopped": False,
         "triggered_at": "",
         "reset_at": "",
@@ -3426,6 +3431,9 @@ def _refresh_daily_guard_from_equity(current_equity: float | None) -> None:
                 "start_of_day_equity": current_equity,
                 "current_equity": current_equity,
                 "daily_pnl_pct": None,
+                "external_cashflow_idr": 0.0,
+                "external_cashflow_detected_at": "",
+                "external_cashflow_reason": "",
                 "hard_stopped": False,
                 "triggered_at": "",
                 "reset_at": "",
@@ -3461,6 +3469,9 @@ def _reconcile_daily_guard_day_rollover() -> None:
                 "date": today,
                 "start_of_day_equity": _daily_guard_state.get("current_equity"),
                 "daily_pnl_pct": 0.0,
+                "external_cashflow_idr": 0.0,
+                "external_cashflow_detected_at": "",
+                "external_cashflow_reason": "",
                 "hard_stopped": False,
                 "triggered_at": "",
                 "reset_at": "",
@@ -3550,12 +3561,69 @@ def _check_daily_loss_limit(current_equity: float | None = None) -> None:
     start_equity = float(_daily_guard_state.get("start_of_day_equity") or 0.0)
     if not start_equity or not current_equity:
         return
-    daily_pnl_pct = (float(current_equity) - start_equity) / start_equity
+    external_cashflow = float(_daily_guard_state.get("external_cashflow_idr") or 0.0)
+    net_equity = float(current_equity) - external_cashflow
+    daily_pnl_pct = (net_equity - start_equity) / start_equity
     _daily_guard_state["current_equity"] = float(current_equity)
     _daily_guard_state["daily_pnl_pct"] = daily_pnl_pct
     _save_daily_guard_state()
     if daily_pnl_pct <= -abs(_current_daily_loss_limit_pct()) and not bool(_daily_guard_state.get("hard_stopped")):
         _trigger_daily_hard_stop(current_equity, daily_pnl_pct)
+
+
+def _recent_trade_activity_window_sec(window_sec: int = 180) -> bool:
+    cutoff = time.time() - max(window_sec, 30)
+    for event in reversed(_recent_runtime_events[-25:]):
+        try:
+            ts = str(event.get("at") or "")
+            if not ts:
+                continue
+            event_dt = datetime.fromisoformat(ts)
+            if event_dt.replace(tzinfo=timezone.utc).timestamp() < cutoff:
+                continue
+            if str(event.get("kind") or "").lower() in {
+                "execution_filled",
+                "fill",
+                "book_entry",
+                "partial_sell",
+                "force_exit",
+                "entry_approved",
+            }:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _maybe_register_external_cashflow(current_equity: float | None) -> None:
+    if current_equity is None:
+        return
+    start_equity = _parse_numeric(_daily_guard_state.get("start_of_day_equity"))
+    prev_equity = _parse_numeric(_daily_guard_state.get("current_equity"))
+    if not start_equity or prev_equity is None or prev_equity <= 0:
+        return
+    if _active_position_pairs():
+        return
+    if _recent_trade_activity_window_sec():
+        return
+    delta = float(current_equity) - float(prev_equity)
+    min_delta = max(EXTERNAL_CASHFLOW_AUTO_DETECT_IDR, start_equity * EXTERNAL_CASHFLOW_AUTO_DETECT_PCT)
+    if abs(delta) < min_delta:
+        return
+    _daily_guard_state["external_cashflow_idr"] = float(_daily_guard_state.get("external_cashflow_idr") or 0.0) + delta
+    _daily_guard_state["external_cashflow_detected_at"] = datetime.now(timezone.utc).isoformat()
+    _daily_guard_state["external_cashflow_reason"] = "auto_detected_balance_jump"
+    _daily_guard_state["current_equity"] = float(current_equity)
+    _save_daily_guard_state()
+    _append_runtime_event(
+        "external_cashflow",
+        {
+            "delta_idr": round(delta, 2),
+            "reason": "auto_detected_balance_jump",
+            "equity_idr": round(float(current_equity), 2),
+        },
+    )
+    print(f"[KIBOT][CASHFLOW] external cashflow detected delta=Rp{delta:,.0f}", flush=True)
 
 
 def _bootstrap_daily_guard_from_kidax() -> None:
@@ -3590,6 +3658,7 @@ def _bootstrap_daily_guard_from_kidax() -> None:
 
     if current_equity is not None:
         _refresh_daily_guard_from_equity(current_equity)
+        _maybe_register_external_cashflow(current_equity)
         if daily_pnl_pct is not None and _daily_guard_state.get("daily_pnl_pct") is None:
             _daily_guard_state["daily_pnl_pct"] = daily_pnl_pct
             _daily_guard_state["current_equity"] = current_equity
@@ -4290,6 +4359,8 @@ def _collect_learning_review_snapshot() -> Dict[str, Any]:
         "wib_date": _operational_wib_date(),
         "market_regime": _daily_summary_market_regime() if DAILY_SUMMARY_ENABLED else "UNKNOWN",
         "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+        "external_cashflow_idr": _daily_guard_state.get("external_cashflow_idr"),
+        "external_cashflow_reason": _daily_guard_state.get("external_cashflow_reason"),
         "equity_idr": balance.get("equity_idr"),
         "free_cash_idr": balance.get("free_cash_idr"),
         "trade_metrics": trade_metrics,
@@ -4546,6 +4617,9 @@ def _complete_midnight_reset(new_date: str, *, reason: str) -> None:
             "start_of_day_equity": current_equity,
             "current_equity": current_equity,
             "daily_pnl_pct": 0.0,
+            "external_cashflow_idr": 0.0,
+            "external_cashflow_detected_at": "",
+            "external_cashflow_reason": "",
             "hard_stopped": False,
             "triggered_at": "",
             "reset_at": "",
@@ -4672,6 +4746,7 @@ def _write_runtime_note(*, force: bool = False) -> None:
         "control_plane_healthy": _control_plane_healthy,
         "daily_hard_stop": bool(_daily_guard_state.get("hard_stopped") or _gate_state.get("daily_hard_stop")),
         "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+        "external_cashflow_idr": _daily_guard_state.get("external_cashflow_idr"),
         "daily_hard_stop_reset_at": _gate_state.get("daily_hard_stop_reset_at") or _daily_guard_state.get("reset_at"),
         "ai_router_enabled": AI_ROUTER_ENABLED,
         "ai_provider_order": _iter_ai_provider_order(),
@@ -7551,6 +7626,15 @@ def _brain_signal_advisory(
     budget_idr: float,
     capital_profile: Dict[str, Any],
 ) -> Dict[str, Any]:
+    _brain.ensure_warm(
+        watch_symbols=_brain_watch_symbols(),
+        context={
+            "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+            "equity_idr": _current_balance_snapshot().get("equity_idr"),
+            "free_cash_idr": _current_balance_snapshot().get("free_cash_idr"),
+            "capital_profile": capital_profile,
+        },
+    )
     snapshot = _brain.snapshot() if hasattr(_brain, "snapshot") else {}
     if not isinstance(snapshot, dict) or not snapshot:
         return {

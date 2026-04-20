@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import calendar
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -117,6 +119,8 @@ class BrainManager:
         self._pair_cache: Dict[str, Dict[str, Any]] = {}
         self._provider_cache: Dict[str, Dict[str, Any]] = {}
         self._last_snapshot: Dict[str, Any] = self._load_snapshot()
+        self._refresh_lock = threading.Lock()
+        self._refresh_in_flight = False
 
     def get_market_intel(self, symbol: str) -> Dict[str, Any]:
         symbol = (symbol or "").strip().upper()
@@ -235,6 +239,43 @@ class BrainManager:
             return dict(self._last_snapshot)
         self._last_snapshot = self._load_snapshot()
         return dict(self._last_snapshot)
+
+    def snapshot_age_sec(self) -> Optional[float]:
+        snapshot = self.snapshot()
+        checked_at = str(snapshot.get("checked_at") or "").strip()
+        if not checked_at:
+            return None
+        try:
+            ts = time.strptime(checked_at, "%Y-%m-%dT%H:%M:%SZ")
+            return max(0.0, time.time() - calendar.timegm(ts))
+        except Exception:
+            return None
+
+    def ensure_warm(
+        self,
+        watch_symbols: Optional[Iterable[str]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        age = self.snapshot_age_sec()
+        stale_after = max(60, int(self.market_pulse_ttl_sec))
+        if age is not None and age < stale_after:
+            return False
+        with self._refresh_lock:
+            if self._refresh_in_flight:
+                return False
+            self._refresh_in_flight = True
+
+        def worker() -> None:
+            try:
+                self.think(watch_symbols=watch_symbols, context=context)
+            except Exception as error:
+                logger.warning("Brain async warm failed: %s", error)
+            finally:
+                with self._refresh_lock:
+                    self._refresh_in_flight = False
+
+        threading.Thread(target=worker, name="kibot-brain-warm", daemon=True).start()
+        return True
 
     def _get_market_pulse(self, symbols: Sequence[str]) -> Dict[str, Any]:
         def loader() -> Dict[str, Any]:
