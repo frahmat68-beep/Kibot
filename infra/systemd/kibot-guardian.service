@@ -6,7 +6,7 @@ StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
-Type=simple
+Type=notify
 User=ubuntu
 WorkingDirectory=/home/ubuntu/KiBot
 EnvironmentFile=-/home/ubuntu/KiBot/.env.server
@@ -14,6 +14,8 @@ EnvironmentFile=-/home/ubuntu/KiBot/.env.kibot
 EnvironmentFile=-/home/ubuntu/KiBot/.env.kibot_manager
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 scripts/kibot_guardian.py
+NotifyAccess=all
+WatchdogSec=180
 Restart=always
 RestartSec=30
 MemoryMax=40M

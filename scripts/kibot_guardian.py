@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +38,14 @@ CPU_WARN_PCT = 90
 CPU_WARN_SUSTAINED_S = 300
 MAX_SERVICE_RESTARTS_PER_HOUR = 3
 restart_counts: Dict[str, List[float]] = {}
+health_issue_since: Dict[str, float] = {}
+ENGINE_DEGRADED_RESTART_SEC = int(os.getenv("KIBOT_GUARDIAN_ENGINE_DEGRADED_RESTART_SEC", "600"))
+MANAGER_SUSPEND_RESTART_SEC = int(os.getenv("KIBOT_GUARDIAN_MANAGER_SUSPEND_RESTART_SEC", "600"))
+SERVICE_HEALTH_URLS = {
+    "kidax-engine": "http://127.0.0.1:8787/api/health",
+    "kinance-engine": "http://127.0.0.1:8788/api/health",
+    "kibot-manager": "http://127.0.0.1:9998/api/state",
+}
 
 
 def _parse_guardian_service_override(raw: str) -> List[str]:
@@ -173,22 +183,107 @@ def check_services() -> Dict[str, Dict[str, Any]]:
             is_active = proc.stdout.strip() == "active"
             results[service] = {"active": is_active, "status": proc.stdout.strip()}
             if not is_active:
-                _handle_service_down(service)
+                health_issue_since.pop(service, None)
+                _restart_service(service, reason="inactive", action="start")
+                continue
+            health = _check_service_health(service)
+            results[service].update(health)
+            if health.get("healthy", True):
+                health_issue_since.pop(service, None)
+                continue
+            since = health_issue_since.setdefault(service, time.time())
+            unhealthy_for = time.time() - since
+            results[service]["unhealthy_for_sec"] = round(unhealthy_for, 1)
+            threshold = _restart_threshold_for(service, health)
+            if threshold > 0 and unhealthy_for >= threshold:
+                _restart_service(
+                    service,
+                    reason=str(health.get("reason") or "unhealthy"),
+                    action="restart",
+                )
+                health_issue_since.pop(service, None)
         except Exception as error:
             results[service] = {"active": False, "error": str(error)}
     return results
 
 
-def _handle_service_down(service: str) -> None:
+def _restart_threshold_for(service: str, health: Dict[str, Any]) -> int:
+    if service in {"kidax-engine", "kinance-engine"}:
+        return ENGINE_DEGRADED_RESTART_SEC
+    if service == "kibot-manager":
+        reason = str(health.get("reason") or "")
+        if "math_review_recovery_impossible" in reason or "state_unhealthy" in reason or "manager_http_error" in reason:
+            return MANAGER_SUSPEND_RESTART_SEC
+    return 0
+
+
+def _load_health_payload(url: str) -> Dict[str, Any]:
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        body = ""
+        try:
+            body = error.read().decode("utf-8")
+        except Exception:
+            body = ""
+        if body:
+            try:
+                return json.loads(body)
+            except Exception:
+                pass
+        raise
+
+
+def _check_service_health(service: str) -> Dict[str, Any]:
+    url = SERVICE_HEALTH_URLS.get(service)
+    if not url:
+        return {"healthy": True, "reason": "no_health_endpoint"}
+    try:
+        payload = _load_health_payload(url)
+    except Exception as error:
+        return {"healthy": False, "reason": f"{service}_http_error:{type(error).__name__}"}
+
+    if service in {"kidax-engine", "kinance-engine"}:
+        effective_state = str(payload.get("effectiveState") or "")
+        sync_health = str(payload.get("syncHealth") or "")
+        hard_stop_active = bool(payload.get("hardStopActive"))
+        if hard_stop_active:
+            return {"healthy": True, "reason": "hard_stop_active", "effective_state": effective_state, "sync_health": sync_health}
+        if effective_state == "RUNNING" and sync_health == "HEALTHY":
+            return {"healthy": True, "reason": "engine_healthy", "effective_state": effective_state, "sync_health": sync_health}
+        return {
+            "healthy": False,
+            "reason": f"engine_degraded:{effective_state}:{sync_health}",
+            "effective_state": effective_state,
+            "sync_health": sync_health,
+        }
+
+    if service == "kibot-manager":
+        system_state = str(payload.get("system_state") or payload.get("systemState") or "")
+        degraded_reason = str(payload.get("degradedReason") or payload.get("healthDecision") or "")
+        hard_stop_active = bool(payload.get("hard_stop_active") or payload.get("hardStopActive"))
+        if hard_stop_active:
+            return {"healthy": True, "reason": "manager_hard_stop_active", "system_state": system_state}
+        if system_state in {"", "HEALTHY"}:
+            return {"healthy": True, "reason": "manager_healthy", "system_state": system_state}
+        if system_state == "SUSPENDED" and degraded_reason == "math_review_recovery_impossible":
+            return {"healthy": False, "reason": "math_review_recovery_impossible", "system_state": system_state}
+        return {"healthy": False, "reason": f"manager_state_unhealthy:{system_state}:{degraded_reason}", "system_state": system_state}
+
+    return {"healthy": True, "reason": "unsupported_service"}
+
+
+def _restart_service(service: str, *, reason: str, action: str) -> None:
     now = time.time()
     recent = [timestamp for timestamp in restart_counts.get(service, []) if now - timestamp < 3600]
     restart_counts[service] = recent
     if len(recent) >= MAX_SERVICE_RESTARTS_PER_HOUR:
         push_event(
             "SERVICE_CRASH_LOOP",
-            f"{service} crashed {len(recent)}x dalam 1 jam — tidak di-restart otomatis",
+            f"{service} unhealthy {len(recent)}x dalam 1 jam — tidak di-restart otomatis",
             "CRITICAL",
-            {"service": service, "restarts_1h": len(recent)},
+            {"service": service, "restarts_1h": len(recent), "reason": reason},
         )
         return
     backoff = [10, 30, 60][min(len(recent), 2)]
@@ -198,17 +293,21 @@ def _handle_service_down(service: str) -> None:
         try:
             guard = json.loads(guard_path.read_text(encoding="utf-8"))
             if guard.get("hard_stopped") and service in {"kidax-engine", "kibot-manager"}:
-                push_event("SERVICE_DOWN_HARD_STOP", f"{service} down tapi hard stop aktif — skip restart", "INFO")
-                return
+                push_event(
+                    "SERVICE_DOWN_HARD_STOP",
+                    f"{service} down saat hard stop aktif — tetap restart agar monitoring/reset tetap hidup",
+                    "WARNING",
+                    {"service": service},
+                )
         except Exception:
             pass
-    result = subprocess.run(["sudo", "systemctl", "start", service], capture_output=True, text=True, timeout=30)
+    result = subprocess.run(["sudo", "systemctl", action, service], capture_output=True, text=True, timeout=30)
     restart_counts.setdefault(service, []).append(now)
     push_event(
         "SERVICE_RESTARTED",
-        f"{service} restarted (attempt {len(recent) + 1}/{MAX_SERVICE_RESTARTS_PER_HOUR})",
+        f"{service} {action}ed (attempt {len(recent) + 1}/{MAX_SERVICE_RESTARTS_PER_HOUR})",
         "WARNING" if result.returncode == 0 else "CRITICAL",
-        {"service": service, "success": result.returncode == 0, "stderr": result.stderr[:200]},
+        {"service": service, "success": result.returncode == 0, "stderr": result.stderr[:200], "reason": reason, "action": action},
     )
 
 
@@ -226,7 +325,7 @@ def _auto_cleanup_disk() -> None:
 def check_network() -> Dict[str, Dict[str, Any]]:
     results: Dict[str, Dict[str, Any]] = {}
     targets = {
-        "indodax": "https://indodax.com/api/ping",
+        "indodax": "https://indodax.com/api/pairs",
         "binance": "https://api.binance.com/api/v3/ping",
         "supabase": os.getenv("SUPABASE_URL", "").rstrip("/") + "/rest/v1/" if os.getenv("SUPABASE_URL") else "",
     }
@@ -239,6 +338,13 @@ def check_network() -> Dict[str, Dict[str, Any]]:
             with urllib.request.urlopen(url, timeout=5) as response:
                 latency_ms = int((time.time() - start) * 1000)
                 results[name] = {"ok": response.status == 200, "latency_ms": latency_ms}
+        except urllib.error.HTTPError as error:
+            latency_ms = int((time.time() - start) * 1000)
+            status = int(getattr(error, "code", 0) or 0)
+            ok = 200 <= status < 500
+            results[name] = {"ok": ok, "latency_ms": latency_ms, "http_status": status}
+            if not ok:
+                push_event(f"NETWORK_{name.upper()}_DOWN", f"Koneksi ke {name} gagal: HTTP {status}", "WARNING", {"target": name, "status": status})
         except Exception as error:
             results[name] = {"ok": False, "error": str(error)[:100]}
             push_event(f"NETWORK_{name.upper()}_DOWN", f"Koneksi ke {name} gagal: {str(error)[:100]}", "WARNING", {"target": name})
@@ -249,8 +355,40 @@ def save_state(metrics: Dict[str, Any]) -> None:
     atomic_write(GUARDIAN_STATE, {"ts": now_iso(), **metrics})
 
 
+def _systemd_notify(*args: str) -> None:
+    notify_socket = os.getenv("NOTIFY_SOCKET")
+    if not notify_socket:
+        return
+    try:
+        address: str | bytes = notify_socket
+        if notify_socket.startswith("@"):
+            address = "\0" + notify_socket[1:]
+        payload = "\n".join(args).encode("utf-8")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(address)
+            sock.sendall(payload)
+    except Exception:
+        return
+
+
+def _notify_ready() -> None:
+    _systemd_notify("READY=1", f"STATUS=Guardian active: {', '.join(SERVICES_TO_GUARD)}")
+
+
+def _notify_watchdog(metrics: Dict[str, Any]) -> None:
+    memory = metrics.get("memory") if isinstance(metrics.get("memory"), dict) else {}
+    disk = metrics.get("disk") if isinstance(metrics.get("disk"), dict) else {}
+    status = (
+        f"ram={memory.get('ram_pct', 0)}% "
+        f"disk={disk.get('used_pct', 0)}% "
+        f"services={','.join(f'{k}:{'up' if v.get('active') else 'down'}' for k, v in metrics.get('services', {}).items())}"
+    )
+    _systemd_notify(f"STATUS={status}", "WATCHDOG=1")
+
+
 def run_guardian_loop() -> None:
     print(f"[GUARDIAN] KiBot Server Guardian started. Guarding services: {', '.join(SERVICES_TO_GUARD)}")
+    _notify_ready()
     cpu_high_since: Optional[float] = None
     while True:
         try:
@@ -271,6 +409,7 @@ def run_guardian_loop() -> None:
             else:
                 cpu_high_since = None
             save_state(metrics)
+            _notify_watchdog(metrics)
             time.sleep(60)
         except Exception as error:
             push_event("GUARDIAN_LOOP_ERROR", str(error), "WARNING")

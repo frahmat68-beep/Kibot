@@ -2696,23 +2696,51 @@ def _env_first(*keys: str, default: str = "") -> str:
             return value
     return default
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY or ""
-SUPABASE_USER_EMAIL = os.getenv("SUPABASE_USER_EMAIL", "")
-SUPABASE_USER_PASSWORD = os.getenv("SUPABASE_USER_PASSWORD", "")
-TIMEOUT = float(os.getenv("KIBOT_MANAGER_HTTP_TIMEOUT_SEC", "12"))
-UDP_BIND_HOST = os.getenv("KIBOT_MANAGER_UDP_BIND_HOST", "0.0.0.0")
-UDP_BIND_PORT = int(os.getenv("KIBOT_MANAGER_UDP_BIND_PORT", "9998"))
-KINANCE_UDP_HOST = os.getenv("KINANCE_UDP_HOST", "")
-KINANCE_UDP_PORT = int(os.getenv("KINANCE_UDP_PORT", "9999"))
-KIDAX_UDP_HOST = os.getenv("KIDAX_UDP_HOST", "127.0.0.1")
-KIDAX_UDP_PORT = int(os.getenv("KIDAX_UDP_PORT", "9999"))
-MANAGER_HEARTBEAT_INTERVAL_SEC = float(os.getenv("KIBOT_MANAGER_HEARTBEAT_INTERVAL_SEC", "1.0"))
-TAKER_FEE_PCT = float(os.getenv("KIDAX_TAKER_FEE_PCT", "0.51"))
-STALE_SIGNAL_ABORT_MS = int(os.getenv("KIBOT_STALE_SIGNAL_MS", "800"))
-FOMO_GUARD_PCT = float(os.getenv("KIBOT_FOMO_GUARD_PCT", "15.0"))
+# Configuration Constants (Initialized via _init_config)
+SUPABASE_URL = ""
+SUPABASE_ANON_KEY = ""
+SUPABASE_SERVICE_ROLE_KEY = ""
+SUPABASE_KEY = ""
+SUPABASE_USER_EMAIL = ""
+SUPABASE_USER_PASSWORD = ""
+TIMEOUT = 12.0
+UDP_BIND_HOST = "0.0.0.0"
+UDP_BIND_PORT = 9998
+KINANCE_UDP_HOST = ""
+KINANCE_UDP_PORT = 9999
+KIDAX_UDP_HOST = "127.0.0.1"
+KIDAX_UDP_PORT = 9999
+MANAGER_HEARTBEAT_INTERVAL_SEC = 1.0
+TAKER_FEE_PCT = 0.51
+STALE_SIGNAL_ABORT_MS = 800
+FOMO_GUARD_PCT = 15.0
+
+def _init_config():
+    global SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_KEY
+    global SUPABASE_USER_EMAIL, SUPABASE_USER_PASSWORD, TIMEOUT
+    global UDP_BIND_HOST, UDP_BIND_PORT, KINANCE_UDP_HOST, KINANCE_UDP_PORT
+    global KIDAX_UDP_HOST, KIDAX_UDP_PORT, MANAGER_HEARTBEAT_INTERVAL_SEC
+    global TAKER_FEE_PCT, STALE_SIGNAL_ABORT_MS, FOMO_GUARD_PCT
+
+    SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+    SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+    SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY or ""
+    SUPABASE_USER_EMAIL = os.getenv("SUPABASE_USER_EMAIL", "")
+    SUPABASE_USER_PASSWORD = os.getenv("SUPABASE_USER_PASSWORD", "")
+    TIMEOUT = float(os.getenv("KIBOT_MANAGER_HTTP_TIMEOUT_SEC", "12"))
+    UDP_BIND_HOST = os.getenv("KIBOT_MANAGER_UDP_BIND_HOST", "0.0.0.0")
+    UDP_BIND_PORT = int(os.getenv("KIBOT_MANAGER_UDP_BIND_PORT", "9998"))
+    KINANCE_UDP_HOST = os.getenv("KINANCE_UDP_HOST", "")
+    KINANCE_UDP_PORT = int(os.getenv("KINANCE_UDP_PORT", "9999"))
+    KIDAX_UDP_HOST = os.getenv("KIDAX_UDP_HOST", "127.0.0.1")
+    KIDAX_UDP_PORT = int(os.getenv("KIDAX_UDP_PORT", "9999"))
+    MANAGER_HEARTBEAT_INTERVAL_SEC = float(os.getenv("KIBOT_MANAGER_HEARTBEAT_INTERVAL_SEC", "1.0"))
+    TAKER_FEE_PCT = float(os.getenv("KIDAX_TAKER_FEE_PCT", "0.51"))
+    STALE_SIGNAL_ABORT_MS = int(os.getenv("KIBOT_STALE_SIGNAL_MS", "800"))
+    FOMO_GUARD_PCT = float(os.getenv("KIBOT_FOMO_GUARD_PCT", "15.0"))
+
+_init_config()
 FOMO_LIMIT_CORRECTION_PCT = float(os.getenv("KIBOT_FOMO_LIMIT_CORRECTION_PCT", "4.0"))
 COINGECKO_BASE = os.getenv("COINGECKO_BASE_URL", "https://api.coingecko.com/api/v3")
 NEWS_SCAN_INTERVAL_SEC = int(os.getenv("KIBOT_NEWS_SCAN_INTERVAL_SEC", "45"))
@@ -2763,6 +2791,8 @@ ADAPTIVE_NORMAL_MAX_POSITION_PCT = float(os.getenv("KIBOT_ADAPTIVE_NORMAL_MAX_PO
 ADAPTIVE_EXPANSION_MAX_POSITION_PCT = float(os.getenv("KIBOT_ADAPTIVE_EXPANSION_MAX_POSITION_PCT", "0.10"))
 ADAPTIVE_FREE_CASH_BUFFER_PCT = float(os.getenv("KIBOT_ADAPTIVE_FREE_CASH_BUFFER_PCT", "0.35"))
 ADAPTIVE_RECOVERY_MAX_POSITION_PCT = float(os.getenv("KIBOT_ADAPTIVE_RECOVERY_MAX_POSITION_PCT", "0.10"))
+MATH_REVIEW_MIN_TRADES = int(os.getenv("KIBOT_MATH_REVIEW_MIN_TRADES", "3"))
+MATH_REVIEW_SMALL_LOSS_GRACE_PCT = float(os.getenv("KIBOT_MATH_REVIEW_SMALL_LOSS_GRACE_PCT", "0.01"))
 SURVIVAL_MODE = os.getenv("KIBOT_SURVIVAL_MODE", "true").lower() in {"1", "true", "yes", "on"}
 SURVIVAL_MODE_EQUITY_THRESHOLD_IDR = float(os.getenv("KIBOT_SURVIVAL_MODE_EQUITY_THRESHOLD_IDR", "200000"))
 SURVIVAL_ALLOWED_PAIRS = tuple(
@@ -3658,6 +3688,8 @@ def _run_math_review() -> Dict[str, Any]:
     equity = _get_total_equity_estimate() or 0.0
     pnl_pct = float(_daily_guard_state.get("daily_pnl_pct") or 0.0)
     current_loss_idr = abs(min(pnl_pct, 0.0) * equity)
+    min_trade_sample = max(1, int(MATH_REVIEW_MIN_TRADES))
+    small_loss_grace_idr = max(1000.0, equity * max(MATH_REVIEW_SMALL_LOSS_GRACE_PCT, 0.0))
     hours_left = _hours_until_midnight_wib()
     avg_trades_per_hour = metrics["total_trades"] / max((time.time() - _bot_start_time) / 3600.0, 0.5)
     trades_possible = avg_trades_per_hour * hours_left
@@ -3671,10 +3703,22 @@ def _run_math_review() -> Dict[str, Any]:
     else:
         trades_to_recover = 0.0
 
-    if ev_per_trade <= 0 and metrics["total_trades"] >= 3:
+    if metrics["total_trades"] < min_trade_sample:
+        action = "WAIT_FOR_SAMPLE"
+        reason = f"Need >= {min_trade_sample} realized trades before strict recovery gate (have {metrics['total_trades']})"
+        if str(_gate_state.get("reason") or "").startswith("math_review_"):
+            _resume_new_entries("math_review_wait_for_sample")
+    elif current_loss_idr <= small_loss_grace_idr:
+        action = "CONTINUE"
+        reason = f"Loss Rp{current_loss_idr:,.0f} within grace Rp{small_loss_grace_idr:,.0f}"
+        if str(_gate_state.get("reason") or "").startswith("math_review_"):
+            _resume_new_entries("math_review_loss_within_grace")
+    elif ev_per_trade <= 0 and metrics["total_trades"] >= min_trade_sample:
         action = "TIGHTEN_FILTER"
         reason = f"EV/trade <= 0 after {metrics['total_trades']} trades"
         _set_conservative_mode("math_review_ev_negative")
+        if str(_gate_state.get("reason") or "").startswith("math_review_"):
+            _resume_new_entries("math_review_tighten_filter")
     elif current_loss_idr > 0 and trades_to_recover > trades_possible * 1.5:
         action = "HARD_STOP"
         reason = f"Recovery too far: need {trades_to_recover:.1f}, possible {trades_possible:.1f}"
@@ -3683,14 +3727,19 @@ def _run_math_review() -> Dict[str, Any]:
     elif current_loss_idr > 0 and trades_to_recover > trades_possible:
         action = "DEFENSIVE"
         reason = f"Recovery tight: need {trades_to_recover:.1f}, possible {trades_possible:.1f}"
+        if str(_gate_state.get("reason") or "").startswith("math_review_"):
+            _resume_new_entries("math_review_defensive")
     elif metrics["win_rate"] >= 0.60 and ev_per_trade > 0:
         action = "CONTINUE_OPTIMAL"
         reason = f"WR={metrics['win_rate']:.0%}, EV/trade=Rp{ev_per_trade:,.0f}"
         if not bool(_daily_guard_state.get("hard_stopped")) and _api_fail_streak == 0 and _control_plane_healthy:
             _set_normal_mode("math_review_optimal")
+            _resume_new_entries("math_review_optimal")
     else:
         action = "CONTINUE"
         reason = f"WR={metrics['win_rate']:.0%}, EV/trade=Rp{ev_per_trade:,.0f}"
+        if str(_gate_state.get("reason") or "").startswith("math_review_"):
+            _resume_new_entries("math_review_continue")
 
     report = (
         f"📊 30min Math Review\n"
@@ -7731,17 +7780,17 @@ def main() -> None:
 
 def _load_daily_state():
     """Restores daily capital metrics with WIB context (Fix #5)."""
-    global _initial_capital_idr
+    global _initial_capital_idr, _entry_loss_count
     try:
-        state_file = Path("state/daily_state.json")
-        if state_file.exists():
-            state = json.loads(state_file.read_text())
-            today = datetime.now(WIB).date().isoformat()
-            if state.get("date") == today:
-                _initial_capital_idr = float(state.get("initial_capital_idr", 0))
-                _hard_stop.initial_capital = _initial_capital_idr
-                print(f"[BOOT] Daily state restored: Rp{_initial_capital_idr:,.0f}", flush=True)
-                return
+        path = STATE_ROOT / "daily_state.json"
+        if not path.exists():
+            return
+        data = json.loads(path.read_text(encoding="utf-8"))
+        _operational_date = data.get("date")
+        _hard_stop.initial_capital = float(data.get("initial_capital_idr") or 0.0)
+        _hard_stop.daily_pnl = float(data.get("daily_pnl") or 0.0)
+        _entry_loss_count = data.get("entry_loss_count") or {}
+        _hard_stop.hard_stopped = bool(data.get("hard_stopped"))
     except Exception as e:
         print(f"[BOOT][ERROR] Failed to load daily state: {e}", flush=True)
     _daily_reset_state()

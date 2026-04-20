@@ -241,6 +241,39 @@ if manager is not None:
             manager._daily_guard_state.update(old_guard_state)
 
     with (
+        patch("kibot_manager._get_trade_metrics_today", return_value={
+            "total_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": 0.0,
+            "avg_win": 0.0,
+            "avg_loss": 0.0,
+            "ev_per_trade": 0.0,
+            "profit_factor": 0.0,
+            "total_gross_pnl": 0.0,
+        }),
+        patch("kibot_manager._get_total_equity_estimate", return_value=56_000.0),
+        patch("kibot_manager._hours_until_midnight_wib", return_value=5.5),
+        patch("kibot_manager._telegram_send", return_value=None),
+        patch("kibot_manager._append_runtime_event", return_value=None),
+        patch("kibot_manager._set_conservative_mode", return_value=None),
+        patch("kibot_manager._set_normal_mode", return_value=None),
+    ):
+        old_guard_state = dict(manager._daily_guard_state)
+        old_gate_state = dict(manager._gate_state)
+        try:
+            manager._daily_guard_state.update({"daily_pnl_pct": -0.0053, "hard_stopped": False})
+            manager._gate_state.update({"entry_state": "SUSPENDED", "reason": "math_review_recovery_impossible", "daily_hard_stop": False})
+            result = manager._run_math_review()
+            check("math review small loss waits for sample", result["action"] == "WAIT_FOR_SAMPLE", str(result))
+            check("math review small loss resumes gate", manager._gate_state.get("entry_state") == "HEALTHY", str(manager._gate_state))
+        finally:
+            manager._daily_guard_state.clear()
+            manager._daily_guard_state.update(old_guard_state)
+            manager._gate_state.clear()
+            manager._gate_state.update(old_gate_state)
+
+    with (
         patch("kibot_manager.REMOTE_SCANNER_FEED_ENABLED", True),
         patch("kibot_manager.SUPABASE_URL", "https://example.supabase.co"),
         patch("kibot_manager.SUPABASE_KEY", "anon"),
