@@ -404,3 +404,20 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
 - Claim:
   - Untuk topologi aktif 2-server sekarang, sistem sudah berjalan normal kembali dalam arti runtime inti, guardian autorevive, scanner mesh, dan komunikasi antarnode sudah pulih.
   - Catatan jujur: SG belum berada di mode trading normal karena `daily hard stop` masih aktif akibat loss harian live; ini guard yang valid, bukan crash.
+
+## 2026-04-20 13:27 WIB — SAFE_MODE Sync Repair For HP Visibility
+- Temuan:
+  - SG hidup dan scanner feed aktif, tetapi engine utama tetap mengekspose `DEGRADED` saat daily hard stop valid sedang aktif.
+  - Akar bug ada di `MacEngineDaemon`: reason manager `hard stop active` tidak ikut dikenali sebagai hard-stop valid, jadi state jatuh ke `DEGRADED` alih-alih `SAFE_MODE`.
+  - Dampaknya dashboard/HP terlihat seperti sistem rusak atau belum nyala, padahal sebenarnya sedang proteksi.
+- Perbaikan:
+  - Patch reason normalization agar `hard stop active` / `daily loss limit` dipetakan ke `SAFE_MODE`.
+  - Ubah label node `SAFE_MODE` menjadi `safe` agar UI tidak salah baca sebagai `degraded`.
+  - Saat safety gate aktif, log loop kini memakai `SAFE_MODE_HOLD` dan tidak lagi spam `LIFECYCLE_BLOCK` error yang misleading.
+- Verifikasi lokal:
+  - `./gradlew :apps:mac-engine:compileKotlin :apps:mac-engine:fatJar --no-daemon`
+  - `python3 tests/test_whatif_complete.py` → `200/200 PASS`
+  - `python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
+- Langkah berikut:
+  - Deploy jar baru ke SG dan Tokyo.
+  - Soak ulang live untuk memastikan `/api/state` dan `/api/health` sinkron ke HP dengan status `SAFE` saat proteksi aktif.

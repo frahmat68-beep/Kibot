@@ -13,7 +13,18 @@ tidak salah arah. Log operasional runtime yang wajib di-update ada di:
 ## RULE: Setiap pembaca WAJIB menulis update di logs/OPS_UPDATE_LOG.md setiap ada temuan, perbaikan, atau deploy, beserta hasil dan claim. Tidak boleh deploy/patch tanpa update log.
 
 ## Pointer Terakhir
-- Audit/deploy/soak terbaru: lihat entry `2026-04-20 12:21 WIB` di `logs/OPS_UPDATE_LOG.md`.
+- Audit/deploy/soak terbaru: lihat entry `2026-04-20 13:27 WIB` di `logs/OPS_UPDATE_LOG.md`.
+
+## [2026-04-20 13:27 WIB] - SAFE_MODE Sync Repair For HP Visibility
+- **Issue**: SG engine masih tampil `DEGRADED` saat hard stop valid aktif, sehingga HP/UI terlihat seperti sistem rusak padahal sebenarnya sedang proteksi.
+- **Action**:
+  - Patch `MacEngineDaemon` agar reason `hard stop active` dikenali sebagai `SAFE_MODE`.
+  - Status node `SAFE_MODE` ditampilkan sebagai `safe`, bukan `degraded`.
+  - Log misleading `LIFECYCLE_BLOCK` saat hard stop diganti menjadi `SAFE_MODE_HOLD`.
+- **Result**:
+  - Build lokal lolos dan siap redeploy.
+  - Setelah deploy, HP seharusnya membaca node utama sebagai hidup dalam mode aman, bukan down/degraded palsu.
+- **Claim**: Sinkronisasi state ke HP menjadi lebih jujur dan selaras dengan guard runtime yang sebenarnya.
 
 ## [2026-04-20 12:21 WIB] - Guardian Autorevive Repair
 - **Issue**: SG punya gap autorevive nyata; guardian lama bisa skip restart manager/engine saat hard stop aktif.

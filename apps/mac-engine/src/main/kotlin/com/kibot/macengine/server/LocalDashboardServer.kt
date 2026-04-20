@@ -225,8 +225,11 @@ class LocalDashboardServer(
                     .replace("%", "")
                     .replace("+", "")
                     .toDoubleOrNull()
-                val dailyLossHardStop = state.liveExecutionEnabled.not() && (dailyPnlPct ?: 0.0) <= -3.0
+                val safeModeActive = state.effectiveState.name == "SAFE_MODE"
+                val tradingAllowed = state.liveExecutionEnabled && !safeModeActive
+                val dailyLossHardStop = tradingAllowed.not() && (dailyPnlPct ?: 0.0) <= -3.0
                 val hardStopActive =
+                    safeModeActive ||
                     state.statusMessage.contains("hard stop", ignoreCase = true) ||
                         state.healthSummary.contains("hard stop", ignoreCase = true) ||
                         state.healthSummary.contains("daily_loss_limit", ignoreCase = true) ||
@@ -243,7 +246,7 @@ class LocalDashboardServer(
                     botId = botId.value,
                     effectiveState = state.effectiveState.name,
                     syncHealth = state.syncHealth,
-                    tradingAllowed = state.liveExecutionEnabled,
+                    tradingAllowed = tradingAllowed,
                     hardStopActive = hardStopActive,
                     services = HealthServicesResponse(
                         kidax = state.kidaxNodeStatus,
@@ -275,12 +278,13 @@ class LocalDashboardServer(
             get("/api/mobile") {
                 applyDashboardSecurityHeaders(call)
                 val state = repository.state.value
+                val safeModeActive = state.effectiveState.name == "SAFE_MODE"
                 val compact = MobileStateResponse(
                     timestamp = java.time.Instant.now().epochSecond,
                     portfolioIdr = state.portfolioValueIdr,
                     pnl = state.pnlTodayIdr,
                     active = state.holdingsDetailed.size,
-                    status = if (state.liveExecutionEnabled) "LIVE" else "PAUSED"
+                    status = if (state.liveExecutionEnabled && !safeModeActive) "LIVE" else "PAUSED"
                 )
                 call.respond(compact)
             }
@@ -498,13 +502,16 @@ class LocalDashboardServer(
         val whatIfJson = readJsonFileOrEmpty(Path.of("state/whatif_results.json"))
         val tradeSummaryJson = readJsonFileOrEmpty(Path.of("state/trade_summary.json"))
         val dailyPnlPct = state.pnlTodayPctLabel.replace("%", "").replace("+", "").toDoubleOrNull() ?: 0.0
-        val dailyLossHardStop = state.liveExecutionEnabled.not() && dailyPnlPct <= -3.0
+        val safeModeActive = state.effectiveState.name == "SAFE_MODE"
+        val tradingAllowed = state.liveExecutionEnabled && !safeModeActive
+        val dailyLossHardStop = tradingAllowed.not() && dailyPnlPct <= -3.0
         return DashboardStateResponse(
             portfolioValueIdr = state.portfolioValueIdr,
             dailyPnlPct = dailyPnlPct,
             dailyPnlIdr = state.pnlTodayIdr.replace(Regex("[^0-9-]"), "").toDoubleOrNull() ?: 0.0,
-            tradingAllowed = state.liveExecutionEnabled,
+            tradingAllowed = tradingAllowed,
             hardStopActive =
+                safeModeActive ||
                 state.statusMessage.contains("hard stop", ignoreCase = true) ||
                     state.healthSummary.contains("hard stop", ignoreCase = true) ||
                     state.healthSummary.contains("daily_loss_limit", ignoreCase = true) ||

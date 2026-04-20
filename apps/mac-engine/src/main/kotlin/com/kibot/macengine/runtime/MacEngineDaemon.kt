@@ -4121,8 +4121,13 @@ class MacEngineDaemon(
                 continue
             }
             if (!shouldRun) {
-                logger.error("LIFECYCLE_BLOCK: Cannot start sync cycle because state is {}", currentState.effectiveState)
-                repository.noteStatus("LIFECYCLE_BLOCK: state=${currentState.effectiveState}")
+                if (currentState.effectiveState == BotEffectiveState.SAFE_MODE) {
+                    logger.info("SAFE_MODE_HOLD: Sync cycle paused while hard-stop or operator safety gate is active")
+                    repository.noteStatus("SAFE_MODE_HOLD: state=${currentState.effectiveState}")
+                } else {
+                    logger.error("LIFECYCLE_BLOCK: Cannot start sync cycle because state is {}", currentState.effectiveState)
+                    repository.noteStatus("LIFECYCLE_BLOCK: state=${currentState.effectiveState}")
+                }
             } else if (currentState.effectiveState == BotEffectiveState.DEGRADED) {
                 logger.warn(
                     "[LIFECYCLE] Running sync cycle in DEGRADED mode while control-plane recovers; syncHealth={}",
@@ -4962,7 +4967,7 @@ class MacEngineDaemon(
         }
         repository.noteBootstrapProgress(
             message = "Server monitor waiting for control-plane registration.",
-            liveExecutionEnabled = config.enableLiveExecution,
+            liveExecutionEnabled = false,
         )
         registrationJob = registrationScope.launch {
             if (!registered && registrationInitialDelayMs > 0L) {
@@ -4973,13 +4978,13 @@ class MacEngineDaemon(
                 registered = true
                 repository.noteBootstrapProgress(
                     message = "Server monitor connected to live feed.",
-                    liveExecutionEnabled = config.enableLiveExecution,
+                    liveExecutionEnabled = false,
                 )
                 appendAuditLog(LogLevel.INFO, "AUTH", "Server monitor connected to live feed.")
             } else {
                 repository.noteBootstrapProgress(
                     message = "Control-plane registration delayed; running in degraded mode.",
-                    liveExecutionEnabled = config.enableLiveExecution,
+                    liveExecutionEnabled = false,
                 )
                 registrationJob = null
             }
@@ -10777,10 +10782,14 @@ class MacEngineDaemon(
     ): BotEffectiveState {
         if (botState.desiredState == BotDesiredState.OFF) return BotEffectiveState.STOPPED
         val leaseHeld = lease.isHeldBy(config.device.deviceId, clock.now())
+        val normalizedManagerReason = managerEntryBlockReason
+            ?.replace('_', ' ')
+            ?.trim()
+            ?.lowercase()
         return when {
-            managerEntryBlockReason != null &&
-                (managerEntryBlockReason.contains("hard_stop", ignoreCase = true) ||
-                    managerEntryBlockReason.contains("daily_loss_limit", ignoreCase = true)) -> BotEffectiveState.SAFE_MODE
+            normalizedManagerReason != null &&
+                (normalizedManagerReason.contains("hard stop") ||
+                    normalizedManagerReason.contains("daily loss limit")) -> BotEffectiveState.SAFE_MODE
             managerEntryBlockReason != null -> BotEffectiveState.DEGRADED
             healthDecision.tradingAllowed -> BotEffectiveState.RUNNING
             leaseHeld -> BotEffectiveState.DEGRADED
@@ -11091,6 +11100,7 @@ class MacEngineDaemon(
         }
         fun localNodeStatus(): String = when {
             botState.desiredState == BotDesiredState.OFF || botState.effectiveState == BotEffectiveState.STOPPED -> "offline"
+            botState.effectiveState == BotEffectiveState.SAFE_MODE -> "safe"
             botState.syncHealth == SyncHealth.BROKEN || botState.effectiveState == BotEffectiveState.DEGRADED -> "degraded"
             else -> "online"
         }
@@ -11102,14 +11112,16 @@ class MacEngineDaemon(
             val heartbeatAt = peerState.lastHeartbeatAt ?: return when {
                 peerState.desiredState == BotDesiredState.OFF || peerState.effectiveState == BotEffectiveState.STOPPED -> "offline"
                 udpAgeMs != null && udpAgeMs <= config.leadLagUdpHeartbeatTimeoutMillis -> "online"
-                peerState.syncHealth == SyncHealth.BROKEN || peerState.effectiveState == BotEffectiveState.SAFE_MODE -> "degraded"
+                peerState.effectiveState == BotEffectiveState.SAFE_MODE -> "safe"
+                peerState.syncHealth == SyncHealth.BROKEN -> "degraded"
                 else -> "online"
             }
             val ageMs = (now - heartbeatAt).inWholeMilliseconds
             return when {
                 peerState.desiredState == BotDesiredState.OFF || peerState.effectiveState == BotEffectiveState.STOPPED -> "offline"
                 udpAgeMs != null && udpAgeMs <= config.leadLagUdpHeartbeatTimeoutMillis -> "online"
-                peerState.syncHealth == SyncHealth.BROKEN || peerState.effectiveState == BotEffectiveState.SAFE_MODE -> "degraded"
+                peerState.effectiveState == BotEffectiveState.SAFE_MODE -> "safe"
+                peerState.syncHealth == SyncHealth.BROKEN -> "degraded"
                 ageMs <= 180_000L -> "online"
                 else -> "degraded"
             }
@@ -11465,7 +11477,8 @@ class MacEngineDaemon(
         return when (value.trim().lowercase()) {
             "online", "running", "active" -> "RUNNING"
             "offline", "stopped" -> "STOPPED"
-            "degraded", "broken", "safe_mode", "safe mode" -> "DEGRADED"
+            "safe", "safe_mode", "safe mode" -> "SAFE_MODE"
+            "degraded", "broken" -> "DEGRADED"
             else -> value.trim().uppercase().ifBlank { "UNKNOWN" }
         }
     }
