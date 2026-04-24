@@ -13,6 +13,8 @@ Env vars (tambah ke .env):
   GITHUB_OWNER          — username GitHub (frahmat68-beep)
   GITHUB_REPO           — nama repo (Kibot)
   KIBOT_BUD_ACCOUNTS    — jumlah account Bud yang rotasi (default: 8)
+  KIBOT_REPORT_AUTOCLOSE_HOURS — auto close issue auto-report lebih tua dari X jam (default: 24)
+  KIBOT_REPORT_KEEP_OPEN_MAX   — maksimal issue auto-report open (default: 2)
   TELEGRAM_BOT_TOKEN    — token bot Telegram
   TELEGRAM_CHAT_ID      — group ID Telegram
 """
@@ -47,6 +49,8 @@ GITHUB_TOKEN  = os.getenv("GITHUB_TOKEN", "").strip()
 GITHUB_OWNER  = os.getenv("GITHUB_OWNER", "frahmat68-beep").strip()
 GITHUB_REPO   = os.getenv("GITHUB_REPO",  "Kibot").strip()
 NUM_ACCOUNTS  = max(1, int(os.getenv("KIBOT_BUD_ACCOUNTS", "8")))
+AUTOCLOSE_HOURS = max(1, int(os.getenv("KIBOT_REPORT_AUTOCLOSE_HOURS", "24")))
+KEEP_OPEN_MAX = max(0, int(os.getenv("KIBOT_REPORT_KEEP_OPEN_MAX", "2")))
 TG_TOKEN      = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TG_CHAT_ID    = os.getenv("TELEGRAM_CHAT_ID", "-1001346696386").strip()
 
@@ -299,6 +303,62 @@ def create_issue(title: str, body: str, account_num: int) -> dict:
     )
     return resp["data"]
 
+
+def _parse_gh_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def close_stale_reports():
+    """Close old/noisy open auto-report issues to keep repo tidy."""
+    resp = gh_request("GET", "issues?state=open&labels=auto-report&per_page=100", timeout=15)
+    if not resp["ok"] or not isinstance(resp["data"], list):
+        print(f"[WARN] Gagal list auto-report issues: {resp}")
+        return
+
+    items = [item for item in resp["data"] if "pull_request" not in item]
+    if not items:
+        return
+
+    now_utc = datetime.now(timezone.utc)
+    threshold = timedelta(hours=AUTOCLOSE_HOURS)
+    # Keep newest first
+    items_sorted = sorted(
+        items,
+        key=lambda x: _parse_gh_datetime(str(x.get("created_at") or "")) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+
+    closed = 0
+    for idx, issue in enumerate(items_sorted):
+        issue_number = issue.get("number")
+        created_at = _parse_gh_datetime(str(issue.get("created_at") or ""))
+        age = (now_utc - created_at) if created_at else timedelta.max
+        must_close = idx >= KEEP_OPEN_MAX or age >= threshold
+        if not must_close or not issue_number:
+            continue
+
+        gh_request(
+            "POST",
+            f"issues/{issue_number}/comments",
+            payload={
+                "body": (
+                    "Auto-close housekeeping by `ki_issue_reporter.py`.\n\n"
+                    "Issue ditutup otomatis untuk menjaga queue tetap ringan."
+                )
+            },
+            timeout=10,
+        )
+        close_resp = gh_request("PATCH", f"issues/{issue_number}", payload={"state": "closed"}, timeout=10)
+        if close_resp["ok"]:
+            closed += 1
+    if closed:
+        print(f"[INFO] Auto-close selesai: {closed} issue ditutup.")
+
 # ── Telegram notif ───────────────────────────────────────────────────────────────
 def tg_notify(status: dict, issue_url: str, account_num: int):
     if not TG_TOKEN or not TG_CHAT_ID:
@@ -329,6 +389,9 @@ def main():
     if not GITHUB_TOKEN:
         print("[ERROR] GITHUB_TOKEN tidak diset di .env!")
         return
+
+    # Housekeeping dulu supaya queue issue tetap rapih.
+    close_stale_reports()
 
     # Ambil data bot
     print("[INFO] Membaca status bot...")
