@@ -5,6 +5,7 @@ import calendar
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -110,17 +111,27 @@ class BrainManager:
         self.tavily_ttl_sec = int(os.getenv("KIBOT_BRAIN_TAVILY_TTL_SEC", "7200"))
         self.serper_ttl_sec = int(os.getenv("KIBOT_BRAIN_SERPER_TTL_SEC", "5400"))
         self.finnhub_ttl_sec = int(os.getenv("KIBOT_BRAIN_FINNHUB_TTL_SEC", "900"))
+        self.gemini_ttl_sec = int(os.getenv("KIBOT_BRAIN_GEMINI_TTL_SEC", "7200"))
         self.max_watch_symbols = max(1, int(os.getenv("KIBOT_BRAIN_MAX_WATCH_SYMBOLS", "5")))
         self.max_external_symbols = max(1, int(os.getenv("KIBOT_BRAIN_NEWS_MAX_SYMBOLS", "2")))
         self.green_target_daily_pct = float(os.getenv("KIBOT_GREEN_TARGET_DAILY_PCT", "0.003"))
         self.external_research_enabled = os.getenv("KIBOT_BRAIN_ENABLE_EXTERNAL_RESEARCH", "true").lower() == "true"
         self.search_country = os.getenv("KIBOT_BRAIN_SEARCH_COUNTRY", "indonesia")
         self.search_lang = os.getenv("KIBOT_BRAIN_SEARCH_LANG", "id")
+        self.gemini_model = os.getenv("KIBOT_BRAIN_GEMINI_MODEL", os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite"))
         self._pair_cache: Dict[str, Dict[str, Any]] = {}
         self._provider_cache: Dict[str, Dict[str, Any]] = {}
         self._last_snapshot: Dict[str, Any] = self._load_snapshot()
         self._refresh_lock = threading.Lock()
         self._refresh_in_flight = False
+
+    def _gemini_api_key(self) -> str:
+        return (
+            os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+            or os.getenv("GEMINI_SUPPORT_API_KEY")
+            or ""
+        )
 
     def get_market_intel(self, symbol: str) -> Dict[str, Any]:
         symbol = (symbol or "").strip().upper()
@@ -212,6 +223,7 @@ class BrainManager:
             "watch_symbols": symbols,
             "watch_reviews": [],
         }
+        snapshot["ai_critic"] = self._get_ai_critic(symbols, market_pulse, context)
         for symbol in symbols[: self.max_external_symbols]:
             intel = self.get_market_intel(symbol)
             approved, reason = self.vet_signal(symbol, 0.70)
@@ -335,6 +347,103 @@ class BrainManager:
             }
 
         return self._cached_payload("market_pulse", self.market_pulse_ttl_sec, loader)
+
+    def _extract_text_from_gemini_response(self, payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        candidates = payload.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            return ""
+        first = candidates[0] if isinstance(candidates[0], dict) else {}
+        content = first.get("content") if isinstance(first.get("content"), dict) else {}
+        parts = content.get("parts")
+        if not isinstance(parts, list) or not parts:
+            return ""
+        first_part = parts[0] if isinstance(parts[0], dict) else {}
+        text = first_part.get("text")
+        return str(text or "").strip()
+
+    def _safe_json_from_text(self, text: str) -> Dict[str, Any]:
+        raw = str(text or "").strip()
+        if not raw:
+            return {}
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?", "", raw, flags=re.IGNORECASE).strip()
+            raw = raw[:-3].strip() if raw.endswith("```") else raw
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            raw = raw[start:end + 1]
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    def _get_ai_critic(self, symbols: Sequence[str], market_pulse: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.external_research_enabled or not self._gemini_api_key():
+            return {}
+        risk_bias = str(market_pulse.get("risk_bias") or "UNKNOWN").upper()
+        daily_pnl = f"{self._safe_float(context.get('daily_pnl_pct')):.4f}"
+        cache_key = f"ai_critic:{risk_bias}:{daily_pnl}:{'-'.join(list(symbols)[:3])}"
+
+        def loader() -> Dict[str, Any]:
+            payload = {
+                "contents": [
+                    {
+                        "parts": [
+                            {
+                                "text": (
+                                    "You are a trading strategy critic. Return compact JSON only with keys "
+                                    "{\"capital_posture\":\"DEFENSIVE|NEUTRAL|OPPORTUNISTIC\","
+                                    "\"risk_bias\":\"RISK_OFF|MIXED|RISK_ON\","
+                                    "\"confidence\":0.0,"
+                                    "\"strategy_next\":\"...\","
+                                    "\"focus_symbols\":[...],"
+                                    "\"do_not_do\":[...]}"
+                                    "\n\nContext:\n"
+                                    f"- watch_symbols: {json.dumps(list(symbols), ensure_ascii=False)}\n"
+                                    f"- market_pulse: {json.dumps(market_pulse, ensure_ascii=False)}\n"
+                                    f"- daily_target: {json.dumps(self._daily_target_snapshot(context), ensure_ascii=False)}\n"
+                                    f"- capital_profile: {json.dumps(context.get('capital_profile') or {}, ensure_ascii=False)}\n"
+                                    "Rules:\n"
+                                    "- keep risk controls strict\n"
+                                    "- favor tiny-account survival if capital is small\n"
+                                    "- only recommend aggressive posture when market pulse and local learning both support it\n"
+                                    "- strategy_next must be one sentence\n"
+                                )
+                            }
+                        ]
+                    }
+                ],
+                "generationConfig": {
+                    "temperature": 0.1,
+                    "maxOutputTokens": 320,
+                    "responseMimeType": "text/plain",
+                },
+            }
+            base = os.getenv("GEMINI_API_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+            api_key = self._gemini_api_key()
+            url = f"{base}/models/{self.gemini_model}:generateContent"
+            request = Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": api_key,
+                    "User-Agent": "KiBot-Brain/1.0",
+                },
+            )
+            with urlopen(request, timeout=max(self.request_timeout)) as response:
+                raw = json.loads(response.read().decode("utf-8"))
+            text = self._extract_text_from_gemini_response(raw)
+            critic = self._safe_json_from_text(text)
+            if critic:
+                critic["provider"] = "gemini"
+                critic["model"] = self.gemini_model
+            return critic
+
+        return self._cached_payload(cache_key, self.gemini_ttl_sec, loader)
 
     def _symbol_external_intel(self, symbol: str) -> Dict[str, Any]:
         def loader() -> Dict[str, Any]:
@@ -501,7 +610,7 @@ class BrainManager:
         ):
             last = self._provider_cache.get(name) or {}
             out[name] = {
-                "configured": bool(os.getenv(env_key)),
+                "configured": bool(self._gemini_api_key()) if name == "gemini" else bool(os.getenv(env_key)),
                 "last_ok": bool(last.get("ok")) if last else None,
                 "last_checked_at": last.get("checked_at"),
                 "last_error": last.get("error", ""),
@@ -705,11 +814,11 @@ class BrainManager:
         return {
             "google.genai": {
                 "installed": has_module("google.genai"),
-                "api_key_present": bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")),
+                "api_key_present": bool(self._gemini_api_key()),
             },
             "google.generativeai": {
                 "installed": has_module("google.generativeai"),
-                "api_key_present": bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")),
+                "api_key_present": bool(self._gemini_api_key()),
                 "legacy_sdk": True,
             },
             "tavily": {

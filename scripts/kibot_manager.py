@@ -2793,6 +2793,9 @@ ADAPTIVE_NORMAL_MAX_POSITION_PCT = float(os.getenv("KIBOT_ADAPTIVE_NORMAL_MAX_PO
 ADAPTIVE_EXPANSION_MAX_POSITION_PCT = float(os.getenv("KIBOT_ADAPTIVE_EXPANSION_MAX_POSITION_PCT", "0.10"))
 ADAPTIVE_FREE_CASH_BUFFER_PCT = float(os.getenv("KIBOT_ADAPTIVE_FREE_CASH_BUFFER_PCT", "0.35"))
 ADAPTIVE_RECOVERY_MAX_POSITION_PCT = float(os.getenv("KIBOT_ADAPTIVE_RECOVERY_MAX_POSITION_PCT", "0.10"))
+MICRO_ACCOUNT_MIN_ORDER_BUFFER_PCT = float(os.getenv("KIBOT_MICRO_ACCOUNT_MIN_ORDER_BUFFER_PCT", "1.15"))
+MICRO_ACCOUNT_FREE_CASH_BUFFER_PCT = float(os.getenv("KIBOT_MICRO_ACCOUNT_FREE_CASH_BUFFER_PCT", "0.50"))
+MICRO_ACCOUNT_MAX_RISK_PCT = float(os.getenv("KIBOT_MICRO_ACCOUNT_MAX_RISK_PCT", "0.40"))
 MATH_REVIEW_MIN_TRADES = int(os.getenv("KIBOT_MATH_REVIEW_MIN_TRADES", "3"))
 MATH_REVIEW_SMALL_LOSS_GRACE_PCT = float(os.getenv("KIBOT_MATH_REVIEW_SMALL_LOSS_GRACE_PCT", "0.01"))
 SURVIVAL_MODE = os.getenv("KIBOT_SURVIVAL_MODE", "true").lower() in {"1", "true", "yes", "on"}
@@ -5529,11 +5532,11 @@ def _adaptive_capital_profile(
         )
         return profile
 
-    if free_cash_now < ABSOLUTE_MIN_POSITION_SIZE_IDR:
+    if free_cash_now < ABSOLUTE_MIN_POSITION_SIZE_IDR * MICRO_ACCOUNT_MIN_ORDER_BUFFER_PCT:
         profile.update(
             {
                 "mode": "PAUSED",
-                "reason": f"free_cash_below_floor:{free_cash_now:.0f}",
+                "reason": f"free_cash_below_min_order:{free_cash_now:.0f}",
                 "max_position_idr": 0.0,
                 "trading_allowed": False,
             }
@@ -5546,7 +5549,11 @@ def _adaptive_capital_profile(
         reason = "daily_drawdown_recovery"
     elif equity_now < 75_000:
         mode = "MICRO"
-        risk_pct = ADAPTIVE_MICRO_MAX_POSITION_PCT
+        floor_risk_pct = (ABSOLUTE_MIN_POSITION_SIZE_IDR / max(equity_now, 1.0)) * MICRO_ACCOUNT_MIN_ORDER_BUFFER_PCT
+        risk_pct = min(
+            MICRO_ACCOUNT_MAX_RISK_PCT,
+            max(ADAPTIVE_MICRO_MAX_POSITION_PCT, floor_risk_pct),
+        )
         reason = "micro_balance_preservation"
     elif equity_now < 150_000:
         mode = "BUILDUP"
@@ -5561,15 +5568,26 @@ def _adaptive_capital_profile(
         risk_pct = ADAPTIVE_EXPANSION_MAX_POSITION_PCT
         reason = "capital_expansion_discipline"
 
+    free_cash_buffer_pct = ADAPTIVE_FREE_CASH_BUFFER_PCT
+    if mode == "MICRO":
+        free_cash_buffer_pct = max(free_cash_buffer_pct, MICRO_ACCOUNT_FREE_CASH_BUFFER_PCT)
+    elif mode == "BUILDUP":
+        free_cash_buffer_pct = max(free_cash_buffer_pct, 0.42)
+
     max_position = min(
         MAXIMUM_POSITION_SIZE_IDR,
         equity_now * risk_pct,
-        free_cash_now * ADAPTIVE_FREE_CASH_BUFFER_PCT,
+        free_cash_now * free_cash_buffer_pct,
     )
-    min_position = min(ABSOLUTE_MIN_POSITION_SIZE_IDR, max_position)
-    trading_allowed = max_position >= ABSOLUTE_MIN_POSITION_SIZE_IDR
+    min_position = ABSOLUTE_MIN_POSITION_SIZE_IDR
+    tiny_balance_mode = mode in {"MICRO", "BUILDUP"} and equity_now < 150_000
+    if tiny_balance_mode and max_position < ABSOLUTE_MIN_POSITION_SIZE_IDR:
+        max_position = ABSOLUTE_MIN_POSITION_SIZE_IDR
+    trading_allowed = free_cash_now >= ABSOLUTE_MIN_POSITION_SIZE_IDR * MICRO_ACCOUNT_MIN_ORDER_BUFFER_PCT and max_position >= ABSOLUTE_MIN_POSITION_SIZE_IDR
     if not trading_allowed:
         reason = f"{reason}:position_floor_unmet"
+    elif tiny_balance_mode:
+        reason = f"{reason}:min_order_override"
 
     profile.update(
         {
@@ -7236,10 +7254,20 @@ def _signal_handler(signum: int, frame: Any) -> None:
     _write_runtime_note(force=True)
 
 
-def _http_state_payload() -> Dict[str, Any]:
-    runtime_state = _fetch_local_runtime_state(timeout_sec=0.35, max_cache_age_sec=2.5)
+def _manager_gate_payload(
+    runtime_state: Optional[Dict[str, Any]] = None,
+    capital_profile: Optional[Dict[str, Any]] = None,
+    *,
+    include_runtime_state: bool = True,
+) -> Dict[str, Any]:
+    if runtime_state is None:
+        runtime_state = (
+            _fetch_local_runtime_state(timeout_sec=0.35, max_cache_age_sec=2.5)
+            if include_runtime_state
+            else {}
+        )
     equity_estimate = _extract_equity_estimate(runtime_state)
-    capital_profile = _adaptive_capital_profile(equity=equity_estimate)
+    capital_profile = capital_profile or _adaptive_capital_profile(equity=equity_estimate)
     with _state_lock:
         capital_sufficient = bool(capital_profile.get("trading_allowed"))
         manager_trading_allowed = (
@@ -7248,26 +7276,53 @@ def _http_state_payload() -> Dict[str, Any]:
             and capital_sufficient
         )
         runtime_trading_allowed = runtime_state.get("tradingAllowed")
-        effective_state = str(runtime_state.get("effectiveState") or ("RUNNING" if manager_trading_allowed else "DEGRADED"))
-        trading_allowed = (
+        effective_trading_allowed = (
             manager_trading_allowed and bool(runtime_trading_allowed)
             if isinstance(runtime_trading_allowed, bool)
             else manager_trading_allowed
         )
+        system_state = str(_gate_state.get("entry_state") or "HEALTHY")
+        degraded_reason = (
+            str(_gate_state.get("reason") or _daily_guard_state.get("reason") or "")
+            if system_state != "HEALTHY" or bool(_daily_guard_state.get("hard_stopped"))
+            else ""
+        )
+        return {
+            "system_state": system_state,
+            "tradingAllowed": manager_trading_allowed,
+            "runtimeTradingAllowed": runtime_trading_allowed,
+            "effectiveTradingAllowed": effective_trading_allowed,
+            "effectiveState": str(runtime_state.get("effectiveState") or ("RUNNING" if manager_trading_allowed else "DEGRADED")),
+            "degradedReason": degraded_reason,
+            "hard_stop_active": bool(_daily_guard_state.get("hard_stopped")),
+            "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+            "capital_profile": capital_profile,
+        }
+
+
+def _http_state_payload() -> Dict[str, Any]:
+    runtime_state = _fetch_local_runtime_state(timeout_sec=0.35, max_cache_age_sec=2.5)
+    equity_estimate = _extract_equity_estimate(runtime_state)
+    capital_profile = _adaptive_capital_profile(equity=equity_estimate)
+    gate_payload = _manager_gate_payload(runtime_state=runtime_state, capital_profile=capital_profile)
+    with _state_lock:
+        capital_sufficient = bool(capital_profile.get("trading_allowed"))
         return {
             "ok": True,
             "service": "kibot-manager",
-            "system_state": str(_gate_state.get("entry_state") or "HEALTHY"),
+            "system_state": gate_payload["system_state"],
             "trading_mode": str(_gate_state.get("mode") or "CONSERVATIVE"),
-            "effectiveState": effective_state,
-            "tradingAllowed": trading_allowed,
+            "effectiveState": gate_payload["effectiveState"],
+            "tradingAllowed": gate_payload["tradingAllowed"],
+            "runtimeTradingAllowed": gate_payload["runtimeTradingAllowed"],
+            "effectiveTradingAllowed": gate_payload["effectiveTradingAllowed"],
             "marketRegime": _daily_summary_market_regime() if DAILY_SUMMARY_ENABLED else "UNKNOWN",
-            "degradedReason": str(_gate_state.get("reason") or _daily_guard_state.get("reason") or ""),
+            "degradedReason": gate_payload["degradedReason"],
             "healthDecision": str(_gate_state.get("reason") or ""),
             "statusMessage": str(runtime_state.get("statusMessage") or "Server monitor connected to live feed"),
             "nodeStatus": str(runtime_state.get("nodeStatus") or "active"),
-            "hard_stop_active": bool(_daily_guard_state.get("hard_stopped")),
-            "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+            "hard_stop_active": gate_payload["hard_stop_active"],
+            "daily_pnl_pct": gate_payload["daily_pnl_pct"],
             "api_fail_streak": _api_fail_streak,
             "control_plane_healthy": _control_plane_healthy,
             "pair_memory_count": len(_pair_memory),
@@ -7357,6 +7412,15 @@ class _ManagerStateHandler(BaseHTTPRequestHandler):
 
         if self.path.startswith("/api/state"):
             payload = _http_state_payload()
+            raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self._safe_write(raw)
+            return
+        if self.path.startswith("/api/gate"):
+            payload = _manager_gate_payload(include_runtime_state=False)
             raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -7651,6 +7715,7 @@ def _brain_signal_advisory(
     score = _parse_numeric(msg.get("score")) or 0.0
     market_pulse = snapshot.get("market_pulse") if isinstance(snapshot.get("market_pulse"), dict) else {}
     daily_target = snapshot.get("daily_target") if isinstance(snapshot.get("daily_target"), dict) else {}
+    ai_critic = snapshot.get("ai_critic") if isinstance(snapshot.get("ai_critic"), dict) else {}
     risk_bias = str(market_pulse.get("risk_bias") or "UNKNOWN").upper()
     strategy_next = str(daily_target.get("strategy_next") or "").strip()
     top_focus = {str(item).lower() for item in list(_load_json_file(WHATIF_RESULTS_PATH, {}).get("topOpportunities") or [])[:5]}
@@ -7674,8 +7739,25 @@ def _brain_signal_advisory(
     target_status = str(daily_target.get("status") or "").upper()
     if target_status == "RECOVERY_MODE":
         budget_multiplier = min(budget_multiplier, 0.75)
-    if str(capital_profile.get("mode") or "").upper() in {"MICRO", "BUILDUP"}:
+    critic_posture = str(ai_critic.get("capital_posture") or "").upper()
+    critic_confidence = _parse_numeric(ai_critic.get("confidence")) or 0.0
+    critic_focus = {
+        str(item).lower().strip()
+        for item in list(ai_critic.get("focus_symbols") or [])
+        if str(item or "").strip()
+    }
+    tiny_mode = str(capital_profile.get("mode") or "").upper() in {"MICRO", "BUILDUP"}
+    if tiny_mode and (risk_bias == "RISK_OFF" or critic_posture in {"DEFENSIVE", "PROTECT"}):
         budget_multiplier = min(budget_multiplier, 0.85)
+    if critic_posture in {"OPPORTUNISTIC", "AGGRESSIVE"} and approved is not False and risk_bias != "RISK_OFF":
+        budget_multiplier = max(
+            budget_multiplier,
+            1.0 + min(0.15, max(0.0, critic_confidence) * 0.15),
+        )
+    elif critic_posture in {"DEFENSIVE", "PROTECT"}:
+        budget_multiplier = min(budget_multiplier, 0.9)
+    if symbol in {item.upper() for item in critic_focus} and risk_bias != "RISK_OFF" and approved is not False:
+        budget_multiplier = max(budget_multiplier, 1.03 if critic_confidence < 0.8 else 1.08)
 
     if approved is False and review_reason in {
         "external_research_risk_off",
@@ -7704,7 +7786,7 @@ def _brain_signal_advisory(
         }
 
     adjusted_budget = budget_idr
-    if budget_multiplier < 0.999:
+    if abs(budget_multiplier - 1.0) > 1e-6:
         adjusted_budget = max(ABSOLUTE_MIN_POSITION_SIZE_IDR, round(float(budget_idr) * budget_multiplier, 2))
 
     reason_parts: List[str] = []

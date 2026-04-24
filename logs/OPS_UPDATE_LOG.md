@@ -497,3 +497,52 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
 - Dampak yang diharapkan:
   - Top-up tidak lagi menaikkan PnL harian palsu.
   - Otak/manager tetap bisa baca snapshot lokal instan, sambil background warm menjaga intel tetap siap pakai.
+
+## 2026-04-24 21:36 WIB — Small-Balance Hybrid Trading Unstuck + Authoritative Manager Gate
+- Temuan:
+  - Dengan equity sekitar `Rp50k`, manager masih sering freeze di mode modal kecil walau user ingin bot tetap bergerak disiplin.
+  - SG sebelumnya tidak membaca `GEMINI_SUPPORT_API_KEY`, jadi support AI Google terdeteksi seolah belum siap walau key ada di env.
+  - Jalur `manager -> engine` sempat circular: manager menghormati `runtimeTradingAllowed` dari engine, sementara engine membaca `tradingAllowed` dari manager. Ini membuat bot bisa tampak sehat di manager tapi tetap mandek di engine.
+  - Endpoint gate yang dipakai engine terlalu berat karena memakai `/api/state`; hasilnya muncul timeout `MANAGER_GATE_FETCH_FAILED` dan sempat mempertahankan reason lama `midnight_reset_completed:no_active_positions`.
+- Perbaikan:
+  - `scripts/kibot_manager.py`
+    - Ubah adaptive capital untuk akun kecil menjadi `MICRO` yang tetap menghormati minimum order venue, bukan freeze total.
+    - Tambahkan override `min_order` untuk tiny balance agar modal sekitar `Rp50k` masih bisa sizing disiplin.
+    - Wire brain advisory agar benar-benar bisa mengecilkan atau sedikit menaikkan budget sesuai `market_pulse` dan `ai_critic`.
+    - Pisahkan manager gate authoritative dari runtime engine.
+    - Tambah endpoint ringan `/api/gate` khusus untuk engine.
+    - Ringankan `/api/gate` lagi supaya tidak fetch runtime berat dan tidak memicu timeout yang tidak perlu.
+  - `scripts/ki_brain.py`
+    - Tambahkan fallback key `GEMINI_SUPPORT_API_KEY`.
+    - Tambahkan `ai_critic` berbasis Gemini REST yang cached, dengan fallback tetap ke Tavily/Finnhub bila Google rate-limited.
+  - `apps/mac-engine/.../MacEngineDaemon.kt`
+    - Ganti default manager gate URL dari `/api/state` ke `/api/gate`.
+  - `scripts/test_offline.py`
+    - Tambah regression akun kecil `Rp50k` dan advisory boost/reduction yang dipengaruhi AI.
+- Verifikasi lokal:
+  - `python3 -m py_compile scripts/ki_brain.py scripts/kibot_manager.py scripts/test_offline.py`
+  - `./.brain-venv/bin/python3 scripts/test_offline.py` → `59 PASS 0 FAIL`
+  - `./.brain-venv/bin/python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
+  - `./gradlew :apps:mac-engine:compileKotlin :apps:mac-engine:fatJar --no-daemon` → `BUILD SUCCESSFUL`
+- Deploy:
+  - SG `213.35.118.26`: deploy `kibot_manager.py`, `ki_brain.py`, dan `server/mac-engine-all.jar`; restart `kibot-manager` + `kidax-engine`.
+  - Tokyo `152.69.218.198`: deploy `kibot_manager.py`, `ki_brain.py`, dan `server/mac-engine-all.jar`; restart `kibot-manager` + `kinance-engine`.
+- Soak pascadeploy:
+  - SG akhir:
+    - manager `/api/gate`: `system_state=HEALTHY`, `tradingAllowed=true`, `effectiveTradingAllowed=true`
+    - capital profile: `MICRO`, `reason=micro_balance_preservation:min_order_override`, `max_position_idr=11500`
+    - engine `/api/health`: `effectiveState=RUNNING`, `syncHealth=HEALTHY`, `tradingAllowed=true`
+    - mobile `/api/mobile`: `status=LIVE`
+    - log tidak lagi menunjukkan block `midnight_reset_completed:no_active_positions`
+    - log tetap menunjukkan aksi nyata dari filter disiplin: `minimum order venue`, `learning blacklist`, `toxic cooldown`
+  - Tokyo akhir:
+    - manager `/api/gate`: tetap `tradingAllowed=false` by design karena node scanner tidak punya equity lokal
+    - engine `/api/health`: `effectiveState=RUNNING`, `syncHealth=HEALTHY`
+    - scanner mesh tetap hidup dan feed terus masuk ke SG
+- Catatan jujur:
+  - Gemini support sekarang `configured=true`, tetapi live call saat audit kena `429 Too Many Requests`; jadi support AI yang benar-benar aktif saat ini masih terutama Tavily/Finnhub, dengan Gemini sebagai cadangan saat kuota tersedia.
+  - Dengan saldo sekecil ini, bot sudah bisa bergerak lagi, tetapi tetap akan sering menolak pair yang gagal minimum order atau quality gate. Itu perilaku yang diinginkan, bukan bug.
+- Claim:
+  - Topologi produksi aktif 2 server kembali normal untuk modal kecil.
+  - Manager, learning, scanner feed, dan execution gate sekarang saling nyambung lagi tanpa circular freeze.
+  - SG sudah kembali `LIVE` dengan pengawasan penuh, bukan stuck total karena gate modal atau gate sync yang salah.

@@ -13,7 +13,7 @@ tidak salah arah. Log operasional runtime yang wajib di-update ada di:
 ## RULE: Setiap pembaca WAJIB menulis update di logs/OPS_UPDATE_LOG.md setiap ada temuan, perbaikan, atau deploy, beserta hasil dan claim. Tidak boleh deploy/patch tanpa update log.
 
 ## Pointer Terakhir
-- Audit/deploy/soak terbaru: lihat entry `2026-04-20 14:24 WIB` di `logs/OPS_UPDATE_LOG.md`.
+- Audit/deploy/soak terbaru: lihat entry `2026-04-24 21:36 WIB` di `logs/OPS_UPDATE_LOG.md`.
 
 ## [2026-04-20 14:24 WIB] - Hybrid Brain Gate Wired Into Live Entry Path
 - **Issue**: Brain sebelumnya hidup, tapi dampaknya ke BUY path masih terlalu lemah; AI belum cukup terlihat mengubah sizing atau memblokir entry lemah.

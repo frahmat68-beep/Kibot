@@ -6415,7 +6415,7 @@ class MacEngineDaemon(
     private fun managerEntryGateUrl(): String =
         System.getProperty("kibot.manager.state.url")
             ?.takeIf { it.isNotBlank() }
-            ?: "http://127.0.0.1:9998/api/state"
+            ?: "http://127.0.0.1:9998/api/gate"
 
     private fun resolveManagerEntryBlockReason(now: Instant): String? {
         if (!config.enableLiveExecution || config.shadowMode) {

@@ -105,12 +105,13 @@ if manager is not None:
     )
 
     with (
-        patch("kibot_manager._get_total_equity_estimate", return_value=84_000),
-        patch("kibot_manager._current_balance_snapshot", return_value={"equity_idr": 84_000, "free_cash_idr": 60_000, "holdings_pairs": [], "payload": {}}),
+        patch("kibot_manager._get_total_equity_estimate", return_value=50_000),
+        patch("kibot_manager._current_balance_snapshot", return_value={"equity_idr": 50_000, "free_cash_idr": 45_000, "holdings_pairs": [], "payload": {}}),
     ):
         profile = manager._adaptive_capital_profile()
-        check("adaptive capital micro mode", profile.get("mode") == "BUILDUP" or profile.get("mode") == "MICRO", str(profile))
-        check("adaptive capital allows small balance", manager._check_minimum_capital())
+        check("adaptive capital micro mode", profile.get("mode") == "MICRO", str(profile))
+        check("adaptive capital allows small balance", manager._check_minimum_capital(), str(profile))
+        check("adaptive capital minimum order preserved", float(profile.get("max_position_idr") or 0.0) >= 10_000.0, str(profile))
 
     with (
         patch("kibot_manager._get_total_equity_estimate", return_value=12_000),
@@ -393,6 +394,12 @@ with patch.object(
     return_value={
         "market_pulse": {"risk_bias": "RISK_OFF"},
         "daily_target": {"status": "RECOVERY_MODE", "strategy_next": "stay defensive"},
+        "ai_critic": {
+            "capital_posture": "OPPORTUNISTIC",
+            "risk_bias": "RISK_ON",
+            "confidence": 0.92,
+            "focus_symbols": ["BTC"],
+        },
         "watch_reviews": [
             {"symbol": "BTC", "approved": True, "reason": "brain_advisory_ok"},
             {"symbol": "REQ", "approved": False, "reason": "external_research_risk_off"},
@@ -411,6 +418,7 @@ with patch.object(
     )
     check("brain advisory allows focus pair", advice.get("allow") is True, str(advice))
     check("brain advisory reduces size in risk off", float(advice.get("budget_idr") or 0.0) < 20_000.0, str(advice))
+    check("brain advisory still respects critic boost", float(advice.get("budget_idr") or 0.0) >= 10_000.0, str(advice))
 
     blocked = manager._brain_signal_advisory(
         "req_idr",
@@ -419,6 +427,35 @@ with patch.object(
         {"mode": "MICRO", "reason": "micro_balance_preservation"},
     )
     check("brain advisory blocks rejected review", blocked.get("allow") is False, str(blocked))
+
+with patch.object(
+    manager._brain,
+    "snapshot",
+    return_value={
+        "market_pulse": {"risk_bias": "RISK_ON"},
+        "daily_target": {"status": "CHASING_GREEN", "strategy_next": "press the cleanest setup"},
+        "ai_critic": {
+            "capital_posture": "OPPORTUNISTIC",
+            "risk_bias": "RISK_ON",
+            "confidence": 0.95,
+            "focus_symbols": ["BTC"],
+        },
+        "watch_reviews": [
+            {"symbol": "BTC", "approved": True, "reason": "brain_advisory_ok"},
+        ],
+    },
+), patch.object(
+    manager,
+    "_load_json_file",
+    side_effect=lambda path, default=None: {"topOpportunities": ["btc_idr"]} if str(path).endswith("whatif_results.json") else (default if default is not None else {}),
+):
+    boosted = manager._brain_signal_advisory(
+        "btc_idr",
+        {"pair": "btc_idr", "score": 0.92, "base_symbol": "BTC"},
+        20_000.0,
+        {"mode": "BUILDUP", "reason": "small_balance_build_up"},
+    )
+    check("brain advisory boosts focus pair when risk-on", float(boosted.get("budget_idr") or 0.0) > 20_000.0, str(boosted))
 
 class _FakeScanner:
     def __init__(self, exchange: str):
