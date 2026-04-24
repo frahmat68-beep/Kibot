@@ -2912,7 +2912,7 @@ AI_PROVIDER_ORDER = [
     token.strip().lower()
     for token in os.getenv(
         "KIBOT_AI_PROVIDER_ORDER",
-        "groq,openrouter,cohere,gemini",
+        "groq,openrouter,ollama,cohere,gemini",
     ).split(",")
     if token.strip()
 ]
@@ -2960,6 +2960,10 @@ REMOTE_SCANNER_FEED_STATE_PATH = Path(
 PAIR_MEMORY_ROLLING_WINDOW = int(os.getenv("KIBOT_PAIR_MEMORY_ROLLING_WINDOW", "50"))
 PAIR_MEMORY_MIN_TRADES_FOR_WINRATE = int(os.getenv("KIBOT_PAIR_MEMORY_MIN_TRADES_FOR_WINRATE", "3"))
 AI_BATCH_REVIEW_INTERVAL_SEC = int(os.getenv("KIBOT_AI_BATCH_REVIEW_INTERVAL_SEC", str(6 * 60 * 60)))
+
+OLLAMA_API_KEY = _env_first("OLLAMA_API_KEY", "KIBOT_OLLAMA_GATEWAY_TOKEN")
+OLLAMA_MODEL = os.getenv("KIBOT_OLLAMA_MODEL", "qwen3:4b")
+OLLAMA_API_URL = os.getenv("KIBOT_OLLAMA_BASE_URL", "http://127.0.0.1:11434/api/chat")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
@@ -4923,6 +4927,8 @@ def _extract_assistant_text(payload: Any) -> str:
 
 def _provider_has_credentials(provider: str) -> bool:
     p = provider.lower().strip()
+    if p == "ollama":
+        return bool(OLLAMA_API_KEY and OLLAMA_API_URL)
     if p == "groq":
         return bool(GROQ_API_KEY)
     if p == "gemini":
@@ -5036,6 +5042,51 @@ def _call_cohere(
     return _extract_assistant_text(response.json() or {})
 
 
+def _call_ollama(
+    *,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    timeout_sec: float,
+) -> str:
+    if not OLLAMA_API_KEY:
+        raise RuntimeError("ollama missing gateway token")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OLLAMA_API_KEY}",
+    }
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": False,
+        "format": "json",
+        "keep_alive": os.getenv("KIBOT_OLLAMA_KEEP_ALIVE", "10m"),
+        "options": {"temperature": 0.1},
+    }
+    payload["think"] = _ollama_think_value()
+    try:
+        response = requests.post(OLLAMA_API_URL, headers=headers, json=payload, timeout=timeout_sec)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        raise RuntimeError(f"ollama network error: {type(e).__name__}")
+    if response.status_code >= 300:
+        raise RuntimeError(f"ollama status={response.status_code} body={response.text[:240]}")
+    return _extract_assistant_text(response.json() or {})
+
+
+def _ollama_think_value() -> Any:
+    raw = os.getenv("KIBOT_OLLAMA_THINK_LEVEL", "").strip().lower()
+    if not raw:
+        return False
+    if raw in {"0", "false", "no", "off", "nothink"}:
+        return False
+    if raw in {"1", "true", "yes", "on", "think"}:
+        return True
+    return raw
+
+
 def _call_provider(
     provider: str,
     *,
@@ -5045,6 +5096,13 @@ def _call_provider(
     timeout_sec: float = AI_REQUEST_TIMEOUT_SEC,
 ) -> str:
     p = provider.lower().strip()
+    if p == "ollama":
+        return _call_ollama(
+            model=model_hint or OLLAMA_MODEL,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            timeout_sec=timeout_sec,
+        )
     if p == "groq":
         return _call_openai_compatible(
             provider="groq",

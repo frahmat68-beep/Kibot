@@ -8,7 +8,7 @@ For current production topology and runtime behavior, read this first:
 - `docs/architecture/TWO_SERVER_SYSTEM_GUIDE.md`
 
 This file is the source of truth for:
-- two-server architecture,
+- active production topology,
 - active services on each node,
 - end-to-end runtime flow,
 - known failure modes and root causes,
@@ -126,8 +126,9 @@ sudo systemctl restart kibot-manager kidax-engine kinance-engine
 | Service | Mode | Note |
 | :--- | :--- | :--- |
 | **AI Providers** | AUDITOR / LEARNING | Simpan token hanya di file env server, jangan pernah commit ke repo. |
-| **Indodax Node** | SGP | Oracle Singapore executor node. |
+| **Indodax Node** | SGP | Oracle Singapore executor + control-plane node. |
 | **Binance Node** | TYO | Oracle Tokyo radar/scanner node. |
+| **AI Brain Node** | BAT | Oracle Batam Ampere node for `Ollama`, local reasoning, and AI fallback. |
 | **Database** | CLOUD | Supabase control-plane untuk sinkronisasi state. |
 
 ---

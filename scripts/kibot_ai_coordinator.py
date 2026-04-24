@@ -61,57 +61,64 @@ RESPONSE_CACHE = STATE_DIR / "ai_coordinator_cache.json"
 REQUEST_TIMEOUT_SEC = float(os.getenv("KIBOT_AI_COORDINATOR_TIMEOUT_SEC", "12"))
 
 PROVIDERS = {
+    "ollama": {
+        "daily_limit": 100000,
+        "model": os.getenv("KIBOT_OLLAMA_MODEL", "qwen3:4b"),
+        "api_key_envs": ["OLLAMA_API_KEY", "KIBOT_OLLAMA_GATEWAY_TOKEN"],
+        "base_url": os.getenv("KIBOT_OLLAMA_BASE_URL", "http://127.0.0.1:11434/api/chat"),
+        "priority": 1,
+    },
     "groq": {
         "daily_limit": 14400,
         "model": "llama-3.1-8b-instant",
         "api_key_envs": ["GROQ_API_KEY"],
         "base_url": "https://api.groq.com/openai/v1/chat/completions",
-        "priority": 1,
+        "priority": 2,
     },
     "gemini": {
         "daily_limit": 1500,
         "model": os.getenv("GEMINI_SUPPORT_MODEL", os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")),
         "api_key_envs": ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GEMINI_SUPPORT_API_KEY"],
         "base_url": "https://generativelanguage.googleapis.com/v1beta/models",
-        "priority": 2,
+        "priority": 3,
     },
     "nvidia": {
         "daily_limit": 1000,
         "model": "meta/llama-3.1-70b-instruct",
         "api_key_envs": ["NVIDIA_API_KEY"],
         "base_url": "https://integrate.api.nvidia.com/v1/chat/completions",
-        "priority": 3,
+        "priority": 4,
     },
     "openrouter": {
         "daily_limit": 200,
         "model": "openrouter/free",
         "api_key_envs": ["OPENROUTER_API_KEY"],
         "base_url": "https://openrouter.ai/api/v1/chat/completions",
-        "priority": 4,
+        "priority": 5,
     },
     "cohere": {
         "daily_limit": 100,
         "model": "command-a-03-2025",
         "api_key_envs": ["COHERE_API_KEY"],
         "base_url": "https://api.cohere.ai/v1/chat",
-        "priority": 5,
+        "priority": 6,
     },
     "jina": {
         "daily_limit": 50,
         "model": "jina-3-8b-instruct",
         "api_key_envs": ["JINA_API_KEY"],
         "base_url": "https://api.jina.ai/v1/chat/completions",
-        "priority": 6,
+        "priority": 7,
     },
 }
 
 PROMPT_PROVIDER_ORDER = {
-    "BRAIN_CRITIC": ["groq", "gemini", "nvidia", "openrouter", "cohere", "jina"],
-    "WHATIF_SIMULATION": ["groq", "gemini", "openrouter", "cohere", "nvidia", "jina"],
-    "TRADE_POSTMORTEM": ["groq", "gemini", "nvidia", "cohere", "openrouter", "jina"],
-    "VETO_ANALYSIS": ["groq", "gemini", "nvidia", "openrouter", "cohere", "jina"],
-    "WEEKLY_SUMMARY": ["groq", "gemini", "openrouter", "cohere", "nvidia", "jina"],
-    "NEWS_ANALYSIS": ["groq", "gemini", "openrouter", "cohere", "nvidia", "jina"],
+    "BRAIN_CRITIC": ["groq", "openrouter", "ollama", "gemini", "nvidia", "cohere", "jina"],
+    "WHATIF_SIMULATION": ["openrouter", "ollama", "groq", "gemini", "cohere", "nvidia", "jina"],
+    "TRADE_POSTMORTEM": ["ollama", "openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
+    "VETO_ANALYSIS": ["groq", "openrouter", "ollama", "gemini", "nvidia", "cohere", "jina"],
+    "WEEKLY_SUMMARY": ["ollama", "openrouter", "groq", "gemini", "cohere", "nvidia", "jina"],
+    "NEWS_ANALYSIS": ["openrouter", "ollama", "groq", "gemini", "cohere", "nvidia", "jina"],
 }
 
 PROMPT_TEMPLATES = {
@@ -268,13 +275,41 @@ def _render_prompt(template: str, context: Dict[str, Any]) -> str:
         return f"{template}\n\nContext:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
 
 
+def _ollama_think_value() -> Any:
+    raw = os.getenv("KIBOT_OLLAMA_THINK_LEVEL", "").strip().lower()
+    if not raw:
+        return False
+    if raw in {"0", "false", "no", "off", "nothink"}:
+        return False
+    if raw in {"1", "true", "yes", "on", "think"}:
+        return True
+    return raw
+
+
 def _call_provider(provider: str, prompt: str) -> Optional[str]:
     config = PROVIDERS[provider]
     api_key = _provider_api_key(provider)
     if not api_key:
         return None
     try:
-        if provider == "gemini":
+        if provider == "ollama":
+            url = config["base_url"]
+            payload = {
+                "model": config["model"],
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "format": "json",
+                "keep_alive": os.getenv("KIBOT_OLLAMA_KEEP_ALIVE", "10m"),
+                "options": {
+                    "temperature": 0.2,
+                },
+            }
+            payload["think"] = _ollama_think_value()
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            }
+        elif provider == "gemini":
             url = f"{config['base_url']}/{config['model']}:generateContent?key={api_key}"
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
             headers = {"Content-Type": "application/json"}
@@ -304,6 +339,8 @@ def _call_provider(provider: str, prompt: str) -> Optional[str]:
         request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SEC) as response:
             data = json.loads(response.read())
+            if provider == "ollama":
+                return data.get("message", {}).get("content")
             if provider == "gemini":
                 return data["candidates"][0]["content"]["parts"][0]["text"]
             if provider == "cohere":

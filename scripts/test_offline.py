@@ -17,6 +17,10 @@ try:
     import kibot_analyst as analyst
 except Exception:
     analyst = None
+try:
+    import kibot_ai_coordinator as coordinator
+except Exception:
+    coordinator = None
 from ki_brain import BrainManager
 from ki_global_scanner_mesh import GlobalScannerMesh
 from kibot_learning_engine import (
@@ -392,6 +396,40 @@ if manager is not None:
             manager._remote_scanner_feed_state.clear()
             manager._remote_scanner_feed_state.update(old_remote_state)
 
+if coordinator is not None:
+    class _FakeHTTPResponse:
+        def __init__(self, payload: dict):
+            self._payload = json.dumps(payload).encode("utf-8")
+
+        def read(self) -> bytes:
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    with (
+        patch("kibot_ai_coordinator._candidate_providers", return_value=["ollama"]),
+        patch("kibot_ai_coordinator._provider_api_key", return_value="token"),
+        patch("kibot_ai_coordinator._get_from_cache", return_value=None),
+        patch("kibot_ai_coordinator._save_to_cache", return_value=None),
+        patch("kibot_ai_coordinator._increment_usage", return_value=None),
+        patch("kibot_ai_coordinator.urllib.request.urlopen", return_value=_FakeHTTPResponse({"message": {"content": "{\"capital_posture\":\"DEFENSIVE\",\"risk_bias\":\"MIXED\",\"confidence\":0.66}"}})),
+    ):
+        result = coordinator.query_ai("BRAIN_CRITIC", {"watch_symbols": ["BTC"], "market_pulse": {"risk_bias": "MIXED"}})
+        check("coordinator ollama parses result", isinstance(result, dict) and result.get("provider") == "ollama", str(result))
+        check("coordinator ollama preserves model", result.get("model") == coordinator.PROVIDERS["ollama"]["model"], str(result))
+
+    with patch("kibot_ai_coordinator._provider_api_key", side_effect=lambda provider: "token" if provider == "ollama" else ""):
+        status = coordinator.get_provider_status()
+        check("coordinator status exposes ollama", "ollama" in status and status["ollama"]["configured"] is True, str(status.get("ollama")))
+
+    with patch.dict("os.environ", {"KIBOT_OLLAMA_THINK_LEVEL": "false"}):
+        check("coordinator ollama think false", coordinator._ollama_think_value() is False)
+        check("manager ollama think false", manager._ollama_think_value() is False)
+
 brain = BrainManager()
 with (
     patch.object(brain, "_get_json", side_effect=[
@@ -422,6 +460,7 @@ with (
         "model": "llama-3.1-8b-instant",
     }),
     patch("ki_brain._coordinator_provider_status_fn", return_value={
+        "ollama": {"configured": True, "model": "qwen3:4b", "priority": 1, "used": 3, "remaining": 99997, "pct_used": 0.0},
         "groq": {"configured": True, "model": "llama-3.1-8b-instant", "priority": 1, "used": 4, "remaining": 100, "pct_used": 4.0},
         "openrouter": {"configured": True, "model": "meta-llama/llama-3.1-8b-instruct:free", "priority": 4, "used": 1, "remaining": 99, "pct_used": 1.0},
     }),
@@ -443,6 +482,7 @@ with (
     check("brain ai critic provider", snapshot.get("ai_critic", {}).get("provider") == "groq", str(snapshot.get("ai_critic")))
     check("brain ai legion shows ddg", "ddg" in snapshot.get("ai_legion", {}).get("search_providers", {}), str(snapshot.get("ai_legion")))
     check("brain ai legion shows groq", "groq" in snapshot.get("ai_legion", {}).get("llm_providers", {}), str(snapshot.get("ai_legion")))
+    check("brain ai legion shows ollama", "ollama" in snapshot.get("ai_legion", {}).get("llm_providers", {}), str(snapshot.get("ai_legion")))
     check("brain snapshot age available", brain.snapshot_age_sec() is not None)
     check("brain ensure warm skips fresh snapshot", brain.ensure_warm(["BTC"], {"daily_pnl_pct": 0.0}) is False)
 

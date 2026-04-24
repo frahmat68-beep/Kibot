@@ -613,3 +613,65 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
   - DDG sudah aktif sebagai search provider live.
   - Daily hard stop SG sekarang jujur dan tetap terkunci saat rugi harian sudah melewati batas survival mode; tidak ada clear palsu/fail-open lagi.
   - Topologi aktif 2 server kembali normal dalam arti runtime sehat dan sinkron, dengan SG aman di hard-stop yang valid dan Tokyo sehat sebagai radar.
+
+## 2026-04-25 06:31 WIB — Three-Server Overlay, Batam Ollama Brain Hub, dan Tunnel Antar Node
+- Temuan:
+  - Topologi produksi sudah berkembang jadi 3 node, tetapi blueprint/README masih tertinggal di pola 2 server.
+  - `DuckDuckGo` belum benar-benar tersedia di runtime SG/Tokyo walau kode support-nya sudah ada.
+  - Batam tidak cocok dibuka sebagai HTTP publik langsung untuk port custom; jalur yang lebih disiplin dibutuhkan.
+  - `qwen3:8b` terlalu berat untuk jalur live CPU-only; `Qwen3` juga berpikir default sehingga response awal bisa >90 detik jika `think` tidak dimatikan.
+- Perbaikan:
+  - Batam dijadikan AI brain hub resmi:
+    - install `ollama`
+    - pull model `qwen3:4b` dan `qwen3:8b`
+    - aktifkan `kibot-ollama-gateway`
+  - SG dan Tokyo:
+    - install `ddgs` + `duckduckgo-search`
+    - aktifkan `kibot-ollama-tunnel` ke Batam
+    - wire provider `ollama` ke `kibot_manager.py`, `kibot_ai_coordinator.py`, dan `ki_brain.py`
+  - Patch helper `think`:
+    - `false/off/no` sekarang dikirim sebagai boolean `False`
+    - mencegah Qwen3 masuk mode thinking panjang pada jalur live
+  - Runtime policy AI dirapikan:
+    - hot path manager: provider cloud cepat tetap di depan
+    - Batam `ollama` jadi fallback lokal + background analyst
+    - model live default di Batam: `qwen3:4b`
+    - model heavy review tetap tersedia: `qwen3:8b`
+- Deploy:
+  - Host disentuh:
+    - `213.35.118.26`
+    - `152.69.218.198`
+    - `168.110.201.228`
+  - Service baru aktif:
+    - Batam: `ollama`, `kibot-ollama-gateway`
+    - SG: `kibot-ollama-tunnel`
+    - Tokyo: `kibot-ollama-tunnel`
+- Verifikasi:
+  - `python3 -m py_compile scripts/kibot_manager.py scripts/kibot_ai_coordinator.py scripts/ki_brain.py scripts/kibot_ollama_gateway.py`
+  - `./.brain-venv/bin/python3 scripts/test_offline.py` → `71 PASS 0 FAIL`
+  - `./.brain-venv/bin/python3 scripts/test_brain_integration.py`
+  - `./.brain-venv/bin/python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
+  - Proof Batam model:
+    - `qwen3:4b` tersedia
+    - `qwen3:8b` tersedia
+  - Proof reachability:
+    - SG → Batam `qwen3:4b` sukses sekitar `5.48s`
+    - Tokyo → Batam `qwen3:4b` sukses sekitar `3.81s`
+- Soak:
+  - Batam 10 menit terakhir menunjukkan `Ollama` + gateway aktif stabil, tanpa error kritis baru.
+  - SG:
+    - `system_state=HEALTHY`
+    - `tradingAllowed=true`
+    - `syncHealth=HEALTHY`
+    - tunnel aktif
+    - scanner feed tetap masuk
+  - Tokyo:
+    - `kinance-engine=RUNNING/HEALTHY`
+    - manager tetap scanner-only (`tradingAllowed=false` by design)
+    - tunnel aktif
+- Claim:
+  - Topologi aktif sekarang sehat sebagai overlay 3 node:
+    - SG executor sehat
+    - Tokyo radar sehat
+    - Batam AI brain hub sehat
+  - Jalur `SG/Tokyo -> SSH tunnel -> Batam Ollama gateway` sudah aktif dan stabil.

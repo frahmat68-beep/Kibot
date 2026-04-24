@@ -54,6 +54,7 @@ def test_brain():
             "model": "llama-3.1-8b-instant",
         }),
         patch("ki_brain._coordinator_provider_status_fn", return_value={
+            "ollama": {"configured": True, "model": "qwen3:4b", "priority": 1, "used": 3, "remaining": 99997, "pct_used": 0.0},
             "groq": {"configured": True, "model": "llama-3.1-8b-instant", "priority": 1, "used": 2, "remaining": 98, "pct_used": 2.0},
             "gemini": {"configured": True, "model": "gemini-2.0-flash-lite", "priority": 2, "used": 0, "remaining": 100, "pct_used": 0.0},
         }),

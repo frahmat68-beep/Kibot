@@ -34,6 +34,12 @@ infra/supabase/.generated/
 .tmp/
 SSH_BINANCE/
 SSH_INDODAX/
+SSH_BATAM/*.pem
+SSH_BATAM/*.pub
+!SSH_BATAM/README.md
+SSH_SINGAPORE/**/*.key
+SSH_SINGAPORE/**/*.key.pub
+!SSH_SINGAPORE/README.md
 **/bin/
 SUPABASE_MIGRATION_GUIDE.md
 *.credentials.md

@@ -18,8 +18,9 @@ Environment=KIBOT_MANAGER_STATE_DIR=/home/ubuntu/KiBot/state
 Environment=KIBOT_MANAGER_PROVIDER_STATE_FILE=/home/ubuntu/KiBot/state/ai_provider_state.json
 Environment=KIBOT_MANAGER_RUNTIME_NOTE_FILE=/home/ubuntu/KiBot/state/runtime_note.json
 Environment=KIBOT_MANAGER_HEARTBEAT_INTERVAL_SEC=1.0
-Environment=KIBOT_AI_PROVIDER_ORDER=groq,openrouter,cohere,gemini
-Environment=KIBOT_AI_REQUEST_TIMEOUT_SEC=8
+Environment=KIBOT_AI_PROVIDER_ORDER=groq,openrouter,ollama,cohere,gemini
+Environment=KIBOT_AI_REQUEST_TIMEOUT_SEC=15
+Environment=KIBOT_AI_COORDINATOR_TIMEOUT_SEC=30
 Environment=KIBOT_AI_PROVIDER_DEFAULT_COOLDOWN_SEC=900
 Environment=KIBOT_AI_PROVIDER_NETWORK_COOLDOWN_SEC=180
 Environment=KIBOT_AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC=3600
