@@ -1685,6 +1685,8 @@ def _process_signal_multipos(msg: dict):
 
     category = get_pair_category(pair_id)
     raw_score = float(msg.get("pumpScore", msg.get("pump_score", 0)))
+    if bool(_daily_guard_state.get("hard_stopped")) or bool(_gate_state.get("daily_hard_stop")):
+        return
 
     # === 2. VALIDASI KILAT (GLOBAL CONSENSUS - BUCKET A) ===
     if category == "LEAD_LAG":
@@ -3502,7 +3504,7 @@ def _ensure_hard_stop_consistency() -> None:
         daily_pnl_pct = float(daily_pnl_pct)
     except Exception:
         return
-    limit = -abs(DAILY_LOSS_LIMIT_PCT)
+    limit = -abs(_current_daily_loss_limit_pct())
     if not bool(_daily_guard_state.get("hard_stopped")) and not bool(_gate_state.get("daily_hard_stop")):
         return
     # If we are not breaching the limit anymore for the current day, treat previous hard-stop as stale.

@@ -546,3 +546,70 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
   - Topologi produksi aktif 2 server kembali normal untuk modal kecil.
   - Manager, learning, scanner feed, dan execution gate sekarang saling nyambung lagi tanpa circular freeze.
   - SG sudah kembali `LIVE` dengan pengawasan penuh, bukan stuck total karena gate modal atau gate sync yang salah.
+
+## 2026-04-24 23:37 WIB — AI Legion Runtime Wiring, DDG Live, dan Hard-Stop Consistency Repair
+- Temuan:
+  - Pool AI free-tier di repo sudah banyak (`Groq`, `Gemini`, `OpenRouter`, `Cohere`, `Jina`, plus search/data `Tavily`, `Serper`, `Finnhub`), tetapi jalur brain ringan harian belum benar-benar memakai provider pool itu secara runtime.
+  - `duckduckgo_search`/DDG sebelumnya hanya terdeteksi sebagai optional module; belum ada jalur search yang benar-benar dipakai di snapshot otak.
+  - Ada bug kritis di SG: saat survival mode menurunkan batas rugi harian ke `1%`, daily hard stop bisa terpicu di `-1.17%` lalu langsung ter-clear sendiri karena checker konsistensi masih membandingkan ke limit statis `2%`.
+  - Selama hard stop aktif, manager SG masih sempat mengeluarkan noise legacy `Missing consensus data (AND gate failed)` dari jalur multipos lama.
+- Perbaikan:
+  - `scripts/kibot_ai_coordinator.py`
+    - Load `.env.server` / `.env.kibot` / `.env` lebih awal supaya provider pool live benar-benar terbaca.
+    - Tambahkan fallback key Gemini (`GEMINI_SUPPORT_API_KEY`) dan ubah pemilihan provider jadi multi-candidate, bukan single best provider.
+    - Tambahkan prompt type `BRAIN_CRITIC` dan status provider detail (`configured`, `used`, `remaining`, `priority`).
+    - Perbarui model yang sudah drift:
+      - `OpenRouter` → `openrouter/free`
+      - `Cohere` → `command-a-03-2025`
+    - Provider yang kena `401/403/404/429` sekarang ditandai unavailable untuk hari itu agar tidak diulang terus.
+  - `scripts/ki_brain.py`
+    - Wire `kibot_ai_coordinator` ke snapshot brain sehingga `ai_critic` bisa fallback antar provider LLM.
+    - Tambahkan search DDG sungguhan via paket `ddgs`; market brief dan symbol brief sekarang bisa memakai DDG selain Tavily/Serper/Finnhub.
+    - Tambahkan metadata `ai_legion` dan `provider_status` agar state API menunjukkan provider mana yang benar-benar configured/aktif.
+  - `scripts/kibot_manager.py`
+    - Samakan checker konsistensi hard stop dengan `_current_daily_loss_limit_pct()` agar hard stop survival mode tidak auto-clear palsu.
+    - Saat hard stop aktif, skip jalur legacy multipos agar manager SG tidak spam veto konsensus lama.
+  - `scripts/test_offline.py` dan `scripts/test_brain_integration.py`
+    - Tambahkan regression DDG, AI coordinator fallback, hard-stop latch survival mode, dan skip legacy consensus saat hard stop.
+- Verifikasi lokal:
+  - `python3 -m py_compile scripts/kibot_ai_coordinator.py scripts/ki_brain.py scripts/kibot_manager.py scripts/test_offline.py scripts/test_brain_integration.py`
+  - `./.brain-venv/bin/python3 scripts/test_offline.py` → `65 PASS 0 FAIL`
+  - `./.brain-venv/bin/python3 scripts/test_brain_integration.py`
+  - `./.brain-venv/bin/python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
+- Deploy:
+  - Host disentuh:
+    - `213.35.118.26` (SG / executor)
+    - `152.69.218.198` (Tokyo / radar)
+  - Files deployed manual via SSH:
+    - `scripts/kibot_ai_coordinator.py`
+    - `scripts/ki_brain.py`
+    - `scripts/kibot_manager.py`
+  - Runtime dependency yang ditambahkan di dua server:
+    - `python3 -m pip install --user --break-system-packages ddgs`
+  - Restart:
+    - `kibot-manager` di SG dan Tokyo
+- Soak pascadeploy:
+  - SG akhir:
+    - service aktif: `kibot-manager`, `kidax-engine`, `kibot-guardian`, `antigravity-bot`
+    - `/api/gate`: `system_state=SUSPENDED`, `tradingAllowed=false`, `hard_stop_active=true`
+    - capital profile: `mode=HARD_STOP`, `daily_pnl_pct=-0.0117`, `daily_loss_limit_pct=0.01`
+    - `/api/state`: `ai_critic_provider=openrouter`
+    - `/api/state`: `ai_legion=['tavily','serper','finnhub','ddg','groq','gemini','openrouter','cohere']`
+    - `/api/health`: `status=safe`, `effectiveState=SAFE_MODE`, `tradingAllowed=false`, `hardStopActive=true`
+    - mobile state tetap `PAUSED`, tidak ada fail-open ke mode live palsu.
+  - Tokyo akhir:
+    - service aktif: `kibot-manager`, `kinance-engine`, `kibot-guardian`, `ki-global-scanner-mesh`
+    - `/api/gate`: `system_state=HEALTHY`, `tradingAllowed=false` by design, `reason=missing_equity_snapshot`
+    - `/api/state`: `ai_critic_provider=openrouter`
+    - `/api/state`: `ai_legion=['tavily','serper','finnhub','ddg','groq','gemini','openrouter','cohere','jina']`
+    - `/api/health`: `status=ok`, `effectiveState=RUNNING`, `syncHealth=HEALTHY`
+    - mesh scanner tetap hidup dan feed tetap mengalir ke SG.
+- Catatan jujur:
+  - `Groq` di SG terbaca configured tetapi live REST call ditolak `403`, sehingga provider ini otomatis di-skip untuk hari berjalan.
+  - `Gemini` tetap configured, tetapi kuota audit saat ini sedang `429`, sehingga `OpenRouter` menjadi critic aktif yang benar-benar dipakai live.
+  - Tokyo masih menyimpan noise legacy `Missing consensus data` di manager scanner-only; runtime sehat, tetapi jalur legacy itu masih layak dirapikan di putaran berikutnya.
+- Claim:
+  - Legiun AI free-tier sekarang benar-benar masuk ke runtime otak secara ringan dan fallback-aware, bukan hanya tersimpan di repo.
+  - DDG sudah aktif sebagai search provider live.
+  - Daily hard stop SG sekarang jujur dan tetap terkunci saat rugi harian sudah melewati batas survival mode; tidak ada clear palsu/fail-open lagi.
+  - Topologi aktif 2 server kembali normal dalam arti runtime sehat dan sinkron, dengan SG aman di hard-stop yang valid dan Tokyo sehat sebagai radar.

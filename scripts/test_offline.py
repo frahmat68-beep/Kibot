@@ -275,6 +275,44 @@ if manager is not None:
             manager._gate_state.update(old_gate_state)
 
     old_guard_state = dict(manager._daily_guard_state)
+    old_gate_state = dict(manager._gate_state)
+    try:
+        manager._daily_guard_state.update(
+            {
+                "date": "2026-04-24",
+                "daily_pnl_pct": -0.0117,
+                "hard_stopped": True,
+                "triggered_at": "2026-04-24T16:11:55Z",
+                "reset_at": "2026-04-24T17:00:00Z",
+                "reason": "daily_loss_limit_hit",
+            }
+        )
+        manager._gate_state.update(
+            {
+                "daily_hard_stop": True,
+                "daily_hard_stop_reason": "daily_loss_limit_hit",
+                "daily_hard_stop_reset_at": "2026-04-24T17:00:00Z",
+            }
+        )
+        with (
+            patch("kibot_manager._is_survival_mode", return_value=True),
+            patch("kibot_manager._save_daily_guard_state"),
+            patch("kibot_manager._save_gate_state"),
+            patch("kibot_manager._resume_new_entries") as mocked_resume,
+        ):
+            manager._ensure_hard_stop_consistency()
+            check("survival hard stop remains latched", manager._daily_guard_state.get("hard_stopped") is True, str(manager._daily_guard_state))
+            check("survival hard stop not resumed early", mocked_resume.called is False)
+        with patch("kibot_manager.get_binance_symbol") as mocked_symbol:
+            manager._process_signal_multipos({"pairId": "btc_idr", "pumpScore": 90, "source": "BINANCE"})
+            check("hard stop skips legacy consensus path", mocked_symbol.called is False)
+    finally:
+        manager._daily_guard_state.clear()
+        manager._daily_guard_state.update(old_guard_state)
+        manager._gate_state.clear()
+        manager._gate_state.update(old_gate_state)
+
+    old_guard_state = dict(manager._daily_guard_state)
     old_events = list(manager._recent_runtime_events)
     old_active = dict(manager._active_positions_cache)
     try:
@@ -370,6 +408,23 @@ with (
     patch.object(brain, "_get_tavily_symbol_brief", return_value={"answer": "BTC has positive catalysts with controlled risk.", "results": []}),
     patch.object(brain, "_get_serper_market_brief", return_value={}),
     patch.object(brain, "_get_serper_symbol_brief", return_value={}),
+    patch.object(brain, "_get_ddg_market_brief", return_value={"results": [{"title": "DDG market pulse", "content": "Crypto market stabilizes"}]}),
+    patch.object(brain, "_get_ddg_symbol_brief", return_value={"results": [{"title": "DDG BTC view", "content": "BTC remains liquid"}]}),
+    patch.object(brain, "_has_ddg_client", return_value=True),
+    patch("ki_brain._coordinator_query_ai_fn", return_value={
+        "capital_posture": "DEFENSIVE",
+        "risk_bias": "MIXED",
+        "confidence": 0.77,
+        "strategy_next": "Stay selective and size only the cleanest entries.",
+        "focus_symbols": ["BTC"],
+        "do_not_do": ["force breakout entries"],
+        "provider": "groq",
+        "model": "llama-3.1-8b-instant",
+    }),
+    patch("ki_brain._coordinator_provider_status_fn", return_value={
+        "groq": {"configured": True, "model": "llama-3.1-8b-instant", "priority": 1, "used": 4, "remaining": 100, "pct_used": 4.0},
+        "openrouter": {"configured": True, "model": "meta-llama/llama-3.1-8b-instruct:free", "priority": 4, "used": 1, "remaining": 99, "pct_used": 1.0},
+    }),
 ):
     snapshot = brain.think(
         ["BTC"],
@@ -385,6 +440,9 @@ with (
     check("brain target strategy next", bool(snapshot.get("daily_target", {}).get("strategy_next")))
     check("brain market pulse headline", bool(snapshot.get("market_pulse", {}).get("top_headlines")))
     check("brain watch review headline count", int(snapshot.get("watch_reviews", [{}])[0].get("headline_count") or 0) >= 1)
+    check("brain ai critic provider", snapshot.get("ai_critic", {}).get("provider") == "groq", str(snapshot.get("ai_critic")))
+    check("brain ai legion shows ddg", "ddg" in snapshot.get("ai_legion", {}).get("search_providers", {}), str(snapshot.get("ai_legion")))
+    check("brain ai legion shows groq", "groq" in snapshot.get("ai_legion", {}).get("llm_providers", {}), str(snapshot.get("ai_legion")))
     check("brain snapshot age available", brain.snapshot_age_sec() is not None)
     check("brain ensure warm skips fresh snapshot", brain.ensure_warm(["BTC"], {"daily_pnl_pct": 0.0}) is False)
 

@@ -85,6 +85,15 @@ def _load_dotenv_early() -> None:
 
 _load_dotenv_early()
 
+try:
+    from kibot_ai_coordinator import (
+        get_provider_status as _coordinator_provider_status_fn,
+        query_ai as _coordinator_query_ai_fn,
+    )
+except Exception:
+    _coordinator_provider_status_fn = None
+    _coordinator_query_ai_fn = None
+
 
 class BrainManager:
     """
@@ -110,12 +119,14 @@ class BrainManager:
         self.market_pulse_ttl_sec = int(os.getenv("KIBOT_BRAIN_MARKET_PULSE_TTL_SEC", "900"))
         self.tavily_ttl_sec = int(os.getenv("KIBOT_BRAIN_TAVILY_TTL_SEC", "7200"))
         self.serper_ttl_sec = int(os.getenv("KIBOT_BRAIN_SERPER_TTL_SEC", "5400"))
+        self.ddg_ttl_sec = int(os.getenv("KIBOT_BRAIN_DDG_TTL_SEC", "3600"))
         self.finnhub_ttl_sec = int(os.getenv("KIBOT_BRAIN_FINNHUB_TTL_SEC", "900"))
         self.gemini_ttl_sec = int(os.getenv("KIBOT_BRAIN_GEMINI_TTL_SEC", "7200"))
         self.max_watch_symbols = max(1, int(os.getenv("KIBOT_BRAIN_MAX_WATCH_SYMBOLS", "5")))
         self.max_external_symbols = max(1, int(os.getenv("KIBOT_BRAIN_NEWS_MAX_SYMBOLS", "2")))
         self.green_target_daily_pct = float(os.getenv("KIBOT_GREEN_TARGET_DAILY_PCT", "0.003"))
         self.external_research_enabled = os.getenv("KIBOT_BRAIN_ENABLE_EXTERNAL_RESEARCH", "true").lower() == "true"
+        self.ai_coordinator_enabled = os.getenv("KIBOT_BRAIN_ENABLE_AI_COORDINATOR", "true").lower() == "true"
         self.search_country = os.getenv("KIBOT_BRAIN_SEARCH_COUNTRY", "indonesia")
         self.search_lang = os.getenv("KIBOT_BRAIN_SEARCH_LANG", "id")
         self.gemini_model = os.getenv("KIBOT_BRAIN_GEMINI_MODEL", os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite"))
@@ -210,6 +221,7 @@ class BrainManager:
             "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "mode": "advisory_only",
             "provider_status": self._provider_status(),
+            "ai_legion": self._ai_legion_status(),
             "optional_modules": self._optional_modules(),
             "internet_checks": {
                 "binance": self._status_code("https://api.binance.com/api/v3/ping"),
@@ -294,6 +306,7 @@ class BrainManager:
             finnhub_news = self._get_finnhub_crypto_news()
             tavily_brief = self._get_tavily_market_brief()
             serper_brief = self._get_serper_market_brief() if not tavily_brief else {}
+            ddg_brief = self._get_ddg_market_brief()
 
             top_headlines: List[str] = []
             for row in finnhub_news[:6]:
@@ -311,6 +324,11 @@ class BrainManager:
             for item in list(serper_brief.get("organic") or [])[:2]:
                 if isinstance(item, dict):
                     headline = str(item.get("title") or "").strip()
+                    if headline:
+                        top_headlines.append(headline)
+            for item in list(ddg_brief.get("results") or [])[:2]:
+                if isinstance(item, dict):
+                    headline = str(item.get("title") or item.get("content") or "").strip()
                     if headline:
                         top_headlines.append(headline)
 
@@ -342,6 +360,7 @@ class BrainManager:
                     "finnhub": bool(finnhub_news),
                     "tavily": bool(tavily_brief),
                     "serper": bool(serper_brief),
+                    "ddg": bool(ddg_brief),
                 }.items() if used],
                 "watch_symbols": list(symbols)[: self.max_external_symbols],
             }
@@ -381,13 +400,29 @@ class BrainManager:
             return {}
 
     def _get_ai_critic(self, symbols: Sequence[str], market_pulse: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.external_research_enabled or not self._gemini_api_key():
+        if not self.external_research_enabled:
             return {}
         risk_bias = str(market_pulse.get("risk_bias") or "UNKNOWN").upper()
         daily_pnl = f"{self._safe_float(context.get('daily_pnl_pct')):.4f}"
         cache_key = f"ai_critic:{risk_bias}:{daily_pnl}:{'-'.join(list(symbols)[:3])}"
 
         def loader() -> Dict[str, Any]:
+            if self.ai_coordinator_enabled and _coordinator_query_ai_fn is not None:
+                critic = _coordinator_query_ai_fn(
+                    "BRAIN_CRITIC",
+                    {
+                        "watch_symbols": list(symbols),
+                        "market_pulse": market_pulse,
+                        "daily_target": self._daily_target_snapshot(context),
+                        "capital_profile": context.get("capital_profile") or {},
+                    },
+                    cache_ttl_minutes=max(1, int(self.gemini_ttl_sec / 60)),
+                )
+                if isinstance(critic, dict) and critic:
+                    return critic
+
+            if not self._gemini_api_key():
+                return {}
             payload = {
                 "contents": [
                     {
@@ -450,6 +485,7 @@ class BrainManager:
             news_hits = self._filter_news_for_symbol(symbol, self._get_finnhub_crypto_news())
             tavily_brief = self._get_tavily_symbol_brief(symbol)
             serper_brief = self._get_serper_symbol_brief(symbol) if not tavily_brief else {}
+            ddg_brief = self._get_ddg_symbol_brief(symbol)
 
             texts: List[str] = []
             headlines = []
@@ -481,6 +517,15 @@ class BrainManager:
                         texts.append(title)
                     if snippet:
                         texts.append(snippet)
+            for item in list(ddg_brief.get("results") or [])[:2]:
+                if isinstance(item, dict):
+                    title = str(item.get("title") or "").strip()
+                    snippet = str(item.get("content") or "").strip()
+                    if title:
+                        headlines.append(title)
+                        texts.append(title)
+                    if snippet:
+                        texts.append(snippet)
 
             positive_hits, negative_hits = self._sentiment_counts(texts)
             if negative_hits > positive_hits + 1:
@@ -500,6 +545,11 @@ class BrainManager:
                 if isinstance(first, dict):
                     summary = str(first.get("snippet") or first.get("title") or "").strip()
                     provider = "serper"
+            elif ddg_brief.get("results"):
+                first = ddg_brief.get("results")[0]
+                if isinstance(first, dict):
+                    summary = str(first.get("content") or first.get("title") or "").strip()
+                    provider = "ddg"
             elif headlines:
                 summary = headlines[0]
 
@@ -587,6 +637,24 @@ class BrainManager:
             ),
         )
 
+    def _get_ddg_market_brief(self) -> Dict[str, Any]:
+        if not self.external_research_enabled or not self._has_ddg_client():
+            return {}
+        return self._cached_payload(
+            "ddg_market",
+            self.ddg_ttl_sec,
+            lambda: self._ddg_search("crypto market today bitcoin altcoin risk catalysts exchange exploit", max_results=3),
+        )
+
+    def _get_ddg_symbol_brief(self, symbol: str) -> Dict[str, Any]:
+        if not self.external_research_enabled or not self._has_ddg_client():
+            return {}
+        return self._cached_payload(
+            f"ddg_symbol:{symbol}",
+            self.ddg_ttl_sec,
+            lambda: self._ddg_search(f"{symbol} crypto latest news catalyst risk", max_results=3),
+        )
+
     def _get_finnhub_crypto_news(self) -> List[Dict[str, Any]]:
         if not self.external_research_enabled or not os.getenv("FINNHUB_API_KEY"):
             return []
@@ -606,16 +674,58 @@ class BrainManager:
             ("tavily", "TAVILY_API_KEY"),
             ("serper", "SERPER_API_KEY"),
             ("finnhub", "FINNHUB_API_KEY"),
-            ("gemini", "GOOGLE_API_KEY"),
         ):
             last = self._provider_cache.get(name) or {}
             out[name] = {
-                "configured": bool(self._gemini_api_key()) if name == "gemini" else bool(os.getenv(env_key)),
+                "configured": bool(os.getenv(env_key)),
                 "last_ok": bool(last.get("ok")) if last else None,
                 "last_checked_at": last.get("checked_at"),
                 "last_error": last.get("error", ""),
             }
+
+        ddg_last = self._provider_cache.get("ddg") or {}
+        out["ddg"] = {
+            "configured": self._has_ddg_client(),
+            "last_ok": bool(ddg_last.get("ok")) if ddg_last else None,
+            "last_checked_at": ddg_last.get("checked_at"),
+            "last_error": ddg_last.get("error", ""),
+        }
+
+        coordinator_status = self._coordinator_provider_status()
+        for name, detail in coordinator_status.items():
+            if not isinstance(detail, dict):
+                continue
+            out[name] = {
+                "configured": bool(detail.get("configured")),
+                "model": str(detail.get("model") or ""),
+                "priority": detail.get("priority"),
+                "used": detail.get("used"),
+                "remaining": detail.get("remaining"),
+                "pct_used": detail.get("pct_used"),
+                "last_ok": out.get(name, {}).get("last_ok"),
+                "last_checked_at": out.get(name, {}).get("last_checked_at"),
+                "last_error": out.get(name, {}).get("last_error", ""),
+            }
         return out
+
+    def _ai_legion_status(self) -> Dict[str, Any]:
+        provider_status = self._provider_status()
+        configured = [name for name, detail in provider_status.items() if bool(detail.get("configured"))]
+        llm_providers = {
+            name: detail for name, detail in provider_status.items()
+            if name in {"groq", "gemini", "openrouter", "cohere", "jina", "nvidia"}
+        }
+        search_providers = {
+            name: detail for name, detail in provider_status.items()
+            if name in {"tavily", "serper", "finnhub", "ddg"}
+        }
+        return {
+            "configured_count": len(configured),
+            "configured_names": configured,
+            "llm_providers": llm_providers,
+            "search_providers": search_providers,
+            "coordinator_enabled": self.ai_coordinator_enabled,
+        }
 
     def _daily_target_snapshot(self, context: Dict[str, Any]) -> Dict[str, Any]:
         daily_pnl_pct = self._safe_float(context.get("daily_pnl_pct"))
@@ -812,6 +922,10 @@ class BrainManager:
                 return False
 
         return {
+            "ddgs": {
+                "installed": has_module("ddgs"),
+                "api_key_present": False,
+            },
             "google.genai": {
                 "installed": has_module("google.genai"),
                 "api_key_present": bool(self._gemini_api_key()),
@@ -846,6 +960,65 @@ class BrainManager:
                 "api_key_present": False,
             },
         }
+
+    def _has_ddg_client(self) -> bool:
+        for module_name in ("ddgs", "duckduckgo_search"):
+            try:
+                if importlib.util.find_spec(module_name) is not None:
+                    return True
+            except ModuleNotFoundError:
+                continue
+        return False
+
+    def _ddg_search(self, query: str, max_results: int = 3) -> Dict[str, Any]:
+        client_cls = None
+        for module_name in ("ddgs", "duckduckgo_search"):
+            try:
+                module = __import__(module_name, fromlist=["DDGS"])
+                client_cls = getattr(module, "DDGS", None)
+                if client_cls is not None:
+                    break
+            except Exception:
+                continue
+        if client_cls is None:
+            return {}
+
+        client = None
+        try:
+            try:
+                client = client_cls(timeout=max(self.request_timeout))
+            except TypeError:
+                client = client_cls()
+            raw_results = client.text(query, max_results=max_results)
+            results = []
+            for item in list(raw_results or [])[:max_results]:
+                if not isinstance(item, dict):
+                    continue
+                results.append(
+                    {
+                        "title": str(item.get("title") or "").strip(),
+                        "content": str(item.get("body") or item.get("snippet") or "").strip(),
+                        "url": str(item.get("href") or item.get("url") or "").strip(),
+                    }
+                )
+            return {"query": query, "results": results}
+        finally:
+            closer = getattr(client, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    pass
+
+    def _coordinator_provider_status(self) -> Dict[str, Dict[str, Any]]:
+        if not self.ai_coordinator_enabled or _coordinator_provider_status_fn is None:
+            return {}
+        try:
+            payload = _coordinator_provider_status_fn()
+            return payload if isinstance(payload, dict) else {}
+        except Exception as error:
+            logger.warning("Brain coordinator status fetch failed: %s", error)
+            return {}
 
     def _load_snapshot(self) -> Dict[str, Any]:
         if not self.state_file.exists():

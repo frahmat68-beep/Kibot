@@ -40,6 +40,23 @@ def test_brain():
         patch.object(brain, "_get_tavily_symbol_brief", return_value={"answer": "BTC remains liquid with manageable event risk.", "results": []}),
         patch.object(brain, "_get_serper_market_brief", return_value={}),
         patch.object(brain, "_get_serper_symbol_brief", return_value={}),
+        patch.object(brain, "_get_ddg_market_brief", return_value={"results": [{"title": "DDG market pulse", "content": "Crypto market selective"}]}),
+        patch.object(brain, "_get_ddg_symbol_brief", return_value={"results": [{"title": "DDG BTC note", "content": "BTC remains liquid"}]}),
+        patch.object(brain, "_has_ddg_client", return_value=True),
+        patch("ki_brain._coordinator_query_ai_fn", return_value={
+            "capital_posture": "DEFENSIVE",
+            "risk_bias": "MIXED",
+            "confidence": 0.72,
+            "strategy_next": "Stay selective and wait for cleaner confirmation.",
+            "focus_symbols": ["BTC"],
+            "do_not_do": ["chase thin liquidity"],
+            "provider": "groq",
+            "model": "llama-3.1-8b-instant",
+        }),
+        patch("ki_brain._coordinator_provider_status_fn", return_value={
+            "groq": {"configured": True, "model": "llama-3.1-8b-instant", "priority": 1, "used": 2, "remaining": 98, "pct_used": 2.0},
+            "gemini": {"configured": True, "model": "gemini-2.0-flash-lite", "priority": 2, "used": 0, "remaining": 100, "pct_used": 0.0},
+        }),
     ):
         print("\n--- Testing Brain Market Intel ---")
         symbol = "BTC"
@@ -73,6 +90,7 @@ def test_brain():
         )
         print(f"Brain snapshot keys: {list(snapshot.keys())}")
         print(f"Provider status: {snapshot.get('provider_status')}")
+        print(f"AI Legion: {snapshot.get('ai_legion')}")
         print(f"Daily target: {snapshot.get('daily_target')}")
         print(f"Market pulse: {snapshot.get('market_pulse')}")
         print(f"Strategy next: {snapshot.get('daily_target', {}).get('strategy_next')}")
