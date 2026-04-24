@@ -19,7 +19,6 @@ Env vars (tambah ke .env):
 
 import os
 import json
-import time
 import requests
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -47,7 +46,7 @@ _load_env()
 GITHUB_TOKEN  = os.getenv("GITHUB_TOKEN", "").strip()
 GITHUB_OWNER  = os.getenv("GITHUB_OWNER", "frahmat68-beep").strip()
 GITHUB_REPO   = os.getenv("GITHUB_REPO",  "Kibot").strip()
-NUM_ACCOUNTS  = int(os.getenv("KIBOT_BUD_ACCOUNTS", "8"))
+NUM_ACCOUNTS  = max(1, int(os.getenv("KIBOT_BUD_ACCOUNTS", "8")))
 TG_TOKEN      = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TG_CHAT_ID    = os.getenv("TELEGRAM_CHAT_ID", "-1001346696386").strip()
 
@@ -97,10 +96,18 @@ def get_bot_status():
     wr      = (wins / total * 100) if total > 0 else 0
     total_pnl = sum(t.get("netPnlIdr", t.get("net_profit_idr", 0)) for t in trades)
 
+    current_equity = (
+        state.get("current_equity")
+        or state.get("equity")
+        or main_state.get("equity")
+        or state.get("initial_capital_idr")
+        or 0.0
+    )
+
     return {
         "pnl_pct":        state.get("daily_pnl_pct", 0.0),
         "pnl_idr":        state.get("daily_pnl_idr", total_pnl),
-        "equity":         state.get("initial_capital_idr", 0.0),
+        "equity":         current_equity,
         "risk_mode":      main_state.get("risk_mode", gate.get("risk_mode", "UNKNOWN")),
         "total_trades":   main_state.get("total_trades", total),
         "wins":           wins,
@@ -119,14 +126,18 @@ def get_next_account():
     data = read_json(COUNTER_FILE)
     current = data.get("counter", 0)
     next_acc = (current % NUM_ACCOUNTS) + 1
-    # Simpan counter baru
+    return next_acc
+
+
+def commit_account(account_num: int):
+    data = read_json(COUNTER_FILE)
+    current = int(data.get("counter", 0))
     COUNTER_FILE.parent.mkdir(parents=True, exist_ok=True)
     COUNTER_FILE.write_text(json.dumps({
         "counter": current + 1,
-        "last_account": next_acc,
+        "last_account": account_num,
         "last_run": ts_wib()
     }, indent=2))
-    return next_acc
 
 # ── Format Issue ─────────────────────────────────────────────────────────────────
 def build_issue(status: dict, account_num: int) -> dict:
@@ -232,47 +243,61 @@ Kamu adalah **autonomous trading assistant** dengan otoritas penuh. Evaluasi dat
     return {"title": title, "body": body, "account_num": account_num}
 
 # ── GitHub API ───────────────────────────────────────────────────────────────────
-def ensure_label(label: str):
-    """Buat label kalau belum ada."""
+def gh_request(method: str, path: str, *, payload: dict | None = None, timeout: int = 15) -> dict:
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"
     }
+    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/{path.lstrip('/')}"
+
+    try:
+        resp = requests.request(method, url, headers=headers, json=payload, timeout=timeout)
+        data = {}
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"raw": resp.text}
+        return {"ok": 200 <= resp.status_code < 300, "status": resp.status_code, "data": data}
+    except Exception as error:
+        return {"ok": False, "status": 0, "data": {"error": str(error)}}
+
+
+def ensure_label(label: str):
+    """Buat label kalau belum ada."""
     colors = ["0075ca","e4e669","d93f0b","0e8a16","5319e7","b60205","1d76db","0052cc"]
-    idx    = int(label.split("-")[1]) - 1 if "-" in label else 0
+    parts  = label.split("-")
+    idx    = 0
+    if len(parts) == 2 and parts[1].isdigit():
+        idx = max(0, int(parts[1]) - 1)
     color  = colors[idx % len(colors)]
 
-    # Cek dulu apakah label udah ada
-    r = requests.get(
-        f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/labels/{label}",
-        headers=headers, timeout=10
+    exists = gh_request("GET", f"labels/{label}", timeout=10)
+    if exists["ok"]:
+        return
+    if exists["status"] not in (404,):
+        print(f"[WARN] Cek label gagal ({label}): {exists}")
+        return
+    created = gh_request(
+        "POST",
+        "labels",
+        payload={"name": label, "color": color, "description": f"Handled by Bud account {label}"},
+        timeout=10,
     )
-    if r.status_code == 404:
-        requests.post(
-            f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/labels",
-            headers=headers,
-            json={"name": label, "color": color, "description": f"Handled by Bud account {label}"},
-            timeout=10
-        )
+    if not created["ok"]:
+        print(f"[WARN] Buat label gagal ({label}): {created}")
 
 def create_issue(title: str, body: str, account_num: int) -> dict:
     label = f"bud-{account_num}"
     ensure_label(label)
     ensure_label("auto-report")
-
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28"
-    }
-    r = requests.post(
-        f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/issues",
-        headers=headers,
-        json={"title": title, "body": body, "labels": [label, "auto-report"]},
-        timeout=15
+    resp = gh_request(
+        "POST",
+        "issues",
+        payload={"title": title, "body": body, "labels": [label, "auto-report"]},
+        timeout=15,
     )
-    return r.json()
+    return resp["data"]
 
 # ── Telegram notif ───────────────────────────────────────────────────────────────
 def tg_notify(status: dict, issue_url: str, account_num: int):
@@ -322,6 +347,7 @@ def main():
 
     if issue_url:
         print(f"[OK] Issue #{issue_num} dibuat: {issue_url}")
+        commit_account(account_num)
         tg_notify(status, issue_url, account_num)
     else:
         print(f"[ERROR] Gagal buat issue: {result}")
