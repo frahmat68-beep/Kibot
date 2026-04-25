@@ -573,7 +573,7 @@ class BrainManager:
                 "https://api.tavily.com/search",
                 body={
                     "query": "crypto market today bitcoin altcoin risk catalysts regulation exploit exchange",
-                    "topic": "finance",
+                    "topic": "news",
                     "search_depth": "basic",
                     "max_results": 3,
                     "include_answer": "basic",
@@ -593,7 +593,7 @@ class BrainManager:
                 "https://api.tavily.com/search",
                 body={
                     "query": f"{symbol} crypto latest news catalyst risk",
-                    "topic": "finance",
+                    "topic": "news",
                     "search_depth": "basic",
                     "max_results": 3,
                     "include_answer": "basic",

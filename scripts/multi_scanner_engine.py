@@ -5,6 +5,7 @@
 import time, json, os
 from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 
 SCANNER_WEIGHTS = {
     "BINANCE": 0.30, "BYBIT": 0.25, "KUCOIN": 0.20,
@@ -19,6 +20,8 @@ MSC_HIGH         = 0.80
 MSC_MAX          = 0.90
 MEXC_ONLY_BLOCK  = os.environ.get("KIBOT_MEXC_ONLY_BLOCK", "true").lower() == "true"
 
+DIRECTIVES_FILE = Path(os.environ.get("KIBOT_GOVERNOR_FILE", "state/governor_directives.json"))
+
 
 class MultiScannerEngine:
     """
@@ -30,6 +33,26 @@ class MultiScannerEngine:
     def __init__(self):
         self._cache: dict[str, dict] = defaultdict(dict)
         # {pair_indodax: {exchange: {signal_data, received_at}}}
+        self.weights = SCANNER_WEIGHTS.copy()
+        self.msc_min = MSC_MIN
+        self._last_directive_check = 0.0
+
+    def _refresh_directives(self):
+        """Load dynamic overrides from the Governor."""
+        now = time.time()
+        if now - self._last_directive_check < 60: return # throttle check
+        self._last_directive_check = now
+
+        if DIRECTIVES_FILE.exists():
+            try:
+                data = json.loads(DIRECTIVES_FILE.read_text())
+                scanner_cfg = data.get("scanner", {})
+                if "weights" in scanner_cfg:
+                    self.weights.update(scanner_cfg["weights"])
+                if "msc_min" in scanner_cfg:
+                    self.msc_min = float(scanner_cfg["msc_min"])
+            except Exception as e:
+                print(f"[MSC][WARN] Failed to load directives: {e}")
 
     def ingest(self, msg: dict):
         """Terima satu signal dari UDP."""
@@ -68,16 +91,22 @@ class MultiScannerEngine:
                     "is_mexc_only": True}
 
         # Hitung weighted MSC
+        self._refresh_directives()
+        
+        weight_sum = sum(self.weights.get(exc, 0.10) for exc in scanners)
+        if weight_sum <= 0: return {"msc": 0.0, "action": "IGNORE", "reason": "no_weight"}
+
         weighted = sum(
-            SCANNER_WEIGHTS.get(exc, 0.10) * active[exc].get("detection_score", 0.5)
+            self.weights.get(exc, 0.10) * active[exc].get("detection_score", 0.5)
             for exc in scanners
         )
-        msc = weighted / ALL_WEIGHT_SUM  # normalize ke 0-1
+        msc = weighted / weight_sum  # normalize
+        msc_min = self.msc_min
 
         # Tentukan action + position multiplier
         if msc < 0.40:
             action, mult, reason = "IGNORE",     0.0, f"msc_weak:{msc:.3f}"
-        elif msc < MSC_MIN:
+        elif msc < msc_min:
             action, mult, reason = "WATCHLIST",  0.0, f"msc_below_threshold:{msc:.3f}"
         elif msc < MSC_MEDIUM:
             action, mult, reason = "ENTRY", 0.60, f"entry_cautious:msc={msc:.3f}"

@@ -5,8 +5,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlin.time.Duration.Companion.hours
-import kotlin.time.Duration.Companion.minutes
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import okio.FileSystem
+import okio.Path.Companion.toPath
 
 /**
  * DynamicConfigReloader — Hot-Reload tanpa restart
@@ -36,6 +39,15 @@ class DynamicConfigReloader(
         val fomoGuardBig: Double = 15.0,
         val aiApprovalMinScore: Double = 0.48,
         val aiApprovalMinNetPct: Double = 0.08,
+        
+        // Strategy Governor Overrides
+        val mscMin: Double = 0.60,
+        val leadLagRatio: Double = 0.50,
+        val localPumpRatio: Double = 0.50,
+        val maxPerTradeBudgetPct: Double = 0.25,
+        val dailyLossLimitPct: Double = 3.0,
+        val profitLockRatio: Double = 0.30,
+        val strategyMode: String = "NORMAL" // DEFENSIVE, NORMAL, OPPORTUNISTIC
     )
     
     @Serializable
@@ -60,12 +72,21 @@ class DynamicConfigReloader(
         scope.launch {
             while (isActive) {
                 try {
-                    val params = fetchParams()
-                    val hash = params.hashCode()
+                    // Try Local Governor Directives first (High Priority, Fast)
+                    val localDirectivesFile = "state/governor_directives.json".toPath()
+                    val params = if (FileSystem.SYSTEM.exists(localDirectivesFile)) {
+                        parseLocalDirectives(
+                            FileSystem.SYSTEM.read(localDirectivesFile) {
+                                readUtf8()
+                            }
+                        )
+                    } else {
+                        fetchParams()
+                    }
                     
+                    val hash = params.hashCode()
                     if (hash != lastConfigHash && lastConfigHash != 0) {
-                        println("[CONFIG_RELOAD] New params detected!")
-                        println("[CONFIG_RELOAD] $params")
+                        println("[CONFIG_RELOAD] New params from Governor detected!")
                         onConfigChange(params)
                     }
                     
@@ -73,14 +94,35 @@ class DynamicConfigReloader(
                     lastConfigHash = hash
                     
                 } catch (e: Exception) {
-                    println("[CONFIG_RELOAD] Poll failed: ${e.message}")
+                    println("[CONFIG_RELOAD] Reload failed: ${e.message}")
                 }
                 
-                // CRITICAL: Long delay to avoid Supabase bandwidth limits
-                // Default 60 minutes, minimum 15 minutes
-                val delayMinutes = pollIntervalMinutes.coerceAtLeast(15)
-                delay(delayMinutes.minutes)
+                // Adaptive delay: check local file more frequently (every 10s)
+                // but poll remote Supabase less frequently.
+                delay(10000)
             }
+        }
+    }
+
+    private fun parseLocalDirectives(jsonStr: String): DynamicParams {
+        return try {
+            val root = json.parseToJsonElement(jsonStr).jsonObject
+            val scanner = root["scanner"]?.jsonObject
+            val capital = root["capital"]?.jsonObject
+            val risk = root["risk"]?.jsonObject
+            
+            DynamicParams(
+                mscMin = scanner?.get("msc_min")?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.60,
+                leadLagRatio = capital?.get("ratio")?.jsonObject?.get("LEAD_LAG")?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.50,
+                localPumpRatio = capital?.get("ratio")?.jsonObject?.get("LOCAL_PUMP")?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.50,
+                maxPerTradeBudgetPct = capital?.get("max_per_trade")?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.25,
+                dailyLossLimitPct = risk?.get("daily_loss_limit_pct")?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 3.0,
+                profitLockRatio = risk?.get("lock_ratio")?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.30,
+                strategyMode = root["strategy_mode"]?.jsonPrimitive?.contentOrNull ?: "NORMAL"
+            )
+        } catch (e: Exception) {
+            println("[CONFIG_RELOAD] Error parsing local directives: ${e.message}")
+            DynamicParams()
         }
     }
     

@@ -404,274 +404,94 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
 - Claim:
   - Untuk topologi aktif 2-server sekarang, sistem sudah berjalan normal kembali dalam arti runtime inti, guardian autorevive, scanner mesh, dan komunikasi antarnode sudah pulih.
   - Catatan jujur: SG belum berada di mode trading normal karena `daily hard stop` masih aktif akibat loss harian live; ini guard yang valid, bukan crash.
-
-## 2026-04-20 13:27 WIB — SAFE_MODE Sync Repair For HP Visibility
+## [2026-04-25 08:47 WIB] - 3-Node Adaptive Governor + Batam Ollama Acceleration
+- Scope:
+  - Targetkan sistem jadi lebih adaptif tanpa bikin node kecil drop.
+  - Batam diposisikan sebagai AI hub (`ollama`), SG sebagai executor/controller, Tokyo sebagai radar/scanner mesh.
+  - `antigravity_bot` tidak disentuh.
 - Temuan:
-  - SG hidup dan scanner feed aktif, tetapi engine utama tetap mengekspose `DEGRADED` saat daily hard stop valid sedang aktif.
-  - Akar bug ada di `MacEngineDaemon`: reason manager `hard stop active` tidak ikut dikenali sebagai hard-stop valid, jadi state jatuh ke `DEGRADED` alih-alih `SAFE_MODE`.
-  - Dampaknya dashboard/HP terlihat seperti sistem rusak atau belum nyala, padahal sebenarnya sedang proteksi.
-- Perbaikan:
-  - Patch reason normalization agar `hard stop active` / `daily loss limit` dipetakan ke `SAFE_MODE`.
-  - Ubah label node `SAFE_MODE` menjadi `safe` agar UI tidak salah baca sebagai `degraded`.
-  - Saat safety gate aktif, log loop kini memakai `SAFE_MODE_HOLD` dan tidak lagi spam `LIFECYCLE_BLOCK` error yang misleading.
-- Verifikasi lokal:
-  - `./gradlew :apps:mac-engine:compileKotlin :apps:mac-engine:fatJar --no-daemon`
-  - `python3 tests/test_whatif_complete.py` → `200/200 PASS`
-  - `python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
-- Langkah berikut:
-  - Deploy jar baru ke SG dan Tokyo.
-  - Soak ulang live untuk memastikan `/api/state` dan `/api/health` sinkron ke HP dengan status `SAFE` saat proteksi aktif.
-
-## 2026-04-20 14:24 WIB — Hybrid Brain Gate Wired Into Live Entry Path
-- Temuan:
-  - `brain_assist`, `market_pulse`, dan `watch_reviews` sudah hidup, tetapi dampaknya ke jalur `BUY` masih terlalu lemah.
-  - Manager sebelumnya hanya memakai brain untuk review/snapshot, belum cukup memengaruhi sizing atau penolakan entry lemah saat `risk-off`.
-- Perbaikan:
-  - Tambahkan `_brain_signal_advisory(...)` di `scripts/kibot_manager.py` untuk membaca snapshot brain lokal tanpa network call di hot path.
-  - Jalur entry kini:
-    - memblokir pair yang explicit ditolak `watch_reviews` (`external_research_risk_off`, `missing_or_zero_quote_volume`, `symbol_not_listed_on_indodax`)
-    - memblokir non-focus pair saat `risk-off` dan skor sinyal lemah
-    - mengecilkan `budgetIdr` saat `risk-off`, `RECOVERY_MODE`, dan modal `MICRO/BUILDUP`
-  - Tambahkan metric/state:
-    - `entries_blocked.brain`
-    - `entries_brain_reduced`
-- Verifikasi lokal:
-  - `./.brain-venv/bin/python3 scripts/test_offline.py` → `52 PASS 0 FAIL`
-  - `python3 scripts/test_brain_integration.py`
-  - `python3 tests/test_whatif_complete.py` → `200/200 PASS`
-  - `./.brain-venv/bin/python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
-- Dampak yang diharapkan:
-  - AI tetap advisory, tetapi sekarang benar-benar terlihat aksinya di runtime:
-    - weak entry bisa diblok
-    - sizing bisa otomatis diperkecil
-    - strategy `risk-off / recovery / micro capital` menempel ke jalur keputusan manager
-- Langkah berikut:
-  - Deploy `kibot_manager.py` ke SG dan Tokyo.
-  - Soak log 10 menit untuk membuktikan event `BRAIN BLOCK` / `BRAIN SIZE` / scanner feed berjalan normal.
-
-## 2026-04-20 14:36 WIB — SAFE_MODE Health Endpoint Semantics Repaired
-- Temuan:
-  - Setelah soak 10 menit selesai, SG terbukti sehat dalam proteksi `SAFE_MODE`, tetapi `/api/health` masih mengembalikan `503 Service Unavailable`.
-  - Ini bukan crash, tetapi semantik lama yang bisa membuat HP/monitor salah baca node aman sebagai node rusak.
-- Perbaikan:
-  - Patch `LocalDashboardServer.kt` agar:
-    - `SAFE_MODE / hardStopActive` => HTTP `200` dengan `status="safe"`
-    - hanya kondisi rusak nyata (`STOPPED` / `BROKEN`) yang tetap `503`
-  - Rebuild jar:
-    - `./gradlew :apps:mac-engine:compileKotlin :apps:mac-engine:fatJar --no-daemon`
-  - Redeploy manual ke SG dan Tokyo lalu restart `kidax-engine` / `kinance-engine`
-- Verifikasi:
-  - SG `/api/health` akhir:
-    - `HTTP/1.1 200 OK`
-    - `status="safe"`
-    - `effectiveState="SAFE_MODE"`
-    - `tradingAllowed=false`
-    - `hardStopActive=true`
-  - Tokyo `/api/health` akhir:
-    - `HTTP/1.1 200 OK`
-    - `status="ok"`
-    - `effectiveState="RUNNING"`
-    - `tradingAllowed=false`
-    - `hardStopActive=false`
-- Dampak:
-  - Hard-stop protektif sekarang tetap terlihat hidup dan sehat di layer health endpoint.
-  - HP/monitor tidak lagi perlu mengartikan proteksi valid sebagai downtime palsu.
-
-## 2026-04-21 03:35 WIB — Top-Up Separated From Daily PnL + Brain Warm-On-Call
-- Temuan:
-  - Manager Python masih menghitung `daily_pnl_pct` dari delta equity mentah, sehingga top-up berisiko kebaca sebagai profit.
-  - Brain advisory sudah ada, tetapi bila snapshot mulai stale ia hanya menunggu loop periodik berikutnya; belum cukup on-call.
-- Perbaikan:
-  - Tambahkan deteksi `external cashflow` di `scripts/kibot_manager.py`.
-  - `daily_pnl_pct` sekarang dihitung dari `current_equity - external_cashflow_idr - start_of_day_equity`, bukan dari equity mentah.
-  - Cashflow eksternal otomatis ditandai saat ada lonjakan balance besar tanpa posisi aktif dan tanpa trade activity baru.
-  - Tambahkan metadata state:
-    - `external_cashflow_idr`
-    - `external_cashflow_reason`
-  - Tambahkan `BrainManager.ensure_warm(...)` + `snapshot_age_sec()` di `scripts/ki_brain.py`.
-  - Manager sekarang bisa memicu warm refresh brain di background saat snapshot stale, tanpa blocking hot path.
-- Verifikasi lokal:
-  - `./.brain-venv/bin/python3 scripts/test_offline.py` → `56 PASS 0 FAIL`
-  - `python3 tests/test_whatif_complete.py` → `200/200 PASS`
-  - `./.brain-venv/bin/python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
-- Dampak yang diharapkan:
-  - Top-up tidak lagi menaikkan PnL harian palsu.
-  - Otak/manager tetap bisa baca snapshot lokal instan, sambil background warm menjaga intel tetap siap pakai.
-
-## 2026-04-24 21:36 WIB — Small-Balance Hybrid Trading Unstuck + Authoritative Manager Gate
-- Temuan:
-  - Dengan equity sekitar `Rp50k`, manager masih sering freeze di mode modal kecil walau user ingin bot tetap bergerak disiplin.
-  - SG sebelumnya tidak membaca `GEMINI_SUPPORT_API_KEY`, jadi support AI Google terdeteksi seolah belum siap walau key ada di env.
-  - Jalur `manager -> engine` sempat circular: manager menghormati `runtimeTradingAllowed` dari engine, sementara engine membaca `tradingAllowed` dari manager. Ini membuat bot bisa tampak sehat di manager tapi tetap mandek di engine.
-  - Endpoint gate yang dipakai engine terlalu berat karena memakai `/api/state`; hasilnya muncul timeout `MANAGER_GATE_FETCH_FAILED` dan sempat mempertahankan reason lama `midnight_reset_completed:no_active_positions`.
-- Perbaikan:
-  - `scripts/kibot_manager.py`
-    - Ubah adaptive capital untuk akun kecil menjadi `MICRO` yang tetap menghormati minimum order venue, bukan freeze total.
-    - Tambahkan override `min_order` untuk tiny balance agar modal sekitar `Rp50k` masih bisa sizing disiplin.
-    - Wire brain advisory agar benar-benar bisa mengecilkan atau sedikit menaikkan budget sesuai `market_pulse` dan `ai_critic`.
-    - Pisahkan manager gate authoritative dari runtime engine.
-    - Tambah endpoint ringan `/api/gate` khusus untuk engine.
-    - Ringankan `/api/gate` lagi supaya tidak fetch runtime berat dan tidak memicu timeout yang tidak perlu.
-  - `scripts/ki_brain.py`
-    - Tambahkan fallback key `GEMINI_SUPPORT_API_KEY`.
-    - Tambahkan `ai_critic` berbasis Gemini REST yang cached, dengan fallback tetap ke Tavily/Finnhub bila Google rate-limited.
-  - `apps/mac-engine/.../MacEngineDaemon.kt`
-    - Ganti default manager gate URL dari `/api/state` ke `/api/gate`.
-  - `scripts/test_offline.py`
-    - Tambah regression akun kecil `Rp50k` dan advisory boost/reduction yang dipengaruhi AI.
-- Verifikasi lokal:
-  - `python3 -m py_compile scripts/ki_brain.py scripts/kibot_manager.py scripts/test_offline.py`
-  - `./.brain-venv/bin/python3 scripts/test_offline.py` → `59 PASS 0 FAIL`
-  - `./.brain-venv/bin/python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
-  - `./gradlew :apps:mac-engine:compileKotlin :apps:mac-engine:fatJar --no-daemon` → `BUILD SUCCESSFUL`
-- Deploy:
-  - SG `213.35.118.26`: deploy `kibot_manager.py`, `ki_brain.py`, dan `server/mac-engine-all.jar`; restart `kibot-manager` + `kidax-engine`.
-  - Tokyo `152.69.218.198`: deploy `kibot_manager.py`, `ki_brain.py`, dan `server/mac-engine-all.jar`; restart `kibot-manager` + `kinance-engine`.
-- Soak pascadeploy:
-  - SG akhir:
-    - manager `/api/gate`: `system_state=HEALTHY`, `tradingAllowed=true`, `effectiveTradingAllowed=true`
-    - capital profile: `MICRO`, `reason=micro_balance_preservation:min_order_override`, `max_position_idr=11500`
-    - engine `/api/health`: `effectiveState=RUNNING`, `syncHealth=HEALTHY`, `tradingAllowed=true`
-    - mobile `/api/mobile`: `status=LIVE`
-    - log tidak lagi menunjukkan block `midnight_reset_completed:no_active_positions`
-    - log tetap menunjukkan aksi nyata dari filter disiplin: `minimum order venue`, `learning blacklist`, `toxic cooldown`
-  - Tokyo akhir:
-    - manager `/api/gate`: tetap `tradingAllowed=false` by design karena node scanner tidak punya equity lokal
-    - engine `/api/health`: `effectiveState=RUNNING`, `syncHealth=HEALTHY`
-    - scanner mesh tetap hidup dan feed terus masuk ke SG
-- Catatan jujur:
-  - Gemini support sekarang `configured=true`, tetapi live call saat audit kena `429 Too Many Requests`; jadi support AI yang benar-benar aktif saat ini masih terutama Tavily/Finnhub, dengan Gemini sebagai cadangan saat kuota tersedia.
-  - Dengan saldo sekecil ini, bot sudah bisa bergerak lagi, tetapi tetap akan sering menolak pair yang gagal minimum order atau quality gate. Itu perilaku yang diinginkan, bukan bug.
-- Claim:
-  - Topologi produksi aktif 2 server kembali normal untuk modal kecil.
-  - Manager, learning, scanner feed, dan execution gate sekarang saling nyambung lagi tanpa circular freeze.
-  - SG sudah kembali `LIVE` dengan pengawasan penuh, bukan stuck total karena gate modal atau gate sync yang salah.
-
-## 2026-04-24 23:37 WIB — AI Legion Runtime Wiring, DDG Live, dan Hard-Stop Consistency Repair
-- Temuan:
-  - Pool AI free-tier di repo sudah banyak (`Groq`, `Gemini`, `OpenRouter`, `Cohere`, `Jina`, plus search/data `Tavily`, `Serper`, `Finnhub`), tetapi jalur brain ringan harian belum benar-benar memakai provider pool itu secara runtime.
-  - `duckduckgo_search`/DDG sebelumnya hanya terdeteksi sebagai optional module; belum ada jalur search yang benar-benar dipakai di snapshot otak.
-  - Ada bug kritis di SG: saat survival mode menurunkan batas rugi harian ke `1%`, daily hard stop bisa terpicu di `-1.17%` lalu langsung ter-clear sendiri karena checker konsistensi masih membandingkan ke limit statis `2%`.
-  - Selama hard stop aktif, manager SG masih sempat mengeluarkan noise legacy `Missing consensus data (AND gate failed)` dari jalur multipos lama.
+  - Adaptive governor di SG sudah hidup, tapi provider live masih jatuh ke `openrouter`; `ollama` gateway sehat namun inferensi lokal CPU belum cukup cepat untuk prompt governor live.
+  - Tokyo scanner mesh aktif, tetapi evidence runtime paling sering didominasi `KUCOIN` di sisi SG karena ranking sinyal; perlu bukti lintas-exchange dari mesh logs, bukan hanya `MSC_RECV`.
+  - Tokyo governor pernah menyisakan `last_error=empty_governor_response` pada stale refresh, walau node scanner tetap sehat.
 - Perbaikan:
   - `scripts/kibot_ai_coordinator.py`
-    - Load `.env.server` / `.env.kibot` / `.env` lebih awal supaya provider pool live benar-benar terbaca.
-    - Tambahkan fallback key Gemini (`GEMINI_SUPPORT_API_KEY`) dan ubah pemilihan provider jadi multi-candidate, bukan single best provider.
-    - Tambahkan prompt type `BRAIN_CRITIC` dan status provider detail (`configured`, `used`, `remaining`, `priority`).
-    - Perbarui model yang sudah drift:
-      - `OpenRouter` → `openrouter/free`
-      - `Cohere` → `command-a-03-2025`
-    - Provider yang kena `401/403/404/429` sekarang ditandai unavailable untuk hari itu agar tidak diulang terus.
-  - `scripts/ki_brain.py`
-    - Wire `kibot_ai_coordinator` ke snapshot brain sehingga `ai_critic` bisa fallback antar provider LLM.
-    - Tambahkan search DDG sungguhan via paket `ddgs`; market brief dan symbol brief sekarang bisa memakai DDG selain Tavily/Serper/Finnhub.
-    - Tambahkan metadata `ai_legion` dan `provider_status` agar state API menunjukkan provider mana yang benar-benar configured/aktif.
-  - `scripts/kibot_manager.py`
-    - Samakan checker konsistensi hard stop dengan `_current_daily_loss_limit_pct()` agar hard stop survival mode tidak auto-clear palsu.
-    - Saat hard stop aktif, skip jalur legacy multipos agar manager SG tidak spam veto konsensus lama.
-  - `scripts/test_offline.py` dan `scripts/test_brain_integration.py`
-    - Tambahkan regression DDG, AI coordinator fallback, hard-stop latch survival mode, dan skip legacy consensus saat hard stop.
+    - Tambah profil model/timeout khusus `ollama`:
+      - fast=`qwen3:1.7b`
+      - default=`qwen3:4b`
+      - deep=`qwen3:8b`
+    - `STRATEGY_GOVERNOR` prompt dipadatkan supaya lebih cocok untuk model lokal CPU.
+    - cache key sekarang ikut mempertimbangkan template + provider/model runtime, supaya deploy baru tidak ketahan cache lama.
+    - status provider `ollama` sekarang punya metadata profile/timeout.
+  - `scripts/test_offline.py`
+    - Tambah regression untuk:
+      - pemilihan model `ollama` per prompt
+      - timeout tier `ollama`
+      - status `ollama` profiles
+  - Batam:
+    - install model baru `qwen3:1.7b`
+    - model aktif sekarang: `qwen3:1.7b`, `qwen3:4b`, `qwen3:8b`
+  - SG/Tokyo:
+    - deploy ulang `kibot_ai_coordinator.py`, `kibot_manager.py`, `ki_brain.py`, `multi_scanner_engine.py`, `ki_capital_engine.py`, `ki_scanner_base.py`
+    - deploy ulang `mac-engine-all.jar`
+    - hapus `state/ai_coordinator_cache.json` agar routing baru langsung dipakai
+    - restart `kibot-manager` + engine terkait
 - Verifikasi lokal:
-  - `python3 -m py_compile scripts/kibot_ai_coordinator.py scripts/ki_brain.py scripts/kibot_manager.py scripts/test_offline.py scripts/test_brain_integration.py`
-  - `./.brain-venv/bin/python3 scripts/test_offline.py` → `65 PASS 0 FAIL`
-  - `./.brain-venv/bin/python3 scripts/test_brain_integration.py`
+  - `python3 -m py_compile scripts/kibot_ai_coordinator.py scripts/kibot_manager.py scripts/ki_brain.py scripts/multi_scanner_engine.py scripts/test_offline.py`
+  - `./.brain-venv/bin/python3 scripts/test_offline.py` → `81 PASS 0 FAIL`
   - `./.brain-venv/bin/python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
-- Deploy:
-  - Host disentuh:
-    - `213.35.118.26` (SG / executor)
-    - `152.69.218.198` (Tokyo / radar)
-  - Files deployed manual via SSH:
-    - `scripts/kibot_ai_coordinator.py`
-    - `scripts/ki_brain.py`
-    - `scripts/kibot_manager.py`
-  - Runtime dependency yang ditambahkan di dua server:
-    - `python3 -m pip install --user --break-system-packages ddgs`
-  - Restart:
-    - `kibot-manager` di SG dan Tokyo
-- Soak pascadeploy:
-  - SG akhir:
-    - service aktif: `kibot-manager`, `kidax-engine`, `kibot-guardian`, `antigravity-bot`
-    - `/api/gate`: `system_state=SUSPENDED`, `tradingAllowed=false`, `hard_stop_active=true`
-    - capital profile: `mode=HARD_STOP`, `daily_pnl_pct=-0.0117`, `daily_loss_limit_pct=0.01`
-    - `/api/state`: `ai_critic_provider=openrouter`
-    - `/api/state`: `ai_legion=['tavily','serper','finnhub','ddg','groq','gemini','openrouter','cohere']`
-    - `/api/health`: `status=safe`, `effectiveState=SAFE_MODE`, `tradingAllowed=false`, `hardStopActive=true`
-    - mobile state tetap `PAUSED`, tidak ada fail-open ke mode live palsu.
-  - Tokyo akhir:
-    - service aktif: `kibot-manager`, `kinance-engine`, `kibot-guardian`, `ki-global-scanner-mesh`
-    - `/api/gate`: `system_state=HEALTHY`, `tradingAllowed=false` by design, `reason=missing_equity_snapshot`
-    - `/api/state`: `ai_critic_provider=openrouter`
-    - `/api/state`: `ai_legion=['tavily','serper','finnhub','ddg','groq','gemini','openrouter','cohere','jina']`
-    - `/api/health`: `status=ok`, `effectiveState=RUNNING`, `syncHealth=HEALTHY`
-    - mesh scanner tetap hidup dan feed tetap mengalir ke SG.
-- Catatan jujur:
-  - `Groq` di SG terbaca configured tetapi live REST call ditolak `403`, sehingga provider ini otomatis di-skip untuk hari berjalan.
-  - `Gemini` tetap configured, tetapi kuota audit saat ini sedang `429`, sehingga `OpenRouter` menjadi critic aktif yang benar-benar dipakai live.
-  - Tokyo masih menyimpan noise legacy `Missing consensus data` di manager scanner-only; runtime sehat, tetapi jalur legacy itu masih layak dirapikan di putaran berikutnya.
+  - `./gradlew :apps:mac-engine:compileKotlin --no-daemon` → `BUILD SUCCESSFUL`
+  - `./gradlew :apps:mac-engine:fatJar --no-daemon` → `BUILD SUCCESSFUL`
+  - artifact jar: `078b577f1cd2ad81bccaa049ac5880fa875e9a6158532e491f0c93f9648e8c64`
+- Hasil live pascadeploy + soak ~10 menit:
+  - SG `213.35.118.26`
+    - `kibot-manager`, `kidax-engine`, `kibot-guardian`, `kibot-ollama-tunnel` = `active`
+    - `/api/health` akhir:
+      - `status=ok`
+      - `effectiveState=RUNNING`
+      - `syncHealth=HEALTHY`
+      - `tradingAllowed=true`
+    - `/api/state` akhir:
+      - `system_state=HEALTHY`
+      - `brain_provider=openrouter`
+      - `strategy_governor.mode=DEFENSIVE`
+      - `strategy_governor.refresh_count=9`
+      - `remote_scanner_feed.cycles_seen=15349`
+      - `remote_scanner_feed.signals_ingested=326246`
+    - log 10 menit terakhir:
+      - `REMOTE_SCANNER_FEED` terus masuk
+      - `MSC_RECV` terus masuk
+      - `GOVERNOR` refresh jalan
+      - tidak ada traceback/exception baru
+  - Tokyo `152.69.218.198`
+    - `kibot-manager`, `kinance-engine`, `ki-global-scanner-mesh`, `kibot-guardian`, `kibot-ollama-tunnel` = `active`
+    - `/api/health` akhir:
+      - `status=ok`
+      - `effectiveState=RUNNING`
+      - `syncHealth=HEALTHY`
+      - `tradingAllowed=false` by design (scanner-only)
+    - `ki-global-scanner-mesh` selama soak:
+      - stabil scan `3525` ticker per siklus
+      - `exchanges=4` konsisten (Bybit, KuCoin, Crypto.com, MEXC)
+      - `sent` dinamis per siklus
+    - Tokyo governor masih menggunakan directive scanner-only lama dan sempat menyimpan `empty_governor_response`, tetapi tidak mengganggu runtime radar/mesh.
+  - Batam `168.110.201.228`
+    - `ollama`, `kibot-ollama-gateway` = `active`
+    - model tersedia:
+      - `qwen3:1.7b`
+      - `qwen3:4b`
+      - `qwen3:8b`
+- Kesimpulan operasional:
+  - 5-scanner topology saat ini aktif sebagai:
+    - `BINANCE/kinance-engine` + `BYBIT` + `KUCOIN` + `CRYPTOCOM` + `MEXC`
+  - scanner sekarang memang lebih baik dibanding sebelumnya karena:
+    - auxiliary mesh aktif stabil di Tokyo
+    - feed terbukti sampai ke SG dan masuk ke jalur `MSC_RECV`
+    - governor adaptif sekarang benar-benar mengubah threshold/sizing/risk di SG
+  - `ollama` Batam sekarang siap sebagai AI hub lokal dan modelnya lengkap, tetapi untuk governor live tercepat provider yang menang tetap `openrouter` karena latensi inferensi lokal di CPU masih lebih lambat daripada budget waktu runtime yang aman.
 - Claim:
-  - Legiun AI free-tier sekarang benar-benar masuk ke runtime otak secara ringan dan fallback-aware, bukan hanya tersimpan di repo.
-  - DDG sudah aktif sebagai search provider live.
-  - Daily hard stop SG sekarang jujur dan tetap terkunci saat rugi harian sudah melewati batas survival mode; tidak ada clear palsu/fail-open lagi.
-  - Topologi aktif 2 server kembali normal dalam arti runtime sehat dan sinkron, dengan SG aman di hard-stop yang valid dan Tokyo sehat sebagai radar.
-
-## 2026-04-25 06:31 WIB — Three-Server Overlay, Batam Ollama Brain Hub, dan Tunnel Antar Node
-- Temuan:
-  - Topologi produksi sudah berkembang jadi 3 node, tetapi blueprint/README masih tertinggal di pola 2 server.
-  - `DuckDuckGo` belum benar-benar tersedia di runtime SG/Tokyo walau kode support-nya sudah ada.
-  - Batam tidak cocok dibuka sebagai HTTP publik langsung untuk port custom; jalur yang lebih disiplin dibutuhkan.
-  - `qwen3:8b` terlalu berat untuk jalur live CPU-only; `Qwen3` juga berpikir default sehingga response awal bisa >90 detik jika `think` tidak dimatikan.
-- Perbaikan:
-  - Batam dijadikan AI brain hub resmi:
-    - install `ollama`
-    - pull model `qwen3:4b` dan `qwen3:8b`
-    - aktifkan `kibot-ollama-gateway`
-  - SG dan Tokyo:
-    - install `ddgs` + `duckduckgo-search`
-    - aktifkan `kibot-ollama-tunnel` ke Batam
-    - wire provider `ollama` ke `kibot_manager.py`, `kibot_ai_coordinator.py`, dan `ki_brain.py`
-  - Patch helper `think`:
-    - `false/off/no` sekarang dikirim sebagai boolean `False`
-    - mencegah Qwen3 masuk mode thinking panjang pada jalur live
-  - Runtime policy AI dirapikan:
-    - hot path manager: provider cloud cepat tetap di depan
-    - Batam `ollama` jadi fallback lokal + background analyst
-    - model live default di Batam: `qwen3:4b`
-    - model heavy review tetap tersedia: `qwen3:8b`
-- Deploy:
-  - Host disentuh:
-    - `213.35.118.26`
-    - `152.69.218.198`
-    - `168.110.201.228`
-  - Service baru aktif:
-    - Batam: `ollama`, `kibot-ollama-gateway`
-    - SG: `kibot-ollama-tunnel`
-    - Tokyo: `kibot-ollama-tunnel`
-- Verifikasi:
-  - `python3 -m py_compile scripts/kibot_manager.py scripts/kibot_ai_coordinator.py scripts/ki_brain.py scripts/kibot_ollama_gateway.py`
-  - `./.brain-venv/bin/python3 scripts/test_offline.py` → `71 PASS 0 FAIL`
-  - `./.brain-venv/bin/python3 scripts/test_brain_integration.py`
-  - `./.brain-venv/bin/python3 scripts/trinity_production_test.py` → `ALL SYSTEMS GREEN`
-  - Proof Batam model:
-    - `qwen3:4b` tersedia
-    - `qwen3:8b` tersedia
-  - Proof reachability:
-    - SG → Batam `qwen3:4b` sukses sekitar `5.48s`
-    - Tokyo → Batam `qwen3:4b` sukses sekitar `3.81s`
-- Soak:
-  - Batam 10 menit terakhir menunjukkan `Ollama` + gateway aktif stabil, tanpa error kritis baru.
-  - SG:
-    - `system_state=HEALTHY`
-    - `tradingAllowed=true`
-    - `syncHealth=HEALTHY`
-    - tunnel aktif
-    - scanner feed tetap masuk
-  - Tokyo:
-    - `kinance-engine=RUNNING/HEALTHY`
-    - manager tetap scanner-only (`tradingAllowed=false` by design)
-    - tunnel aktif
-- Claim:
-  - Topologi aktif sekarang sehat sebagai overlay 3 node:
-    - SG executor sehat
-    - Tokyo radar sehat
-    - Batam AI brain hub sehat
-  - Jalur `SG/Tokyo -> SSH tunnel -> Batam Ollama gateway` sudah aktif dan stabil.
+  - Topologi aktif 3-node saat ini berjalan normal kembali:
+    - SG sehat sebagai executor/control-plane
+    - Tokyo sehat sebagai radar/scanner mesh
+    - Batam sehat sebagai AI hub lokal
+  - Sistem sekarang lebih adaptif, scanner 5-node aktif, dan jalur governor/risk/execution tetap disiplin.
+  - Catatan jujur: `ollama` belum menjadi provider utama governor live; dia saat ini paling realistis untuk advisory yang lebih berat / fallback lokal, sementara keputusan strategi live tercepat masih dimenangkan provider cloud.

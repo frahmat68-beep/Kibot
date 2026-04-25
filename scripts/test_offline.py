@@ -123,6 +123,30 @@ if manager is not None:
     ):
         check("adaptive capital blocks low free cash", not manager._check_minimum_capital())
 
+    governor_directive = manager._sanitize_governor_directives(
+        {
+            "strategy_mode": "OPPORTUNISTIC",
+            "scanner": {"weights": {"BINANCE": 5, "BYBIT": 3, "KUCOIN": 2}, "msc_min": 0.72},
+            "capital": {"max_per_trade": 0.5, "risk_pct_multiplier": 1.5, "micro_entry_floor_idr": 5000},
+            "risk": {"daily_loss_limit_pct": 1.3, "trailing_tightness": "tighter"},
+            "survival": {"equity_threshold_idr": 90_000, "allowed_tiers": ["A", "B"], "min_target_profit_pct": 0.018},
+            "execution": {"focus_pairs": ["btc", "eth_idr"], "avoid_pairs": ["req"], "budget_boost": 1.1, "focus_boost": 1.15},
+        },
+        {"capital_profile": {"mode": "MICRO", "equity_idr": 50_000}},
+    )
+    check("governor weights normalized", 0.99 <= sum(governor_directive["scanner"]["weights"].values()) <= 1.01, str(governor_directive))
+    check("governor clamps micro floor", float(governor_directive["capital"]["micro_entry_floor_idr"]) >= 10_000.0, str(governor_directive))
+    check("governor normalizes focus pair", "btc_idr" in governor_directive["execution"]["focus_pairs"], str(governor_directive))
+
+    old_governor_directives = dict(manager._governor_directives)
+    try:
+        manager._governor_directives = governor_directive
+        with patch("kibot_manager._get_total_equity_estimate", return_value=120_000):
+            check("governor survival threshold override", not manager._is_survival_mode())
+        check("governor daily loss limit override", abs(manager._current_daily_loss_limit_pct() - 0.013) < 1e-9, str(manager._current_daily_loss_limit_pct()))
+    finally:
+        manager._governor_directives = old_governor_directives
+
     what_if = manager._simulate_what_if(
         pair_id="btc_idr",
         entry_price=100.0,
@@ -420,15 +444,32 @@ if coordinator is not None:
     ):
         result = coordinator.query_ai("BRAIN_CRITIC", {"watch_symbols": ["BTC"], "market_pulse": {"risk_bias": "MIXED"}})
         check("coordinator ollama parses result", isinstance(result, dict) and result.get("provider") == "ollama", str(result))
-        check("coordinator ollama preserves model", result.get("model") == coordinator.PROVIDERS["ollama"]["model"], str(result))
+        check("coordinator ollama preserves model", result.get("model") == coordinator._provider_model("ollama", "BRAIN_CRITIC"), str(result))
 
     with patch("kibot_ai_coordinator._provider_api_key", side_effect=lambda provider: "token" if provider == "ollama" else ""):
         status = coordinator.get_provider_status()
         check("coordinator status exposes ollama", "ollama" in status and status["ollama"]["configured"] is True, str(status.get("ollama")))
+        check("coordinator status exposes ollama profiles", "profiles" in status.get("ollama", {}), str(status.get("ollama")))
 
     with patch.dict("os.environ", {"KIBOT_OLLAMA_THINK_LEVEL": "false"}):
         check("coordinator ollama think false", coordinator._ollama_think_value() is False)
         check("manager ollama think false", manager._ollama_think_value() is False)
+
+    check(
+        "coordinator ollama fast model for governor",
+        coordinator._provider_model("ollama", "STRATEGY_GOVERNOR") == coordinator.OLLAMA_FAST_MODEL,
+        coordinator._provider_model("ollama", "STRATEGY_GOVERNOR"),
+    )
+    check(
+        "coordinator ollama deep model for weekly summary",
+        coordinator._provider_model("ollama", "WEEKLY_SUMMARY") == coordinator.OLLAMA_DEEP_MODEL,
+        coordinator._provider_model("ollama", "WEEKLY_SUMMARY"),
+    )
+    check(
+        "coordinator ollama timeout tiers",
+        coordinator._provider_timeout("ollama", "WEEKLY_SUMMARY") >= coordinator._provider_timeout("ollama", "STRATEGY_GOVERNOR"),
+        f"{coordinator._provider_timeout('ollama', 'STRATEGY_GOVERNOR')}->{coordinator._provider_timeout('ollama', 'WEEKLY_SUMMARY')}",
+    )
 
 brain = BrainManager()
 with (
@@ -525,6 +566,40 @@ with patch.object(
         {"mode": "MICRO", "reason": "micro_balance_preservation"},
     )
     check("brain advisory blocks rejected review", blocked.get("allow") is False, str(blocked))
+
+with patch.object(
+    manager._brain,
+    "snapshot",
+    return_value={
+        "market_pulse": {"risk_bias": "MIXED"},
+        "daily_target": {"status": "NORMAL", "strategy_next": "focus liquid leaders"},
+        "ai_critic": {"capital_posture": "NEUTRAL", "risk_bias": "MIXED", "confidence": 0.8, "focus_symbols": ["BTC"]},
+        "watch_reviews": [{"symbol": "BTC", "approved": True, "reason": "brain_advisory_ok"}],
+    },
+), patch.object(
+    manager,
+    "_load_json_file",
+    side_effect=lambda path, default=None: {"topOpportunities": ["btc_idr"]} if str(path).endswith("whatif_results.json") else (default if default is not None else {}),
+):
+    old_governor_directives = dict(manager._governor_directives)
+    try:
+        manager._governor_directives = {
+            "strategy_mode": "DEFENSIVE",
+            "execution": {"avoid_pairs": ["btc_idr"], "focus_pairs": [], "budget_boost": 1.0, "focus_boost": 1.0},
+            "risk": {"daily_loss_limit_pct": 1.3, "trailing_tightness": "BASE"},
+            "capital": {"micro_entry_floor_idr": 10_000},
+            "survival": {"equity_threshold_idr": 150_000, "allowed_tiers": ["A", "B"], "min_target_profit_pct": 0.02, "max_spread_pct": 0.008, "max_slippage_pct": 0.01},
+            "scanner": {"weights": {"BINANCE": 0.3, "BYBIT": 0.25, "KUCOIN": 0.2, "CRYPTOCOM": 0.15, "MEXC": 0.1}, "msc_min": 0.6},
+        }
+        avoided = manager._brain_signal_advisory(
+            "btc_idr",
+            {"pair": "btc_idr", "score": 0.88, "base_symbol": "BTC"},
+            20_000.0,
+            {"mode": "MICRO", "reason": "micro_balance_preservation"},
+        )
+        check("governor avoid pair blocks", avoided.get("allow") is False, str(avoided))
+    finally:
+        manager._governor_directives = old_governor_directives
 
 with patch.object(
     manager._brain,

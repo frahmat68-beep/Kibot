@@ -153,10 +153,13 @@ private fun buildStrategyOrchestrator(exchangeKind: ExchangeKind): StrategyOrche
     )
 }
 
-private fun buildTradeAutomationCoordinator(exchangeKind: ExchangeKind): TradeAutomationCoordinator {
+private fun buildTradeAutomationCoordinator(
+    exchangeKind: ExchangeKind,
+    automationConfig: TradeAutomationConfig? = null,
+): TradeAutomationCoordinator {
     return TradeAutomationCoordinator(
         executionConfig = exchangeExecutionConfig(exchangeKind),
-        config = exchangeTradeAutomationConfig(exchangeKind),
+        config = automationConfig ?: exchangeTradeAutomationConfig(exchangeKind),
     )
 }
 
@@ -195,22 +198,22 @@ private fun exchangePairSelectionPolicy(exchangeKind: ExchangeKind): PairSelecti
     )
 }
 
-private fun exchangeRiskConfig(exchangeKind: ExchangeKind): RiskConfig = when (exchangeKind) {
+private fun exchangeRiskConfig(exchangeKind: ExchangeKind, dynamic: DynamicConfigReloader.DynamicParams? = null): RiskConfig = when (exchangeKind) {
     ExchangeKind.INDODAX -> RiskConfig(
-        hardDailyLossLimitPct = 0.03,             // TIGHTENED: was 0.04 → 0.03 (3%)
-        hardRealizedLossLimitIdr = 10_000.0,      // TIGHTENED: was 15k → 10k
-        dailyProfitLockPct = 0.010,               // TIGHTENED: lock profit at 1%
-        warningDrawdownPct = 0.012,               // TIGHTENED: was 0.015 → 0.012
-        reduceSizeDrawdownPct = 0.018,            // TIGHTENED: was 0.025 → 0.018
-        defensiveDrawdownPct = 0.022,             // TIGHTENED: was 0.040 → 0.022
-        restrictedEntriesDrawdownPct = 0.026,     // TIGHTENED: was 0.055 → 0.026
-        stopNewEntriesDrawdownPct = 0.030,        // TIGHTENED: was 0.070 → 0.030 (3%)
+        hardDailyLossLimitPct = dynamic?.dailyLossLimitPct ?: 0.03,
+        hardRealizedLossLimitIdr = 10_000.0,
+        dailyProfitLockPct = dynamic?.profitLockRatio ?: 0.010,
+        warningDrawdownPct = 0.012,
+        reduceSizeDrawdownPct = 0.018,
+        defensiveDrawdownPct = 0.022,
+        restrictedEntriesDrawdownPct = 0.026,
+        stopNewEntriesDrawdownPct = 0.030,
         maxConcurrentPositions = 5,
         minimumCashReservePct = 0.05,
         defensiveCashReservePct = 0.10,
         attackCashReservePct = 0.03,
         targetMinPositionBudgetIdr = 20_000.0,
-        maxPerPositionBudgetPct = 0.70,
+        maxPerPositionBudgetPct = dynamic?.maxPerTradeBudgetPct ?: 0.70,
         dominantAllInMaxAllocationPct = 0.55,
     )
     ExchangeKind.BINANCE_SPOT -> RiskConfig(
@@ -219,8 +222,9 @@ private fun exchangeRiskConfig(exchangeKind: ExchangeKind): RiskConfig = when (e
         attackCashReservePct = 0.015,
         rotationMinClearProfitIdr = 160.0,
         dominantTierAMinCashReservePct = 0.03,
-        maxPerPositionBudgetPct = 0.15,
+        maxPerPositionBudgetPct = dynamic?.maxPerTradeBudgetPct ?: 0.15,
         maxConcurrentPositions = 5,
+        hardDailyLossLimitPct = dynamic?.dailyLossLimitPct ?: 0.03,
     )
 }
 
@@ -289,7 +293,7 @@ class MacEngineDaemon(
     private val liveRolloutGuard: LiveRolloutGuard = LiveRolloutGuard(),
     private val liveExecutionCoordinator: LiveExecutionCoordinator = LiveExecutionCoordinator(),
     private val situationalLearningEngine: SituationalLearningEngine = SituationalLearningEngine(),
-    private val tradeAutomationCoordinator: TradeAutomationCoordinator = buildTradeAutomationCoordinator(config.exchangeKind),
+    private var tradeAutomationCoordinator: TradeAutomationCoordinator = buildTradeAutomationCoordinator(config.exchangeKind),
     private val aiSupportCoordinator: GeminiSupportCoordinator? = null,
     private val multiAiCoordinator: MultiAIClient? = MultiAIClient(),
 ) {
@@ -4197,13 +4201,22 @@ class MacEngineDaemon(
             // [DYNAMIC CONFIG] Ensure reloader is started
             if (!dynamicConfigStarted.getAndSet(true)) {
                 dynamicConfigReloader.startPolling { newParams ->
-                    logger.info("[CONFIG] Live-loaded new params from Supabase: $newParams")
-                    // Map DynamicParams to RiskConfig or ExecutionConfig
-                    // For now, update RiskConfig with AI Approval Min Score if needed
-                    val currentRisk = exchangeRiskConfig(config.exchangeKind)
-                    strategyOrchestrator.updateRiskConfig(currentRisk.copy(
-                        // Add more mappings as needed
-                    ))
+                    logger.info("[CONFIG_GOVERNOR] Applying AI-driven directives: $newParams")
+                    
+                    // Update Strategy Orchestrator with new RiskConfig
+                    val updatedRisk = exchangeRiskConfig(config.exchangeKind, newParams)
+                    strategyOrchestrator.updateRiskConfig(updatedRisk)
+                    
+                    // Update Trade Automation (TP/SL)
+                    val updatedAutomation = exchangeTradeAutomationConfig(config.exchangeKind).copy(
+                        partialTakeProfitMinPnlPct = newParams.trailingStopPct
+                    )
+                    tradeAutomationCoordinator = buildTradeAutomationCoordinator(
+                        config.exchangeKind,
+                        updatedAutomation,
+                    )
+                    
+                    logger.info("[CONFIG_GOVERNOR] Autonomy synchronized: strategyMode=${newParams.strategyMode}")
                 }
             }
 

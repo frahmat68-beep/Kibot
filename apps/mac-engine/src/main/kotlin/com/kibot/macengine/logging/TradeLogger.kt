@@ -51,9 +51,28 @@ object TradeLogger {
             val encoded = json.encodeToString(normalized) + "\n"
             logPath.appendText(encoded)
             analystMirrorPath.appendText(encoded)
+            
+            // [ANOMALY DETECTION] Check for excessive slippage
+            checkSlippageAnomaly(normalized)
+            
             updateSummary(normalized)
         } catch (e: Exception) {
             System.err.println("[TRADE_LOGGER] Failed to write trade: ${e.message}")
+        }
+    }
+
+    private fun checkSlippageAnomaly(trade: TradeRecord) {
+        if (trade.requestedPrice <= 0.0 || trade.filledPrice <= 0.0) return
+        
+        val slippagePct = if (trade.side == "BUY") {
+            ((trade.filledPrice - trade.requestedPrice) / trade.requestedPrice) * 100.0
+        } else {
+            ((trade.requestedPrice - trade.filledPrice) / trade.requestedPrice) * 100.0
+        }
+
+        if (slippagePct >= 0.5) { // 0.5% slippage is an anomaly in high-liquidity zones
+            System.err.println("[ANOMALY] High slippage detected on ${trade.pair}: ${String.format("%.3f", slippagePct)}%")
+            // In the future, this could emit an event to the Governor
         }
     }
 

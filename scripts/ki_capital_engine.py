@@ -1,6 +1,9 @@
 import os, time, json
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Any
+
+DIRECTIVES_FILE = Path(os.environ.get("KIBOT_GOVERNOR_FILE", "state/governor_directives.json"))
 
 # ═══ CAPITAL ALLOCATION (50/50) ════════════════════════════
 
@@ -19,6 +22,22 @@ class CapitalAllocator:
         }
         self.deployed = {"LEAD_LAG": 0.0, "LOCAL_PUMP": 0.0}
         self.MAX_PER_TRADE = 0.25  # max 25% dari bucket per trade
+        self._last_directive_check = 0.0
+
+    def _refresh_directives(self):
+        now = time.time()
+        if now - self._last_directive_check < 60: return
+        self._last_directive_check = now
+        
+        if DIRECTIVES_FILE.exists():
+            try:
+                data = json.loads(DIRECTIVES_FILE.read_text())
+                cap_cfg = data.get("capital", {})
+                if "ratio" in cap_cfg:
+                    self.ratio.update(cap_cfg["ratio"])
+                if "max_per_trade" in cap_cfg:
+                    self.MAX_PER_TRADE = float(cap_cfg["max_per_trade"])
+            except Exception: pass
 
     def update_total(self, new_total: float):
         self.total = new_total
@@ -28,6 +47,7 @@ class CapitalAllocator:
         Return alokasi dalam IDR, atau None jika bucket habis.
         msc_multiplier: dari MSC engine (0.6x - 1.2x)
         """
+        self._refresh_directives()
         max_bucket   = self.total * self.ratio.get(bucket, 0.50)
         available    = max_bucket - self.deployed.get(bucket, 0.0)
         max_per      = max_bucket * self.MAX_PER_TRADE * msc_multiplier
@@ -113,11 +133,20 @@ class ProfitLockManager:
         self.daily_locked = 0.0
         self.daily_profit = 0.0
         self.session_locked = 0.0
+        self.lock_ratio = float(os.environ.get("KIBOT_PROFIT_LOCK_RATIO", "0.30"))
+
+    def _refresh_directives(self):
+        if DIRECTIVES_FILE.exists():
+            try:
+                data = json.loads(DIRECTIVES_FILE.read_text())
+                self.lock_ratio = float(data.get("risk", {}).get("lock_ratio", self.lock_ratio))
+            except Exception: pass
 
     def lock(self, net_profit_idr: float, bucket: str) -> dict:
         if net_profit_idr <= 0:
             return {"locked": 0.0, "redeployable": net_profit_idr}
-        locked = net_profit_idr * self.LOCK_RATIO
+        self._refresh_directives()
+        locked = net_profit_idr * self.lock_ratio
         redeploy = net_profit_idr - locked
         self.daily_locked += locked
         self.daily_profit += net_profit_idr
@@ -133,7 +162,7 @@ class ProfitLockManager:
             "daily_locked":  self.daily_locked,
             "daily_profit":  self.daily_profit,
             "session_locked": self.session_locked,
-            "lock_ratio":    self.LOCK_RATIO,
+            "lock_ratio":    self.lock_ratio,
         }
 
 
@@ -186,12 +215,21 @@ class HardStopGuard:
         self.daily_pnl = 0.0
         self.initial_capital = 0.0
         self.hard_stopped = False
+        self.loss_limit_pct = self.DAILY_LOSS_LIMIT_PCT
+
+    def _refresh_directives(self):
+        if DIRECTIVES_FILE.exists():
+            try:
+                data = json.loads(DIRECTIVES_FILE.read_text())
+                self.loss_limit_pct = float(data.get("risk", {}).get("daily_loss_limit_pct", self.loss_limit_pct))
+            except Exception: pass
 
     def update_pnl(self, realized_pnl_idr: float):
         self.daily_pnl += realized_pnl_idr
+        self._refresh_directives()
         if self.initial_capital > 0:
             loss_pct = -self.daily_pnl / self.initial_capital * 100
-            if loss_pct >= self.DAILY_LOSS_LIMIT_PCT and not self.hard_stopped:
+            if loss_pct >= self.loss_limit_pct and not self.hard_stopped:
                 self.hard_stopped = True
                 return True  # Trigger hard stop
         return False

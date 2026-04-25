@@ -59,11 +59,17 @@ STATE_DIR = ROOT / "state"
 RATE_STATE_FILE = STATE_DIR / "ai_coordinator_rate.json"
 RESPONSE_CACHE = STATE_DIR / "ai_coordinator_cache.json"
 REQUEST_TIMEOUT_SEC = float(os.getenv("KIBOT_AI_COORDINATOR_TIMEOUT_SEC", "12"))
+OLLAMA_FAST_MODEL = os.getenv("KIBOT_OLLAMA_FAST_MODEL", "qwen3:1.7b")
+OLLAMA_DEFAULT_MODEL = os.getenv("KIBOT_OLLAMA_MODEL", "qwen3:4b")
+OLLAMA_DEEP_MODEL = os.getenv("KIBOT_OLLAMA_DEEP_MODEL", "qwen3:8b")
+OLLAMA_FAST_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_FAST_TIMEOUT_SEC", "35"))
+OLLAMA_DEFAULT_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_TIMEOUT_SEC", "55"))
+OLLAMA_DEEP_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_DEEP_TIMEOUT_SEC", "90"))
 
 PROVIDERS = {
     "ollama": {
         "daily_limit": 100000,
-        "model": os.getenv("KIBOT_OLLAMA_MODEL", "qwen3:4b"),
+        "model": OLLAMA_DEFAULT_MODEL,
         "api_key_envs": ["OLLAMA_API_KEY", "KIBOT_OLLAMA_GATEWAY_TOKEN"],
         "base_url": os.getenv("KIBOT_OLLAMA_BASE_URL", "http://127.0.0.1:11434/api/chat"),
         "priority": 1,
@@ -119,6 +125,7 @@ PROMPT_PROVIDER_ORDER = {
     "VETO_ANALYSIS": ["groq", "openrouter", "ollama", "gemini", "nvidia", "cohere", "jina"],
     "WEEKLY_SUMMARY": ["ollama", "openrouter", "groq", "gemini", "cohere", "nvidia", "jina"],
     "NEWS_ANALYSIS": ["openrouter", "ollama", "groq", "gemini", "cohere", "nvidia", "jina"],
+    "STRATEGY_GOVERNOR": ["ollama", "groq", "gemini", "nvidia", "openrouter"],
 }
 
 PROMPT_TEMPLATES = {
@@ -157,6 +164,49 @@ PROMPT_TEMPLATES = {
         "Categorize sentiment and impact on price movement.\n"
         "Return JSON {{\"sentiment\": \"BULLISH/BEARISH/NEUTRAL\", \"confidence\": 0.0, \"reason\": \"...\", \"action\": \"HOLD/SELL/STABLE\"}}"
     ),
+    "STRATEGY_GOVERNOR": (
+        "You are KiBot's autonomous strategy governor for spot trading.\n"
+        "Mission: preserve capital, adapt to market, compound small gains, stop preventable losses.\n"
+        "Context market={market}\n"
+        "critic={ai_critic}\n"
+        "performance={performance}\n"
+        "capital={capital_profile}\n"
+        "scanner_feed={scanner_feed}\n"
+        "whatif={whatif_top_opportunities}\n"
+        "gate={gate}\n"
+        "Return strict compact JSON only with keys reason,strategy_mode,scanner,capital,risk,survival,execution.\n"
+        "Schema:\n"
+        "{{"
+        "\"reason\":\"brief\","
+        "\"strategy_mode\":\"DEFENSIVE|NEUTRAL|OPPORTUNISTIC\","
+        "\"scanner\":{{\"weights\":{{\"BINANCE\":0.30,\"BYBIT\":0.25,\"KUCOIN\":0.20,\"CRYPTOCOM\":0.15,\"MEXC\":0.10}},\"msc_min\":0.65}},"
+        "\"capital\":{{\"ratio\":{{\"LEAD_LAG\":0.60,\"LOCAL_PUMP\":0.40}},\"max_per_trade\":0.20,\"risk_pct_multiplier\":1.0,\"free_cash_buffer_pct\":0.45,\"micro_entry_floor_idr\":10000}},"
+        "\"risk\":{{\"lock_ratio\":0.35,\"daily_loss_limit_pct\":2.5,\"pair_cooldown_minutes\":45,\"trailing_tightness\":\"TIGHTER|BASE|LOOSER\"}},"
+        "\"survival\":{{\"equity_threshold_idr\":150000,\"allowed_tiers\":[\"A\",\"B\"],\"min_target_profit_pct\":0.02,\"max_spread_pct\":0.006,\"max_slippage_pct\":0.009}},"
+        "\"execution\":{{\"focus_pairs\":[\"btc_idr\"],\"avoid_pairs\":[],\"budget_boost\":1.0,\"focus_boost\":1.0}}"
+        "}}\n"
+        "Rules: protect tiny balances, prefer liquid/high-trust pairs, raise msc_min and reduce size when risk_off or weak win_rate, never output impossible budgets."
+    ),
+}
+
+PROMPT_OLLAMA_MODEL = {
+    "BRAIN_CRITIC": OLLAMA_FAST_MODEL,
+    "VETO_ANALYSIS": OLLAMA_FAST_MODEL,
+    "NEWS_ANALYSIS": OLLAMA_FAST_MODEL,
+    "STRATEGY_GOVERNOR": OLLAMA_FAST_MODEL,
+    "WHATIF_SIMULATION": OLLAMA_DEFAULT_MODEL,
+    "TRADE_POSTMORTEM": OLLAMA_DEFAULT_MODEL,
+    "WEEKLY_SUMMARY": OLLAMA_DEEP_MODEL,
+}
+
+PROMPT_OLLAMA_TIMEOUT = {
+    "BRAIN_CRITIC": OLLAMA_FAST_TIMEOUT_SEC,
+    "VETO_ANALYSIS": OLLAMA_FAST_TIMEOUT_SEC,
+    "NEWS_ANALYSIS": OLLAMA_FAST_TIMEOUT_SEC,
+    "STRATEGY_GOVERNOR": OLLAMA_FAST_TIMEOUT_SEC,
+    "WHATIF_SIMULATION": OLLAMA_DEFAULT_TIMEOUT_SEC,
+    "TRADE_POSTMORTEM": OLLAMA_DEFAULT_TIMEOUT_SEC,
+    "WEEKLY_SUMMARY": OLLAMA_DEEP_TIMEOUT_SEC,
 }
 
 
@@ -207,7 +257,7 @@ def _candidate_providers(prompt_type: str) -> List[str]:
     prompt_order = list(PROMPT_PROVIDER_ORDER.get(prompt_type, []))
     default_order = [name for name, _ in sorted(PROVIDERS.items(), key=lambda item: item[1]["priority"])]
     ordered: List[str] = []
-    for name in configured_order + prompt_order + default_order:
+    for name in prompt_order + configured_order + default_order:
         if name not in PROVIDERS or name in ordered:
             continue
         config = PROVIDERS[name]
@@ -286,16 +336,31 @@ def _ollama_think_value() -> Any:
     return raw
 
 
-def _call_provider(provider: str, prompt: str) -> Optional[str]:
+def _provider_model(provider: str, prompt_type: str) -> str:
+    config = PROVIDERS[provider]
+    if provider != "ollama":
+        return str(config["model"])
+    return str(PROMPT_OLLAMA_MODEL.get(prompt_type, config["model"]))
+
+
+def _provider_timeout(provider: str, prompt_type: str) -> float:
+    if provider != "ollama":
+        return REQUEST_TIMEOUT_SEC
+    return float(PROMPT_OLLAMA_TIMEOUT.get(prompt_type, OLLAMA_DEFAULT_TIMEOUT_SEC))
+
+
+def _call_provider(provider: str, prompt: str, prompt_type: str = "") -> Optional[str]:
     config = PROVIDERS[provider]
     api_key = _provider_api_key(provider)
     if not api_key:
         return None
+    model = _provider_model(provider, prompt_type)
+    timeout_sec = _provider_timeout(provider, prompt_type)
     try:
         if provider == "ollama":
             url = config["base_url"]
             payload = {
-                "model": config["model"],
+                "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
                 "format": "json",
@@ -337,7 +402,7 @@ def _call_provider(provider: str, prompt: str) -> Optional[str]:
                     headers["HTTP-Referer"] = "https://github.com/frahmat68-beep/KiBot"
                     headers["X-Title"] = "KiBot"
         request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SEC) as response:
+        with urllib.request.urlopen(request, timeout=timeout_sec) as response:
             data = json.loads(response.read())
             if provider == "ollama":
                 return data.get("message", {}).get("content")
@@ -358,13 +423,26 @@ def query_ai(prompt_type: str, context: Dict[str, Any], cache_ttl_minutes: int =
     template = PROMPT_TEMPLATES.get(prompt_type, "Analyze this context:\n{context}")
     prompt = _render_prompt(template, context)
     data_hash = hashlib.md5(json.dumps(context, sort_keys=True).encode()).hexdigest()[:8]
-    cache_key = f"{prompt_type}_{data_hash}"
+    candidates = _candidate_providers(prompt_type)
+    runtime_sig = hashlib.md5(
+        json.dumps(
+            {
+                "template": template,
+                "candidates": [
+                    {"name": provider, "model": _provider_model(provider, prompt_type)}
+                    for provider in candidates
+                ],
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()[:8]
+    cache_key = f"{prompt_type}_{runtime_sig}_{data_hash}"
     if not force_refresh:
         cached = _get_from_cache(cache_key, cache_ttl_minutes)
         if cached:
             return cached
-    for provider in _candidate_providers(prompt_type):
-        response = _call_provider(provider, prompt)
+    for provider in candidates:
+        response = _call_provider(provider, prompt, prompt_type=prompt_type)
         if not response:
             continue
         _increment_usage(provider)
@@ -376,7 +454,7 @@ def query_ai(prompt_type: str, context: Dict[str, Any], cache_ttl_minutes: int =
             parsed = json.loads(response[start : end + 1]) if start != -1 and end != -1 else {"raw": response}
         if isinstance(parsed, dict):
             parsed.setdefault("provider", provider)
-            parsed.setdefault("model", str(PROVIDERS[provider]["model"]))
+            parsed.setdefault("model", _provider_model(provider, prompt_type))
         _save_to_cache(cache_key, parsed)
         return parsed
     return None
@@ -397,6 +475,15 @@ def get_provider_status() -> Dict[str, Dict[str, Any]]:
             "remaining": max(0, limit - used),
             "pct_used": round((used / limit) * 100, 1),
         }
+        if name == "ollama":
+            summary[name]["profiles"] = {
+                "fast_model": OLLAMA_FAST_MODEL,
+                "default_model": OLLAMA_DEFAULT_MODEL,
+                "deep_model": OLLAMA_DEEP_MODEL,
+                "fast_timeout_sec": OLLAMA_FAST_TIMEOUT_SEC,
+                "default_timeout_sec": OLLAMA_DEFAULT_TIMEOUT_SEC,
+                "deep_timeout_sec": OLLAMA_DEEP_TIMEOUT_SEC,
+            }
     return summary
 
 

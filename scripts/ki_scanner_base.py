@@ -67,7 +67,9 @@ class KiScannerBase(ABC):
     def __init__(self, exchange_name: str, port: int):
         self.exchange = exchange_name.upper()
         self.port = port
-        self.weight = SCANNER_WEIGHTS.get(self.exchange, 0.10)
+        self.weights = SCANNER_WEIGHTS.copy()
+        self.msc_min = 0.40
+        self.scan_interval = SCAN_INTERVAL_S
         self._vol_history: dict[str, list] = {}
         self._price_history: dict[str, list] = {}
         self._state_file = SCANNER_STATE_ROOT / f"scanner_{self.exchange.lower()}_state.json"
@@ -75,7 +77,29 @@ class KiScannerBase(ABC):
         self._load_state()
         # Load Indodax pairs on startup
         self._indodax_pairs = fetch_indodax_pairs()
+        self._refresh_directives()
         print(f"[{self.exchange}] Scanner init — {len(self._indodax_pairs)} Indodax pairs tracked")
+
+    def _refresh_directives(self):
+        """Load dynamic weights and thresholds from the Governor."""
+        directives_file = RUNTIME_ROOT / "state" / "governor_directives.json"
+        if directives_file.exists():
+            try:
+                with open(directives_file, "r") as f:
+                    cfg = json.load(f)
+                scanner_cfg = cfg.get("scanner", {})
+                if "weights" in scanner_cfg:
+                    self.weights.update(scanner_cfg["weights"])
+                if "msc_min" in scanner_cfg:
+                    self.msc_min = float(scanner_cfg["msc_min"])
+                
+                # Adaptive Interval: opportunistic mode scans faster
+                if cfg.get("strategy_mode") == "OPPORTUNISTIC":
+                    self.scan_interval = max(5, SCAN_INTERVAL_S // 3)
+                else:
+                    self.scan_interval = SCAN_INTERVAL_S
+            except Exception as e:
+                print(f"[{self.exchange}][WARN] Failed to load directives: {e}")
 
     @abstractmethod
     def fetch_tickers(self) -> dict:
@@ -136,6 +160,7 @@ class KiScannerBase(ABC):
         if detection_score < 0.30:
             return None
 
+        weight = self.weights.get(self.exchange, 0.10)
         return {
             "exchange":        self.exchange,
             "base_symbol":     base_symbol.upper(),
@@ -145,8 +170,8 @@ class KiScannerBase(ABC):
             "change_24h":      round(change_24h, 3),
             "change_1h":       round(change_1h, 3),
             "detection_score": round(detection_score, 3),
-            "weight":          self.weight,
-            "weighted_contrib":round(self.weight * detection_score, 3),
+            "weight":          weight,
+            "weighted_contrib":round(weight * detection_score, 3),
             "timestamp":       datetime.now(timezone.utc).isoformat(),
         }
 
@@ -176,11 +201,12 @@ class KiScannerBase(ABC):
 
     # ── Main loop ─────────────────────────────────────────────
     def run(self):
-        print(f"[{self.exchange}] Scanner started weight={self.weight} "
+        print(f"[{self.exchange}] Scanner started "
               f"tracking {len(self._indodax_pairs)} pairs")
         errors = 0
         while True:
             try:
+                self._refresh_directives()
                 t0 = time.time()
                 tickers = self.fetch_tickers()
                 sent = 0
@@ -202,7 +228,7 @@ class KiScannerBase(ABC):
                           f"{len(tickers)} scanned | {elapsed:.1f}s")
                 errors = 0
                 self._save_state()
-                time.sleep(max(1, SCAN_INTERVAL_S - elapsed))
+                time.sleep(max(1, self.scan_interval - elapsed))
 
             except Exception as e:
                 errors += 1

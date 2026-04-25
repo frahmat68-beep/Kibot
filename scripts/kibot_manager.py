@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import ast
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -43,6 +44,12 @@ import kibot_engine_v2 as engine
 from dashboard_template import DASHBOARD_HTML
 from ki_brain import BrainManager
 from ki_stats import calculate_z_score
+try:
+    from kibot_ai_coordinator import query_ai
+except Exception as _coordinator_error:
+    def query_ai(*args: Any, **kwargs: Any) -> Optional[Dict[str, Any]]:
+        return None
+    print(f"[KIBOT][AI][WARN] coordinator unavailable: {_coordinator_error}", flush=True)
 
 _WHATIF_AVAILABLE = True
 try:
@@ -2957,6 +2964,21 @@ REMOTE_SCANNER_FEED_STATE_PATH = Path(
         str(STATE_ROOT / "remote_scanner_feed_state.json"),
     )
 )
+GOVERNOR_DIRECTIVES_PATH = Path(
+    os.getenv(
+        "KIBOT_GOVERNOR_FILE",
+        str(STATE_ROOT / "governor_directives.json"),
+    )
+)
+GOVERNOR_STATE_PATH = Path(
+    os.getenv(
+        "KIBOT_GOVERNOR_STATE_FILE",
+        str(STATE_ROOT / "governor_state.json"),
+    )
+)
+GOVERNOR_MIN_REFRESH_SEC = int(os.getenv("KIBOT_GOVERNOR_MIN_REFRESH_SEC", "90"))
+GOVERNOR_MAX_STALE_SEC = int(os.getenv("KIBOT_GOVERNOR_MAX_STALE_SEC", "900"))
+GOVERNOR_EVENT_COOLDOWN_SEC = int(os.getenv("KIBOT_GOVERNOR_EVENT_COOLDOWN_SEC", "120"))
 PAIR_MEMORY_ROLLING_WINDOW = int(os.getenv("KIBOT_PAIR_MEMORY_ROLLING_WINDOW", "50"))
 PAIR_MEMORY_MIN_TRADES_FOR_WINRATE = int(os.getenv("KIBOT_PAIR_MEMORY_MIN_TRADES_FOR_WINRATE", "3"))
 AI_BATCH_REVIEW_INTERVAL_SEC = int(os.getenv("KIBOT_AI_BATCH_REVIEW_INTERVAL_SEC", str(6 * 60 * 60)))
@@ -3115,6 +3137,19 @@ _remote_scanner_feed_state: Dict[str, Any] = _load_json_file(
         "recent_signal_ids": [],
     },
 )
+_governor_directives: Dict[str, Any] = _load_json_file(GOVERNOR_DIRECTIVES_PATH, {})
+_governor_state: Dict[str, Any] = _load_json_file(
+    GOVERNOR_STATE_PATH,
+    {
+        "last_refresh_at": "",
+        "last_reason": "",
+        "last_provider": "",
+        "last_fingerprint": "",
+        "last_event_fingerprint": "",
+        "refresh_count": 0,
+        "last_error": "",
+    },
+)
 
 
 def _save_pair_cooldown_state() -> None:
@@ -3123,6 +3158,443 @@ def _save_pair_cooldown_state() -> None:
 
 def _save_remote_scanner_feed_state() -> None:
     _write_json_file(REMOTE_SCANNER_FEED_STATE_PATH, _remote_scanner_feed_state)
+
+
+def _save_governor_state() -> None:
+    _write_json_file(GOVERNOR_STATE_PATH, _governor_state)
+
+
+def _save_governor_directives() -> None:
+    _write_json_file(GOVERNOR_DIRECTIVES_PATH, _governor_directives)
+
+
+def _clamp_float(value: Any, minimum: float, maximum: float, default: float) -> float:
+    try:
+        numeric = float(value)
+    except Exception:
+        numeric = float(default)
+    return max(float(minimum), min(float(maximum), numeric))
+
+
+def _normalize_pair_id(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    if raw.endswith("_idr"):
+        return raw
+    return f"{raw}_idr"
+
+
+def _default_governor_directives() -> Dict[str, Any]:
+    return {
+        "strategy_mode": "NEUTRAL",
+        "reason": "default_adaptive_governor",
+        "updated_at": "",
+        "provider": "",
+        "model": "",
+        "scanner": {
+            "weights": {
+                "BINANCE": 0.30,
+                "BYBIT": 0.25,
+                "KUCOIN": 0.20,
+                "CRYPTOCOM": 0.15,
+                "MEXC": 0.10,
+            },
+            "msc_min": 0.60,
+        },
+        "capital": {
+            "ratio": {"LEAD_LAG": 0.50, "LOCAL_PUMP": 0.50},
+            "max_per_trade": 0.25,
+            "risk_pct_multiplier": 1.0,
+            "free_cash_buffer_pct": ADAPTIVE_FREE_CASH_BUFFER_PCT,
+            "micro_entry_floor_idr": float(ABSOLUTE_MIN_POSITION_SIZE_IDR),
+        },
+        "risk": {
+            "lock_ratio": 0.30,
+            "daily_loss_limit_pct": abs(float(DAILY_LOSS_LIMIT_PCT)) * 100.0,
+            "pair_cooldown_minutes": 60,
+            "trailing_tightness": "BASE",
+        },
+        "survival": {
+            "equity_threshold_idr": float(SURVIVAL_MODE_EQUITY_THRESHOLD_IDR),
+            "allowed_tiers": ["A", "B"],
+            "min_target_profit_pct": float(SURVIVAL_TARGET_PROFIT_PCT),
+            "max_spread_pct": float(SURVIVAL_MAX_SPREAD_PCT),
+            "max_slippage_pct": float(SURVIVAL_MAX_SLIPPAGE_PCT),
+        },
+        "execution": {
+            "focus_pairs": [],
+            "avoid_pairs": [],
+            "budget_boost": 1.0,
+            "focus_boost": 1.0,
+        },
+    }
+
+
+def _governor_daily_loss_limit_fraction() -> Optional[float]:
+    raw_risk = _governor_directives.get("risk") if isinstance(_governor_directives, dict) else {}
+    raw_limit = raw_risk.get("daily_loss_limit_pct") if isinstance(raw_risk, dict) else None
+    numeric = _parse_numeric(raw_limit)
+    if numeric is None:
+        return None
+    numeric = abs(float(numeric))
+    return numeric / 100.0 if numeric > 0.5 else numeric
+
+
+def _sanitize_governor_directives(raw: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    defaults = _default_governor_directives()
+    capital_profile = context.get("capital_profile") if isinstance(context.get("capital_profile"), dict) else {}
+    equity_now = max(0.0, float(_parse_numeric(capital_profile.get("equity_idr")) or 0.0))
+    capital_mode = str(capital_profile.get("mode") or "NORMAL").upper()
+    tiny_account = capital_mode in {"MICRO", "BUILDUP"} or (0.0 < equity_now < 150_000.0)
+
+    strategy_mode = str(raw.get("strategy_mode") or defaults["strategy_mode"]).upper()
+    if strategy_mode not in {"DEFENSIVE", "NEUTRAL", "OPPORTUNISTIC"}:
+        strategy_mode = "NEUTRAL"
+
+    weights = {}
+    raw_weights = raw.get("scanner", {}).get("weights") if isinstance(raw.get("scanner"), dict) else {}
+    if isinstance(raw_weights, dict):
+        for key in defaults["scanner"]["weights"].keys():
+            numeric = _parse_numeric(raw_weights.get(key))
+            if numeric is not None and numeric > 0:
+                weights[key] = float(numeric)
+    if not weights:
+        weights = dict(defaults["scanner"]["weights"])
+    weight_sum = sum(weights.values())
+    if weight_sum <= 0:
+        weights = dict(defaults["scanner"]["weights"])
+        weight_sum = sum(weights.values())
+    weights = {key: round(float(value) / weight_sum, 4) for key, value in weights.items()}
+
+    raw_ratio = raw.get("capital", {}).get("ratio") if isinstance(raw.get("capital"), dict) else {}
+    lead_lag_ratio = _clamp_float(
+        raw_ratio.get("LEAD_LAG") if isinstance(raw_ratio, dict) else None,
+        0.20,
+        0.80,
+        defaults["capital"]["ratio"]["LEAD_LAG"],
+    )
+    local_pump_ratio = _clamp_float(
+        raw_ratio.get("LOCAL_PUMP") if isinstance(raw_ratio, dict) else None,
+        0.20,
+        0.80,
+        defaults["capital"]["ratio"]["LOCAL_PUMP"],
+    )
+    ratio_sum = max(lead_lag_ratio + local_pump_ratio, 1e-9)
+    ratio = {
+        "LEAD_LAG": round(lead_lag_ratio / ratio_sum, 4),
+        "LOCAL_PUMP": round(local_pump_ratio / ratio_sum, 4),
+    }
+
+    risk_pct_default = defaults["capital"]["risk_pct_multiplier"]
+    if tiny_account and strategy_mode == "OPPORTUNISTIC":
+        risk_pct_default = 1.05
+    elif strategy_mode == "DEFENSIVE":
+        risk_pct_default = 0.82
+    max_per_trade_default = 0.22 if tiny_account else defaults["capital"]["max_per_trade"]
+    if strategy_mode == "DEFENSIVE":
+        max_per_trade_default = min(max_per_trade_default, 0.18 if tiny_account else 0.22)
+    elif strategy_mode == "OPPORTUNISTIC":
+        max_per_trade_default = min(0.30, max_per_trade_default + (0.03 if not tiny_account else 0.01))
+
+    micro_entry_floor_default = float(ABSOLUTE_MIN_POSITION_SIZE_IDR)
+    if tiny_account and equity_now > 0:
+        micro_entry_floor_default = float(ABSOLUTE_MIN_POSITION_SIZE_IDR)
+
+    trailing_tightness = str(raw.get("risk", {}).get("trailing_tightness") or defaults["risk"]["trailing_tightness"]).upper()
+    if trailing_tightness not in {"TIGHTER", "BASE", "LOOSER"}:
+        trailing_tightness = "BASE"
+
+    allowed_tiers = raw.get("survival", {}).get("allowed_tiers") if isinstance(raw.get("survival"), dict) else None
+    normalized_tiers = [str(item).upper() for item in (allowed_tiers or []) if str(item).upper() in {"A", "B", "C"}]
+    if not normalized_tiers:
+        normalized_tiers = list(defaults["survival"]["allowed_tiers"])
+
+    focus_pairs = [_normalize_pair_id(item) for item in list(raw.get("execution", {}).get("focus_pairs") or []) if _normalize_pair_id(item)]
+    avoid_pairs = [_normalize_pair_id(item) for item in list(raw.get("execution", {}).get("avoid_pairs") or []) if _normalize_pair_id(item)]
+    focus_pairs = list(dict.fromkeys([pair for pair in focus_pairs if pair not in avoid_pairs]))[:6]
+    avoid_pairs = list(dict.fromkeys(avoid_pairs))[:6]
+
+    daily_loss_limit_pct = _clamp_float(
+        raw.get("risk", {}).get("daily_loss_limit_pct") if isinstance(raw.get("risk"), dict) else None,
+        0.9 if tiny_account else 1.2,
+        2.2 if tiny_account else 3.5,
+        defaults["risk"]["daily_loss_limit_pct"],
+    )
+
+    directives = {
+        "strategy_mode": strategy_mode,
+        "reason": str(raw.get("reason") or defaults["reason"])[:220],
+        "updated_at": _safe_isoformat(),
+        "provider": str(raw.get("provider") or ""),
+        "model": str(raw.get("model") or ""),
+        "scanner": {
+            "weights": weights,
+            "msc_min": round(
+                _clamp_float(
+                    raw.get("scanner", {}).get("msc_min") if isinstance(raw.get("scanner"), dict) else None,
+                    0.48 if tiny_account else 0.45,
+                    0.88,
+                    defaults["scanner"]["msc_min"],
+                ),
+                4,
+            ),
+        },
+        "capital": {
+            "ratio": ratio,
+            "max_per_trade": round(
+                _clamp_float(
+                    raw.get("capital", {}).get("max_per_trade") if isinstance(raw.get("capital"), dict) else None,
+                    0.08 if tiny_account else 0.10,
+                    0.26 if tiny_account else 0.40,
+                    max_per_trade_default,
+                ),
+                4,
+            ),
+            "risk_pct_multiplier": round(
+                _clamp_float(
+                    raw.get("capital", {}).get("risk_pct_multiplier") if isinstance(raw.get("capital"), dict) else None,
+                    0.55,
+                    1.10 if tiny_account else 1.25,
+                    risk_pct_default,
+                ),
+                4,
+            ),
+            "free_cash_buffer_pct": round(
+                _clamp_float(
+                    raw.get("capital", {}).get("free_cash_buffer_pct") if isinstance(raw.get("capital"), dict) else None,
+                    0.28 if tiny_account else 0.20,
+                    0.92,
+                    defaults["capital"]["free_cash_buffer_pct"],
+                ),
+                4,
+            ),
+            "micro_entry_floor_idr": round(
+                _clamp_float(
+                    raw.get("capital", {}).get("micro_entry_floor_idr") if isinstance(raw.get("capital"), dict) else None,
+                    float(ABSOLUTE_MIN_POSITION_SIZE_IDR),
+                    25_000.0,
+                    micro_entry_floor_default,
+                ),
+                2,
+            ),
+        },
+        "risk": {
+            "lock_ratio": round(
+                _clamp_float(
+                    raw.get("risk", {}).get("lock_ratio") if isinstance(raw.get("risk"), dict) else None,
+                    0.20,
+                    0.60,
+                    defaults["risk"]["lock_ratio"],
+                ),
+                4,
+            ),
+            "daily_loss_limit_pct": round(daily_loss_limit_pct, 4),
+            "pair_cooldown_minutes": int(
+                _clamp_float(
+                    raw.get("risk", {}).get("pair_cooldown_minutes") if isinstance(raw.get("risk"), dict) else None,
+                    15,
+                    180,
+                    defaults["risk"]["pair_cooldown_minutes"],
+                )
+            ),
+            "trailing_tightness": trailing_tightness,
+        },
+        "survival": {
+            "equity_threshold_idr": round(
+                _clamp_float(
+                    raw.get("survival", {}).get("equity_threshold_idr") if isinstance(raw.get("survival"), dict) else None,
+                    50_000.0,
+                    300_000.0,
+                    defaults["survival"]["equity_threshold_idr"],
+                ),
+                2,
+            ),
+            "allowed_tiers": normalized_tiers,
+            "min_target_profit_pct": round(
+                _clamp_float(
+                    raw.get("survival", {}).get("min_target_profit_pct") if isinstance(raw.get("survival"), dict) else None,
+                    0.008,
+                    0.050,
+                    defaults["survival"]["min_target_profit_pct"],
+                ),
+                4,
+            ),
+            "max_spread_pct": round(
+                _clamp_float(
+                    raw.get("survival", {}).get("max_spread_pct") if isinstance(raw.get("survival"), dict) else None,
+                    0.002,
+                    0.020,
+                    defaults["survival"]["max_spread_pct"],
+                ),
+                4,
+            ),
+            "max_slippage_pct": round(
+                _clamp_float(
+                    raw.get("survival", {}).get("max_slippage_pct") if isinstance(raw.get("survival"), dict) else None,
+                    0.002,
+                    0.030,
+                    defaults["survival"]["max_slippage_pct"],
+                ),
+                4,
+            ),
+        },
+        "execution": {
+            "focus_pairs": focus_pairs,
+            "avoid_pairs": avoid_pairs,
+            "budget_boost": round(
+                _clamp_float(
+                    raw.get("execution", {}).get("budget_boost") if isinstance(raw.get("execution"), dict) else None,
+                    0.80,
+                    1.25,
+                    defaults["execution"]["budget_boost"],
+                ),
+                4,
+            ),
+            "focus_boost": round(
+                _clamp_float(
+                    raw.get("execution", {}).get("focus_boost") if isinstance(raw.get("execution"), dict) else None,
+                    1.0,
+                    1.20,
+                    defaults["execution"]["focus_boost"],
+                ),
+                4,
+            ),
+        },
+    }
+    return directives
+
+
+def _governor_effective_directives() -> Dict[str, Any]:
+    merged = _default_governor_directives()
+    raw = _governor_directives if isinstance(_governor_directives, dict) else {}
+    for section in ("scanner", "capital", "risk", "survival", "execution"):
+        if isinstance(raw.get(section), dict):
+            merged[section].update(raw.get(section) or {})
+    for key in ("strategy_mode", "reason", "updated_at", "provider", "model"):
+        if raw.get(key) not in (None, ""):
+            merged[key] = raw.get(key)
+    return merged
+
+
+def _build_governor_context() -> Dict[str, Any]:
+    brain_snapshot = _brain.snapshot() if hasattr(_brain, "snapshot") else {}
+    capital_profile = _adaptive_capital_profile()
+    trade_metrics = _get_trade_metrics_today()
+    whatif_payload = _load_json_file(WHATIF_RESULTS_PATH, {})
+    top_whatif = [
+        str(pair).lower()
+        for pair in list(whatif_payload.get("topOpportunities") or [])[:5]
+        if str(pair).strip()
+    ]
+    remote_summary = {
+        "cycles_seen": int(_remote_scanner_feed_state.get("cycles_seen") or 0),
+        "signals_ingested": int(_remote_scanner_feed_state.get("signals_ingested") or 0),
+        "last_feed_id": str(_remote_scanner_feed_state.get("last_feed_id") or ""),
+        "last_success_at": str(_remote_scanner_feed_state.get("last_success_at") or ""),
+    }
+    return {
+        "market": brain_snapshot.get("market_pulse") if isinstance(brain_snapshot.get("market_pulse"), dict) else {},
+        "ai_critic": brain_snapshot.get("ai_critic") if isinstance(brain_snapshot.get("ai_critic"), dict) else {},
+        "performance": {
+            **trade_metrics,
+            "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+            "hard_stop_active": bool(_daily_guard_state.get("hard_stopped")),
+            "whatif_enter_rate": (
+                float(_metrics.get("whatif_enters_today", 0))
+                / max(float(_metrics.get("whatif_enters_today", 0)) + float(_metrics.get("whatif_skips_today", 0)), 1.0)
+            ),
+            "entries_blocked_brain": int(_metrics.get("entries_blocked_brain", 0)),
+            "entries_brain_reduced": int(_metrics.get("entries_brain_reduced", 0)),
+        },
+        "capital_profile": capital_profile,
+        "trade_metrics": trade_metrics,
+        "scanner_feed": remote_summary,
+        "whatif_top_opportunities": top_whatif,
+        "math_review": {
+            "last_action": _math_review_last_action,
+            "last_reason": _math_review_last_reason,
+        },
+        "gate": {
+            "entry_state": _gate_state.get("entry_state"),
+            "mode": _gate_state.get("mode"),
+            "reason": _gate_state.get("reason"),
+            "control_plane_healthy": _control_plane_healthy,
+            "api_fail_streak": _api_fail_streak,
+        },
+    }
+
+
+def _governor_event_fingerprint(context: Dict[str, Any]) -> str:
+    payload = {
+        "market_risk_bias": str(context.get("market", {}).get("risk_bias") or "UNKNOWN"),
+        "capital_mode": str(context.get("capital_profile", {}).get("mode") or "NORMAL"),
+        "capital_allowed": bool(context.get("capital_profile", {}).get("trading_allowed")),
+        "daily_pnl_bucket": round(float(_parse_numeric(context.get("performance", {}).get("daily_pnl_pct")) or 0.0), 3),
+        "hard_stop": bool(context.get("performance", {}).get("hard_stop_active")),
+        "entry_state": str(context.get("gate", {}).get("entry_state") or ""),
+        "top_whatif": list(context.get("whatif_top_opportunities") or [])[:3],
+        "remote_feed": str(context.get("scanner_feed", {}).get("last_feed_id") or ""),
+    }
+    return hashlib.md5(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _refresh_governor_directives(*, force: bool = False, reason: str = "loop") -> Optional[Dict[str, Any]]:
+    global _governor_directives
+    now = time.time()
+    last_refresh_at = _iso_to_epoch(str(_governor_state.get("last_refresh_at") or "")) or 0.0
+    context = _build_governor_context()
+    event_fingerprint = _governor_event_fingerprint(context)
+    stale = (now - last_refresh_at) >= GOVERNOR_MAX_STALE_SEC
+    changed = event_fingerprint != str(_governor_state.get("last_event_fingerprint") or "")
+    if not force:
+        if not stale and not changed:
+            return _governor_effective_directives()
+        if changed and (now - last_refresh_at) < GOVERNOR_EVENT_COOLDOWN_SEC:
+            return _governor_effective_directives()
+        if (now - last_refresh_at) < GOVERNOR_MIN_REFRESH_SEC:
+            return _governor_effective_directives()
+    raw = query_ai(
+        "STRATEGY_GOVERNOR",
+        context,
+        cache_ttl_minutes=8,
+        force_refresh=force or changed,
+    )
+    if not isinstance(raw, dict) or not raw:
+        _governor_state["last_error"] = "empty_governor_response"
+        _governor_state["last_event_fingerprint"] = event_fingerprint
+        _save_governor_state()
+        return _governor_effective_directives()
+    sanitized = _sanitize_governor_directives(raw, context)
+    sanitized["trigger_reason"] = reason
+    _governor_directives = sanitized
+    _save_governor_directives()
+    _governor_state.update(
+        {
+            "last_refresh_at": sanitized.get("updated_at") or _safe_isoformat(now),
+            "last_reason": reason,
+            "last_provider": str(sanitized.get("provider") or ""),
+            "last_fingerprint": hashlib.md5(json.dumps(sanitized, sort_keys=True).encode("utf-8")).hexdigest(),
+            "last_event_fingerprint": event_fingerprint,
+            "refresh_count": int(_governor_state.get("refresh_count") or 0) + 1,
+            "last_error": "",
+        }
+    )
+    _save_governor_state()
+    _append_runtime_event(
+        "strategy_governor_refresh",
+        {
+            "reason": reason,
+            "provider": sanitized.get("provider"),
+            "strategy_mode": sanitized.get("strategy_mode"),
+        },
+    )
+    print(
+        f"[KIBOT][GOVERNOR] refreshed reason={reason} provider={sanitized.get('provider') or '?'} "
+        f"mode={sanitized.get('strategy_mode') or 'NEUTRAL'}",
+        flush=True,
+    )
+    return sanitized
 
 
 def _save_gate_state() -> None:
@@ -4775,6 +5247,10 @@ def _write_runtime_note(*, force: bool = False) -> None:
         "pair_cooldowns": _pair_cooldown_state,
         "remote_scanner_feed": dict(_remote_scanner_feed_state),
         "capital_profile": _adaptive_capital_profile(),
+        "strategy_governor": {
+            "directives": _governor_effective_directives(),
+            "state": dict(_governor_state),
+        },
         "veto_metrics": _veto_metrics,
         "sector_count": len(_last_sector_map),
         "sector_preview": {key: value[:5] for key, value in list(_last_sector_map.items())[:5]},
@@ -5539,6 +6015,8 @@ def _adaptive_capital_profile(
     free_cash: Optional[float] = None,
     daily_pnl_pct: Optional[float] = None,
 ) -> Dict[str, Any]:
+    directives = _governor_effective_directives()
+    capital_directives = directives.get("capital") if isinstance(directives.get("capital"), dict) else {}
     equity_val = _parse_numeric(equity)
     if equity_val is None:
         equity_val = _get_total_equity_estimate()
@@ -5560,10 +6038,11 @@ def _adaptive_capital_profile(
         "mode": "NORMAL",
         "reason": "capital_adaptive_normal",
         "risk_pct_per_trade": 0.12,
-        "min_position_idr": float(ABSOLUTE_MIN_POSITION_SIZE_IDR),
+        "min_position_idr": float(capital_directives.get("micro_entry_floor_idr") or ABSOLUTE_MIN_POSITION_SIZE_IDR),
         "max_position_idr": float(MAXIMUM_POSITION_SIZE_IDR),
         "daily_loss_limit_pct": round(_current_daily_loss_limit_pct(), 4),
         "trading_allowed": True,
+        "strategy_mode": directives.get("strategy_mode") or "NEUTRAL",
     }
     if not ADAPTIVE_CAPITAL_ENABLED:
         return profile
@@ -5592,7 +6071,12 @@ def _adaptive_capital_profile(
         )
         return profile
 
-    if free_cash_now < ABSOLUTE_MIN_POSITION_SIZE_IDR * MICRO_ACCOUNT_MIN_ORDER_BUFFER_PCT:
+    min_position_floor = max(
+        float(ABSOLUTE_MIN_POSITION_SIZE_IDR),
+        float(_parse_numeric(capital_directives.get("micro_entry_floor_idr")) or ABSOLUTE_MIN_POSITION_SIZE_IDR),
+    )
+
+    if free_cash_now < min_position_floor * MICRO_ACCOUNT_MIN_ORDER_BUFFER_PCT:
         profile.update(
             {
                 "mode": "PAUSED",
@@ -5628,7 +6112,16 @@ def _adaptive_capital_profile(
         risk_pct = ADAPTIVE_EXPANSION_MAX_POSITION_PCT
         reason = "capital_expansion_discipline"
 
-    free_cash_buffer_pct = ADAPTIVE_FREE_CASH_BUFFER_PCT
+    strategy_mode = str(directives.get("strategy_mode") or "NEUTRAL").upper()
+    risk_pct *= float(_parse_numeric(capital_directives.get("risk_pct_multiplier")) or 1.0)
+    if strategy_mode == "DEFENSIVE":
+        risk_pct *= 0.92
+    elif strategy_mode == "OPPORTUNISTIC" and mode not in {"RECOVERY", "HARD_STOP"}:
+        risk_pct *= 1.03
+
+    free_cash_buffer_pct = float(
+        _parse_numeric(capital_directives.get("free_cash_buffer_pct")) or ADAPTIVE_FREE_CASH_BUFFER_PCT
+    )
     if mode == "MICRO":
         free_cash_buffer_pct = max(free_cash_buffer_pct, MICRO_ACCOUNT_FREE_CASH_BUFFER_PCT)
     elif mode == "BUILDUP":
@@ -5639,11 +6132,11 @@ def _adaptive_capital_profile(
         equity_now * risk_pct,
         free_cash_now * free_cash_buffer_pct,
     )
-    min_position = ABSOLUTE_MIN_POSITION_SIZE_IDR
+    min_position = min_position_floor
     tiny_balance_mode = mode in {"MICRO", "BUILDUP"} and equity_now < 150_000
-    if tiny_balance_mode and max_position < ABSOLUTE_MIN_POSITION_SIZE_IDR:
-        max_position = ABSOLUTE_MIN_POSITION_SIZE_IDR
-    trading_allowed = free_cash_now >= ABSOLUTE_MIN_POSITION_SIZE_IDR * MICRO_ACCOUNT_MIN_ORDER_BUFFER_PCT and max_position >= ABSOLUTE_MIN_POSITION_SIZE_IDR
+    if tiny_balance_mode and max_position < min_position_floor:
+        max_position = min_position_floor
+    trading_allowed = free_cash_now >= min_position_floor * MICRO_ACCOUNT_MIN_ORDER_BUFFER_PCT and max_position >= min_position_floor
     if not trading_allowed:
         reason = f"{reason}:position_floor_unmet"
     elif tiny_balance_mode:
@@ -5713,13 +6206,18 @@ def _maybe_auto_promote_trading_mode() -> None:
 def _is_survival_mode() -> bool:
     if not SURVIVAL_MODE:
         return False
+    directives = _governor_effective_directives()
+    survival_cfg = directives.get("survival") if isinstance(directives.get("survival"), dict) else {}
     equity = _get_total_equity_estimate()
     if equity is None:
         return True
-    return equity < SURVIVAL_MODE_EQUITY_THRESHOLD_IDR
+    threshold = float(_parse_numeric(survival_cfg.get("equity_threshold_idr")) or SURVIVAL_MODE_EQUITY_THRESHOLD_IDR)
+    return equity < threshold
 
 
 def _apply_survival_filters(pair_id: str, budget_idr: float, spread_pct: float = 0.0, slippage_pct: float = 0.0) -> tuple[bool, str]:
+    directives = _governor_effective_directives()
+    survival_cfg = directives.get("survival") if isinstance(directives.get("survival"), dict) else {}
     capital_profile = _adaptive_capital_profile()
     min_position_idr = float(capital_profile.get("min_position_idr") or ABSOLUTE_MIN_POSITION_SIZE_IDR)
     max_position_idr = float(capital_profile.get("max_position_idr") or 0.0)
@@ -5733,14 +6231,30 @@ def _apply_survival_filters(pair_id: str, budget_idr: float, spread_pct: float =
         return True, "normal_mode"
     pair_key = str(pair_id or "").lower().strip()
     pair_cfg = _get_pair_config(pair_key)
-    allowed_tiers = set(_capital_bucket_tiers())
+    allowed_tiers = {
+        str(item).upper()
+        for item in list(survival_cfg.get("allowed_tiers") or [])
+        if str(item).strip()
+    } or set(_capital_bucket_tiers())
     if pair_key not in SURVIVAL_ALLOWED_PAIRS and pair_cfg.get("tier") not in allowed_tiers:
         return False, f"survival_mode: {pair_key} not allowed"
     max_size_idr = float(pair_cfg.get("max_size_idr") or MAXIMUM_POSITION_SIZE_IDR)
     max_size_idr *= _capital_risk_multiplier()
-    min_target_profit_pct = float(pair_cfg.get("min_target_profit_pct") or SURVIVAL_TARGET_PROFIT_PCT)
-    max_spread_pct = float(pair_cfg.get("max_spread_pct") or SURVIVAL_MAX_SPREAD_PCT)
-    max_slippage_pct = float(pair_cfg.get("max_slippage_pct") or SURVIVAL_MAX_SLIPPAGE_PCT)
+    min_target_profit_pct = float(
+        _parse_numeric(survival_cfg.get("min_target_profit_pct"))
+        or pair_cfg.get("min_target_profit_pct")
+        or SURVIVAL_TARGET_PROFIT_PCT
+    )
+    max_spread_pct = float(
+        _parse_numeric(survival_cfg.get("max_spread_pct"))
+        or pair_cfg.get("max_spread_pct")
+        or SURVIVAL_MAX_SPREAD_PCT
+    )
+    max_slippage_pct = float(
+        _parse_numeric(survival_cfg.get("max_slippage_pct"))
+        or pair_cfg.get("max_slippage_pct")
+        or SURVIVAL_MAX_SLIPPAGE_PCT
+    )
     if budget_idr < min_position_idr:
         return False, f"survival_mode: budget {budget_idr:.0f} below min position {min_position_idr:.0f}"
     if budget_idr > min(max_position_idr or MAXIMUM_POSITION_SIZE_IDR, max_size_idr):
@@ -6060,13 +6574,21 @@ def _pair_screen_loop() -> None:
 
 
 def _apply_dynamic_trailing(pump_phase: str, current_profit_pct: float) -> float:
+    directives = _governor_effective_directives()
+    tightness = str(directives.get("risk", {}).get("trailing_tightness") or "BASE").upper()
     if pump_phase == "EARLY":
-        return 0.02 if current_profit_pct >= 0.05 else 0.04
-    if pump_phase == "MID":
-        return 0.015 if current_profit_pct >= 0.03 else 0.03
-    if pump_phase == "LATE":
-        return 0.01 if current_profit_pct >= 0.015 else 0.02
-    return 0.01
+        base = 0.02 if current_profit_pct >= 0.05 else 0.04
+    elif pump_phase == "MID":
+        base = 0.015 if current_profit_pct >= 0.03 else 0.03
+    elif pump_phase == "LATE":
+        base = 0.01 if current_profit_pct >= 0.015 else 0.02
+    else:
+        base = 0.01
+    if tightness == "TIGHTER":
+        return max(0.006, base * 0.82)
+    if tightness == "LOOSER":
+        return min(0.06, base * 1.18)
+    return base
 
 
 def _run_30min_math_review() -> Dict[str, Any]:
@@ -6121,7 +6643,9 @@ def _maybe_run_30min_math_review() -> None:
 
 
 def _current_daily_loss_limit_pct() -> float:
-    return 0.01 if _is_survival_mode() else abs(float(DAILY_LOSS_LIMIT_PCT))
+    default_limit = 0.01 if _is_survival_mode() else abs(float(DAILY_LOSS_LIMIT_PCT))
+    override_limit = _governor_daily_loss_limit_fraction()
+    return override_limit if override_limit is not None else default_limit
 
 
 def _upsert_trade_history(entry: Dict[str, Any]) -> None:
@@ -7365,6 +7889,7 @@ def _http_state_payload() -> Dict[str, Any]:
     equity_estimate = _extract_equity_estimate(runtime_state)
     capital_profile = _adaptive_capital_profile(equity=equity_estimate)
     gate_payload = _manager_gate_payload(runtime_state=runtime_state, capital_profile=capital_profile)
+    governor_directives = _governor_effective_directives()
     with _state_lock:
         capital_sufficient = bool(capital_profile.get("trading_allowed"))
         return {
@@ -7400,6 +7925,15 @@ def _http_state_payload() -> Dict[str, Any]:
                     if capital_sufficient
                     else f"PAUSED — {capital_profile.get('reason')}"
                 ),
+            },
+            "strategy_governor": {
+                "strategy_mode": governor_directives.get("strategy_mode"),
+                "reason": governor_directives.get("reason"),
+                "provider": governor_directives.get("provider"),
+                "updated_at": governor_directives.get("updated_at"),
+                "execution": governor_directives.get("execution"),
+                "risk": governor_directives.get("risk"),
+                "refresh": dict(_governor_state),
             },
             "metrics": {
                 "market_orders_today": _metrics.get("market_orders_today", 0),
@@ -7750,6 +8284,9 @@ def _brain_signal_advisory(
     budget_idr: float,
     capital_profile: Dict[str, Any],
 ) -> Dict[str, Any]:
+    directives = _governor_effective_directives()
+    execution_cfg = directives.get("execution") if isinstance(directives.get("execution"), dict) else {}
+    strategy_mode = str(directives.get("strategy_mode") or "NEUTRAL").upper()
     _brain.ensure_warm(
         watch_symbols=_brain_watch_symbols(),
         context={
@@ -7789,8 +8326,36 @@ def _brain_signal_advisory(
             break
     approved = review.get("approved") if isinstance(review.get("approved"), bool) else None
     review_reason = str(review.get("reason") or "").strip()
+    focus_pairs = {
+        str(item).lower().strip()
+        for item in list(execution_cfg.get("focus_pairs") or [])
+        if str(item).strip()
+    }
+    avoid_pairs = {
+        str(item).lower().strip()
+        for item in list(execution_cfg.get("avoid_pairs") or [])
+        if str(item).strip()
+    }
+
+    if pair.lower() in avoid_pairs:
+        return {
+            "allow": False,
+            "budget_idr": budget_idr,
+            "reason": "governor_avoid_pair",
+            "symbol": symbol,
+            "risk_bias": risk_bias,
+            "strategy_next": strategy_next,
+            "watch_review": review,
+        }
 
     budget_multiplier = 1.0
+    if strategy_mode == "DEFENSIVE":
+        budget_multiplier = min(budget_multiplier, 0.88)
+    elif strategy_mode == "OPPORTUNISTIC":
+        budget_multiplier = max(
+            budget_multiplier,
+            float(_parse_numeric(execution_cfg.get("budget_boost")) or 1.02),
+        )
     if risk_bias == "RISK_OFF":
         budget_multiplier = min(budget_multiplier, 0.65 if score < 0.85 else 0.8)
     elif risk_bias == "MIXED":
@@ -7818,6 +8383,11 @@ def _brain_signal_advisory(
         budget_multiplier = min(budget_multiplier, 0.9)
     if symbol in {item.upper() for item in critic_focus} and risk_bias != "RISK_OFF" and approved is not False:
         budget_multiplier = max(budget_multiplier, 1.03 if critic_confidence < 0.8 else 1.08)
+    if pair.lower() in focus_pairs and approved is not False:
+        budget_multiplier = max(
+            budget_multiplier,
+            float(_parse_numeric(execution_cfg.get("focus_boost")) or 1.05),
+        )
 
     if approved is False and review_reason in {
         "external_research_risk_off",
@@ -7858,6 +8428,8 @@ def _brain_signal_advisory(
         reason_parts.append(f"review={review_reason}")
     if not reason_parts:
         reason_parts.append("brain_neutral")
+    if strategy_mode and strategy_mode != "NEUTRAL":
+        reason_parts.append(f"governor={strategy_mode.lower()}")
 
     return {
         "allow": True,
@@ -7891,6 +8463,34 @@ def _brain_thinking_loop():
         except Exception as error:
             print(f"[KIBOT][BRAIN][WARN] advisory loop error: {error}", flush=True)
         time.sleep(10)
+
+
+def _strategy_governor_loop() -> None:
+    """Refresh adaptive directives when important context changes, not only on a fixed timer."""
+    loop_sleep_sec = int(os.getenv("KIBOT_GOVERNOR_LOOP_SEC", "25"))
+    try:
+        _refresh_governor_directives(force=True, reason="startup")
+        _write_runtime_note(force=True)
+    except Exception as error:
+        print(f"[KIBOT][GOVERNOR][WARN] initial refresh failed: {error}", flush=True)
+    while not _shutdown_event.is_set():
+        try:
+            context = _build_governor_context()
+            event_fingerprint = _governor_event_fingerprint(context)
+            last_event_fingerprint = str(_governor_state.get("last_event_fingerprint") or "")
+            last_refresh_at = _iso_to_epoch(str(_governor_state.get("last_refresh_at") or "")) or 0.0
+            stale = (time.time() - last_refresh_at) >= GOVERNOR_MAX_STALE_SEC
+            if event_fingerprint != last_event_fingerprint:
+                reason = "trade_event" if _recent_trade_activity_window_sec(300) else "context_shift"
+                _refresh_governor_directives(reason=reason)
+                _write_runtime_note(force=True)
+            elif stale:
+                _refresh_governor_directives(reason="stale_refresh")
+                _write_runtime_note(force=True)
+        except Exception as error:
+            print(f"[KIBOT][GOVERNOR][WARN] loop error: {error}", flush=True)
+        if _shutdown_event.wait(timeout=max(10, loop_sleep_sec)):
+            break
 
 
 def _remote_scanner_feed_loop() -> None:
@@ -8030,6 +8630,8 @@ def main() -> None:
 
     brain_thread = threading.Thread(target=_brain_thinking_loop, name="kibot-brain-thinking", daemon=True)
     brain_thread.start()
+    governor_thread = threading.Thread(target=_strategy_governor_loop, name="kibot-strategy-governor", daemon=True)
+    governor_thread.start()
     remote_scanner_feed_thread = threading.Thread(
         target=_remote_scanner_feed_loop,
         name="kibot-remote-scanner-feed",
