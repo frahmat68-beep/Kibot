@@ -548,7 +548,12 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
       - `ollama ps` saat idle menunjukkan satu model aktif saja, dan log runner konsisten `Parallel:1` / `loaded runners count=1`.
   - Telegram:
     - Jalur `/ollama` di SG menjawab langsung, mis. `Sistem saat ini berada di status "HEALTHY" dan "RUNNING"...`
-    - Timeout polling lama masih terlihat sebelum restart monitor, lalu berhenti setelah patch timeout baru.
+    - Timeout polling lama masih terlihat sebelum restart monitor.
+  - Soak ulang 10 menit setelah patch timeout Telegram:
+    - SG `ki-telegram-monitor`: `journalctl --since "10 min ago"` = `-- No entries --`
+    - SG `kibot-manager`: `REMOTE_SCANNER_FEED` dan `MSC_RECV` tetap masuk normal selama window yang sama.
+    - Tokyo `ki-global-scanner-mesh`: stabil `scanned=3526` dengan `sent` dinamis tiap siklus.
+    - Batam `kibot-ollama-gateway` + `kibot-polymarket`: tidak ada error baru; gateway `200`, Polymarket refresh terus.
 - Claim:
   - Topologi aktif 3 server kembali normal dan lebih disiplin:
     - SG sehat sebagai executor + manager + Telegram ops
