@@ -3830,23 +3830,66 @@ def _build_governor_context(profile: str = "fast") -> Dict[str, Any]:
             "mapped_pairs": list(item.get("mapped_pairs") or [])[:2],
         }
     sovereign_review = daily_summary.get("last_sovereign_review") if isinstance(daily_summary.get("last_sovereign_review"), dict) else {}
+    market_pulse = brain_snapshot.get("market_pulse") if isinstance(brain_snapshot.get("market_pulse"), dict) else {}
+    market_summary = {
+        "risk_bias": str(market_pulse.get("risk_bias") or "UNKNOWN").upper(),
+        "headline_count": int(market_pulse.get("headline_count") or 0),
+        "summary": str(market_pulse.get("summary") or "")[:160],
+        "watch_symbols": [str(item).upper() for item in list(market_pulse.get("watch_symbols") or [])[: (2 if profile == "fast" else 4)]],
+    }
+    performance_summary = {
+        "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
+        "hard_stop_active": bool(_daily_guard_state.get("hard_stopped")),
+        "total_trades": int(trade_metrics.get("total_trades") or 0),
+        "wins": int(trade_metrics.get("wins") or 0),
+        "losses": int(trade_metrics.get("losses") or 0),
+        "win_rate": round(float(_parse_numeric(trade_metrics.get("win_rate")) or 0.0), 4),
+        "ev_per_trade": round(float(_parse_numeric(trade_metrics.get("ev_per_trade")) or 0.0), 4),
+        "profit_factor": round(float(_parse_numeric(trade_metrics.get("profit_factor")) or 0.0), 4),
+        "whatif_enter_rate": round(
+            float(_metrics.get("whatif_enters_today", 0))
+            / max(float(_metrics.get("whatif_enters_today", 0)) + float(_metrics.get("whatif_skips_today", 0)), 1.0),
+            4,
+        ),
+        "entries_blocked_brain": int(_metrics.get("entries_blocked_brain", 0)),
+        "entries_brain_reduced": int(_metrics.get("entries_brain_reduced", 0)),
+    }
+    capital_summary = {
+        "mode": str(capital_profile.get("mode") or ""),
+        "reason": str(capital_profile.get("reason") or ""),
+        "equity_idr": round(float(_parse_numeric(capital_profile.get("equity_idr")) or 0.0), 2),
+        "free_cash_idr": round(float(_parse_numeric(capital_profile.get("free_cash_idr")) or 0.0), 2),
+        "max_position_idr": round(float(_parse_numeric(capital_profile.get("max_position_idr")) or 0.0), 2),
+        "min_position_idr": round(float(_parse_numeric(capital_profile.get("min_position_idr")) or 0.0), 2),
+        "risk_pct_per_trade": round(float(_parse_numeric(capital_profile.get("risk_pct_per_trade")) or 0.0), 4),
+        "daily_loss_limit_pct": round(float(_parse_numeric(capital_profile.get("daily_loss_limit_pct")) or 0.0), 4),
+        "trading_allowed": bool(capital_profile.get("trading_allowed")),
+        "strategy_mode": str(capital_profile.get("strategy_mode") or ""),
+    }
+    runtime_connections = runtime_state.get("connections") if isinstance(runtime_state.get("connections"), dict) else {}
+    runtime_summary = {
+        "node_status": str(runtime_state.get("nodeStatus") or ""),
+        "status_message": str(runtime_state.get("statusMessage") or "")[:140],
+        "connections": {
+            str(name): str(state)
+            for name, state in list(runtime_connections.items())[:5]
+        },
+        "active_pairs": _extract_state_holdings(runtime_state)[: (3 if profile == "fast" else 6)],
+    }
+    gate_summary = {
+        "entry_state": str(_gate_state.get("entry_state") or ""),
+        "mode": str(_gate_state.get("mode") or ""),
+        "reason": str(_gate_state.get("reason") or "")[:160],
+        "control_plane_healthy": bool(_control_plane_healthy),
+        "api_fail_streak": int(_api_fail_streak or 0),
+    }
     return {
         "governor_profile": profile.upper(),
         "governor_interval_target_sec": GOVERNOR_FAST_LOOP_SEC if profile == "fast" else GOVERNOR_MEDIUM_LOOP_SEC,
-        "market": brain_snapshot.get("market_pulse") if isinstance(brain_snapshot.get("market_pulse"), dict) else {},
+        "market": market_summary,
         "ai_critic": brain_snapshot.get("ai_critic") if isinstance(brain_snapshot.get("ai_critic"), dict) else {},
-        "performance": {
-            **trade_metrics,
-            "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
-            "hard_stop_active": bool(_daily_guard_state.get("hard_stopped")),
-            "whatif_enter_rate": (
-                float(_metrics.get("whatif_enters_today", 0))
-                / max(float(_metrics.get("whatif_enters_today", 0)) + float(_metrics.get("whatif_skips_today", 0)), 1.0)
-            ),
-            "entries_blocked_brain": int(_metrics.get("entries_blocked_brain", 0)),
-            "entries_brain_reduced": int(_metrics.get("entries_brain_reduced", 0)),
-        },
-        "capital_profile": capital_profile,
+        "performance": performance_summary,
+        "capital_profile": capital_summary,
         "trade_metrics": trade_metrics,
         "scanner_feed": remote_summary,
         "polymarket": {
@@ -3859,12 +3902,7 @@ def _build_governor_context(profile: str = "fast") -> Dict[str, Any]:
             "alpha_candidates": alpha_candidates,
             "ops_alerts": list(polymarket.get("ops_alerts") or [])[:4],
         },
-        "runtime": {
-            "node_status": runtime_state.get("nodeStatus"),
-            "status_message": runtime_state.get("statusMessage"),
-            "connections": runtime_state.get("connections") if isinstance(runtime_state.get("connections"), dict) else {},
-            "active_pairs": _extract_state_holdings(runtime_state)[: (4 if profile == "fast" else 8)],
-        },
+        "runtime": runtime_summary,
         "memory": {
             "daily_summary": {
                 "coins_bought_today": list(daily_summary.get("coins_bought_today") or [])[:8],
@@ -3900,13 +3938,7 @@ def _build_governor_context(profile: str = "fast") -> Dict[str, Any]:
             "last_action": _math_review_last_action,
             "last_reason": _math_review_last_reason,
         },
-        "gate": {
-            "entry_state": _gate_state.get("entry_state"),
-            "mode": _gate_state.get("mode"),
-            "reason": _gate_state.get("reason"),
-            "control_plane_healthy": _control_plane_healthy,
-            "api_fail_streak": _api_fail_streak,
-        },
+        "gate": gate_summary,
     }
 
 
@@ -9398,7 +9430,7 @@ def _strategy_governor_loop() -> None:
         _write_runtime_note(force=True)
         now_ts = time.time()
         last_fast_refresh_at = now_ts
-        last_medium_refresh_at = now_ts if startup_profile == "medium" else 0.0
+        last_medium_refresh_at = now_ts
     except Exception as error:
         print(f"[KIBOT][GOVERNOR][WARN] initial refresh failed: {error}", flush=True)
     while not _shutdown_event.is_set():
