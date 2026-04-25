@@ -1,64 +1,81 @@
-# Architecture
+# KiBot Architecture
 
-## High Level — TRINITY System
+## Topology
 
-Trinity adalah sistem High-Frequency Trading (HFT) otomatis berbasis Microservices yang ditulis menggunakan Kotlin (JVM). Sistem ini terdiri dari 3 bot terpisah yang berkomunikasi via UDP untuk sub-ms latency:
+KiBot berjalan sebagai sistem 3 node:
 
-### The Three Nodes
+1. `SG1` / Indodax executor
+   - `kidax-engine`
+   - `kibot-manager`
+   - `ki-telegram-monitor`
+   - tunnel ke Batam
 
-1. **KINANCE (The Predictive Radar)** — Binance Server
-   - Mengawasi pergerakan market global di Binance
-   - Mendeteksi Volume Anomaly, Imbalance Order Book, Sector Lead-Lag
-   - Mengirim sinyal UDP ke KiDax/KiCryp dengan latensi sangat rendah
-   - Mode PEKA: mendeteksi Bandar Ignition sebelum pump di Indodax
+2. `SG2` / global radar
+   - `kinance-engine`
+   - `ki-global-scanner-mesh`
+   - `kibot-manager` dalam mode scanner/radar
+   - support services ops/risk
+   - tunnel ke Batam
 
-2. **KIDAX (The Executioner)** — Indodax Server
-   - Eksekutor Buy/Sell langsung di market Indodax
-   - Menghitung slippage, optimalisasi fee (Maker/Taker)
-   - Trailing Stop dengan adaptive threshold untuk micro-caps
+3. `Batam` / sovereign brain hub
+   - `ollama`
+   - `kibot-ollama-gateway`
+   - `kibot-polymarket`
 
-3. **KIBOT Manager (The Brain)** — Indodax Server (Python)
-   - Manajer stabilitas, capital rotation, dan VETO eksekusi
-   - AI-powered approval via Groq/OpenRouter/Cohere/Gemini
-   - Post-mortem learning untuk continuous improvement
-   - Heartbeat monitoring untuk Trinity health
+## Otoritas
 
-## Safety Model
+- keputusan strategis: `kibot_manager`
+- model utama: Ollama di Batam
+- fallback saat AI gagal: heuristic sovereign plan
+- eksekusi langsung: engine Kotlin di SG
 
-- Only one lease holder may trade at a time.
-- Lease ownership is protected by monotonically increasing `term`.
-- Trade writes require both a valid lease and a short-lived execution action reservation.
-- Conflict or ambiguous exchange state forces `SAFE_MODE`.
-- UDP signals older than 500ms are dropped (stale data protection).
-- NO PANIC SELL on heartbeat timeout — only suspend new entries.
+Tidak ada service governor terpisah. Semua brain directive terpusat di manager supaya tidak ada otak ganda.
 
-## Infrastructure
+## Fungsi Tiap Lapisan
 
-- **Indodax Server** (Oracle Cloud, 1GB RAM): KiDax + KiCryp Manager
-- **Binance Server** (Oracle Cloud, 1GB RAM): Kinance only (scanner mode)
-- Communication: UDP broadcasting for signals, Supabase for control plane
+Sensor:
 
-## Runtime Split
+- `kinance-engine`
+- `ki_global_scanner_mesh.py`
+- market/news/polymarket feeds
 
-- `apps/mac-engine`
-  JVM daemon for KiDax and Kinance trading engines.
-- `packages/shared-models`
-  Serializable transport models.
-- `packages/core`
-  Lease rules, health rules, pair selection, risk, reconciliation.
-- `packages/control-plane`
-  Supabase auth, polling snapshot client, RPC wrappers.
-- `packages/indodax-client`
-  Exchange adapter, signed REST helpers.
-- `scripts/kicryp_manager.py`
-  Python AI veto daemon with multi-provider LLM support.
-- `infra/supabase`
-  SQL schema, RLS, RPC functions, cleanup policy.
+Memory:
 
-## Trading Philosophy
+- `daily_summary.json`
+- `learning_review.json`
+- `daily_report.json`
+- `pattern_library.json`
+- `pair_memory.json`
+- `decision_ledger.jsonl`
 
-- **Capital Efficiency**: Modal diputar hanya saat probabilitas edge positif
-- **Liquidity First**: Prioritas pair liquid dengan spread/slippage terkontrol
-- **Signal-Confirmed Entry**: Entry hanya saat Kinance fresh + scoring lolos gate
-- **Survival First**: Modal yang selamat adalah modal yang bisa compound
-- **Adaptive Trailing Stop**: Widen stop for micro-caps to avoid noise exits
+Decision:
+
+- fast/medium/slow sovereign loop di `kibot_manager.py`
+
+Execution:
+
+- `kidax-engine` untuk Indodax
+- `kibot-polymarket.py` untuk Polymarket
+
+Ops/reporting:
+
+- `ki_telegram_monitor.py`
+- runtime note + daily report
+
+## Penempatan Beban
+
+Yang harus tetap ringan di SG:
+
+- executor
+- manager
+- tunnel
+- health/risk yang benar-benar lokal
+
+Yang harus berat di Batam:
+
+- Ollama
+- sovereign reasoning
+- Polymarket research/execution
+- nightly review
+
+Prinsipnya: SG tidak boleh bergantung pada RPC berat ke Batam untuk setiap mikro-keputusan. Batam mengirim posture/plan, SG mengeksekusi lokal dengan hard guard.

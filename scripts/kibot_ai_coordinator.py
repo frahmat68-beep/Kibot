@@ -69,16 +69,16 @@ PROVIDER_STATE_FILE = STATE_DIR / "ai_coordinator_providers.json"
 REQUEST_TIMEOUT_SEC = float(os.getenv("KIBOT_AI_COORDINATOR_TIMEOUT_SEC", "12"))
 OLLAMA_FAST_MODEL = os.getenv("KIBOT_OLLAMA_FAST_MODEL", "qwen3:1.7b")
 OLLAMA_DEFAULT_MODEL = os.getenv("KIBOT_OLLAMA_MODEL", "qwen3:4b")
-OLLAMA_DEEP_MODEL = os.getenv("KIBOT_OLLAMA_DEEP_MODEL", "qwen3:4b")
-OLLAMA_FAST_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_FAST_TIMEOUT_SEC", "35"))
-OLLAMA_DEFAULT_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_TIMEOUT_SEC", "55"))
-OLLAMA_DEEP_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_DEEP_TIMEOUT_SEC", "90"))
+OLLAMA_DEEP_MODEL = os.getenv("KIBOT_OLLAMA_DEEP_MODEL", "qwen3:8b")
+OLLAMA_FAST_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_FAST_TIMEOUT_SEC", "25"))
+OLLAMA_DEFAULT_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_TIMEOUT_SEC", "45"))
+OLLAMA_DEEP_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_DEEP_TIMEOUT_SEC", "120"))
 OLLAMA_FAST_KEEP_ALIVE = os.getenv("KIBOT_OLLAMA_FAST_KEEP_ALIVE", "45s")
 OLLAMA_DEFAULT_KEEP_ALIVE = os.getenv("KIBOT_OLLAMA_KEEP_ALIVE", "90s")
 OLLAMA_DEEP_KEEP_ALIVE = os.getenv("KIBOT_OLLAMA_DEEP_KEEP_ALIVE", "3m")
-OLLAMA_FAST_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_FAST_NUM_CTX", "2048"))
-OLLAMA_DEFAULT_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_DEFAULT_NUM_CTX", "3072"))
-OLLAMA_DEEP_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_DEEP_NUM_CTX", "4096"))
+OLLAMA_FAST_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_FAST_NUM_CTX", "3072"))
+OLLAMA_DEFAULT_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_DEFAULT_NUM_CTX", "4096"))
+OLLAMA_DEEP_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_DEEP_NUM_CTX", "6144"))
 OLLAMA_FAST_NUM_PREDICT = int(os.getenv("KIBOT_OLLAMA_FAST_NUM_PREDICT", "320"))
 OLLAMA_DEFAULT_NUM_PREDICT = int(os.getenv("KIBOT_OLLAMA_DEFAULT_NUM_PREDICT", "480"))
 OLLAMA_DEEP_NUM_PREDICT = int(os.getenv("KIBOT_OLLAMA_DEEP_NUM_PREDICT", "768"))
@@ -148,7 +148,10 @@ PROMPT_PROVIDER_ORDER = {
     "VETO_ANALYSIS": ["groq", "openrouter", "gemini", "nvidia", "ollama", "cohere", "jina"],
     "WEEKLY_SUMMARY": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
     "NEWS_ANALYSIS": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
-    "STRATEGY_GOVERNOR": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
+    "STRATEGY_GOVERNOR": ["ollama", "openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
+    "STRATEGY_GOVERNOR_FAST": ["ollama", "openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
+    "STRATEGY_GOVERNOR_MEDIUM": ["ollama", "openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
+    "SOVEREIGN_DAILY_REVIEW": ["ollama", "openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
     "OPS_CHAT": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
     "OPS_CHAT_LOCAL": ["ollama", "openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
 }
@@ -190,27 +193,73 @@ PROMPT_TEMPLATES = {
         "Return JSON {{\"sentiment\": \"BULLISH/BEARISH/NEUTRAL\", \"confidence\": 0.0, \"reason\": \"...\", \"action\": \"HOLD/SELL/STABLE\"}}"
     ),
     "STRATEGY_GOVERNOR": (
-        "You are KiBot's autonomous strategy governor for spot trading.\n"
-        "Mission: preserve capital, adapt to market, compound small gains, stop preventable losses.\n"
+        "You are KiBot's sovereign strategy brain.\n"
+        "Use the provided context to issue one adaptive plan for Indodax and Polymarket.\n"
+        "Mission: preserve capital, stay adaptive, exploit clean opportunities, avoid preventable losses.\n"
         "Context market={market}\n"
         "critic={ai_critic}\n"
         "performance={performance}\n"
         "capital={capital_profile}\n"
         "scanner_feed={scanner_feed}\n"
+        "runtime={runtime}\n"
+        "memory={memory}\n"
+        "pair_memory={pair_memory}\n"
+        "polymarket={polymarket}\n"
         "whatif={whatif_top_opportunities}\n"
         "gate={gate}\n"
-        "Return strict compact JSON only with keys reason,strategy_mode,scanner,capital,risk,survival,execution.\n"
-        "Schema:\n"
-        "{{"
-        "\"reason\":\"brief\","
-        "\"strategy_mode\":\"DEFENSIVE|NEUTRAL|OPPORTUNISTIC\","
-        "\"scanner\":{{\"weights\":{{\"BINANCE\":0.30,\"BYBIT\":0.25,\"KUCOIN\":0.20,\"CRYPTOCOM\":0.15,\"MEXC\":0.10}},\"msc_min\":0.65}},"
-        "\"capital\":{{\"ratio\":{{\"LEAD_LAG\":0.60,\"LOCAL_PUMP\":0.40}},\"max_per_trade\":0.20,\"risk_pct_multiplier\":1.0,\"free_cash_buffer_pct\":0.45,\"micro_entry_floor_idr\":10000}},"
-        "\"risk\":{{\"lock_ratio\":0.35,\"daily_loss_limit_pct\":2.5,\"pair_cooldown_minutes\":45,\"trailing_tightness\":\"TIGHTER|BASE|LOOSER\"}},"
-        "\"survival\":{{\"equity_threshold_idr\":150000,\"allowed_tiers\":[\"A\",\"B\"],\"min_target_profit_pct\":0.02,\"max_spread_pct\":0.006,\"max_slippage_pct\":0.009}},"
-        "\"execution\":{{\"focus_pairs\":[\"btc_idr\"],\"avoid_pairs\":[],\"budget_boost\":1.0,\"focus_boost\":1.0}}"
-        "}}\n"
-        "Rules: protect tiny balances, prefer liquid/high-trust pairs, raise msc_min and reduce size when risk_off or weak win_rate, never output impossible budgets."
+        "Return strict compact JSON only with keys "
+        "plan_id,plan_ttl_sec,expires_at,reason,why,brain_mode,market_regime,capital_posture,confidence,"
+        "confidence_decay_per_hour,fallback_if_expired,what_could_make_this_wrong,ops_alerts,"
+        "strategy_mode,scanner,capital,risk,survival,execution,indodax,polymarket.\n"
+        "Rules: do not invent unsupported pairs or budgets, keep tiny accounts conservative, and always include short risks."
+    ),
+    "STRATEGY_GOVERNOR_FAST": (
+        "You are KiBot's FAST sovereign loop running every ~30 seconds.\n"
+        "Use only the supplied working memory to refresh a short-lived plan.\n"
+        "Prioritize: live health, active pairs, current capital, cross-market shifts, and whether entries should be blocked.\n"
+        "Context profile={governor_profile}\n"
+        "market={market}\n"
+        "performance={performance}\n"
+        "capital={capital_profile}\n"
+        "runtime={runtime}\n"
+        "scanner_feed={scanner_feed}\n"
+        "polymarket={polymarket}\n"
+        "gate={gate}\n"
+        "Return strict compact JSON only with keys "
+        "reason,why,brain_mode,strategy_mode,confidence,confidence_decay_per_hour,ops_alerts,"
+        "what_could_make_this_wrong,indodax,polymarket.\n"
+        "Inside indodax include only allow_entries,max_open_positions,budget_per_trade_idr,focus_pairs,avoid_pairs,preferred_style.\n"
+        "Inside polymarket include only allow_execution,max_risk_pct,focus_markets.\n"
+        "Target a TTL of 180-600 seconds, keep output minimal, and never add prose outside JSON."
+    ),
+    "STRATEGY_GOVERNOR_MEDIUM": (
+        "You are KiBot's MEDIUM sovereign loop running every ~5 minutes.\n"
+        "Re-evaluate posture using working memory plus compact historical memory.\n"
+        "Context profile={governor_profile}\n"
+        "market={market}\n"
+        "critic={ai_critic}\n"
+        "performance={performance}\n"
+        "capital={capital_profile}\n"
+        "runtime={runtime}\n"
+        "scanner_feed={scanner_feed}\n"
+        "memory={memory}\n"
+        "pair_memory={pair_memory}\n"
+        "polymarket={polymarket}\n"
+        "whatif={whatif_top_opportunities}\n"
+        "gate={gate}\n"
+        "Return strict JSON with the same plan schema as STRATEGY_GOVERNOR.\n"
+        "Target a TTL of 600-1800 seconds. Adjust focus pairs, market regime, aggression mode, and risk posture."
+    ),
+    "SOVEREIGN_DAILY_REVIEW": (
+        "You are KiBot's nightly sovereign reviewer.\n"
+        "Analyze today's report, open issues, and missed opportunities. Produce a clear post-mortem for tomorrow's posture.\n"
+        "daily_report={daily_report}\n"
+        "latest_learning={latest_learning}\n"
+        "pair_memory={pair_memory}\n"
+        "polymarket={polymarket}\n"
+        "Return strict compact JSON with keys "
+        "{\"summary\":\"...\",\"root_causes\":[...],\"missed_opportunities\":[...],\"lessons\":[...],\"risks\":[...],\"parameter_recommendations\":[...],\"tomorrow_mode\":\"SURVIVAL|CONTROLLED|CONTROLLED_AGGRESSIVE|FULL_ATTACK\",\"tomorrow_focus\":[...]}\n"
+        "Be concrete and evidence-driven."
     ),
     "OPS_CHAT": (
         "You are KiBot's operator copilot.\n"
@@ -237,6 +286,9 @@ PROMPT_OLLAMA_MODEL = {
     "VETO_ANALYSIS": OLLAMA_FAST_MODEL,
     "NEWS_ANALYSIS": OLLAMA_FAST_MODEL,
     "STRATEGY_GOVERNOR": OLLAMA_FAST_MODEL,
+    "STRATEGY_GOVERNOR_FAST": OLLAMA_FAST_MODEL,
+    "STRATEGY_GOVERNOR_MEDIUM": OLLAMA_DEFAULT_MODEL,
+    "SOVEREIGN_DAILY_REVIEW": OLLAMA_DEEP_MODEL,
     "OPS_CHAT": OLLAMA_FAST_MODEL,
     "OPS_CHAT_LOCAL": OLLAMA_FAST_MODEL,
     "WHATIF_SIMULATION": OLLAMA_DEFAULT_MODEL,
@@ -249,6 +301,9 @@ PROMPT_OLLAMA_TIMEOUT = {
     "VETO_ANALYSIS": OLLAMA_FAST_TIMEOUT_SEC,
     "NEWS_ANALYSIS": OLLAMA_FAST_TIMEOUT_SEC,
     "STRATEGY_GOVERNOR": OLLAMA_FAST_TIMEOUT_SEC,
+    "STRATEGY_GOVERNOR_FAST": OLLAMA_FAST_TIMEOUT_SEC,
+    "STRATEGY_GOVERNOR_MEDIUM": OLLAMA_DEFAULT_TIMEOUT_SEC,
+    "SOVEREIGN_DAILY_REVIEW": OLLAMA_DEEP_TIMEOUT_SEC,
     "OPS_CHAT": OLLAMA_FAST_TIMEOUT_SEC,
     "OPS_CHAT_LOCAL": OLLAMA_FAST_TIMEOUT_SEC,
     "WHATIF_SIMULATION": OLLAMA_DEFAULT_TIMEOUT_SEC,
@@ -261,6 +316,9 @@ PROMPT_OLLAMA_KEEP_ALIVE = {
     "VETO_ANALYSIS": OLLAMA_FAST_KEEP_ALIVE,
     "NEWS_ANALYSIS": OLLAMA_FAST_KEEP_ALIVE,
     "STRATEGY_GOVERNOR": OLLAMA_FAST_KEEP_ALIVE,
+    "STRATEGY_GOVERNOR_FAST": OLLAMA_FAST_KEEP_ALIVE,
+    "STRATEGY_GOVERNOR_MEDIUM": OLLAMA_DEFAULT_KEEP_ALIVE,
+    "SOVEREIGN_DAILY_REVIEW": OLLAMA_DEEP_KEEP_ALIVE,
     "OPS_CHAT": OLLAMA_FAST_KEEP_ALIVE,
     "OPS_CHAT_LOCAL": OLLAMA_FAST_KEEP_ALIVE,
     "WHATIF_SIMULATION": OLLAMA_DEFAULT_KEEP_ALIVE,
@@ -273,6 +331,9 @@ PROMPT_OLLAMA_OPTIONS = {
     "VETO_ANALYSIS": {"num_ctx": OLLAMA_FAST_NUM_CTX, "num_predict": OLLAMA_FAST_NUM_PREDICT},
     "NEWS_ANALYSIS": {"num_ctx": OLLAMA_FAST_NUM_CTX, "num_predict": OLLAMA_FAST_NUM_PREDICT},
     "STRATEGY_GOVERNOR": {"num_ctx": OLLAMA_FAST_NUM_CTX, "num_predict": OLLAMA_FAST_NUM_PREDICT},
+    "STRATEGY_GOVERNOR_FAST": {"num_ctx": OLLAMA_FAST_NUM_CTX, "num_predict": OLLAMA_FAST_NUM_PREDICT},
+    "STRATEGY_GOVERNOR_MEDIUM": {"num_ctx": OLLAMA_DEFAULT_NUM_CTX, "num_predict": OLLAMA_DEFAULT_NUM_PREDICT},
+    "SOVEREIGN_DAILY_REVIEW": {"num_ctx": OLLAMA_DEEP_NUM_CTX, "num_predict": OLLAMA_DEEP_NUM_PREDICT},
     "OPS_CHAT": {"num_ctx": OLLAMA_FAST_NUM_CTX, "num_predict": OLLAMA_FAST_NUM_PREDICT},
     "OPS_CHAT_LOCAL": {"num_ctx": OLLAMA_FAST_NUM_CTX, "num_predict": OLLAMA_FAST_NUM_PREDICT},
     "WHATIF_SIMULATION": {"num_ctx": OLLAMA_DEFAULT_NUM_CTX, "num_predict": OLLAMA_DEFAULT_NUM_PREDICT},

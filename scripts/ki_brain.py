@@ -450,6 +450,7 @@ class BrainManager:
             },
             "polymarket": {
                 "ready": polymarket.get("ready"),
+                "analysis_ready": polymarket.get("analysis_ready"),
                 "execution_enabled": polymarket.get("execution_enabled"),
                 "blocked": (polymarket.get("geoblock") or {}).get("blocked") if isinstance(polymarket.get("geoblock"), dict) else None,
                 "country": (polymarket.get("geoblock") or {}).get("country") if isinstance(polymarket.get("geoblock"), dict) else None,
@@ -462,6 +463,17 @@ class BrainManager:
                     for item in list(polymarket.get("top_opportunities") or [])[:3]
                     if isinstance(item, dict)
                 ],
+                "maker_candidates": [
+                    {
+                        "slug": item.get("slug"),
+                        "maker_score": item.get("maker_score"),
+                        "execution_style": item.get("execution_style"),
+                    }
+                    for item in list(polymarket.get("maker_candidates") or [])[:2]
+                    if isinstance(item, dict)
+                ],
+                "cross_market_bias": polymarket.get("cross_market_bias") if isinstance(polymarket.get("cross_market_bias"), dict) else {},
+                "ops_alerts": list(polymarket.get("ops_alerts") or [])[:3],
             },
         }
 

@@ -235,6 +235,7 @@ def fmt_status(state: dict) -> str:
         or 0.0
     )
     risk     = state.get("trading_mode") or state.get("risk_mode", "UNKNOWN")
+    governor = state.get("strategy_governor") if isinstance(state.get("strategy_governor"), dict) else {}
     trade_metrics = state.get("trade_metrics") if isinstance(state.get("trade_metrics"), dict) else {}
     trades   = int(state.get("total_trades_today") or trade_metrics.get("total_trades") or 0)
     wins     = int(state.get("wins_today") or trade_metrics.get("wins") or 0)
@@ -243,12 +244,18 @@ def fmt_status(state: dict) -> str:
     alive    = "✅ Running" if is_manager_alive() else "🔴 <b>MATI!</b>"
     system_state = str(state.get("system_state") or "UNKNOWN")
     status_msg = str(state.get("degradedReason") or state.get("statusMessage") or "").strip()
+    brain_mode = str(governor.get("brain_mode") or governor.get("strategy_mode") or "UNKNOWN")
+    plan_state = str(governor.get("plan_state") or "UNKNOWN")
+    refresh_profile = str(governor.get("refresh_profile") or (governor.get("refresh") or {}).get("last_profile") or "").strip()
+    confidence = float(governor.get("effective_confidence") or governor.get("confidence") or 0.0)
+    focus_pairs = ", ".join(str(item).upper() for item in list((governor.get("indodax") or {}).get("focus_pairs") or [])[:3])
+    ops_alerts = list(governor.get("ops_alerts") or [])[:2]
 
     pnl_emoji = "🟢" if pnl_pct >= 0 else "🔴"
     risk_emoji = {"GROWTH": "🚀", "CAUTION": "⚠️", "DEFENSIVE": "🛡️",
                   "RESTRICTED": "🔒", "HARD_STOP": "🛑"}.get(risk, "❓")
 
-    return (
+    message = (
         f"📊 <b>KiBot Status</b> — {ts}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"Bot       : {alive}\n"
@@ -259,6 +266,13 @@ def fmt_status(state: dict) -> str:
         f"📈 Trades  : {trades} ({wins}W/{losses}L | WR {wr:.0f}%)\n"
         + (f"📝 Note    : {status_msg}\n" if status_msg else "")
     )
+    profile_text = f" | {refresh_profile}" if refresh_profile else ""
+    message += f"🧠 Brain   : {brain_mode} | {plan_state}{profile_text} | conf {confidence*100:.0f}%\n"
+    if focus_pairs:
+        message += f"🎯 Focus   : {focus_pairs}\n"
+    for item in ops_alerts:
+        message += f"⚠️ Alert   : {item}\n"
+    return message
 
 def fmt_trade(t: dict) -> str:
     pair     = t.get("pair_id", "?").upper()
@@ -274,12 +288,25 @@ def fmt_polymarket(state: dict) -> str:
         return "🎯 <b>Polymarket</b>\nState belum tersedia."
     geoblock = state.get("geoblock") if isinstance(state.get("geoblock"), dict) else {}
     opportunities = list(state.get("top_opportunities") or [])[:3]
+    maker_candidates = list(state.get("maker_candidates") or [])[:2]
+    alpha_candidates = list(state.get("alpha_candidates") or [])[:2]
+    cross_market_bias = state.get("cross_market_bias") if isinstance(state.get("cross_market_bias"), dict) else {}
     lines = [
         "🎯 <b>Polymarket</b>",
-        f"Ready      : {'✅' if state.get('ready') else '⚠️'}",
+        f"Ready      : {'✅' if state.get('ready') else '⚠️'} | analysis={'✅' if state.get('analysis_ready') else '⚠️'}",
         f"Region     : {geoblock.get('country') or '?'} blocked={geoblock.get('blocked')}",
         f"Wallet     : <code>{str(state.get('wallet_address') or '')[:16]}...</code>" if state.get("wallet_address") else "Wallet     : unavailable",
     ]
+    if cross_market_bias:
+        lines.append("")
+        lines.append("<b>Cross-market bias</b>")
+        for asset, detail in list(cross_market_bias.items())[:3]:
+            if not isinstance(detail, dict):
+                continue
+            lines.append(
+                f"• {asset.upper()} {detail.get('direction') or '?'} "
+                f"score={float(detail.get('score') or 0.0):.2f}"
+            )
     if opportunities:
         lines.append("")
         lines.append("<b>Top markets</b>")
@@ -291,6 +318,27 @@ def fmt_polymarket(state: dict) -> str:
                 f"liq={float(item.get('liquidity') or 0.0):,.0f} | "
                 f"spr={float(item.get('spread') or 0.0):.3f}"
             )
+    if maker_candidates:
+        lines.append("")
+        lines.append("<b>Maker/rebate</b>")
+        for item in maker_candidates:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"• {str(item.get('slug') or item.get('question') or '?')[:52]} | "
+                f"maker={float(item.get('maker_score') or 0.0):.2f} | "
+                f"{str(item.get('execution_style') or 'OBSERVE')}"
+            )
+    if alpha_candidates:
+        lines.append("")
+        lines.append("<b>Alpha to Indodax</b>")
+        for item in alpha_candidates:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"• {str(item.get('mapped_pair') or item.get('asset') or '?').upper()} "
+                f"{str(item.get('direction') or '?')} score={float(item.get('alpha_score') or 0.0):.2f}"
+            )
     return "\n".join(lines)
 
 
@@ -298,6 +346,7 @@ def _compact_system_state(state: dict) -> dict:
     capital = state.get("capital_health") if isinstance(state.get("capital_health"), dict) else {}
     adaptive = capital.get("adaptive_profile") if isinstance(capital.get("adaptive_profile"), dict) else {}
     brain = state.get("brain_assist") if isinstance(state.get("brain_assist"), dict) else {}
+    governor = state.get("strategy_governor") if isinstance(state.get("strategy_governor"), dict) else {}
     return {
         "system_state": state.get("system_state"),
         "effective_state": state.get("effectiveState"),
@@ -309,6 +358,17 @@ def _compact_system_state(state: dict) -> dict:
         "capital_reason": adaptive.get("reason"),
         "ai_legion_count": ((brain.get("ai_legion") or {}).get("configured_count")),
         "ai_critic": brain.get("ai_critic"),
+        "governor": {
+            "plan_id": governor.get("plan_id"),
+            "plan_state": governor.get("plan_state"),
+            "refresh_profile": governor.get("refresh_profile") or (governor.get("refresh") or {}).get("last_profile"),
+            "brain_mode": governor.get("brain_mode"),
+            "market_regime": governor.get("market_regime"),
+            "capital_posture": governor.get("capital_posture"),
+            "confidence": governor.get("effective_confidence") or governor.get("confidence"),
+            "focus_pairs": list((governor.get("indodax") or {}).get("focus_pairs") or [])[:4],
+            "ops_alerts": list(governor.get("ops_alerts") or [])[:3],
+        },
     }
 
 

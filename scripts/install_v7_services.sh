@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# KiBot v7.1 Service Installer
-# ============================
+# KiBot v7.5 Service Installer (Autonomous Era)
+# ============================================
 # Installs sub-system agents as individual systemd services.
 
 set -euo pipefail
@@ -27,7 +27,7 @@ create_service() {
     echo "Creating $name..."
     cat <<EOF | sudo tee "$SERVICE_DIR/$name.service" > /dev/null
 [Unit]
-Description=KiBot v7.1 $desc
+Description=KiBot v7.5 $desc
 After=network.target
 
 [Service]
@@ -84,7 +84,8 @@ disable_legacy_unit "kibot-engine-recovery.service"
 echo "Reloading systemd..."
 sudo systemctl daemon-reload
 
-echo "Starting Trinity Agentic Core..."
+echo "Starting Trinity support services..."
+echo "Note: sovereign governor now lives inside kibot-manager, not a separate kibot-governor service."
 SERVICES=(kibot-analyst kibot-auditor kibot-notifier kibot-guardian kibot-orchestrator kibot-security)
 if [[ "$ENABLE_AI_COORDINATOR" == "true" ]]; then
     SERVICES+=(kibot-ai-coordinator)
@@ -92,4 +93,4 @@ fi
 sudo systemctl enable "${SERVICES[@]}"
 sudo systemctl start "${SERVICES[@]}"
 
-echo "v7.1 Services Installed Successfully."
+echo "v7.5 Services Installed Successfully (Autonomous Era)."

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from http import HTTPStatus
@@ -88,6 +89,11 @@ GEOBLOCK_URL = os.getenv("KIBOT_POLYMARKET_GEOBLOCK_URL", "https://polymarket.co
 GAMMA_MARKETS_URL = os.getenv("KIBOT_POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com/markets")
 CLOB_HOST = os.getenv("KIBOT_POLYMARKET_CLOB_HOST", "https://clob-v2.polymarket.com")
 SIMPLIFIED_MARKETS_URL = os.getenv("KIBOT_POLYMARKET_SIMPLIFIED_URL", f"{CLOB_HOST}/simplified-markets")
+DATA_API_BASE_URL = os.getenv("KIBOT_POLYMARKET_DATA_API_URL", "https://data-api.polymarket.com")
+POSITIONS_URL = os.getenv("KIBOT_POLYMARKET_POSITIONS_URL", f"{DATA_API_BASE_URL}/positions")
+CLOSED_POSITIONS_URL = os.getenv("KIBOT_POLYMARKET_CLOSED_POSITIONS_URL", f"{DATA_API_BASE_URL}/closed-positions")
+VALUE_URL = os.getenv("KIBOT_POLYMARKET_VALUE_URL", f"{DATA_API_BASE_URL}/value")
+ACTIVITY_URL = os.getenv("KIBOT_POLYMARKET_ACTIVITY_URL", f"{DATA_API_BASE_URL}/activity")
 ALCHEMY_RPC_URL = (
     os.getenv("ALCHEMY_URL")
     or os.getenv("POLYGON_MAINNET_RPC_URL")
@@ -145,6 +151,89 @@ def _ensure_list(value: Any) -> List[Any]:
             except Exception:
                 return []
     return []
+
+
+ASSET_KEYWORDS: Dict[str, List[str]] = {
+    "btc": ["btc", "bitcoin"],
+    "eth": ["eth", "ethereum"],
+    "sol": ["sol", "solana"],
+    "xrp": ["xrp", "ripple"],
+    "doge": ["doge", "dogecoin"],
+    "bnb": ["bnb", "binance coin"],
+    "ada": ["ada", "cardano"],
+    "sui": ["sui"],
+    "ltc": ["ltc", "litecoin"],
+    "altseason": ["altseason", "alt season", "altcoin season"],
+}
+
+CRYPTO_CONTEXT_HINTS = (
+    "bitcoin",
+    "ethereum",
+    "solana",
+    "ripple",
+    "dogecoin",
+    "cardano",
+    "litecoin",
+    "binance",
+    "crypto",
+    "cryptocurrency",
+    "token",
+    "tokens",
+    "coin",
+    "coins",
+    "altcoin",
+    "blockchain",
+    "defi",
+    "etf",
+    "spot etf",
+    "sec",
+    "wallet",
+    "mainnet",
+    "layer 1",
+    "layer 2",
+)
+
+ASSET_REGEX: Dict[str, List[re.Pattern[str]]] = {
+    asset: [
+        re.compile(rf"(?<![a-z0-9]){re.escape(alias.lower())}(?![a-z0-9])")
+        for alias in aliases
+    ]
+    for asset, aliases in ASSET_KEYWORDS.items()
+}
+
+BULLISH_HINTS = (
+    "above",
+    "reach",
+    "hits",
+    "hit",
+    "surpass",
+    "break",
+    "approval",
+    "approved",
+    "bull",
+    "rally",
+    "ath",
+    "up",
+    "rise",
+)
+
+BEARISH_HINTS = (
+    "below",
+    "delay",
+    "delayed",
+    "ban",
+    "hack",
+    "exploit",
+    "crash",
+    "recession",
+    "lawsuit",
+    "depeg",
+    "default",
+    "fails",
+    "failure",
+    "selloff",
+    "drops",
+)
 
 
 class PolymarketEngine:
@@ -235,34 +324,192 @@ class PolymarketEngine:
     def _fetch_simplified_markets(self) -> List[Dict[str, Any]]:
         try:
             payload = self._request_json(SIMPLIFIED_MARKETS_URL)
+            if isinstance(payload, dict):
+                data = payload.get("data")
+                return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
             return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
         except Exception:
             return []
 
+    def _fetch_data_snapshot(self, url: str, *, address: str) -> Any:
+        if not address:
+            return {}
+        try:
+            return self._request_json(url, params={"user": address})
+        except Exception:
+            return {}
+
     def _market_score(self, market: Dict[str, Any]) -> float:
-        liquidity = _safe_float(market.get("liquidityClob") or market.get("liquidity"))
-        volume_24h = _safe_float(market.get("volume24hr") or market.get("volume24h"))
+        liquidity = _safe_float(market.get("liquidity"))
+        volume_24h = _safe_float(market.get("volume24hr"))
         spread = _safe_float(market.get("spread"))
+        liquidity_score = min(liquidity / 150_000.0, 1.0)
+        volume_score = min(volume_24h / 125_000.0, 1.0)
+        spread_score = max(0.0, 1.0 - min(spread / max(MAX_SPREAD, 0.005), 1.0))
+        reward_score = min(_safe_float(market.get("reward_daily_rate")) / 10.0, 1.0)
+        momentum_score = min(abs(_safe_float(market.get("one_day_price_change"))) / 0.20, 1.0)
+        return round(
+            (liquidity_score * 0.32)
+            + (volume_score * 0.28)
+            + (spread_score * 0.20)
+            + (reward_score * 0.10)
+            + (momentum_score * 0.10),
+            4,
+        )
+
+    def _maker_score(self, market: Dict[str, Any]) -> float:
+        spread = _safe_float(market.get("spread"))
+        reward_daily_rate = _safe_float(market.get("reward_daily_rate"))
+        fees_enabled = bool(market.get("fees_enabled"))
+        reward_spread_ok = spread <= max(_safe_float(market.get("reward_max_spread")) / 100.0, MAX_SPREAD)
+        liquidity = _safe_float(market.get("liquidity"))
+        volume_24h = _safe_float(market.get("volume24hr"))
+        return round(
+            (0.35 if fees_enabled else 0.0)
+            + (0.20 if reward_daily_rate > 0 else 0.0)
+            + (0.15 if reward_spread_ok else 0.0)
+            + min(liquidity / 200_000.0, 0.20)
+            + min(volume_24h / 200_000.0, 0.10),
+            4,
+        )
+
+    def _asset_signal(self, market: Dict[str, Any]) -> Dict[str, Any]:
+        question = str(market.get("question") or "").lower()
+        description = str(market.get("description") or "").lower()
+        category = str(market.get("category") or "").lower()
+        tags = " ".join(str(item).lower() for item in _ensure_list(market.get("tags")))
+        event_titles = " ".join(str(item.get("title") or "").lower() for item in _ensure_list(market.get("events")) if isinstance(item, dict))
+        event_descriptions = " ".join(
+            str(item.get("description") or "").lower() for item in _ensure_list(market.get("events")) if isinstance(item, dict)
+        )
+        context_blob = " ".join(part for part in [question, description, category, tags, event_titles, event_descriptions] if part)
+        has_crypto_context = any(token in context_blob for token in CRYPTO_CONTEXT_HINTS)
+        matched_asset = ""
+        for asset, aliases in ASSET_KEYWORDS.items():
+            patterns = ASSET_REGEX.get(asset) or []
+            if any(pattern.search(question) for pattern in patterns):
+                matched_asset = asset
+                break
+        if not matched_asset:
+            return {}
+        strong_alias_present = any(
+            len(alias) > 3 and alias in context_blob
+            for alias in ASSET_KEYWORDS.get(matched_asset, [])
+        )
+        price_context = any(token in question for token in ("$", "price", "priced", "market cap", "etf", "all-time high"))
+        if not (has_crypto_context or strong_alias_present or price_context):
+            return {}
+
+        yes_prob = _safe_float(market.get("implied_prob_yes"))
+        conviction = min(abs(yes_prob - 0.5) * 2.0, 1.0)
+        bullish = any(token in question for token in BULLISH_HINTS)
+        bearish = any(token in question for token in BEARISH_HINTS)
+        direction = ""
+        if bullish and yes_prob >= 0.55:
+            direction = "LONG"
+        elif bullish and yes_prob <= 0.45:
+            direction = "SHORT"
+        elif bearish and yes_prob >= 0.55:
+            direction = "SHORT"
+        elif bearish and yes_prob <= 0.45:
+            direction = "LONG"
+        if not direction:
+            return {}
+
+        score = round(
+            min(
+                1.0,
+                (conviction * 0.55)
+                + min(_safe_float(market.get("liquidity")) / 250_000.0, 0.20)
+                + min(_safe_float(market.get("volume24hr")) / 250_000.0, 0.20)
+                + min(abs(_safe_float(market.get("one_day_price_change"))) / 0.10, 0.05),
+            ),
+            4,
+        )
+        return {
+            "asset": matched_asset,
+            "direction": direction,
+            "score": score,
+            "question": str(market.get("question") or ""),
+            "mapped_pair": "" if matched_asset == "altseason" else f"{matched_asset}_idr",
+        }
+
+    def _normalize_market(self, market: Dict[str, Any]) -> Dict[str, Any]:
+        token_ids = _ensure_list(market.get("clobTokenIds"))
+        outcomes = _ensure_list(market.get("outcomes"))
         best_ask = _safe_float(market.get("bestAsk"))
         best_bid = _safe_float(market.get("bestBid"))
+        spread = _safe_float(market.get("spread"))
         if spread <= 0 and best_ask > 0 and best_bid > 0:
             spread = max(best_ask - best_bid, 0.0)
-        depth_score = min(liquidity / 100_000.0, 2.5)
-        volume_score = min(volume_24h / 100_000.0, 2.5)
-        spread_score = max(0.0, 1.0 - min(spread / max(MAX_SPREAD, 0.001), 1.0))
-        tick_score = 0.3 if _safe_float(market.get("orderPriceMinTickSize")) <= 0.01 else 0.0
-        return round((depth_score * 0.45) + (volume_score * 0.35) + (spread_score * 0.15) + tick_score, 4)
+        outcome_prices = _ensure_list(market.get("outcomePrices"))
+        outcome_price_yes = _safe_float(outcome_prices[0] if outcome_prices else 0.0)
+        midpoint = 0.0
+        if best_bid > 0 and best_ask > 0:
+            midpoint = (best_bid + best_ask) / 2.0
+        elif outcome_price_yes > 0:
+            midpoint = outcome_price_yes
+        reward_daily_rate = sum(_safe_float(item.get("rewardsDailyRate")) for item in _ensure_list(market.get("clobRewards")))
+        reward_min_size = _safe_float(market.get("rewardsMinSize"))
+        reward_max_spread = _safe_float(market.get("rewardsMaxSpread"))
+        normalized = {
+            "question": str(market.get("question") or ""),
+            "slug": str(market.get("slug") or market.get("questionID") or ""),
+            "category": str(market.get("category") or ""),
+            "description": str(market.get("description") or ""),
+            "tags": _ensure_list(market.get("tags")),
+            "events": _ensure_list(market.get("events")),
+            "condition_id": str(market.get("conditionId") or ""),
+            "yes_token_id": str(token_ids[0]) if len(token_ids) >= 1 else "",
+            "no_token_id": str(token_ids[1]) if len(token_ids) >= 2 else "",
+            "yes_outcome": str(outcomes[0]) if len(outcomes) >= 1 else "YES",
+            "no_outcome": str(outcomes[1]) if len(outcomes) >= 2 else "NO",
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "spread": spread,
+            "liquidity": _safe_float(market.get("liquidityClob") or market.get("liquidity")),
+            "volume24hr": _safe_float(market.get("volume24hr") or market.get("volume24h")),
+            "volume1wk": _safe_float(market.get("volume1wk") or market.get("volume1wkClob")),
+            "volume1mo": _safe_float(market.get("volume1mo") or market.get("volume1moClob")),
+            "one_day_price_change": _safe_float(market.get("oneDayPriceChange")),
+            "one_week_price_change": _safe_float(market.get("oneWeekPriceChange")),
+            "one_month_price_change": _safe_float(market.get("oneMonthPriceChange")),
+            "fees_enabled": bool(market.get("feesEnabled")),
+            "order_min_size": _safe_float(market.get("orderMinSize")),
+            "min_tick": _safe_float(market.get("orderPriceMinTickSize")),
+            "midpoint": round(midpoint, 4),
+            "implied_prob_yes": round(midpoint, 4),
+            "last_trade_price": _safe_float(market.get("lastTradePrice")),
+            "reward_daily_rate": reward_daily_rate,
+            "reward_min_size": reward_min_size,
+            "reward_max_spread": reward_max_spread,
+            "end_date": str(market.get("endDate") or ""),
+            "accepting_orders": bool(market.get("acceptingOrders")),
+            "active": bool(market.get("active")),
+            "closed": bool(market.get("closed")),
+        }
+        normalized["score"] = self._market_score(normalized)
+        normalized["maker_score"] = self._maker_score(normalized)
+        normalized["asset_signal"] = self._asset_signal(normalized)
+        normalized["alpha_score"] = round(
+            normalized["score"] * 0.60 + _safe_float((normalized["asset_signal"] or {}).get("score")) * 0.40,
+            4,
+        )
+        normalized["execution_style"] = (
+            "MAKER_REBATE"
+            if normalized["maker_score"] >= 0.55 and normalized["fees_enabled"]
+            else ("PASSIVE_REWARD" if normalized["maker_score"] >= 0.45 else "OBSERVE")
+        )
+        return normalized
 
-    def _top_opportunities(self, markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        opportunities: List[Dict[str, Any]] = []
+    def _normalized_markets(self, markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
         for market in markets:
             if not market.get("active") or market.get("closed") or not market.get("acceptingOrders"):
                 continue
             liquidity = _safe_float(market.get("liquidityClob") or market.get("liquidity"))
             if liquidity < MIN_LIQUIDITY:
                 continue
-            token_ids = _ensure_list(market.get("clobTokenIds"))
-            outcomes = _ensure_list(market.get("outcomes"))
             spread = _safe_float(market.get("spread"))
             best_ask = _safe_float(market.get("bestAsk"))
             best_bid = _safe_float(market.get("bestBid"))
@@ -270,50 +517,158 @@ class PolymarketEngine:
                 spread = max(best_ask - best_bid, 0.0)
             if spread > MAX_SPREAD:
                 continue
-            opportunities.append(
+            normalized.append(self._normalize_market(market))
+        return normalized
+
+    def _top_opportunities(self, markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return sorted(markets, key=lambda item: item.get("score") or 0.0, reverse=True)[:TOP_MARKETS]
+
+    def _maker_candidates(self, markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        candidates = [
+            {
+                "question": item.get("question"),
+                "slug": item.get("slug"),
+                "condition_id": item.get("condition_id"),
+                "maker_score": item.get("maker_score"),
+                "reward_daily_rate": item.get("reward_daily_rate"),
+                "fees_enabled": item.get("fees_enabled"),
+                "spread": item.get("spread"),
+                "liquidity": item.get("liquidity"),
+                "execution_style": item.get("execution_style"),
+            }
+            for item in markets
+            if item.get("maker_score", 0.0) >= 0.35
+        ]
+        return sorted(candidates, key=lambda item: item.get("maker_score") or 0.0, reverse=True)[:TOP_MARKETS]
+
+    def _alpha_candidates(self, markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        candidates: List[Dict[str, Any]] = []
+        for item in markets:
+            signal = item.get("asset_signal") if isinstance(item.get("asset_signal"), dict) else {}
+            if not signal:
+                continue
+            candidates.append(
                 {
-                    "question": str(market.get("question") or ""),
-                    "slug": str(market.get("slug") or market.get("questionID") or ""),
-                    "condition_id": str(market.get("conditionId") or ""),
-                    "yes_token_id": str(token_ids[0]) if len(token_ids) >= 1 else "",
-                    "no_token_id": str(token_ids[1]) if len(token_ids) >= 2 else "",
-                    "yes_outcome": str(outcomes[0]) if len(outcomes) >= 1 else "YES",
-                    "no_outcome": str(outcomes[1]) if len(outcomes) >= 2 else "NO",
-                    "best_bid": best_bid,
-                    "best_ask": best_ask,
-                    "spread": spread,
-                    "liquidity": liquidity,
-                    "volume24hr": _safe_float(market.get("volume24hr") or market.get("volume24h")),
-                    "fees_enabled": bool(market.get("feesEnabled")),
-                    "order_min_size": _safe_float(market.get("orderMinSize")),
-                    "min_tick": _safe_float(market.get("orderPriceMinTickSize")),
-                    "score": self._market_score(market),
+                    "question": item.get("question"),
+                    "slug": item.get("slug"),
+                    "condition_id": item.get("condition_id"),
+                    "asset": signal.get("asset"),
+                    "mapped_pair": signal.get("mapped_pair"),
+                    "direction": signal.get("direction"),
+                    "signal_score": signal.get("score"),
+                    "alpha_score": item.get("alpha_score"),
+                    "implied_prob_yes": item.get("implied_prob_yes"),
+                    "spread": item.get("spread"),
+                    "liquidity": item.get("liquidity"),
+                    "volume24hr": item.get("volume24hr"),
                 }
             )
-        opportunities.sort(key=lambda item: item.get("score") or 0.0, reverse=True)
-        return opportunities[:TOP_MARKETS]
+        return sorted(candidates, key=lambda item: item.get("alpha_score") or 0.0, reverse=True)[:TOP_MARKETS]
+
+    def _cross_market_bias(self, markets: List[Dict[str, Any]]) -> Dict[str, Any]:
+        aggregate: Dict[str, Dict[str, Any]] = {}
+        for item in markets:
+            signal = item.get("asset_signal") if isinstance(item.get("asset_signal"), dict) else {}
+            asset = str(signal.get("asset") or "")
+            direction = str(signal.get("direction") or "")
+            score = _safe_float(signal.get("score"))
+            if not asset or not direction or score <= 0:
+                continue
+            weight = score if direction == "LONG" else -score
+            entry = aggregate.setdefault(
+                asset,
+                {
+                    "net_score": 0.0,
+                    "count": 0,
+                    "top_questions": [],
+                    "mapped_pairs": [],
+                },
+            )
+            entry["net_score"] += weight
+            entry["count"] += 1
+            entry["top_questions"].append(str(item.get("question") or ""))
+            mapped_pair = str(signal.get("mapped_pair") or "")
+            if mapped_pair and mapped_pair not in entry["mapped_pairs"]:
+                entry["mapped_pairs"].append(mapped_pair)
+        out: Dict[str, Any] = {}
+        for asset, entry in aggregate.items():
+            net_score = float(entry.get("net_score") or 0.0)
+            out[asset] = {
+                "direction": "LONG" if net_score >= 0 else "SHORT",
+                "score": round(min(abs(net_score), 1.0), 4),
+                "count": int(entry.get("count") or 0),
+                "top_questions": list(entry.get("top_questions") or [])[:3],
+                "mapped_pairs": list(entry.get("mapped_pairs") or [])[:3],
+            }
+        return out
+
+    def _wallet_summary(self, address: str) -> Dict[str, Any]:
+        positions = self._fetch_data_snapshot(POSITIONS_URL, address=address)
+        closed_positions = self._fetch_data_snapshot(CLOSED_POSITIONS_URL, address=address)
+        value = self._fetch_data_snapshot(VALUE_URL, address=address)
+        activity = self._fetch_data_snapshot(ACTIVITY_URL, address=address)
+        position_rows = positions if isinstance(positions, list) else []
+        closed_rows = closed_positions if isinstance(closed_positions, list) else []
+        activity_rows = activity if isinstance(activity, list) else []
+        return {
+            "open_positions": len(position_rows),
+            "closed_positions": len(closed_rows),
+            "recent_activity": len(activity_rows),
+            "position_value": value if isinstance(value, dict) else {},
+            "top_positions": position_rows[:5],
+        }
+
+    def _ops_alerts(self, *, geoblock: Dict[str, Any], wallet_summary: Dict[str, Any], native_balance: Optional[float], cross_market_bias: Dict[str, Any]) -> List[str]:
+        alerts: List[str] = []
+        if bool(geoblock.get("blocked")):
+            alerts.append("polymarket geoblock active")
+        if EXECUTION_ENABLED and (native_balance or 0.0) < 0.02:
+            alerts.append("polygon gas balance is low")
+        if EXECUTION_ENABLED and int(wallet_summary.get("open_positions") or 0) >= 8:
+            alerts.append("open polymarket positions already dense")
+        if not cross_market_bias:
+            alerts.append("no strong cross-market bias detected")
+        return alerts[:4]
 
     def refresh_state(self) -> Dict[str, Any]:
         geoblock = self._geoblock()
         gamma_markets = self._fetch_markets()
         simplified_markets = self._fetch_simplified_markets()
-        top_opportunities = self._top_opportunities(gamma_markets)
         wallet_address = self.wallet_address()
         native_balance = self._native_balance_matic()
         balance_allowance = self._balance_allowance()
+        normalized_markets = self._normalized_markets(gamma_markets)
+        top_opportunities = self._top_opportunities(normalized_markets)
+        maker_candidates = self._maker_candidates(normalized_markets)
+        alpha_candidates = self._alpha_candidates(normalized_markets)
+        cross_market_bias = self._cross_market_bias(normalized_markets)
+        wallet_summary = self._wallet_summary(wallet_address)
+        ops_alerts = self._ops_alerts(
+            geoblock=geoblock,
+            wallet_summary=wallet_summary,
+            native_balance=native_balance,
+            cross_market_bias=cross_market_bias,
+        )
         state = {
             "ok": True,
             "service": "kibot-polymarket",
             "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "ready": bool(wallet_address) and not bool(geoblock.get("blocked")),
+            "analysis_ready": bool(normalized_markets),
             "execution_enabled": EXECUTION_ENABLED,
             "sdk_ready": bool(self._build_client()),
             "wallet_address": wallet_address,
             "native_balance_matic": native_balance,
+            "wallet_summary": wallet_summary,
             "geoblock": geoblock,
             "gamma_market_count": len(gamma_markets),
             "simplified_market_count": len(simplified_markets),
             "top_opportunities": top_opportunities,
+            "maker_candidates": maker_candidates,
+            "alpha_candidates": alpha_candidates,
+            "cross_market_bias": cross_market_bias,
+            "top_markets": [str(item.get("question") or "") for item in top_opportunities[:6]],
+            "ops_alerts": ops_alerts,
             "balance_allowance": balance_allowance,
             "clob_host": CLOB_HOST,
         }

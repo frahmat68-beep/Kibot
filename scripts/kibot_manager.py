@@ -2941,6 +2941,8 @@ DAILY_REPORT_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_REPORT_FILE", str(STATE_
 DAILY_REPORT_HISTORY_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_REPORT_HISTORY_FILE", str(STATE_ROOT / "daily_report_history.json")))
 LEARNING_REVIEW_PATH = Path(os.getenv("KIBOT_MANAGER_LEARNING_REVIEW_FILE", str(STATE_ROOT / "learning_review.json")))
 LEARNING_REVIEW_HISTORY_PATH = Path(os.getenv("KIBOT_MANAGER_LEARNING_REVIEW_HISTORY_FILE", str(STATE_ROOT / "learning_review_history.json")))
+PATTERN_LIBRARY_PATH = Path(os.getenv("KIBOT_MANAGER_PATTERN_LIBRARY_FILE", str(STATE_ROOT / "pattern_library.json")))
+DECISION_LEDGER_PATH = Path(os.getenv("KIBOT_MANAGER_DECISION_LEDGER_FILE", str(STATE_ROOT / "decision_ledger.jsonl")))
 DAILY_CYCLE_STATE_PATH = Path(os.getenv("KIBOT_MANAGER_DAILY_CYCLE_FILE", str(STATE_ROOT / "daily_cycle_state.json")))
 TRADE_LOG_RUNTIME_PATH = Path(os.getenv("KIBOT_MANAGER_TRADE_LOG_FILE", str(Path.cwd() / "state/trade_log.jsonl")))
 TRADE_SUMMARY_RUNTIME_PATH = Path(os.getenv("KIBOT_MANAGER_TRADE_SUMMARY_FILE", str(Path.cwd() / "state/trade_summary.json")))
@@ -2979,6 +2981,8 @@ GOVERNOR_STATE_PATH = Path(
 GOVERNOR_MIN_REFRESH_SEC = int(os.getenv("KIBOT_GOVERNOR_MIN_REFRESH_SEC", "90"))
 GOVERNOR_MAX_STALE_SEC = int(os.getenv("KIBOT_GOVERNOR_MAX_STALE_SEC", "900"))
 GOVERNOR_EVENT_COOLDOWN_SEC = int(os.getenv("KIBOT_GOVERNOR_EVENT_COOLDOWN_SEC", "120"))
+GOVERNOR_FAST_LOOP_SEC = int(os.getenv("KIBOT_GOVERNOR_FAST_LOOP_SEC", "30"))
+GOVERNOR_MEDIUM_LOOP_SEC = int(os.getenv("KIBOT_GOVERNOR_MEDIUM_LOOP_SEC", "300"))
 PAIR_MEMORY_ROLLING_WINDOW = int(os.getenv("KIBOT_PAIR_MEMORY_ROLLING_WINDOW", "50"))
 PAIR_MEMORY_MIN_TRADES_FOR_WINRATE = int(os.getenv("KIBOT_PAIR_MEMORY_MIN_TRADES_FOR_WINRATE", "3"))
 AI_BATCH_REVIEW_INTERVAL_SEC = int(os.getenv("KIBOT_AI_BATCH_REVIEW_INTERVAL_SEC", str(6 * 60 * 60)))
@@ -3143,7 +3147,10 @@ _governor_state: Dict[str, Any] = _load_json_file(
     {
         "last_refresh_at": "",
         "last_reason": "",
+        "last_profile": "",
         "last_provider": "",
+        "last_plan_id": "",
+        "last_plan_state": "",
         "last_fingerprint": "",
         "last_event_fingerprint": "",
         "refresh_count": 0,
@@ -3185,13 +3192,45 @@ def _normalize_pair_id(value: Any) -> str:
     return f"{raw}_idr"
 
 
+def _unique_text_items(values: Any, *, limit: int = 6, item_limit: int = 120) -> List[str]:
+    items: List[str] = []
+    if not isinstance(values, (list, tuple, set)):
+        return items
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        text = text[:item_limit]
+        if text in items:
+            continue
+        items.append(text)
+        if len(items) >= limit:
+            break
+    return items
+
+
 def _default_governor_directives() -> Dict[str, Any]:
     return {
+        "plan_id": "fallback-default",
+        "plan_generated_at": "",
+        "expires_at": "",
+        "plan_ttl_sec": 900,
+        "plan_state": "ACTIVE",
         "strategy_mode": "NEUTRAL",
+        "brain_mode": "CONTROLLED",
+        "market_regime": "UNKNOWN",
+        "capital_posture": "BALANCED",
         "reason": "default_adaptive_governor",
+        "why": ["adaptive default posture"],
         "updated_at": "",
         "provider": "",
         "model": "",
+        "confidence": 0.55,
+        "effective_confidence": 0.55,
+        "confidence_decay_per_hour": 0.08,
+        "fallback_if_expired": "SURVIVAL_MODE",
+        "what_could_make_this_wrong": [],
+        "ops_alerts": [],
         "scanner": {
             "weights": {
                 "BINANCE": 0.30,
@@ -3228,6 +3267,19 @@ def _default_governor_directives() -> Dict[str, Any]:
             "budget_boost": 1.0,
             "focus_boost": 1.0,
         },
+        "indodax": {
+            "allow_entries": True,
+            "max_open_positions": 3,
+            "budget_per_trade_idr": 0.0,
+            "focus_pairs": [],
+            "avoid_pairs": [],
+            "preferred_style": "ADAPTIVE_SPOT",
+        },
+        "polymarket": {
+            "allow_execution": True,
+            "max_risk_pct": 0.8,
+            "focus_markets": [],
+        },
     }
 
 
@@ -3244,13 +3296,42 @@ def _governor_daily_loss_limit_fraction() -> Optional[float]:
 def _sanitize_governor_directives(raw: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     defaults = _default_governor_directives()
     capital_profile = context.get("capital_profile") if isinstance(context.get("capital_profile"), dict) else {}
+    runtime = context.get("runtime") if isinstance(context.get("runtime"), dict) else {}
     equity_now = max(0.0, float(_parse_numeric(capital_profile.get("equity_idr")) or 0.0))
     capital_mode = str(capital_profile.get("mode") or "NORMAL").upper()
     tiny_account = capital_mode in {"MICRO", "BUILDUP"} or (0.0 < equity_now < 150_000.0)
+    plan_generated_at = str(raw.get("plan_generated_at") or raw.get("updated_at") or _safe_isoformat()).strip()
+    plan_generated_epoch = _iso_to_epoch(plan_generated_at) or time.time()
+    plan_ttl_sec = int(
+        _clamp_float(
+            raw.get("plan_ttl_sec"),
+            180,
+            21_600,
+            defaults["plan_ttl_sec"],
+        )
+    )
+    expires_at = str(raw.get("expires_at") or "").strip()
+    expires_at_epoch = _iso_to_epoch(expires_at)
+    if expires_at_epoch <= 0.0 or expires_at_epoch <= plan_generated_epoch:
+        expires_at = _safe_isoformat(plan_generated_epoch + plan_ttl_sec)
 
     strategy_mode = str(raw.get("strategy_mode") or defaults["strategy_mode"]).upper()
     if strategy_mode not in {"DEFENSIVE", "NEUTRAL", "OPPORTUNISTIC"}:
         strategy_mode = "NEUTRAL"
+    brain_mode = str(raw.get("brain_mode") or defaults["brain_mode"]).upper()
+    if brain_mode not in {"SURVIVAL", "CONTROLLED", "CONTROLLED_AGGRESSIVE", "FULL_ATTACK"}:
+        brain_mode = {
+            "DEFENSIVE": "SURVIVAL",
+            "NEUTRAL": "CONTROLLED",
+            "OPPORTUNISTIC": "CONTROLLED_AGGRESSIVE",
+        }.get(strategy_mode, defaults["brain_mode"])
+    market_regime = str(raw.get("market_regime") or defaults["market_regime"]).upper()
+    if market_regime not in {"RISK_OFF", "MIXED", "RISK_ON", "BREAKOUT", "SIDEWAYS", "UNKNOWN"}:
+        market_regime = "UNKNOWN"
+    capital_posture = str(raw.get("capital_posture") or defaults["capital_posture"]).strip().upper()[:48] or defaults["capital_posture"]
+    fallback_if_expired = str(raw.get("fallback_if_expired") or defaults["fallback_if_expired"]).upper()
+    if fallback_if_expired not in {"SURVIVAL_MODE", "DEFENSIVE_MODE", "HOLD_LAST"}:
+        fallback_if_expired = defaults["fallback_if_expired"]
 
     weights = {}
     raw_weights = raw.get("scanner", {}).get("weights") if isinstance(raw.get("scanner"), dict) else {}
@@ -3314,6 +3395,26 @@ def _sanitize_governor_directives(raw: Dict[str, Any], context: Dict[str, Any]) 
     avoid_pairs = [_normalize_pair_id(item) for item in list(raw.get("execution", {}).get("avoid_pairs") or []) if _normalize_pair_id(item)]
     focus_pairs = list(dict.fromkeys([pair for pair in focus_pairs if pair not in avoid_pairs]))[:6]
     avoid_pairs = list(dict.fromkeys(avoid_pairs))[:6]
+    raw_indodax = raw.get("indodax") if isinstance(raw.get("indodax"), dict) else {}
+    indodax_focus_pairs = [
+        _normalize_pair_id(item)
+        for item in list(raw_indodax.get("focus_pairs") or focus_pairs)
+        if _normalize_pair_id(item)
+    ]
+    indodax_avoid_pairs = [
+        _normalize_pair_id(item)
+        for item in list(raw_indodax.get("avoid_pairs") or avoid_pairs)
+        if _normalize_pair_id(item)
+    ]
+    indodax_focus_pairs = list(dict.fromkeys([pair for pair in indodax_focus_pairs if pair not in indodax_avoid_pairs]))[:6]
+    indodax_avoid_pairs = list(dict.fromkeys(indodax_avoid_pairs))[:6]
+    default_max_positions = 2 if tiny_account else 3
+    if brain_mode in {"CONTROLLED_AGGRESSIVE", "FULL_ATTACK"} and not tiny_account:
+        default_max_positions = 4 if brain_mode == "CONTROLLED_AGGRESSIVE" else 5
+    runtime_positions = len(_extract_state_holdings(runtime)) if isinstance(runtime, dict) else 0
+    max_position_hint = float(_parse_numeric(capital_profile.get("max_position_idr")) or 0.0)
+    budget_cap_default = round(max_position_hint, 2) if max_position_hint > 0 else 0.0
+    raw_polymarket = raw.get("polymarket") if isinstance(raw.get("polymarket"), dict) else {}
 
     daily_loss_limit_pct = _clamp_float(
         raw.get("risk", {}).get("daily_loss_limit_pct") if isinstance(raw.get("risk"), dict) else None,
@@ -3323,11 +3424,54 @@ def _sanitize_governor_directives(raw: Dict[str, Any], context: Dict[str, Any]) 
     )
 
     directives = {
+        "plan_id": str(raw.get("plan_id") or f"governor-{int(plan_generated_epoch)}")[:80],
+        "plan_generated_at": plan_generated_at,
+        "expires_at": expires_at,
+        "plan_ttl_sec": plan_ttl_sec,
+        "plan_state": "ACTIVE",
         "strategy_mode": strategy_mode,
+        "brain_mode": brain_mode,
+        "market_regime": market_regime,
+        "capital_posture": capital_posture,
         "reason": str(raw.get("reason") or defaults["reason"])[:220],
+        "why": _unique_text_items(raw.get("why") or [], limit=5, item_limit=140),
         "updated_at": _safe_isoformat(),
         "provider": str(raw.get("provider") or ""),
         "model": str(raw.get("model") or ""),
+        "confidence": round(
+            _clamp_float(
+                raw.get("confidence"),
+                0.0,
+                1.0,
+                defaults["confidence"],
+            ),
+            4,
+        ),
+        "effective_confidence": round(
+            _clamp_float(
+                raw.get("confidence"),
+                0.0,
+                1.0,
+                defaults["confidence"],
+            ),
+            4,
+        ),
+        "confidence_decay_per_hour": round(
+            _clamp_float(
+                raw.get("confidence_decay_per_hour"),
+                0.0,
+                0.50,
+                defaults["confidence_decay_per_hour"],
+            ),
+            4,
+        ),
+        "fallback_if_expired": fallback_if_expired,
+        "what_could_make_this_wrong": _unique_text_items(
+            raw.get("what_could_make_this_wrong") or [],
+            limit=6,
+            item_limit=160,
+        ),
+        "ops_alerts": _unique_text_items(raw.get("ops_alerts") or [], limit=6, item_limit=180),
         "scanner": {
             "weights": weights,
             "msc_min": round(
@@ -3461,30 +3605,174 @@ def _sanitize_governor_directives(raw: Dict[str, Any], context: Dict[str, Any]) 
                 4,
             ),
         },
+        "indodax": {
+            "allow_entries": bool(raw_indodax.get("allow_entries", True)),
+            "max_open_positions": int(
+                _clamp_float(
+                    raw_indodax.get("max_open_positions"),
+                    max(1, runtime_positions or 1),
+                    8,
+                    default_max_positions,
+                )
+            ),
+            "budget_per_trade_idr": round(
+                _clamp_float(
+                    raw_indodax.get("budget_per_trade_idr"),
+                    0.0,
+                    max(50_000.0, max_position_hint or 500_000.0),
+                    budget_cap_default,
+                ),
+                2,
+            ),
+            "focus_pairs": indodax_focus_pairs,
+            "avoid_pairs": indodax_avoid_pairs,
+            "preferred_style": str(raw_indodax.get("preferred_style") or "ADAPTIVE_SPOT")[:48],
+        },
+        "polymarket": {
+            "allow_execution": bool(raw_polymarket.get("allow_execution", True)),
+            "max_risk_pct": round(
+                _clamp_float(
+                    raw_polymarket.get("max_risk_pct"),
+                    0.0,
+                    5.0,
+                    defaults["polymarket"]["max_risk_pct"],
+                ),
+                4,
+            ),
+            "focus_markets": _unique_text_items(raw_polymarket.get("focus_markets") or [], limit=6, item_limit=120),
+        },
     }
+    if not directives["why"]:
+        directives["why"] = [directives["reason"]]
     return directives
 
 
 def _governor_effective_directives() -> Dict[str, Any]:
     merged = _default_governor_directives()
     raw = _governor_directives if isinstance(_governor_directives, dict) else {}
-    for section in ("scanner", "capital", "risk", "survival", "execution"):
+    for section in ("scanner", "capital", "risk", "survival", "execution", "indodax", "polymarket"):
         if isinstance(raw.get(section), dict):
             merged[section].update(raw.get(section) or {})
-    for key in ("strategy_mode", "reason", "updated_at", "provider", "model"):
+    for key in (
+        "plan_id",
+        "plan_generated_at",
+        "expires_at",
+        "plan_ttl_sec",
+        "plan_state",
+        "strategy_mode",
+        "brain_mode",
+        "market_regime",
+        "capital_posture",
+        "reason",
+        "updated_at",
+        "provider",
+        "model",
+        "confidence",
+        "effective_confidence",
+        "confidence_decay_per_hour",
+        "fallback_if_expired",
+    ):
         if raw.get(key) not in (None, ""):
             merged[key] = raw.get(key)
+    for key in ("why", "what_could_make_this_wrong", "ops_alerts"):
+        if isinstance(raw.get(key), list):
+            merged[key] = list(raw.get(key) or [])
+    generated_epoch = _iso_to_epoch(str(merged.get("plan_generated_at") or merged.get("updated_at") or "")) or 0.0
+    expires_epoch = _iso_to_epoch(str(merged.get("expires_at") or "")) or 0.0
+    now = time.time()
+    age_sec = max(0.0, now - generated_epoch) if generated_epoch > 0 else 0.0
+    base_confidence = float(_parse_numeric(merged.get("confidence")) or 0.55)
+    decay_per_hour = float(_parse_numeric(merged.get("confidence_decay_per_hour")) or 0.08)
+    effective_confidence = max(0.0, min(1.0, base_confidence - ((age_sec / 3600.0) * decay_per_hour)))
+    merged["effective_confidence"] = round(effective_confidence, 4)
+    merged["plan_age_sec"] = round(age_sec, 2)
+    merged["plan_is_expired"] = bool(expires_epoch > 0 and now >= expires_epoch)
+    if merged["plan_is_expired"]:
+        fallback_mode = str(merged.get("fallback_if_expired") or "SURVIVAL_MODE").upper()
+        merged["ops_alerts"] = _unique_text_items(
+            list(merged.get("ops_alerts") or []) + [f"governor plan expired -> {fallback_mode.lower()}"],
+            limit=6,
+            item_limit=180,
+        )
+        if fallback_mode == "SURVIVAL_MODE":
+            merged["plan_state"] = "EXPIRED_SURVIVAL"
+            merged["strategy_mode"] = "DEFENSIVE"
+            merged["brain_mode"] = "SURVIVAL"
+            merged["capital_posture"] = "PRESERVE"
+            merged["reason"] = f"expired_plan_survival:{merged.get('reason')}"
+            merged["capital"]["risk_pct_multiplier"] = min(
+                float(_parse_numeric(merged["capital"].get("risk_pct_multiplier")) or 1.0),
+                0.82,
+            )
+            merged["capital"]["free_cash_buffer_pct"] = max(
+                float(_parse_numeric(merged["capital"].get("free_cash_buffer_pct")) or ADAPTIVE_FREE_CASH_BUFFER_PCT),
+                0.55,
+            )
+            merged["execution"]["budget_boost"] = min(
+                float(_parse_numeric(merged["execution"].get("budget_boost")) or 1.0),
+                0.85,
+            )
+            merged["execution"]["focus_boost"] = min(
+                float(_parse_numeric(merged["execution"].get("focus_boost")) or 1.0),
+                1.0,
+            )
+            merged["indodax"]["allow_entries"] = False
+        elif fallback_mode == "DEFENSIVE_MODE":
+            merged["plan_state"] = "EXPIRED_DEFENSIVE"
+            merged["strategy_mode"] = "DEFENSIVE"
+            merged["brain_mode"] = "CONTROLLED"
+            merged["capital_posture"] = "PRESERVE"
+        else:
+            merged["plan_state"] = "EXPIRED_HOLD_LAST"
+    else:
+        merged["plan_state"] = str(raw.get("plan_state") or merged.get("plan_state") or "ACTIVE")
     return merged
 
 
-def _build_governor_context() -> Dict[str, Any]:
+def _pair_memory_brief(*, limit: int = 6) -> Dict[str, Any]:
+    ranked: List[Dict[str, Any]] = []
+    for pair_id, memory in _pair_memory.items():
+        if not pair_id:
+            continue
+        trade_count = int(memory.get("trade_count") or 0)
+        if trade_count <= 0:
+            continue
+        ranked.append(
+            {
+                "pair": pair_id,
+                "trade_count": trade_count,
+                "win_rate": round(_get_pair_win_rate_now(pair_id), 4),
+                "avg_slippage_pct": round(_get_pair_avg_slippage(pair_id, fallback=0.0), 4),
+                "cooldown": bool(_is_pair_on_cooldown(pair_id)),
+                "fake_pump_count": int(memory.get("fake_pump_count") or 0),
+            }
+        )
+    best_pairs = sorted(ranked, key=lambda item: (item["win_rate"], item["trade_count"]), reverse=True)[:limit]
+    worst_pairs = sorted(
+        ranked,
+        key=lambda item: (item["win_rate"], -item["fake_pump_count"], -item["trade_count"]),
+    )[:limit]
+    return {
+        "best_pairs": best_pairs,
+        "worst_pairs": worst_pairs,
+    }
+
+
+def _build_governor_context(profile: str = "fast") -> Dict[str, Any]:
+    profile = str(profile or "fast").strip().lower()
     brain_snapshot = _brain.snapshot() if hasattr(_brain, "snapshot") else {}
     capital_profile = _adaptive_capital_profile()
     trade_metrics = _get_trade_metrics_today()
+    runtime_state = _fetch_local_runtime_state(timeout_sec=0.35, max_cache_age_sec=2.5)
     whatif_payload = _load_json_file(WHATIF_RESULTS_PATH, {})
+    learning_review = _load_json_file(LEARNING_REVIEW_PATH, {})
+    daily_summary = _load_daily_summary()
+    latest_report = _load_json_file(DAILY_REPORT_PATH, {})
+    pattern_library = _load_pattern_library()
+    pair_memory_brief = _pair_memory_brief(limit=4 if profile == "fast" else 6)
     top_whatif = [
         str(pair).lower()
-        for pair in list(whatif_payload.get("topOpportunities") or [])[:5]
+        for pair in list(whatif_payload.get("topOpportunities") or [])[: (3 if profile == "fast" else 5)]
         if str(pair).strip()
     ]
     remote_summary = {
@@ -3493,7 +3781,58 @@ def _build_governor_context() -> Dict[str, Any]:
         "last_feed_id": str(_remote_scanner_feed_state.get("last_feed_id") or ""),
         "last_success_at": str(_remote_scanner_feed_state.get("last_success_at") or ""),
     }
+    polymarket = brain_snapshot.get("polymarket") if isinstance(brain_snapshot.get("polymarket"), dict) else {}
+    focus_markets = []
+    for item in list(polymarket.get("top_markets") or [])[: (2 if profile == "fast" else 4)]:
+        if not isinstance(item, dict):
+            continue
+        focus_markets.append(
+            {
+                "question": str(item.get("question") or ""),
+                "slug": str(item.get("slug") or ""),
+                "score": round(float(item.get("score") or 0.0), 4),
+                "execution_style": str(item.get("execution_style") or ""),
+            }
+        )
+    maker_candidates = []
+    for item in list(polymarket.get("maker_candidates") or [])[: (1 if profile == "fast" else 3)]:
+        if not isinstance(item, dict):
+            continue
+        maker_candidates.append(
+            {
+                "question": str(item.get("question") or ""),
+                "maker_score": round(float(item.get("maker_score") or 0.0), 4),
+                "reward_daily_rate": round(float(item.get("reward_daily_rate") or 0.0), 4),
+                "execution_style": str(item.get("execution_style") or ""),
+            }
+        )
+    alpha_candidates = []
+    for item in list(polymarket.get("alpha_candidates") or [])[: (1 if profile == "fast" else 3)]:
+        if not isinstance(item, dict):
+            continue
+        alpha_candidates.append(
+            {
+                "mapped_pair": str(item.get("mapped_pair") or ""),
+                "asset": str(item.get("asset") or ""),
+                "direction": str(item.get("direction") or ""),
+                "alpha_score": round(float(item.get("alpha_score") or 0.0), 4),
+                "signal_score": round(float(item.get("signal_score") or 0.0), 4),
+            }
+        )
+    cross_market_bias: Dict[str, Any] = {}
+    for asset, item in list((polymarket.get("cross_market_bias") or {}).items())[:4]:
+        if not isinstance(item, dict):
+            continue
+        cross_market_bias[str(asset)] = {
+            "direction": str(item.get("direction") or ""),
+            "score": round(float(item.get("score") or 0.0), 4),
+            "count": int(item.get("count") or 0),
+            "mapped_pairs": list(item.get("mapped_pairs") or [])[:2],
+        }
+    sovereign_review = daily_summary.get("last_sovereign_review") if isinstance(daily_summary.get("last_sovereign_review"), dict) else {}
     return {
+        "governor_profile": profile.upper(),
+        "governor_interval_target_sec": GOVERNOR_FAST_LOOP_SEC if profile == "fast" else GOVERNOR_MEDIUM_LOOP_SEC,
         "market": brain_snapshot.get("market_pulse") if isinstance(brain_snapshot.get("market_pulse"), dict) else {},
         "ai_critic": brain_snapshot.get("ai_critic") if isinstance(brain_snapshot.get("ai_critic"), dict) else {},
         "performance": {
@@ -3510,7 +3849,52 @@ def _build_governor_context() -> Dict[str, Any]:
         "capital_profile": capital_profile,
         "trade_metrics": trade_metrics,
         "scanner_feed": remote_summary,
-        "polymarket": brain_snapshot.get("polymarket") if isinstance(brain_snapshot.get("polymarket"), dict) else {},
+        "polymarket": {
+            "ready": polymarket.get("ready"),
+            "analysis_ready": polymarket.get("analysis_ready"),
+            "execution_enabled": polymarket.get("execution_enabled"),
+            "focus_markets": focus_markets,
+            "cross_market_bias": cross_market_bias,
+            "maker_candidates": maker_candidates,
+            "alpha_candidates": alpha_candidates,
+            "ops_alerts": list(polymarket.get("ops_alerts") or [])[:4],
+        },
+        "runtime": {
+            "node_status": runtime_state.get("nodeStatus"),
+            "status_message": runtime_state.get("statusMessage"),
+            "connections": runtime_state.get("connections") if isinstance(runtime_state.get("connections"), dict) else {},
+            "active_pairs": _extract_state_holdings(runtime_state)[: (4 if profile == "fast" else 8)],
+        },
+        "memory": {
+            "daily_summary": {
+                "coins_bought_today": list(daily_summary.get("coins_bought_today") or [])[:8],
+                "loss_blacklist_pairs": list(daily_summary.get("loss_blacklist_pairs") or [])[:8],
+                "recent_notes": list(daily_summary.get("recent_notes") or [])[: (2 if profile == "fast" else 5)],
+                "last_sovereign_review": {
+                    "tomorrow_mode": sovereign_review.get("tomorrow_mode"),
+                    "focus_pairs": list(sovereign_review.get("focus_pairs") or [])[:4],
+                    "root_causes": list(sovereign_review.get("root_causes") or [])[:3],
+                    "parameter_recommendations": list(sovereign_review.get("parameter_recommendations") or [])[:4],
+                },
+            },
+            "learning_review": {
+                "summary": learning_review.get("summary"),
+                "strategy": learning_review.get("strategy"),
+                "lessons": list(learning_review.get("lessons") or [])[: (2 if profile == "fast" else 4)],
+                "risks": list(learning_review.get("risks") or [])[: (2 if profile == "fast" else 4)],
+            },
+            "daily_report": {
+                "report_date": latest_report.get("report_date"),
+                "daily_pnl_pct": latest_report.get("daily_pnl_pct"),
+                "weekly_pnl_pct": latest_report.get("weekly_pnl_pct"),
+                "next_strategy": latest_report.get("next_strategy"),
+            },
+            "pattern_library": {
+                "weekly_patterns": list(pattern_library.get("weekly_patterns") or [])[:3],
+                "ops_incidents": list(pattern_library.get("ops_incidents") or [])[:3],
+            },
+        },
+        "pair_memory": pair_memory_brief,
         "whatif_top_opportunities": top_whatif,
         "math_review": {
             "last_action": _math_review_last_action,
@@ -3536,15 +3920,161 @@ def _governor_event_fingerprint(context: Dict[str, Any]) -> str:
         "entry_state": str(context.get("gate", {}).get("entry_state") or ""),
         "top_whatif": list(context.get("whatif_top_opportunities") or [])[:3],
         "remote_feed": str(context.get("scanner_feed", {}).get("last_feed_id") or ""),
+        "runtime_connections": context.get("runtime", {}).get("connections") if isinstance(context.get("runtime"), dict) else {},
+        "loss_blacklist": list(context.get("memory", {}).get("daily_summary", {}).get("loss_blacklist_pairs") or [])[:3],
     }
     return hashlib.md5(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def _refresh_governor_directives(*, force: bool = False, reason: str = "loop") -> Optional[Dict[str, Any]]:
+def _fallback_governor_raw(context: Dict[str, Any], *, failure_reason: str, profile: str = "fast") -> Dict[str, Any]:
+    profile = str(profile or "fast").strip().lower()
+    capital_profile = context.get("capital_profile") if isinstance(context.get("capital_profile"), dict) else {}
+    gate = context.get("gate") if isinstance(context.get("gate"), dict) else {}
+    market = context.get("market") if isinstance(context.get("market"), dict) else {}
+    polymarket = context.get("polymarket") if isinstance(context.get("polymarket"), dict) else {}
+    runtime = context.get("runtime") if isinstance(context.get("runtime"), dict) else {}
+    memory = context.get("memory") if isinstance(context.get("memory"), dict) else {}
+    top_whatif = [str(item).lower() for item in list(context.get("whatif_top_opportunities") or []) if str(item).strip()]
+    blacklist = [
+        _normalize_pair_id(item)
+        for item in list(memory.get("daily_summary", {}).get("loss_blacklist_pairs") or [])
+        if _normalize_pair_id(item)
+    ][:6]
+    risk_bias = str(market.get("risk_bias") or "UNKNOWN").upper()
+    trading_allowed = bool(capital_profile.get("trading_allowed"))
+    hard_stop = bool(context.get("performance", {}).get("hard_stop_active"))
+    gate_healthy = bool(gate.get("control_plane_healthy", True)) and str(gate.get("entry_state") or "HEALTHY") == "HEALTHY"
+    scanner_only = _is_scanner_only_node()
+    daily_pnl_pct = float(_parse_numeric(context.get("performance", {}).get("daily_pnl_pct")) or 0.0)
+
+    strategy_mode = "NEUTRAL"
+    brain_mode = "CONTROLLED"
+    capital_posture = "BALANCED"
+    confidence = 0.48
+    why: List[str] = []
+    if scanner_only:
+        strategy_mode = "DEFENSIVE"
+        capital_posture = "PRESERVE"
+        confidence = 0.44
+        why.append("scanner-only node uses passive sovereign fallback")
+    elif hard_stop or not trading_allowed or not gate_healthy or daily_pnl_pct <= -0.010:
+        strategy_mode = "DEFENSIVE"
+        brain_mode = "SURVIVAL"
+        capital_posture = "PRESERVE"
+        confidence = 0.42
+        why.append("capital or gate health requires defensive fallback")
+    elif risk_bias == "RISK_ON" and daily_pnl_pct >= -0.003 and top_whatif:
+        strategy_mode = "OPPORTUNISTIC"
+        brain_mode = "CONTROLLED_AGGRESSIVE"
+        capital_posture = "DEPLOY_70PCT"
+        confidence = 0.58
+        why.append("risk-on market with actionable opportunities")
+    else:
+        why.append("AI unavailable, using heuristic sovereign fallback")
+
+    max_position_idr = float(_parse_numeric(capital_profile.get("max_position_idr")) or 0.0)
+    free_cash_buffer_pct = 0.55 if strategy_mode == "DEFENSIVE" else ADAPTIVE_FREE_CASH_BUFFER_PCT
+    risk_multiplier = 0.82 if strategy_mode == "DEFENSIVE" else (1.05 if strategy_mode == "OPPORTUNISTIC" else 1.0)
+    cross_market_bias = polymarket.get("cross_market_bias") if isinstance(polymarket.get("cross_market_bias"), dict) else {}
+    bullish_assets = [
+        asset.upper()
+        for asset, detail in cross_market_bias.items()
+        if isinstance(detail, dict)
+        and asset.lower() in {"btc", "eth", "sol", "xrp", "doge", "bnb", "ada", "sui", "ltc"}
+        and str(detail.get("direction") or "").upper() == "LONG"
+        and float(_parse_numeric(detail.get("score")) or 0.0) >= 0.55
+    ]
+    focus_pairs = [_normalize_pair_id(item) for item in top_whatif[:4] if _normalize_pair_id(item)]
+    if bullish_assets and not focus_pairs:
+        focus_pairs = [_normalize_pair_id(f"{asset.lower()}_idr") for asset in bullish_assets[:3]]
+    if not focus_pairs and risk_bias == "RISK_ON":
+        focus_pairs = [_normalize_pair_id(item) for item in ["btc_idr", "sol_idr"]]
+    elif not focus_pairs:
+        focus_pairs = [_normalize_pair_id(item) for item in ["btc_idr"]]
+    focus_pairs = [pair for pair in focus_pairs if pair not in blacklist][:4]
+    allow_entries = trading_allowed and not hard_stop and gate_healthy and not scanner_only
+    return {
+        "plan_id": f"fallback-{int(time.time())}",
+        "plan_generated_at": _safe_isoformat(),
+        "plan_ttl_sec": 360 if profile == "fast" else 900,
+        "reason": f"ai_governor_fallback:{profile}:{failure_reason}",
+        "why": why,
+        "brain_mode": brain_mode,
+        "market_regime": risk_bias if risk_bias in {"RISK_OFF", "MIXED", "RISK_ON"} else "UNKNOWN",
+        "capital_posture": capital_posture,
+        "confidence": confidence,
+        "confidence_decay_per_hour": 0.06,
+        "fallback_if_expired": "SURVIVAL_MODE",
+        "what_could_make_this_wrong": [
+            "scanner signal quality degrades",
+            "control plane or API state becomes stale",
+            "market correlation shifts abruptly",
+        ],
+        "ops_alerts": [
+            f"ai governor fallback active on {str(runtime.get('node_status') or 'node')}",
+        ],
+        "strategy_mode": strategy_mode,
+        "scanner": {
+            "weights": {
+                "BINANCE": 0.32,
+                "BYBIT": 0.24,
+                "KUCOIN": 0.20,
+                "CRYPTOCOM": 0.14,
+                "MEXC": 0.10,
+            },
+            "msc_min": 0.68 if strategy_mode == "DEFENSIVE" else 0.60,
+        },
+        "capital": {
+            "ratio": {"LEAD_LAG": 0.55, "LOCAL_PUMP": 0.45},
+            "max_per_trade": 0.18 if strategy_mode == "DEFENSIVE" else 0.24,
+            "risk_pct_multiplier": risk_multiplier,
+            "free_cash_buffer_pct": free_cash_buffer_pct,
+            "micro_entry_floor_idr": float(capital_profile.get("min_position_idr") or ABSOLUTE_MIN_POSITION_SIZE_IDR),
+        },
+        "risk": {
+            "lock_ratio": 0.36 if strategy_mode == "DEFENSIVE" else 0.30,
+            "daily_loss_limit_pct": abs(float(_current_daily_loss_limit_pct())) * 100.0,
+            "pair_cooldown_minutes": 60 if strategy_mode == "DEFENSIVE" else 45,
+            "trailing_tightness": "TIGHTER" if strategy_mode == "DEFENSIVE" else "BASE",
+        },
+        "survival": {
+            "equity_threshold_idr": float(SURVIVAL_MODE_EQUITY_THRESHOLD_IDR),
+            "allowed_tiers": ["A", "B"],
+            "min_target_profit_pct": float(SURVIVAL_TARGET_PROFIT_PCT),
+            "max_spread_pct": float(SURVIVAL_MAX_SPREAD_PCT),
+            "max_slippage_pct": float(SURVIVAL_MAX_SLIPPAGE_PCT),
+        },
+        "execution": {
+            "focus_pairs": focus_pairs,
+            "avoid_pairs": blacklist,
+            "budget_boost": 0.90 if strategy_mode == "DEFENSIVE" else 1.0,
+            "focus_boost": 1.03 if strategy_mode == "OPPORTUNISTIC" else 1.0,
+        },
+        "indodax": {
+            "allow_entries": allow_entries,
+            "max_open_positions": 2 if strategy_mode == "DEFENSIVE" else 3,
+            "budget_per_trade_idr": max_position_idr,
+            "focus_pairs": focus_pairs,
+            "avoid_pairs": blacklist,
+            "preferred_style": "FALLBACK_DISCIPLINED_SPOT",
+        },
+        "polymarket": {
+            "allow_execution": bool(polymarket.get("ready")) and not scanner_only,
+            "max_risk_pct": 0.5 if strategy_mode == "DEFENSIVE" else 0.8,
+            "focus_markets": _unique_text_items(polymarket.get("top_markets") or polymarket.get("focus_markets") or [], limit=4, item_limit=120),
+        },
+        "provider": "heuristic",
+        "model": "local-fallback",
+        "refresh_profile": profile.upper(),
+    }
+
+
+def _refresh_governor_directives(*, force: bool = False, reason: str = "loop", profile: str = "fast") -> Optional[Dict[str, Any]]:
     global _governor_directives
+    profile = str(profile or "fast").strip().lower()
     now = time.time()
     last_refresh_at = _iso_to_epoch(str(_governor_state.get("last_refresh_at") or "")) or 0.0
-    context = _build_governor_context()
+    context = _build_governor_context(profile=profile)
     event_fingerprint = _governor_event_fingerprint(context)
     stale = (now - last_refresh_at) >= GOVERNOR_MAX_STALE_SEC
     changed = event_fingerprint != str(_governor_state.get("last_event_fingerprint") or "")
@@ -3555,26 +4085,43 @@ def _refresh_governor_directives(*, force: bool = False, reason: str = "loop") -
             return _governor_effective_directives()
         if (now - last_refresh_at) < GOVERNOR_MIN_REFRESH_SEC:
             return _governor_effective_directives()
+    prompt_type = "STRATEGY_GOVERNOR_FAST" if profile == "fast" else "STRATEGY_GOVERNOR_MEDIUM"
     raw = query_ai(
-        "STRATEGY_GOVERNOR",
+        prompt_type,
         context,
-        cache_ttl_minutes=8,
+        cache_ttl_minutes=3 if profile == "fast" else 8,
         force_refresh=force or changed,
     )
     if not isinstance(raw, dict) or not raw:
+        current_directives = _governor_effective_directives()
+        current_provider = str(current_directives.get("provider") or "")
+        current_expired = bool(current_directives.get("plan_is_expired"))
+        if current_directives and current_provider not in {"", "heuristic", "local-fallback"} and not current_expired:
+            preserved = dict(current_directives)
+            ops_alerts = [str(item) for item in list(preserved.get("ops_alerts") or []) if str(item).strip()]
+            ops_alert = f"ai governor refresh missed ({profile})"
+            if ops_alert not in ops_alerts:
+                ops_alerts.append(ops_alert)
+            preserved["ops_alerts"] = ops_alerts[-4:]
+            preserved["plan_state"] = "ACTIVE"
+            preserved["reason"] = f"{str(preserved.get('reason') or 'ai_governor_plan')}+refresh_missed:{profile}"
+            raw = preserved
+        else:
+            raw = _fallback_governor_raw(context, failure_reason="empty_governor_response", profile=profile)
         _governor_state["last_error"] = "empty_governor_response"
-        _governor_state["last_event_fingerprint"] = event_fingerprint
-        _save_governor_state()
-        return _governor_effective_directives()
     sanitized = _sanitize_governor_directives(raw, context)
     sanitized["trigger_reason"] = reason
+    sanitized["refresh_profile"] = profile.upper()
     _governor_directives = sanitized
     _save_governor_directives()
     _governor_state.update(
         {
             "last_refresh_at": sanitized.get("updated_at") or _safe_isoformat(now),
             "last_reason": reason,
+            "last_profile": profile.upper(),
             "last_provider": str(sanitized.get("provider") or ""),
+            "last_plan_id": str(sanitized.get("plan_id") or ""),
+            "last_plan_state": str(sanitized.get("plan_state") or "ACTIVE"),
             "last_fingerprint": hashlib.md5(json.dumps(sanitized, sort_keys=True).encode("utf-8")).hexdigest(),
             "last_event_fingerprint": event_fingerprint,
             "refresh_count": int(_governor_state.get("refresh_count") or 0) + 1,
@@ -3586,13 +4133,35 @@ def _refresh_governor_directives(*, force: bool = False, reason: str = "loop") -
         "strategy_governor_refresh",
         {
             "reason": reason,
+            "profile": profile.upper(),
+            "plan_id": sanitized.get("plan_id"),
             "provider": sanitized.get("provider"),
+            "brain_mode": sanitized.get("brain_mode"),
             "strategy_mode": sanitized.get("strategy_mode"),
         },
     )
+    _append_jsonl(
+        DECISION_LEDGER_PATH,
+        {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "profile": profile.upper(),
+            "reason": reason,
+            "plan_id": sanitized.get("plan_id"),
+            "provider": sanitized.get("provider"),
+            "brain_mode": sanitized.get("brain_mode"),
+            "market_regime": sanitized.get("market_regime"),
+            "capital_posture": sanitized.get("capital_posture"),
+            "confidence": sanitized.get("effective_confidence") or sanitized.get("confidence"),
+            "focus_pairs": list((sanitized.get("indodax") or {}).get("focus_pairs") or [])[:4],
+            "focus_markets": list((sanitized.get("polymarket") or {}).get("focus_markets") or [])[:4],
+            "why": list(sanitized.get("why") or [])[:4],
+            "ops_alerts": list(sanitized.get("ops_alerts") or [])[:4],
+        },
+    )
     print(
-        f"[KIBOT][GOVERNOR] refreshed reason={reason} provider={sanitized.get('provider') or '?'} "
-        f"mode={sanitized.get('strategy_mode') or 'NEUTRAL'}",
+        f"[KIBOT][GOVERNOR] refreshed profile={profile} reason={reason} provider={sanitized.get('provider') or '?'} "
+        f"brain={sanitized.get('brain_mode') or 'CONTROLLED'} mode={sanitized.get('strategy_mode') or 'NEUTRAL'} "
+        f"plan={sanitized.get('plan_id') or '?'}",
         flush=True,
     )
     return sanitized
@@ -4428,6 +4997,7 @@ def _default_daily_summary(date_str: str | None = None) -> Dict[str, Any]:
         "recent_notes": [],
         "learning_reviews": [],
         "last_learning_review": {},
+        "last_sovereign_review": {},
     }
 
 
@@ -4485,6 +5055,19 @@ def _update_daily_summary(kind: str, detail: Dict[str, Any]) -> None:
         reviews.append(entry)
         summary["learning_reviews"] = reviews[-16:]
         summary["last_learning_review"] = entry
+    elif kind == "sovereign_review":
+        summary["last_sovereign_review"] = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "summary": str(detail.get("summary") or "").strip(),
+            "root_causes": list(detail.get("root_causes") or []),
+            "missed_opportunities": list(detail.get("missed_opportunities") or []),
+            "lessons": list(detail.get("lessons") or []),
+            "risks": list(detail.get("risks") or []),
+            "parameter_recommendations": list(detail.get("parameter_recommendations") or []),
+            "tomorrow_mode": str(detail.get("tomorrow_mode") or "").strip(),
+            "tomorrow_focus": list(detail.get("tomorrow_focus") or []),
+            "source": str(detail.get("source") or "").strip(),
+        }
     note_line = {
         "at": datetime.now(timezone.utc).isoformat(),
         "kind": kind,
@@ -4507,6 +5090,33 @@ def _append_runtime_event(kind: str, detail: Dict[str, Any]) -> None:
     )
     if len(_recent_runtime_events) > 40:
         del _recent_runtime_events[:-40]
+
+
+def _append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception as error:
+        print(f"[KIBOT][JSONL][WARN] append failed path={path.name} reason={error}", flush=True)
+
+
+def _load_pattern_library() -> Dict[str, Any]:
+    data = _load_json_file(
+        PATTERN_LIBRARY_PATH,
+        {
+            "updated_at": "",
+            "weekly_patterns": [],
+            "pair_bias": {},
+            "ops_incidents": [],
+            "daily_reviews": [],
+        },
+    )
+    return data if isinstance(data, dict) else {}
+
+
+def _save_pattern_library(library: Dict[str, Any]) -> None:
+    _write_json_file(PATTERN_LIBRARY_PATH, library)
 
 
 def _load_trade_log_records() -> List[Dict[str, Any]]:
@@ -4680,6 +5290,7 @@ def _build_daily_report_payload(report_date: str) -> Dict[str, Any]:
     sells = [item for item in records if str(item.get("side") or "").upper() == "SELL"]
     buys = [item for item in records if str(item.get("side") or "").upper() == "BUY"]
     current_summary = _load_daily_summary()
+    governor = _governor_effective_directives()
     report_guard = dict(_daily_guard_state) if str(_daily_guard_state.get("date") or "") == report_date else {}
     start_balance = _parse_numeric(report_guard.get("start_of_day_equity"))
     end_balance = _parse_numeric(report_guard.get("current_equity"))
@@ -4738,9 +5349,24 @@ def _build_daily_report_payload(report_date: str) -> Dict[str, Any]:
         "losses": losses,
         "win_rate": (wins / max(len(sells), 1)) if sells else 0.0,
         "coins_bought_today": bought_pairs,
+        "brain_plan": {
+            "plan_id": governor.get("plan_id"),
+            "plan_state": governor.get("plan_state"),
+            "brain_mode": governor.get("brain_mode"),
+            "market_regime": governor.get("market_regime"),
+            "capital_posture": governor.get("capital_posture"),
+            "reason": governor.get("reason"),
+            "why": list(governor.get("why") or [])[:4],
+            "confidence": governor.get("effective_confidence") or governor.get("confidence"),
+            "expires_at": governor.get("expires_at"),
+            "ops_alerts": list(governor.get("ops_alerts") or [])[:4],
+            "focus_pairs": list((governor.get("indodax") or {}).get("focus_pairs") or [])[:5],
+            "risks_to_watch": list(governor.get("what_could_make_this_wrong") or [])[:4],
+        },
         "lessons": list(latest_learning.get("lessons") or []),
         "next_strategy": str(latest_learning.get("strategy") or latest_learning.get("summary") or "Prioritaskan pair high-trust, tekan kerugian, dan jaga rotasi modal tetap cepat.").strip(),
         "risks": list(latest_learning.get("risks") or []),
+        "sovereign_review": current_summary.get("last_sovereign_review") if isinstance(current_summary.get("last_sovereign_review"), dict) else {},
         "green_target": {
             "target_pct": float(os.getenv("KIBOT_GREEN_TARGET_DAILY_PCT", "0.003")),
             "gap_pct": max(float(os.getenv("KIBOT_GREEN_TARGET_DAILY_PCT", "0.003")) - float(daily_pnl_pct or 0.0), 0.0),
@@ -4755,14 +5381,148 @@ def _build_daily_report_payload(report_date: str) -> Dict[str, Any]:
     return report
 
 
+def _build_sovereign_daily_review_fallback(report: Dict[str, Any]) -> Dict[str, Any]:
+    daily_pct = float(_parse_numeric(report.get("daily_pnl_pct")) or 0.0)
+    weekly_pct = float(_parse_numeric(report.get("weekly_pnl_pct")) or 0.0)
+    brain_plan = report.get("brain_plan") if isinstance(report.get("brain_plan"), dict) else {}
+    focus_pairs = list(brain_plan.get("focus_pairs") or [])[:4]
+    root_causes: List[str] = []
+    missed: List[str] = []
+    lessons: List[str] = []
+    risks: List[str] = list(report.get("risks") or [])[:3]
+    params: List[str] = []
+
+    if daily_pct < 0:
+        root_causes.append("PnL harian negatif menandakan posture atau filter entry belum cukup ketat.")
+        params.append("Naikkan standar entry untuk pair dengan win-rate lemah dan spread kurang bersih.")
+    if weekly_pct < 0:
+        root_causes.append("PnL mingguan masih di bawah nol, jadi pair memory dan rotasi modal harus lebih disiplin.")
+        params.append("Turunkan agresi modal sampai dua sesi hijau berturut-turut tercapai.")
+    if int(report.get("closed_trades") or 0) == 0:
+        root_causes.append("Hari ini hampir tidak ada trade tutup, sehingga stagnasi perlu dijelaskan dari sisi gate, modal, atau kualitas sinyal.")
+        missed.append("Periksa peluang yang lolos scan tetapi tertahan gate terlalu lama.")
+    if not focus_pairs:
+        missed.append("Belum ada fokus pair yang cukup kuat dari sovereign plan terakhir.")
+    else:
+        lessons.append("Gunakan fokus pair dari brain plan sebagai shortlist utama, bukan menebar entry ke pair abu-abu.")
+    if not risks:
+        risks.append("Perubahan regime mendadak dan stale state lintas server bisa membuat plan salah arah.")
+    if not lessons:
+        lessons.append("Pertahankan kualitas sinyal di atas frekuensi; target utama tetap pertumbuhan yang konsisten.")
+
+    tomorrow_mode = "CONTROLLED"
+    if daily_pct <= -0.01 or weekly_pct <= -0.03:
+        tomorrow_mode = "SURVIVAL"
+    elif daily_pct > 0.003 and weekly_pct >= 0:
+        tomorrow_mode = "CONTROLLED_AGGRESSIVE"
+
+    return {
+        "summary": " | ".join((root_causes or lessons)[:2]),
+        "root_causes": root_causes[:4],
+        "missed_opportunities": missed[:4],
+        "lessons": lessons[:4],
+        "risks": risks[:4],
+        "parameter_recommendations": params[:4],
+        "tomorrow_mode": tomorrow_mode,
+        "tomorrow_focus": focus_pairs,
+        "source": "heuristic_fallback",
+    }
+
+
+def _run_sovereign_daily_review(report: Dict[str, Any]) -> Dict[str, Any]:
+    fallback = _build_sovereign_daily_review_fallback(report)
+    result = dict(fallback)
+    polymarket_snapshot = _brain.snapshot().get("polymarket") if hasattr(_brain, "snapshot") else {}
+    if AI_ROUTER_ENABLED:
+        try:
+            ai_result = query_ai(
+                "SOVEREIGN_DAILY_REVIEW",
+                {
+                    "daily_report": report,
+                    "latest_learning": _load_json_file(LEARNING_REVIEW_PATH, {}),
+                    "pair_memory": _pair_memory_brief(limit=6),
+                    "polymarket": polymarket_snapshot if isinstance(polymarket_snapshot, dict) else {},
+                },
+                cache_ttl_minutes=30,
+                force_refresh=True,
+            )
+            if isinstance(ai_result, dict) and ai_result:
+                result = {
+                    "summary": str(ai_result.get("summary") or fallback.get("summary") or "").strip(),
+                    "root_causes": _coerce_learning_list(ai_result.get("root_causes") or fallback.get("root_causes"))[:5],
+                    "missed_opportunities": _coerce_learning_list(ai_result.get("missed_opportunities") or fallback.get("missed_opportunities"))[:5],
+                    "lessons": _coerce_learning_list(ai_result.get("lessons") or fallback.get("lessons"))[:5],
+                    "risks": _coerce_learning_list(ai_result.get("risks") or fallback.get("risks"))[:5],
+                    "parameter_recommendations": _coerce_learning_list(ai_result.get("parameter_recommendations") or fallback.get("parameter_recommendations"))[:5],
+                    "tomorrow_mode": str(ai_result.get("tomorrow_mode") or fallback.get("tomorrow_mode") or "CONTROLLED").strip().upper(),
+                    "tomorrow_focus": _coerce_learning_list(ai_result.get("tomorrow_focus") or fallback.get("tomorrow_focus"))[:5],
+                    "source": str(ai_result.get("provider") or ai_result.get("source") or "ai_router"),
+                }
+        except Exception as error:
+            print(f"[KIBOT][SOVEREIGN_REVIEW][WARN] ai review failed reason={error}", flush=True)
+    result["at"] = datetime.now(timezone.utc).isoformat()
+    result["report_date"] = str(report.get("report_date") or _operational_wib_date())
+    _update_daily_summary("sovereign_review", result)
+    library = _load_pattern_library()
+    reviews = [item for item in list(library.get("daily_reviews") or []) if item.get("report_date") != result["report_date"]]
+    reviews.append(result)
+    library["daily_reviews"] = sorted(reviews, key=lambda item: str(item.get("report_date") or ""))[-30:]
+    incidents = list(library.get("ops_incidents") or [])
+    for item in list(result.get("risks") or [])[:2]:
+        incidents.append({"at": result["at"], "risk": item, "report_date": result["report_date"]})
+    library["ops_incidents"] = incidents[-30:]
+    if result.get("tomorrow_focus"):
+        pair_bias = library.get("pair_bias") if isinstance(library.get("pair_bias"), dict) else {}
+        for pair in list(result.get("tomorrow_focus") or [])[:5]:
+            pair_key = _normalize_pair_id(pair)
+            if not pair_key:
+                continue
+            entry = pair_bias.get(pair_key) if isinstance(pair_bias.get(pair_key), dict) else {}
+            entry["last_focus_at"] = result["at"]
+            entry["last_mode"] = result.get("tomorrow_mode")
+            pair_bias[pair_key] = entry
+        library["pair_bias"] = pair_bias
+    weekly_patterns = list(library.get("weekly_patterns") or [])
+    if result.get("summary"):
+        weekly_patterns.append({"at": result["at"], "summary": result["summary"], "report_date": result["report_date"]})
+    library["weekly_patterns"] = weekly_patterns[-20:]
+    library["updated_at"] = result["at"]
+    _save_pattern_library(library)
+    _append_runtime_event(
+        "sovereign_daily_review",
+        {
+            "summary": result.get("summary"),
+            "tomorrow_mode": result.get("tomorrow_mode"),
+            "focus": list(result.get("tomorrow_focus") or [])[:4],
+            "source": result.get("source"),
+        },
+    )
+    _append_jsonl(
+        DECISION_LEDGER_PATH,
+        {
+            "at": result["at"],
+            "profile": "SLOW_REVIEW",
+            "reason": "daily_postmortem",
+            "report_date": result["report_date"],
+            "summary": result.get("summary"),
+            "tomorrow_mode": result.get("tomorrow_mode"),
+            "tomorrow_focus": list(result.get("tomorrow_focus") or [])[:5],
+            "source": result.get("source"),
+        },
+    )
+    return result
+
+
 def _render_daily_report_text(report: Dict[str, Any]) -> str:
     daily_pct = (_parse_numeric(report.get("daily_pnl_pct")) or 0.0) * 100.0
     weekly_pct = (_parse_numeric(report.get("weekly_pnl_pct")) or 0.0) * 100.0
     green_target = report.get("green_target") if isinstance(report.get("green_target"), dict) else {}
+    brain_plan = report.get("brain_plan") if isinstance(report.get("brain_plan"), dict) else {}
     green_target_pct = (_parse_numeric(green_target.get("target_pct")) or 0.0) * 100.0
     green_gap_pct = (_parse_numeric(green_target.get("gap_pct")) or 0.0) * 100.0
     bought = ", ".join(str(item).upper() for item in list(report.get("coins_bought_today") or [])[:8]) or "tidak ada"
     lessons = list(report.get("lessons") or [])[:3]
+    sovereign_review = report.get("sovereign_review") if isinstance(report.get("sovereign_review"), dict) else {}
     if not lessons:
         lessons = [str(report.get("next_strategy") or "Fokus ke pair paling bersih, kurangi whipsaw, dan pertahankan disiplin exit.")]
     lines = [
@@ -4780,8 +5540,60 @@ def _render_daily_report_text(report: Dict[str, Any]) -> str:
     for lesson in lessons:
         lines.append(f"• {lesson}")
     strategy = str(report.get("next_strategy") or "").strip()
+    if brain_plan:
+        lines.extend(
+            [
+                "",
+                (
+                    "Brain posture: "
+                    f"{str(brain_plan.get('brain_mode') or '?')} | "
+                    f"regime {str(brain_plan.get('market_regime') or '?')} | "
+                    f"confidence {(float(_parse_numeric(brain_plan.get('confidence')) or 0.0) * 100):.0f}%"
+                ),
+            ]
+        )
+        why_items = list(brain_plan.get("why") or [])[:2]
+        if why_items:
+            lines.append("Kenapa posture ini:")
+            for item in why_items:
+                lines.append(f"• {item}")
+        focus_pairs = ", ".join(str(item).upper() for item in list(brain_plan.get("focus_pairs") or [])[:4])
+        if focus_pairs:
+            lines.append(f"Fokus pair: {focus_pairs}")
+        ops_alerts = list(brain_plan.get("ops_alerts") or [])[:2]
+        if ops_alerts:
+            lines.append("Alert sistem:")
+            for item in ops_alerts:
+                lines.append(f"• {item}")
+        risks_to_watch = list(brain_plan.get("risks_to_watch") or [])[:2]
+        if risks_to_watch:
+            lines.append("Yang bisa bikin rencana ini salah:")
+            for item in risks_to_watch:
+                lines.append(f"• {item}")
+    if sovereign_review:
+        root_causes = list(sovereign_review.get("root_causes") or [])[:2]
+        if root_causes:
+            lines.extend(["", "Akar masalah hari ini:"])
+            for item in root_causes:
+                lines.append(f"• {item}")
+        missed = list(sovereign_review.get("missed_opportunities") or [])[:2]
+        if missed:
+            lines.append("Peluang yang perlu diburu/diusut:")
+            for item in missed:
+                lines.append(f"• {item}")
+        params = list(sovereign_review.get("parameter_recommendations") or [])[:2]
+        if params:
+            lines.append("Perubahan yang direkomendasikan:")
+            for item in params:
+                lines.append(f"• {item}")
+        tomorrow_mode = str(sovereign_review.get("tomorrow_mode") or "").strip()
+        tomorrow_focus = ", ".join(str(item).upper() for item in list(sovereign_review.get("tomorrow_focus") or [])[:4])
+        if tomorrow_mode:
+            lines.append(f"Mode besok: {tomorrow_mode}")
+        if tomorrow_focus:
+            lines.append(f"Fokus besok: {tomorrow_focus}")
     if strategy:
-        lines.extend(["", f"Fokus besok: {strategy}"])
+        lines.extend(["", f"Strategi besok: {strategy}"])
     return "\n".join(lines)
 
 
@@ -5135,6 +5947,8 @@ def _complete_midnight_reset(new_date: str, *, reason: str) -> None:
 
 def _start_midnight_rollover(previous_date: str, new_date: str) -> None:
     report = _build_daily_report_payload(previous_date)
+    report["sovereign_review"] = _run_sovereign_daily_review(report)
+    _store_daily_report(report)
     _telegram_send(_render_daily_report_text(report), category="daily_report")
     _daily_cycle_state["last_daily_report_date"] = previous_date
     _save_daily_cycle_state()
@@ -5251,11 +6065,16 @@ def _write_runtime_note(*, force: bool = False) -> None:
         "strategy_governor": {
             "directives": _governor_effective_directives(),
             "state": dict(_governor_state),
+            "loop_targets": {
+                "fast_sec": GOVERNOR_FAST_LOOP_SEC,
+                "medium_sec": GOVERNOR_MEDIUM_LOOP_SEC,
+            },
         },
         "veto_metrics": _veto_metrics,
         "sector_count": len(_last_sector_map),
         "sector_preview": {key: value[:5] for key, value in list(_last_sector_map.items())[:5]},
         "latest_learning_review": _load_json_file(LEARNING_REVIEW_PATH, {}),
+        "pattern_library": _load_pattern_library(),
         "brain_assist": _brain.snapshot(),
         "recent_events": list(_recent_runtime_events[-15:]),
     }
@@ -5573,9 +6392,19 @@ def _call_provider(
     timeout_sec: float = AI_REQUEST_TIMEOUT_SEC,
 ) -> str:
     p = provider.lower().strip()
+    hint = str(model_hint or "").strip()
+    provider_model_hint = hint
+    if p == "openrouter" and hint and "/" not in hint:
+        provider_model_hint = ""
+    elif p == "cohere" and hint and not hint.startswith("command"):
+        provider_model_hint = ""
+    elif p == "gemini" and hint and not hint.startswith("gemini"):
+        provider_model_hint = ""
+    elif p == "nvidia" and hint and "/" not in hint:
+        provider_model_hint = ""
     if p == "ollama":
         return _call_ollama(
-            model=model_hint or OLLAMA_MODEL,
+            model=provider_model_hint or OLLAMA_MODEL,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             timeout_sec=timeout_sec,
@@ -5585,7 +6414,7 @@ def _call_provider(
             provider="groq",
             api_url=GROQ_API_URL,
             api_key=GROQ_API_KEY,
-            model=model_hint or GROQ_MODEL,
+            model=provider_model_hint or GROQ_MODEL,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             timeout_sec=timeout_sec,
@@ -5595,7 +6424,7 @@ def _call_provider(
             provider="openrouter",
             api_url=OPENROUTER_API_URL,
             api_key=OPENROUTER_API_KEY,
-            model=model_hint or OPENROUTER_MODEL,
+            model=provider_model_hint or OPENROUTER_MODEL,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             timeout_sec=timeout_sec,
@@ -5612,14 +6441,14 @@ def _call_provider(
         )
     if p == "cohere":
         return _call_cohere(
-            model=model_hint or COHERE_MODEL,
+            model=provider_model_hint or COHERE_MODEL,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             timeout_sec=timeout_sec,
         )
     if p == "gemini":
         return _call_gemini(
-            model=model_hint or GEMINI_MODEL,
+            model=provider_model_hint or GEMINI_MODEL,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             timeout_sec=timeout_sec,
@@ -7971,11 +8800,27 @@ def _http_state_payload() -> Dict[str, Any]:
                 ),
             },
             "strategy_governor": {
+                "plan_id": governor_directives.get("plan_id"),
+                "plan_state": governor_directives.get("plan_state"),
+                "plan_is_expired": governor_directives.get("plan_is_expired"),
+                "expires_at": governor_directives.get("expires_at"),
+                "brain_mode": governor_directives.get("brain_mode"),
+                "market_regime": governor_directives.get("market_regime"),
+                "capital_posture": governor_directives.get("capital_posture"),
                 "strategy_mode": governor_directives.get("strategy_mode"),
                 "reason": governor_directives.get("reason"),
+                "why": governor_directives.get("why"),
+                "confidence": governor_directives.get("confidence"),
+                "effective_confidence": governor_directives.get("effective_confidence"),
+                "confidence_decay_per_hour": governor_directives.get("confidence_decay_per_hour"),
+                "fallback_if_expired": governor_directives.get("fallback_if_expired"),
+                "ops_alerts": governor_directives.get("ops_alerts"),
+                "what_could_make_this_wrong": governor_directives.get("what_could_make_this_wrong"),
                 "provider": governor_directives.get("provider"),
                 "updated_at": governor_directives.get("updated_at"),
                 "execution": governor_directives.get("execution"),
+                "indodax": governor_directives.get("indodax"),
+                "polymarket": governor_directives.get("polymarket"),
                 "risk": governor_directives.get("risk"),
                 "refresh": dict(_governor_state),
             },
@@ -8330,7 +9175,9 @@ def _brain_signal_advisory(
 ) -> Dict[str, Any]:
     directives = _governor_effective_directives()
     execution_cfg = directives.get("execution") if isinstance(directives.get("execution"), dict) else {}
+    indodax_cfg = directives.get("indodax") if isinstance(directives.get("indodax"), dict) else {}
     strategy_mode = str(directives.get("strategy_mode") or "NEUTRAL").upper()
+    brain_mode = str(directives.get("brain_mode") or "CONTROLLED").upper()
     _brain.ensure_warm(
         watch_symbols=_brain_watch_symbols(),
         context={
@@ -8372,14 +9219,40 @@ def _brain_signal_advisory(
     review_reason = str(review.get("reason") or "").strip()
     focus_pairs = {
         str(item).lower().strip()
-        for item in list(execution_cfg.get("focus_pairs") or [])
+        for item in list(indodax_cfg.get("focus_pairs") or execution_cfg.get("focus_pairs") or [])
         if str(item).strip()
     }
     avoid_pairs = {
         str(item).lower().strip()
-        for item in list(execution_cfg.get("avoid_pairs") or [])
+        for item in list(indodax_cfg.get("avoid_pairs") or execution_cfg.get("avoid_pairs") or [])
         if str(item).strip()
     }
+    if not bool(indodax_cfg.get("allow_entries", True)):
+        return {
+            "allow": False,
+            "budget_idr": budget_idr,
+            "reason": str(directives.get("plan_state") or "governor_entries_disabled").lower(),
+            "symbol": symbol,
+            "risk_bias": risk_bias,
+            "strategy_next": strategy_next,
+            "watch_review": review,
+        }
+    max_open_positions = int(_parse_numeric(indodax_cfg.get("max_open_positions")) or 0)
+    active_pairs = _active_position_pairs()
+    if (
+        max_open_positions > 0
+        and pair.lower() not in active_pairs
+        and len(active_pairs) >= max_open_positions
+    ):
+        return {
+            "allow": False,
+            "budget_idr": budget_idr,
+            "reason": "governor_position_cap_reached",
+            "symbol": symbol,
+            "risk_bias": risk_bias,
+            "strategy_next": strategy_next,
+            "watch_review": review,
+        }
 
     if pair.lower() in avoid_pairs:
         return {
@@ -8462,6 +9335,9 @@ def _brain_signal_advisory(
     adjusted_budget = budget_idr
     if abs(budget_multiplier - 1.0) > 1e-6:
         adjusted_budget = max(ABSOLUTE_MIN_POSITION_SIZE_IDR, round(float(budget_idr) * budget_multiplier, 2))
+    budget_cap = float(_parse_numeric(indodax_cfg.get("budget_per_trade_idr")) or 0.0)
+    if budget_cap > 0:
+        adjusted_budget = min(adjusted_budget, budget_cap)
 
     reason_parts: List[str] = []
     if risk_bias and risk_bias != "UNKNOWN":
@@ -8474,6 +9350,8 @@ def _brain_signal_advisory(
         reason_parts.append("brain_neutral")
     if strategy_mode and strategy_mode != "NEUTRAL":
         reason_parts.append(f"governor={strategy_mode.lower()}")
+    if brain_mode and brain_mode != "CONTROLLED":
+        reason_parts.append(f"brain={brain_mode.lower()}")
 
     return {
         "allow": True,
@@ -8510,26 +9388,44 @@ def _brain_thinking_loop():
 
 
 def _strategy_governor_loop() -> None:
-    """Refresh adaptive directives when important context changes, not only on a fixed timer."""
-    loop_sleep_sec = int(os.getenv("KIBOT_GOVERNOR_LOOP_SEC", "25"))
+    """Refresh adaptive directives with separate fast and medium sovereign loops."""
+    loop_sleep_sec = int(os.getenv("KIBOT_GOVERNOR_LOOP_SEC", "10"))
+    last_fast_refresh_at = 0.0
+    last_medium_refresh_at = 0.0
+    startup_profile = "medium" if _is_scanner_only_node() else "fast"
     try:
-        _refresh_governor_directives(force=True, reason="startup")
+        _refresh_governor_directives(force=True, reason="startup", profile=startup_profile)
         _write_runtime_note(force=True)
+        now_ts = time.time()
+        last_fast_refresh_at = now_ts
+        last_medium_refresh_at = now_ts if startup_profile == "medium" else 0.0
     except Exception as error:
         print(f"[KIBOT][GOVERNOR][WARN] initial refresh failed: {error}", flush=True)
     while not _shutdown_event.is_set():
         try:
-            context = _build_governor_context()
+            now_ts = time.time()
+            context = _build_governor_context(profile="fast")
             event_fingerprint = _governor_event_fingerprint(context)
             last_event_fingerprint = str(_governor_state.get("last_event_fingerprint") or "")
             last_refresh_at = _iso_to_epoch(str(_governor_state.get("last_refresh_at") or "")) or 0.0
             stale = (time.time() - last_refresh_at) >= GOVERNOR_MAX_STALE_SEC
+            due_fast = (now_ts - last_fast_refresh_at) >= max(15, GOVERNOR_FAST_LOOP_SEC)
+            due_medium = (now_ts - last_medium_refresh_at) >= max(120, GOVERNOR_MEDIUM_LOOP_SEC)
             if event_fingerprint != last_event_fingerprint:
                 reason = "trade_event" if _recent_trade_activity_window_sec(300) else "context_shift"
-                _refresh_governor_directives(reason=reason)
+                _refresh_governor_directives(reason=reason, profile="fast")
                 _write_runtime_note(force=True)
+                last_fast_refresh_at = now_ts
+            elif due_fast:
+                _refresh_governor_directives(reason="fast_cycle", profile="fast")
+                _write_runtime_note(force=True)
+                last_fast_refresh_at = now_ts
+            if due_medium:
+                _refresh_governor_directives(force=True, reason="medium_cycle", profile="medium")
+                _write_runtime_note(force=True)
+                last_medium_refresh_at = now_ts
             elif stale:
-                _refresh_governor_directives(reason="stale_refresh")
+                _refresh_governor_directives(reason="stale_refresh", profile="fast")
                 _write_runtime_note(force=True)
         except Exception as error:
             print(f"[KIBOT][GOVERNOR][WARN] loop error: {error}", flush=True)

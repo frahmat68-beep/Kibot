@@ -1,177 +1,118 @@
 # Trinity Deployment Guide
 
-## System Overview
+## Active Layout
 
-Trinity consists of 3 independent services running on 2 Oracle Cloud servers:
+### SG1 / Indodax Executor
 
-**Indodax Server (213.35.118.26):**
-- kidax-engine (KiDax trading bot)
-- kibot-manager (Python AI veto / learning daemon)
+- host: `213.35.118.26`
+- services:
+  - `kidax-engine`
+  - `kibot-manager`
+  - `ki-telegram-monitor`
+  - `kibot-ollama-tunnel`
+  - `kibot-polymarket-tunnel`
 
-**Binance Server (152.69.218.198):**
-- kinance-engine (Kinance scanner)
+### SG2 / Global Radar
 
-## Prerequisites
+- host: `152.69.218.198`
+- services:
+  - `kinance-engine`
+  - `ki-global-scanner-mesh`
+  - `kibot-manager`
+  - support ops services as needed
+  - `kibot-ollama-tunnel`
+  - `kibot-polymarket-tunnel`
 
-1. SSH keys in repo: `SSH_INDODAX/` and `SSH_BINANCE/`
-2. JDK 21+ installed on both servers
-3. Python 3.10+ on Indodax server
-4. Systemd service files configured
+### Batam / Brain Hub
+
+- host: `168.110.201.228`
+- services:
+  - `ollama`
+  - `kibot-ollama-gateway`
+  - `kibot-polymarket`
 
 ## Build
 
 ```bash
-# From repo root
 ./gradlew :apps:mac-engine:shadowJar
-
-# Output: apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar
 ```
 
-## Deploy to Indodax Server
+Artifact:
+
+- `apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar`
+
+## Deploy SG1
 
 ```bash
-# Copy JAR
-scp -i "SSH_INDODAX/ssh-key-2026-03-22.key" \
+scp -i "SSH_SINGAPORE/SSH_SG1/ssh-key-2026-03-22.key" \
   apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar \
   ubuntu@213.35.118.26:/home/ubuntu/KiBot/server/mac-engine-all.jar
 
-# Restart services
-ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
-  'sudo systemctl restart kidax-engine kibot-manager'
-
-# Verify
-ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
-  'systemctl status kidax-engine kibot-manager'
+ssh -i "SSH_SINGAPORE/SSH_SG1/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
+  'sudo systemctl restart kidax-engine kibot-manager ki-telegram-monitor'
 ```
 
-## Deploy to Binance Server
+## Deploy SG2
 
 ```bash
-# Copy JAR
-scp -i "SSH_BINANCE/ssh-key-2026-03-27.key" \
+scp -i "SSH_SINGAPORE/SSH_SG2/ssh-key-2026-03-27.key" \
   apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar \
   ubuntu@152.69.218.198:/home/ubuntu/KiBot/server/mac-engine-all.jar
 
-# Restart service
-ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
-  'sudo systemctl restart kinance-engine'
+ssh -i "SSH_SINGAPORE/SSH_SG2/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
+  'sudo systemctl restart kinance-engine kibot-manager ki-global-scanner-mesh'
+```
 
-# Verify
-ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
-  'systemctl status kinance-engine'
+## Deploy Batam
+
+```bash
+rsync -avz -e "ssh -i SSH_BATAM/ssh-key-batam-active.pem" \
+  scripts/kibot_ollama_gateway.py \
+  scripts/kibot_polymarket.py \
+  ubuntu@168.110.201.228:/home/ubuntu/KiBot/scripts/
+
+scp -i "SSH_BATAM/ssh-key-batam-active.pem" \
+  infra/systemd/kibot-ollama-gateway.service \
+  infra/systemd/kibot-polymarket.service \
+  infra/systemd/ollama-batam.override.conf \
+  ubuntu@168.110.201.228:/tmp/
+
+ssh -i "SSH_BATAM/ssh-key-batam-active.pem" ubuntu@168.110.201.228 '
+  sudo cp /tmp/kibot-ollama-gateway.service /etc/systemd/system/kibot-ollama-gateway.service &&
+  sudo cp /tmp/kibot-polymarket.service /etc/systemd/system/kibot-polymarket.service &&
+  sudo mkdir -p /etc/systemd/system/ollama.service.d &&
+  sudo cp /tmp/ollama-batam.override.conf /etc/systemd/system/ollama.service.d/override.conf &&
+  sudo systemctl daemon-reload &&
+  sudo systemctl restart ollama kibot-ollama-gateway kibot-polymarket
+'
 ```
 
 ## Health Checks
 
-### Check KiDax Status
-```bash
-ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
-  'curl -s http://localhost:8787/api/state | python3 -m json.tool'
-```
-
-### Check Kinance Status
-```bash
-ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
-  'curl -s http://localhost:8788/api/state | python3 -m json.tool'
-```
-
-### Check Memory Usage
-```bash
-# Indodax
-ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 'free -m'
-
-# Binance
-ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 'free -m'
-```
-
-### Monitor Logs
-```bash
-# KiDax
-ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
-  'journalctl -u kidax-engine -f'
-
-# KiBot Manager
-ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
-  'journalctl -u kibot-manager -f'
-
-# Kinance
-ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
-  'journalctl -u kinance-engine -f'
-```
-
-## Rollback
+SG1:
 
 ```bash
-# Indodax
-ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
-  'cd /home/ubuntu/KiBot/server && \
-   cp mac-engine-all.jar.bak.$(ls -t mac-engine-all.jar.bak* | head -1) mac-engine-all.jar && \
-   sudo systemctl restart kidax-engine'
-
-# Binance
-ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
-  'cd /home/ubuntu/KiBot/server && \
-   cp mac-engine-all.jar.bak.$(ls -t mac-engine-all.jar.bak* | head -1) mac-engine-all.jar && \
-   sudo systemctl restart kinance-engine'
+ssh -i "SSH_SINGAPORE/SSH_SG1/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
+  'curl -s http://127.0.0.1:9998/api/state'
 ```
 
-## Emergency Stop
+SG2:
 
 ```bash
-# Stop all trading
-ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
-  'sudo systemctl stop kidax-engine kibot-manager'
-
-ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
-  'sudo systemctl stop kinance-engine'
+ssh -i "SSH_SINGAPORE/SSH_SG2/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
+  'curl -s http://127.0.0.1:9998/api/state'
 ```
 
-## Configuration Files
-
-### Indodax Server
-- `/home/ubuntu/KiBot/.env.kibot` - KiDax runtime config
-- `/home/ubuntu/KiBot/.env.kibot_manager` - Python AI daemon config
-- `/etc/systemd/system/kidax-engine.service` - KiDax systemd
-- `/etc/systemd/system/kibot-manager.service` - Manager systemd
-
-### Binance Server
-- `/home/ubuntu/KiBot/.env.kibot` - Kinance config
-- `/etc/systemd/system/kinance-engine.service` - Kinance systemd
-
-## Troubleshooting
-
-### High Memory Usage
-```bash
-# Check swap usage
-ssh ubuntu@SERVER 'free -m'
-
-# Clear swap if needed
-ssh ubuntu@SERVER 'sudo swapoff -a && sudo swapon -a'
-```
-
-### Service Won't Start
-```bash
-# Check detailed logs
-ssh ubuntu@SERVER 'journalctl -u SERVICE_NAME -n 100 --no-pager'
-
-# Check if port is in use
-ssh ubuntu@SERVER 'sudo lsof -i :PORT'
-```
-
-### UDP Communication Issues
-```bash
-# Test UDP from Kinance to KiDax
-ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
-  'ping -c 3 213.35.118.26'
-```
-
-## Performance Monitoring
+Batam:
 
 ```bash
-# CPU and memory per service
-ssh ubuntu@SERVER 'systemctl status SERVICE_NAME | grep -E "Memory|CPU"'
-
-# Trading activity
-ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@213.35.118.26 \
-  'journalctl -u kidax-engine --since "10 minutes ago" | grep -E "BUY|SELL" | tail -20'
+ssh -i "SSH_BATAM/ssh-key-batam-active.pem" ubuntu@168.110.201.228 \
+  'curl -s http://127.0.0.1:11435/health && echo && curl -s http://127.0.0.1:11600/api/state'
 ```
+
+## Rules
+
+- jangan jalankan governor terpisah
+- jangan jadikan Batam blocking dependency untuk setiap keputusan kecil
+- kalau RAM SG mepet, matikan sidecar non-kritis dulu sebelum sentuh engine utama
+- `.oci` / Ampere assets tetap dipertahankan dan tidak termasuk cleanup ini
