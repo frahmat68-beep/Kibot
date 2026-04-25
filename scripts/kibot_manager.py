@@ -3510,6 +3510,7 @@ def _build_governor_context() -> Dict[str, Any]:
         "capital_profile": capital_profile,
         "trade_metrics": trade_metrics,
         "scanner_feed": remote_summary,
+        "polymarket": brain_snapshot.get("polymarket") if isinstance(brain_snapshot.get("polymarket"), dict) else {},
         "whatif_top_opportunities": top_whatif,
         "math_review": {
             "last_action": _math_review_last_action,
@@ -6009,6 +6010,19 @@ def _get_total_equity_estimate() -> float:
         return 0.0
 
 
+def _manager_role() -> str:
+    raw = str(os.getenv("KIBOT_MANAGER_ROLE", "") or "").strip().upper()
+    if raw:
+        return raw
+    if str(os.getenv("KIBOT_SCANNER_ONLY", "") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return "SCANNER"
+    return "EXECUTOR"
+
+
+def _is_scanner_only_node() -> bool:
+    return _manager_role() in {"SCANNER", "SCANNER_ONLY", "RADAR", "RADAR_ONLY"}
+
+
 def _adaptive_capital_profile(
     *,
     equity: Optional[float] = None,
@@ -6045,6 +6059,18 @@ def _adaptive_capital_profile(
         "strategy_mode": directives.get("strategy_mode") or "NEUTRAL",
     }
     if not ADAPTIVE_CAPITAL_ENABLED:
+        return profile
+
+    if _is_scanner_only_node():
+        profile.update(
+            {
+                "mode": "RADAR_ONLY",
+                "reason": "scanner_node_passive",
+                "risk_pct_per_trade": 0.0,
+                "max_position_idr": 0.0,
+                "trading_allowed": False,
+            }
+        )
         return profile
 
     equity_now = float(equity_val or 0.0)
@@ -7849,10 +7875,23 @@ def _manager_gate_payload(
             _fetch_local_runtime_state(timeout_sec=0.35, max_cache_age_sec=2.5)
             if include_runtime_state
             else {}
-        )
+    )
     equity_estimate = _extract_equity_estimate(runtime_state)
     capital_profile = capital_profile or _adaptive_capital_profile(equity=equity_estimate)
     with _state_lock:
+        if _is_scanner_only_node():
+            runtime_trading_allowed = runtime_state.get("tradingAllowed")
+            return {
+                "system_state": "HEALTHY",
+                "tradingAllowed": False,
+                "runtimeTradingAllowed": runtime_trading_allowed,
+                "effectiveTradingAllowed": False,
+                "effectiveState": str(runtime_state.get("effectiveState") or "RUNNING"),
+                "degradedReason": "",
+                "hard_stop_active": False,
+                "daily_pnl_pct": 0.0,
+                "capital_profile": capital_profile,
+            }
         capital_sufficient = bool(capital_profile.get("trading_allowed"))
         manager_trading_allowed = (
             (not _entry_state_is_suspended())
@@ -7892,6 +7931,7 @@ def _http_state_payload() -> Dict[str, Any]:
     governor_directives = _governor_effective_directives()
     with _state_lock:
         capital_sufficient = bool(capital_profile.get("trading_allowed"))
+        scanner_only = _is_scanner_only_node()
         return {
             "ok": True,
             "service": "kibot-manager",
@@ -7903,9 +7943,13 @@ def _http_state_payload() -> Dict[str, Any]:
             "effectiveTradingAllowed": gate_payload["effectiveTradingAllowed"],
             "marketRegime": _daily_summary_market_regime() if DAILY_SUMMARY_ENABLED else "UNKNOWN",
             "degradedReason": gate_payload["degradedReason"],
-            "healthDecision": str(_gate_state.get("reason") or ""),
-            "statusMessage": str(runtime_state.get("statusMessage") or "Server monitor connected to live feed"),
-            "nodeStatus": str(runtime_state.get("nodeStatus") or "active"),
+            "healthDecision": "scanner_node_passive" if scanner_only else str(_gate_state.get("reason") or ""),
+            "statusMessage": (
+                "Radar node healthy and forwarding scanner feed"
+                if scanner_only
+                else str(runtime_state.get("statusMessage") or "Server monitor connected to live feed")
+            ),
+            "nodeStatus": "radar" if scanner_only else str(runtime_state.get("nodeStatus") or "active"),
             "hard_stop_active": gate_payload["hard_stop_active"],
             "daily_pnl_pct": gate_payload["daily_pnl_pct"],
             "api_fail_streak": _api_fail_streak,

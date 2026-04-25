@@ -25,6 +25,7 @@ import signal
 import logging
 import threading
 import subprocess
+import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -33,6 +34,41 @@ import requests
 
 # ── Timezone WIB ───────────────────────────────────────────────────────────────
 WIB = timezone(timedelta(hours=7))
+ROOT_DIR = Path(__file__).resolve().parent.parent
+
+
+def _load_dotenv_early() -> None:
+    candidates = [
+        ROOT_DIR / ".env.kibot_manager",
+        ROOT_DIR / ".env.kibot",
+        ROOT_DIR / ".env.server",
+        ROOT_DIR / ".env",
+        ROOT_DIR / "scripts" / ".env",
+        Path(".env.kibot_manager"),
+        Path(".env.kibot"),
+        Path(".env.server"),
+        Path(".env"),
+        Path("scripts/.env"),
+        Path("../.env"),
+    ]
+    explicit = os.getenv("KIBOT_MANAGER_ENV_FILE")
+    if explicit:
+        candidates.insert(0, Path(explicit))
+    for path in candidates:
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+            key, value = raw.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("'").strip('"')
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+_load_dotenv_early()
 
 def now_wib() -> datetime:
     return datetime.now(WIB)
@@ -41,7 +77,12 @@ def ts_wib() -> str:
     return now_wib().strftime("%H:%M:%S WIB")
 
 # ── Config dari env ─────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_TOKEN   = (
+    os.getenv("TELEGRAM_BOT_TOKEN")
+    or os.getenv("KIBOT_TELEGRAM_BOT_TOKEN")
+    or os.getenv("KICRYP_TELEGRAM_BOT_TOKEN")
+    or ""
+).strip()
 TELEGRAM_CHAT_ID = (
     os.getenv("TELEGRAM_CHAT_ID")
     or os.getenv("TELEGRAM_USER_ID")
@@ -50,10 +91,26 @@ TELEGRAM_CHAT_ID = (
 ).strip()
 
 BASE_DIR         = Path(__file__).parent.parent
+sys.path.insert(0, str(BASE_DIR / "scripts"))
+try:
+    from kibot_ai_coordinator import query_ai
+except Exception:
+    query_ai = None
+
 STATE_FILE       = Path(os.getenv("KIBOT_STATE_FILE",  str(BASE_DIR / "state" / "daily_state.json")))
 LOG_FILE         = Path(os.getenv("KIBOT_LOG_FILE",    str(BASE_DIR / "logs"  / "trades.jsonl")))
 PID_FILE         = Path(os.getenv("KIBOT_MANAGER_PID_FILE", str(BASE_DIR / "state" / "manager.pid")))
 OPS_LOG          = BASE_DIR / "logs" / "OPS_UPDATE_LOG.md"
+MANAGER_STATE_URL = os.getenv("KIBOT_MANAGER_STATE_URL", "http://127.0.0.1:9998/api/state")
+POLYMARKET_STATE_URL = os.getenv("KIBOT_POLYMARKET_STATE_URL", "http://127.0.0.1:11600/api/state")
+OLLAMA_CHAT_URL = os.getenv("KIBOT_OLLAMA_BASE_URL", "http://127.0.0.1:11435/api/chat")
+OLLAMA_CHAT_TOKEN = (
+    os.getenv("OLLAMA_API_KEY")
+    or os.getenv("KIBOT_OLLAMA_GATEWAY_TOKEN")
+    or ""
+).strip()
+OLLAMA_CHAT_MODEL = os.getenv("KIBOT_OLLAMA_FAST_MODEL", "qwen3:0.6b")
+OLLAMA_CHAT_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_TELEGRAM_TIMEOUT_SEC", "45"))
 
 POLL_INTERVAL    = int(os.getenv("KIBOT_MONITOR_POLL_SEC",  "60"))   # cek status tiap N detik
 ALERT_LOSS_PCT   = float(os.getenv("KIBOT_ALERT_LOSS_PCT",  "-1.0")) # alert kalau rugi > ini
@@ -81,10 +138,16 @@ def _tg(method: str, **kwargs) -> Optional[dict]:
         log.warning("TELEGRAM_BOT_TOKEN tidak diset — notif dimatiin")
         return None
     try:
+        request_timeout: float | tuple[float, float]
+        if method == "getUpdates":
+            poll_timeout = float(kwargs.get("timeout") or 30)
+            request_timeout = (5.0, max(15.0, poll_timeout + 10.0))
+        else:
+            request_timeout = 10.0
         r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}",
             json=kwargs,
-            timeout=10,
+            timeout=request_timeout,
         )
         return r.json()
     except Exception as e:
@@ -105,13 +168,28 @@ def get_updates(offset: int = 0) -> list:
     return []
 
 # ── Baca state bot ──────────────────────────────────────────────────────────────
+def _fetch_json(url: str) -> dict:
+    try:
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
 def read_state() -> dict:
+    live = _fetch_json(MANAGER_STATE_URL)
+    if live:
+        return live
     try:
         if STATE_FILE.exists():
             return json.loads(STATE_FILE.read_text())
     except Exception as e:
         log.error(f"Gagal baca state: {e}")
     return {}
+
+def read_polymarket_state() -> dict:
+    return _fetch_json(POLYMARKET_STATE_URL)
 
 def read_recent_trades(n: int = 5) -> list:
     trades = []
@@ -150,14 +228,21 @@ def is_manager_alive() -> bool:
 # ── Format pesan ────────────────────────────────────────────────────────────────
 def fmt_status(state: dict) -> str:
     ts       = ts_wib()
-    pnl_pct  = state.get("daily_pnl_pct", 0.0)
-    equity   = state.get("equity_idr", 0.0)
-    risk     = state.get("risk_mode", "UNKNOWN")
-    trades   = state.get("total_trades_today", 0)
-    wins     = state.get("wins_today", 0)
-    losses   = state.get("losses_today", 0)
+    pnl_pct  = float(state.get("daily_pnl_pct", 0.0) or 0.0)
+    equity   = float(
+        state.get("equity_idr")
+        or state.get("capital_health", {}).get("total_equity_est_idr")
+        or 0.0
+    )
+    risk     = state.get("trading_mode") or state.get("risk_mode", "UNKNOWN")
+    trade_metrics = state.get("trade_metrics") if isinstance(state.get("trade_metrics"), dict) else {}
+    trades   = int(state.get("total_trades_today") or trade_metrics.get("total_trades") or 0)
+    wins     = int(state.get("wins_today") or trade_metrics.get("wins") or 0)
+    losses   = int(state.get("losses_today") or trade_metrics.get("losses") or 0)
     wr       = (wins / trades * 100) if trades > 0 else 0.0
     alive    = "✅ Running" if is_manager_alive() else "🔴 <b>MATI!</b>"
+    system_state = str(state.get("system_state") or "UNKNOWN")
+    status_msg = str(state.get("degradedReason") or state.get("statusMessage") or "").strip()
 
     pnl_emoji = "🟢" if pnl_pct >= 0 else "🔴"
     risk_emoji = {"GROWTH": "🚀", "CAUTION": "⚠️", "DEFENSIVE": "🛡️",
@@ -170,7 +255,9 @@ def fmt_status(state: dict) -> str:
         f"{pnl_emoji} PnL Hari  : {pnl_pct:+.2f}%\n"
         f"💰 Equity  : Rp{equity:,.0f}\n"
         f"{risk_emoji} Risk Mode : {risk}\n"
+        f"🧭 State   : {system_state}\n"
         f"📈 Trades  : {trades} ({wins}W/{losses}L | WR {wr:.0f}%)\n"
+        + (f"📝 Note    : {status_msg}\n" if status_msg else "")
     )
 
 def fmt_trade(t: dict) -> str:
@@ -182,6 +269,165 @@ def fmt_trade(t: dict) -> str:
     emoji    = "🟢" if profit >= 0 else "🔴"
     return f"{emoji} <b>{pair}</b> {side} | {pct:+.2f}% | Rp{profit:+,.0f} [{bucket}]"
 
+def fmt_polymarket(state: dict) -> str:
+    if not state:
+        return "🎯 <b>Polymarket</b>\nState belum tersedia."
+    geoblock = state.get("geoblock") if isinstance(state.get("geoblock"), dict) else {}
+    opportunities = list(state.get("top_opportunities") or [])[:3]
+    lines = [
+        "🎯 <b>Polymarket</b>",
+        f"Ready      : {'✅' if state.get('ready') else '⚠️'}",
+        f"Region     : {geoblock.get('country') or '?'} blocked={geoblock.get('blocked')}",
+        f"Wallet     : <code>{str(state.get('wallet_address') or '')[:16]}...</code>" if state.get("wallet_address") else "Wallet     : unavailable",
+    ]
+    if opportunities:
+        lines.append("")
+        lines.append("<b>Top markets</b>")
+        for item in opportunities:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"• {str(item.get('slug') or item.get('question') or '?')[:64]} | "
+                f"liq={float(item.get('liquidity') or 0.0):,.0f} | "
+                f"spr={float(item.get('spread') or 0.0):.3f}"
+            )
+    return "\n".join(lines)
+
+
+def _compact_system_state(state: dict) -> dict:
+    capital = state.get("capital_health") if isinstance(state.get("capital_health"), dict) else {}
+    adaptive = capital.get("adaptive_profile") if isinstance(capital.get("adaptive_profile"), dict) else {}
+    brain = state.get("brain_assist") if isinstance(state.get("brain_assist"), dict) else {}
+    return {
+        "system_state": state.get("system_state"),
+        "effective_state": state.get("effectiveState"),
+        "trading_allowed": state.get("tradingAllowed"),
+        "daily_pnl_pct": state.get("daily_pnl_pct"),
+        "node_status": state.get("nodeStatus"),
+        "reason": state.get("degradedReason") or state.get("healthDecision"),
+        "capital_mode": adaptive.get("mode"),
+        "capital_reason": adaptive.get("reason"),
+        "ai_legion_count": ((brain.get("ai_legion") or {}).get("configured_count")),
+        "ai_critic": brain.get("ai_critic"),
+    }
+
+
+def _compact_polymarket_state(state: dict) -> dict:
+    opportunities = []
+    for item in list(state.get("top_opportunities") or [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        opportunities.append(
+            {
+                "slug": item.get("slug"),
+                "spread": item.get("spread"),
+                "liquidity": item.get("liquidity"),
+            }
+        )
+    return {
+        "ready": state.get("ready"),
+        "blocked": (state.get("geoblock") or {}).get("blocked") if isinstance(state.get("geoblock"), dict) else None,
+        "wallet": state.get("wallet_address"),
+        "top": opportunities,
+    }
+
+
+def _chat_context() -> dict:
+    state = read_state()
+    polymarket = read_polymarket_state()
+    return {
+        "system_state": _compact_system_state(state),
+        "polymarket": _compact_polymarket_state(polymarket),
+    }
+
+
+def _chat_reply(user_message: str, *, local_only: bool = False) -> str:
+    if query_ai is None:
+        return "⚠️ AI coordinator belum aktif di host ini."
+    prompt_type = "OPS_CHAT_LOCAL" if local_only else "OPS_CHAT"
+    reply = query_ai(
+        prompt_type,
+        {
+            **_chat_context(),
+            "user_message": str(user_message or "").strip()[:1200],
+        },
+        cache_ttl_minutes=1,
+        force_refresh=True,
+    )
+    if isinstance(reply, dict):
+        answer = str(reply.get("answer") or reply.get("raw") or "").strip()
+        if answer:
+            return answer
+    return "⚠️ AI belum memberi jawaban yang valid."
+
+
+def _local_ollama_chat(user_message: str) -> str:
+    payload = {
+        "model": OLLAMA_CHAT_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are KiBot's Telegram copilot. "
+                    "Answer briefly in Indonesian, operationally, and truthfully."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        **_chat_context(),
+                        "user_message": str(user_message or "").strip()[:800],
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        "stream": False,
+        "think": False,
+        "keep_alive": "30s",
+        "options": {
+            "temperature": 0.2,
+            "num_ctx": 1536,
+            "num_predict": 160,
+        },
+    }
+    headers = {"Content-Type": "application/json"}
+    if OLLAMA_CHAT_TOKEN:
+        headers["Authorization"] = f"Bearer {OLLAMA_CHAT_TOKEN}"
+    try:
+        response = requests.post(
+            OLLAMA_CHAT_URL,
+            json=payload,
+            headers=headers,
+            timeout=OLLAMA_CHAT_TIMEOUT_SEC,
+        )
+        response.raise_for_status()
+        data = response.json()
+        text = str((data.get("message") or {}).get("content") or "").strip()
+        return text or "⚠️ Ollama tidak mengembalikan jawaban."
+    except Exception as error:
+        return f"⚠️ Ollama tidak siap: {type(error).__name__}"
+
+
+def _natural_text_to_command(text: str) -> Optional[str]:
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return None
+    if raw in {"status", "cek status", "state", "kondisi"}:
+        return "/status"
+    if raw in {"pnl", "profit", "ringkasan pnl"}:
+        return "/pnl"
+    if "polymarket" in raw and len(raw.split()) <= 4:
+        return "/polymarket"
+    if raw.startswith("restart"):
+        return "/restart"
+    if raw.startswith("stop"):
+        return "/stop"
+    if raw in {"alive", "hidup?", "masih jalan?"}:
+        return "/alive"
+    return None
+
 # ── Perintah dari Telegram ───────────────────────────────────────────────────────
 HELP_TEXT = """
 🤖 <b>KiBot Monitor Commands</b>
@@ -189,6 +435,9 @@ HELP_TEXT = """
 /status  — Status bot real-time
 /trades  — 5 trade terakhir
 /pnl     — Ringkasan PnL hari ini
+/polymarket — Status Polymarket executor
+/ask ... — Tanya ke otak sistem
+/ollama ... — Tanya langsung ke Ollama lokal
 /alive   — Cek bot masih jalan ga
 /stop    — STOP bot (kirim SIGTERM ke manager)
 /restart — Restart manager (jalanin ulang)
@@ -196,7 +445,9 @@ HELP_TEXT = """
 """
 
 def handle_command(text: str) -> str:
-    cmd = text.strip().split()[0].lower().lstrip("/")
+    parts = text.strip().split(maxsplit=1)
+    cmd = parts[0].lower().lstrip("/")
+    arg = parts[1].strip() if len(parts) > 1 else ""
 
     if cmd == "status":
         state = read_state()
@@ -228,6 +479,19 @@ def handle_command(text: str) -> str:
             f"EV/trade  : Rp{ev:+,.0f}\n"
             f"📅 Reset tengah malam WIB"
         )
+
+    elif cmd == "polymarket":
+        return fmt_polymarket(read_polymarket_state())
+
+    elif cmd == "ask":
+        if not arg:
+            return "❓ Pakai /ask diikuti pertanyaan. Contoh: /ask kenapa bot lagi defensif?"
+        return _chat_reply(arg, local_only=False)
+
+    elif cmd == "ollama":
+        if not arg:
+            return "❓ Pakai /ollama diikuti pertanyaan."
+        return _local_ollama_chat(arg)
 
     elif cmd == "alive":
         alive = is_manager_alive()
@@ -287,10 +551,19 @@ def command_loop() -> None:
                 msg = upd.get("message", {})
                 text = msg.get("text", "")
                 chat_id = str(msg.get("chat", {}).get("id", ""))
-                if text.startswith("/") and chat_id == TELEGRAM_CHAT_ID:
+                if chat_id != TELEGRAM_CHAT_ID or not text.strip():
+                    continue
+                normalized = _natural_text_to_command(text)
+                if text.startswith("/"):
                     log.info(f"Command diterima: {text}")
                     reply = handle_command(text)
                     send(reply)
+                elif normalized:
+                    log.info(f"Natural command diterima: {text} -> {normalized}")
+                    send(handle_command(normalized))
+                else:
+                    log.info("Pertanyaan operator diteruskan ke AI chat")
+                    send(_chat_reply(text, local_only=False))
         except Exception as e:
             log.error(f"command_loop error: {e}")
         time.sleep(2)

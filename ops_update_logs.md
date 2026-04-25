@@ -13,7 +13,7 @@ tidak salah arah. Log operasional runtime yang wajib di-update ada di:
 ## RULE: Setiap pembaca WAJIB menulis update di logs/OPS_UPDATE_LOG.md setiap ada temuan, perbaikan, atau deploy, beserta hasil dan claim. Tidak boleh deploy/patch tanpa update log.
 
 ## Pointer Terakhir
-- Audit/deploy/soak terbaru: lihat entry `2026-04-25 08:47 WIB` di `logs/OPS_UPDATE_LOG.md`.
+- Audit/deploy/soak terbaru: lihat entry `2026-04-25 14:12 WIB` di `logs/OPS_UPDATE_LOG.md`.
 
 ## [2026-04-20 12:21 WIB] - Guardian Autorevive Repair
 - **Issue**: SG punya gap autorevive nyata; guardian lama bisa skip restart manager/engine saat hard stop aktif.

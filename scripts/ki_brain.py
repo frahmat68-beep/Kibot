@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 
 
 logger = logging.getLogger("KiBrain")
+ROOT_DIR = Path(__file__).resolve().parent.parent
 
 POSITIVE_HEADLINE_KEYWORDS = {
     "approval",
@@ -59,9 +60,14 @@ NEGATIVE_HEADLINE_KEYWORDS = {
 
 def _load_dotenv_early() -> None:
     candidates = [
-        Path(".env.server"),
-        Path(".env.kibot"),
+        ROOT_DIR / ".env.kibot_manager",
+        ROOT_DIR / ".env.kibot",
+        ROOT_DIR / ".env.server",
+        ROOT_DIR / ".env",
+        ROOT_DIR / "scripts" / ".env",
         Path(".env.kibot_manager"),
+        Path(".env.kibot"),
+        Path(".env.server"),
         Path(".env"),
         Path("scripts/.env"),
         Path("../.env"),
@@ -122,6 +128,7 @@ class BrainManager:
         self.ddg_ttl_sec = int(os.getenv("KIBOT_BRAIN_DDG_TTL_SEC", "3600"))
         self.finnhub_ttl_sec = int(os.getenv("KIBOT_BRAIN_FINNHUB_TTL_SEC", "900"))
         self.gemini_ttl_sec = int(os.getenv("KIBOT_BRAIN_GEMINI_TTL_SEC", "7200"))
+        self.polymarket_ttl_sec = int(os.getenv("KIBOT_BRAIN_POLYMARKET_TTL_SEC", "90"))
         self.max_watch_symbols = max(1, int(os.getenv("KIBOT_BRAIN_MAX_WATCH_SYMBOLS", "5")))
         self.max_external_symbols = max(1, int(os.getenv("KIBOT_BRAIN_NEWS_MAX_SYMBOLS", "2")))
         self.green_target_daily_pct = float(os.getenv("KIBOT_GREEN_TARGET_DAILY_PCT", "0.003"))
@@ -130,6 +137,7 @@ class BrainManager:
         self.search_country = os.getenv("KIBOT_BRAIN_SEARCH_COUNTRY", "indonesia")
         self.search_lang = os.getenv("KIBOT_BRAIN_SEARCH_LANG", "id")
         self.gemini_model = os.getenv("KIBOT_BRAIN_GEMINI_MODEL", os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite"))
+        self.polymarket_state_url = os.getenv("KIBOT_POLYMARKET_STATE_URL", "").strip()
         self._pair_cache: Dict[str, Dict[str, Any]] = {}
         self._provider_cache: Dict[str, Dict[str, Any]] = {}
         self._last_snapshot: Dict[str, Any] = self._load_snapshot()
@@ -232,6 +240,7 @@ class BrainManager:
             },
             "daily_target": self._daily_target_snapshot(context),
             "market_pulse": market_pulse,
+            "polymarket": self._get_polymarket_snapshot(),
             "watch_symbols": symbols,
             "watch_reviews": [],
         }
@@ -405,17 +414,62 @@ class BrainManager:
         risk_bias = str(market_pulse.get("risk_bias") or "UNKNOWN").upper()
         daily_pnl = f"{self._safe_float(context.get('daily_pnl_pct')):.4f}"
         cache_key = f"ai_critic:{risk_bias}:{daily_pnl}:{'-'.join(list(symbols)[:3])}"
+        daily_target = self._daily_target_snapshot(context)
+        polymarket = self._get_polymarket_snapshot()
+        critic_context = {
+            "watch_symbols": list(symbols)[:3],
+            "market_pulse": {
+                "risk_bias": market_pulse.get("risk_bias"),
+                "headline_count": int(market_pulse.get("headline_count") or 0),
+                "top_headlines": list(market_pulse.get("top_headlines") or [])[:3],
+                "summary": str(market_pulse.get("summary") or "")[:240],
+                "watch_symbols": list(market_pulse.get("watch_symbols") or [])[:3],
+            },
+            "daily_target": {
+                "status": daily_target.get("status"),
+                "gap_pct": daily_target.get("gap_pct"),
+                "strategy_next": daily_target.get("strategy_next"),
+                "capital_profile": (
+                    {
+                        "mode": (daily_target.get("capital_profile") or {}).get("mode"),
+                        "reason": (daily_target.get("capital_profile") or {}).get("reason"),
+                        "trading_allowed": (daily_target.get("capital_profile") or {}).get("trading_allowed"),
+                        "max_position_idr": (daily_target.get("capital_profile") or {}).get("max_position_idr"),
+                        "daily_loss_limit_pct": (daily_target.get("capital_profile") or {}).get("daily_loss_limit_pct"),
+                    }
+                    if isinstance(daily_target.get("capital_profile"), dict)
+                    else {}
+                ),
+            },
+            "capital_profile": {
+                "mode": (context.get("capital_profile") or {}).get("mode"),
+                "reason": (context.get("capital_profile") or {}).get("reason"),
+                "trading_allowed": (context.get("capital_profile") or {}).get("trading_allowed"),
+                "max_position_idr": (context.get("capital_profile") or {}).get("max_position_idr"),
+                "daily_loss_limit_pct": (context.get("capital_profile") or {}).get("daily_loss_limit_pct"),
+            },
+            "polymarket": {
+                "ready": polymarket.get("ready"),
+                "execution_enabled": polymarket.get("execution_enabled"),
+                "blocked": (polymarket.get("geoblock") or {}).get("blocked") if isinstance(polymarket.get("geoblock"), dict) else None,
+                "country": (polymarket.get("geoblock") or {}).get("country") if isinstance(polymarket.get("geoblock"), dict) else None,
+                "top_opportunities": [
+                    {
+                        "slug": item.get("slug"),
+                        "spread": item.get("spread"),
+                        "liquidity": item.get("liquidity"),
+                    }
+                    for item in list(polymarket.get("top_opportunities") or [])[:3]
+                    if isinstance(item, dict)
+                ],
+            },
+        }
 
         def loader() -> Dict[str, Any]:
             if self.ai_coordinator_enabled and _coordinator_query_ai_fn is not None:
                 critic = _coordinator_query_ai_fn(
                     "BRAIN_CRITIC",
-                    {
-                        "watch_symbols": list(symbols),
-                        "market_pulse": market_pulse,
-                        "daily_target": self._daily_target_snapshot(context),
-                        "capital_profile": context.get("capital_profile") or {},
-                    },
+                    critic_context,
                     cache_ttl_minutes=max(1, int(self.gemini_ttl_sec / 60)),
                 )
                 if isinstance(critic, dict) and critic:
@@ -437,10 +491,11 @@ class BrainManager:
                                     "\"focus_symbols\":[...],"
                                     "\"do_not_do\":[...]}"
                                     "\n\nContext:\n"
-                                    f"- watch_symbols: {json.dumps(list(symbols), ensure_ascii=False)}\n"
-                                    f"- market_pulse: {json.dumps(market_pulse, ensure_ascii=False)}\n"
-                                    f"- daily_target: {json.dumps(self._daily_target_snapshot(context), ensure_ascii=False)}\n"
-                                    f"- capital_profile: {json.dumps(context.get('capital_profile') or {}, ensure_ascii=False)}\n"
+                                    f"- watch_symbols: {json.dumps(critic_context.get('watch_symbols'), ensure_ascii=False)}\n"
+                                    f"- market_pulse: {json.dumps(critic_context.get('market_pulse'), ensure_ascii=False)}\n"
+                                    f"- daily_target: {json.dumps(critic_context.get('daily_target'), ensure_ascii=False)}\n"
+                                    f"- capital_profile: {json.dumps(critic_context.get('capital_profile'), ensure_ascii=False)}\n"
+                                    f"- polymarket: {json.dumps(critic_context.get('polymarket'), ensure_ascii=False)}\n"
                                     "Rules:\n"
                                     "- keep risk controls strict\n"
                                     "- favor tiny-account survival if capital is small\n"
@@ -667,6 +722,16 @@ class BrainManager:
             ),
         )
         return payload if isinstance(payload, list) else []
+
+    def _get_polymarket_snapshot(self) -> Dict[str, Any]:
+        if not self.polymarket_state_url:
+            return {}
+
+        def loader() -> Dict[str, Any]:
+            payload = self._request_json(self.polymarket_state_url)
+            return payload if isinstance(payload, dict) else {}
+
+        return self._cached_payload("polymarket_state", self.polymarket_ttl_sec, loader)
 
     def _provider_status(self) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}

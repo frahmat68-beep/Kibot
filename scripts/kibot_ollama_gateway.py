@@ -10,12 +10,19 @@ from typing import Any, Dict
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
+
 
 def _load_dotenv_early() -> None:
     candidates = [
-        Path(".env.server"),
-        Path(".env.kibot"),
+        ROOT_DIR / ".env.kibot_manager",
+        ROOT_DIR / ".env.kibot",
+        ROOT_DIR / ".env.server",
+        ROOT_DIR / ".env",
+        ROOT_DIR / "scripts" / ".env",
         Path(".env.kibot_manager"),
+        Path(".env.kibot"),
+        Path(".env.server"),
         Path(".env"),
         Path("scripts/.env"),
         Path("../.env"),

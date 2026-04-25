@@ -495,3 +495,64 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
     - Batam sehat sebagai AI hub lokal
   - Sistem sekarang lebih adaptif, scanner 5-node aktif, dan jalur governor/risk/execution tetap disiplin.
   - Catatan jujur: `ollama` belum menjadi provider utama governor live; dia saat ini paling realistis untuk advisory yang lebih berat / fallback lokal, sementara keputusan strategi live tercepat masih dimenangkan provider cloud.
+
+## [2026-04-25 14:12 WIB] - Polymarket + Ollama Stabilization Pass
+- Issue:
+  - Brain/monitor/gateway masih baca env relatif ke `cwd`, jadi manual probe dan beberapa runtime override bisa berbeda dari service.
+  - SG `ai_critic` sempat kosong walau Ollama sehat, karena payload critic terlalu gemuk setelah Polymarket masuk dan override `KIBOT_OLLAMA_*` dari `.env.kibot_manager` kalah oleh `.env.server`.
+  - Telegram `/ollama` sudah hidup tapi bisa kena `ReadTimeout` saat node sibuk.
+  - Batam CPU sempat spike tinggi karena Ollama CPU inference membiarkan perilaku default multi-load / queue terlalu longgar.
+- Action:
+  - Rapikan env discovery ke path absolut repo di `ki_brain.py`, `ki_telegram_monitor.py`, `kibot_ai_coordinator.py`, `kibot_polymarket.py`, dan `kibot_ollama_gateway.py`.
+  - Ubah precedence env agar `.env.kibot_manager` / `.env.polymarket` menang atas `.env.server`.
+  - Tipiskan context `BRAIN_CRITIC` agar `ollama qwen3:0.6b` tetap bisa memberi JSON kritik strategi yang valid.
+  - Wire ulang Telegram `/ollama` ke jalur lokal yang lebih ringan dan naikkan timeout polling Telegram supaya tidak spam false timeout.
+  - Pasang override Batam:
+    - `OLLAMA_MAX_LOADED_MODELS=1`
+    - `OLLAMA_NUM_PARALLEL=1`
+    - `OLLAMA_MAX_QUEUE=32`
+    - `OLLAMA_KEEP_ALIVE=2m`
+    - `OLLAMA_CONTEXT_LENGTH=2048`
+  - Redeploy manual:
+    - SG: `kibot-manager`, `ki-telegram-monitor`
+    - Tokyo: `kibot-manager`
+    - Batam: `ollama`, `kibot-ollama-gateway`, `kibot-polymarket`
+- Result:
+  - Verifikasi lokal:
+    - `python3 -m py_compile scripts/ki_telegram_monitor.py scripts/ki_brain.py scripts/kibot_ai_coordinator.py scripts/kibot_polymarket.py scripts/kibot_ollama_gateway.py`
+    - `./.brain-venv/bin/python3 scripts/test_offline.py` → `87 PASS 0 FAIL`
+  - Soak pascadeploy 10 menit:
+    - SG `213.35.118.26`
+      - `system_state=HEALTHY`
+      - `effectiveState=RUNNING`
+      - `tradingAllowed=true`
+      - `capital_mode=MICRO`
+      - `brain_assist.ai_critic.provider=ollama`
+      - `brain_assist.ai_critic.model=qwen3:0.6b`
+      - `brain_assist.polymarket.ready=true`
+      - log 10 menit terakhir: `REMOTE_SCANNER_FEED` dan `MSC_RECV` terus masuk; tidak ada traceback baru.
+    - Tokyo `152.69.218.198`
+      - `system_state=HEALTHY`
+      - `nodeStatus=radar`
+      - `effectiveState=RUNNING`
+      - `capital_mode=RADAR_ONLY`
+      - `brain_assist.ai_critic.provider=ollama`
+      - `brain_assist.polymarket.ready=true`
+      - `ki-global-scanner-mesh` stabil `scanned=3526`, `exchanges=4`, `sent` dinamis tiap siklus.
+    - Batam `168.110.201.228`
+      - `kibot-polymarket.ready=true`
+      - `execution_enabled=true`
+      - `sdk_ready=true`
+      - `geoblock.blocked=false`
+      - `ollama` berjalan dengan override throttle aktif.
+      - `ollama ps` saat idle menunjukkan satu model aktif saja, dan log runner konsisten `Parallel:1` / `loaded runners count=1`.
+  - Telegram:
+    - Jalur `/ollama` di SG menjawab langsung, mis. `Sistem saat ini berada di status "HEALTHY" dan "RUNNING"...`
+    - Timeout polling lama masih terlihat sebelum restart monitor, lalu berhenti setelah patch timeout baru.
+- Claim:
+  - Topologi aktif 3 server kembali normal dan lebih disiplin:
+    - SG sehat sebagai executor + manager + Telegram ops
+    - Tokyo sehat sebagai radar/scanner mesh
+    - Batam sehat sebagai Polymarket + Ollama AI hub
+  - Scanner aktif, AI legion aktif, Polymarket terhubung, dan Telegram ops chat ke Ollama sudah jalan.
+  - `antigravity_bot` tidak disentuh di putaran ini.

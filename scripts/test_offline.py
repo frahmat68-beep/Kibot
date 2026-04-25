@@ -21,6 +21,10 @@ try:
     import kibot_ai_coordinator as coordinator
 except Exception:
     coordinator = None
+try:
+    import kibot_polymarket as polymarket
+except Exception:
+    polymarket = None
 from ki_brain import BrainManager
 from ki_global_scanner_mesh import GlobalScannerMesh
 from kibot_learning_engine import (
@@ -122,6 +126,16 @@ if manager is not None:
         patch("kibot_manager._current_balance_snapshot", return_value={"equity_idr": 12_000, "free_cash_idr": 7_000, "holdings_pairs": [], "payload": {}}),
     ):
         check("adaptive capital blocks low free cash", not manager._check_minimum_capital())
+
+    with (
+        patch("kibot_manager.os.getenv", side_effect=lambda key, default="": "SCANNER" if key == "KIBOT_MANAGER_ROLE" else os.environ.get(key, default)),
+        patch("kibot_manager._get_total_equity_estimate", return_value=0.0),
+        patch("kibot_manager._current_balance_snapshot", return_value={"equity_idr": 0.0, "free_cash_idr": 0.0, "holdings_pairs": [], "payload": {}}),
+    ):
+        scanner_profile = manager._adaptive_capital_profile()
+        check("scanner profile radar only", scanner_profile.get("mode") == "RADAR_ONLY", str(scanner_profile))
+        gate = manager._manager_gate_payload(runtime_state={"effectiveState": "RUNNING", "tradingAllowed": False}, capital_profile=scanner_profile)
+        check("scanner gate healthy", gate.get("system_state") == "HEALTHY", str(gate))
 
     governor_directive = manager._sanitize_governor_directives(
         {
@@ -470,6 +484,45 @@ if coordinator is not None:
         coordinator._provider_timeout("ollama", "WEEKLY_SUMMARY") >= coordinator._provider_timeout("ollama", "STRATEGY_GOVERNOR"),
         f"{coordinator._provider_timeout('ollama', 'STRATEGY_GOVERNOR')}->{coordinator._provider_timeout('ollama', 'WEEKLY_SUMMARY')}",
     )
+    check(
+        "coordinator ops chat prompt wired",
+        "OPS_CHAT" in coordinator.PROMPT_PROVIDER_ORDER and "ollama" in coordinator.PROMPT_PROVIDER_ORDER["OPS_CHAT_LOCAL"],
+        str(coordinator.PROMPT_PROVIDER_ORDER.get("OPS_CHAT")),
+    )
+    check(
+        "coordinator ollama keep alive tiers",
+        str(coordinator.PROMPT_OLLAMA_KEEP_ALIVE.get("OPS_CHAT")) == coordinator.OLLAMA_FAST_KEEP_ALIVE,
+        str(coordinator.PROMPT_OLLAMA_KEEP_ALIVE),
+    )
+
+if polymarket is not None:
+    with patch.object(polymarket.ENGINE, "_request_json", side_effect=[
+        {"blocked": False, "country": "ID"},
+        [
+            {
+                "question": "BTC above 100k this month?",
+                "slug": "btc-100k",
+                "conditionId": "cond-1",
+                "clobTokenIds": "[\"yes-token\",\"no-token\"]",
+                "outcomes": "[\"YES\",\"NO\"]",
+                "active": True,
+                "closed": False,
+                "acceptingOrders": True,
+                "bestBid": 0.49,
+                "bestAsk": 0.51,
+                "spread": 0.02,
+                "liquidityClob": 20000,
+                "volume24hr": 15000,
+                "orderMinSize": 5,
+                "orderPriceMinTickSize": 0.01,
+                "feesEnabled": True,
+            }
+        ],
+        [],
+    ]), patch.object(polymarket.ENGINE, "_balance_allowance", return_value={"balance": "100"}), patch.object(polymarket.ENGINE, "_native_balance_matic", return_value=1.25), patch.object(polymarket.ENGINE, "wallet_address", return_value="0xabc"), patch.object(polymarket.ENGINE, "_build_client", return_value=object()):
+        snapshot = polymarket.ENGINE.refresh_state()
+        check("polymarket snapshot ready", snapshot.get("ready") is True, str(snapshot))
+        check("polymarket top opportunities populated", len(snapshot.get("top_opportunities") or []) == 1, str(snapshot.get("top_opportunities")))
 
 brain = BrainManager()
 with (

@@ -1,0 +1,23 @@
+[Unit]
+Description=KiBot Polymarket Executor (Batam)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/KiBot
+EnvironmentFile=-/home/ubuntu/KiBot/.env.polymarket
+EnvironmentFile=-/home/ubuntu/KiBot/.env.server
+Environment=PYTHONUNBUFFERED=1
+Environment=KIBOT_RUNTIME_ROOT=/home/ubuntu/KiBot
+ExecStart=/home/ubuntu/KiBot/.polymarket-venv/bin/python -u /home/ubuntu/KiBot/scripts/kibot_polymarket.py
+Restart=always
+RestartSec=5
+MemoryMax=220M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kibot-polymarket
+
+[Install]
+WantedBy=multi-user.target

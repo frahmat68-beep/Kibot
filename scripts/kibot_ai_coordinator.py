@@ -17,12 +17,19 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
+
 
 def _load_dotenv_early() -> None:
     candidates = [
-        Path(".env.server"),
-        Path(".env.kibot"),
+        ROOT_DIR / ".env.kibot_manager",
+        ROOT_DIR / ".env.kibot",
+        ROOT_DIR / ".env.server",
+        ROOT_DIR / ".env",
+        ROOT_DIR / "scripts" / ".env",
         Path(".env.kibot_manager"),
+        Path(".env.kibot"),
+        Path(".env.server"),
         Path(".env"),
         Path("scripts/.env"),
         Path("../.env"),
@@ -58,13 +65,29 @@ ROOT = Path(os.getenv("KIBOT_RUNTIME_ROOT", Path(__file__).resolve().parent.pare
 STATE_DIR = ROOT / "state"
 RATE_STATE_FILE = STATE_DIR / "ai_coordinator_rate.json"
 RESPONSE_CACHE = STATE_DIR / "ai_coordinator_cache.json"
+PROVIDER_STATE_FILE = STATE_DIR / "ai_coordinator_providers.json"
 REQUEST_TIMEOUT_SEC = float(os.getenv("KIBOT_AI_COORDINATOR_TIMEOUT_SEC", "12"))
 OLLAMA_FAST_MODEL = os.getenv("KIBOT_OLLAMA_FAST_MODEL", "qwen3:1.7b")
 OLLAMA_DEFAULT_MODEL = os.getenv("KIBOT_OLLAMA_MODEL", "qwen3:4b")
-OLLAMA_DEEP_MODEL = os.getenv("KIBOT_OLLAMA_DEEP_MODEL", "qwen3:8b")
+OLLAMA_DEEP_MODEL = os.getenv("KIBOT_OLLAMA_DEEP_MODEL", "qwen3:4b")
 OLLAMA_FAST_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_FAST_TIMEOUT_SEC", "35"))
 OLLAMA_DEFAULT_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_TIMEOUT_SEC", "55"))
 OLLAMA_DEEP_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_DEEP_TIMEOUT_SEC", "90"))
+OLLAMA_FAST_KEEP_ALIVE = os.getenv("KIBOT_OLLAMA_FAST_KEEP_ALIVE", "45s")
+OLLAMA_DEFAULT_KEEP_ALIVE = os.getenv("KIBOT_OLLAMA_KEEP_ALIVE", "90s")
+OLLAMA_DEEP_KEEP_ALIVE = os.getenv("KIBOT_OLLAMA_DEEP_KEEP_ALIVE", "3m")
+OLLAMA_FAST_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_FAST_NUM_CTX", "2048"))
+OLLAMA_DEFAULT_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_DEFAULT_NUM_CTX", "3072"))
+OLLAMA_DEEP_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_DEEP_NUM_CTX", "4096"))
+OLLAMA_FAST_NUM_PREDICT = int(os.getenv("KIBOT_OLLAMA_FAST_NUM_PREDICT", "320"))
+OLLAMA_DEFAULT_NUM_PREDICT = int(os.getenv("KIBOT_OLLAMA_DEFAULT_NUM_PREDICT", "480"))
+OLLAMA_DEEP_NUM_PREDICT = int(os.getenv("KIBOT_OLLAMA_DEEP_NUM_PREDICT", "768"))
+AI_DEFAULT_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_DEFAULT_COOLDOWN_SEC", "900"))
+AI_NETWORK_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_NETWORK_COOLDOWN_SEC", "180"))
+AI_RATE_LIMIT_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC", "3600"))
+AI_EMPTY_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_EMPTY_COOLDOWN_SEC", "180"))
+AI_AUTH_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_AUTH_COOLDOWN_SEC", "21600"))
+AI_OLLAMA_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_OLLAMA_COOLDOWN_SEC", "600"))
 
 PROVIDERS = {
     "ollama": {
@@ -119,13 +142,15 @@ PROVIDERS = {
 }
 
 PROMPT_PROVIDER_ORDER = {
-    "BRAIN_CRITIC": ["groq", "openrouter", "ollama", "gemini", "nvidia", "cohere", "jina"],
-    "WHATIF_SIMULATION": ["openrouter", "ollama", "groq", "gemini", "cohere", "nvidia", "jina"],
-    "TRADE_POSTMORTEM": ["ollama", "openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
-    "VETO_ANALYSIS": ["groq", "openrouter", "ollama", "gemini", "nvidia", "cohere", "jina"],
-    "WEEKLY_SUMMARY": ["ollama", "openrouter", "groq", "gemini", "cohere", "nvidia", "jina"],
-    "NEWS_ANALYSIS": ["openrouter", "ollama", "groq", "gemini", "cohere", "nvidia", "jina"],
-    "STRATEGY_GOVERNOR": ["ollama", "groq", "gemini", "nvidia", "openrouter"],
+    "BRAIN_CRITIC": ["groq", "openrouter", "gemini", "nvidia", "ollama", "cohere", "jina"],
+    "WHATIF_SIMULATION": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
+    "TRADE_POSTMORTEM": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
+    "VETO_ANALYSIS": ["groq", "openrouter", "gemini", "nvidia", "ollama", "cohere", "jina"],
+    "WEEKLY_SUMMARY": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
+    "NEWS_ANALYSIS": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
+    "STRATEGY_GOVERNOR": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
+    "OPS_CHAT": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
+    "OPS_CHAT_LOCAL": ["ollama", "openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
 }
 
 PROMPT_TEMPLATES = {
@@ -187,6 +212,24 @@ PROMPT_TEMPLATES = {
         "}}\n"
         "Rules: protect tiny balances, prefer liquid/high-trust pairs, raise msc_min and reduce size when risk_off or weak win_rate, never output impossible budgets."
     ),
+    "OPS_CHAT": (
+        "You are KiBot's operator copilot.\n"
+        "System state={system_state}\n"
+        "Polymarket={polymarket}\n"
+        "User message={user_message}\n"
+        "Return compact JSON only with keys "
+        "{\"answer\":\"...\",\"intent\":\"STATUS|COMMAND|QUESTION|POLYMARKET\",\"recommended_command\":\"...\",\"risk_note\":\"...\"}\n"
+        "Rules: be concise, operational, and truthful; never invent balances or executions."
+    ),
+    "OPS_CHAT_LOCAL": (
+        "You are KiBot's local Ollama operator copilot.\n"
+        "System state={system_state}\n"
+        "Polymarket={polymarket}\n"
+        "User message={user_message}\n"
+        "Return compact JSON only with keys "
+        "{\"answer\":\"...\",\"intent\":\"STATUS|COMMAND|QUESTION|POLYMARKET\",\"recommended_command\":\"...\",\"risk_note\":\"...\"}\n"
+        "Keep the answer short and practical."
+    ),
 }
 
 PROMPT_OLLAMA_MODEL = {
@@ -194,6 +237,8 @@ PROMPT_OLLAMA_MODEL = {
     "VETO_ANALYSIS": OLLAMA_FAST_MODEL,
     "NEWS_ANALYSIS": OLLAMA_FAST_MODEL,
     "STRATEGY_GOVERNOR": OLLAMA_FAST_MODEL,
+    "OPS_CHAT": OLLAMA_FAST_MODEL,
+    "OPS_CHAT_LOCAL": OLLAMA_FAST_MODEL,
     "WHATIF_SIMULATION": OLLAMA_DEFAULT_MODEL,
     "TRADE_POSTMORTEM": OLLAMA_DEFAULT_MODEL,
     "WEEKLY_SUMMARY": OLLAMA_DEEP_MODEL,
@@ -204,9 +249,35 @@ PROMPT_OLLAMA_TIMEOUT = {
     "VETO_ANALYSIS": OLLAMA_FAST_TIMEOUT_SEC,
     "NEWS_ANALYSIS": OLLAMA_FAST_TIMEOUT_SEC,
     "STRATEGY_GOVERNOR": OLLAMA_FAST_TIMEOUT_SEC,
+    "OPS_CHAT": OLLAMA_FAST_TIMEOUT_SEC,
+    "OPS_CHAT_LOCAL": OLLAMA_FAST_TIMEOUT_SEC,
     "WHATIF_SIMULATION": OLLAMA_DEFAULT_TIMEOUT_SEC,
     "TRADE_POSTMORTEM": OLLAMA_DEFAULT_TIMEOUT_SEC,
     "WEEKLY_SUMMARY": OLLAMA_DEEP_TIMEOUT_SEC,
+}
+
+PROMPT_OLLAMA_KEEP_ALIVE = {
+    "BRAIN_CRITIC": OLLAMA_FAST_KEEP_ALIVE,
+    "VETO_ANALYSIS": OLLAMA_FAST_KEEP_ALIVE,
+    "NEWS_ANALYSIS": OLLAMA_FAST_KEEP_ALIVE,
+    "STRATEGY_GOVERNOR": OLLAMA_FAST_KEEP_ALIVE,
+    "OPS_CHAT": OLLAMA_FAST_KEEP_ALIVE,
+    "OPS_CHAT_LOCAL": OLLAMA_FAST_KEEP_ALIVE,
+    "WHATIF_SIMULATION": OLLAMA_DEFAULT_KEEP_ALIVE,
+    "TRADE_POSTMORTEM": OLLAMA_DEFAULT_KEEP_ALIVE,
+    "WEEKLY_SUMMARY": OLLAMA_DEEP_KEEP_ALIVE,
+}
+
+PROMPT_OLLAMA_OPTIONS = {
+    "BRAIN_CRITIC": {"num_ctx": OLLAMA_FAST_NUM_CTX, "num_predict": OLLAMA_FAST_NUM_PREDICT},
+    "VETO_ANALYSIS": {"num_ctx": OLLAMA_FAST_NUM_CTX, "num_predict": OLLAMA_FAST_NUM_PREDICT},
+    "NEWS_ANALYSIS": {"num_ctx": OLLAMA_FAST_NUM_CTX, "num_predict": OLLAMA_FAST_NUM_PREDICT},
+    "STRATEGY_GOVERNOR": {"num_ctx": OLLAMA_FAST_NUM_CTX, "num_predict": OLLAMA_FAST_NUM_PREDICT},
+    "OPS_CHAT": {"num_ctx": OLLAMA_FAST_NUM_CTX, "num_predict": OLLAMA_FAST_NUM_PREDICT},
+    "OPS_CHAT_LOCAL": {"num_ctx": OLLAMA_FAST_NUM_CTX, "num_predict": OLLAMA_FAST_NUM_PREDICT},
+    "WHATIF_SIMULATION": {"num_ctx": OLLAMA_DEFAULT_NUM_CTX, "num_predict": OLLAMA_DEFAULT_NUM_PREDICT},
+    "TRADE_POSTMORTEM": {"num_ctx": OLLAMA_DEFAULT_NUM_CTX, "num_predict": OLLAMA_DEFAULT_NUM_PREDICT},
+    "WEEKLY_SUMMARY": {"num_ctx": OLLAMA_DEEP_NUM_CTX, "num_predict": OLLAMA_DEEP_NUM_PREDICT},
 }
 
 
@@ -240,6 +311,61 @@ def _save_rate_state(state: Dict[str, Any]) -> None:
     _atomic_write(RATE_STATE_FILE, state)
 
 
+def _load_provider_state() -> Dict[str, Any]:
+    if not PROVIDER_STATE_FILE.exists():
+        return {"providers": {}}
+    try:
+        payload = json.loads(PROVIDER_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"providers": {}}
+    if not isinstance(payload, dict):
+        return {"providers": {}}
+    providers = payload.get("providers")
+    if not isinstance(providers, dict):
+        payload["providers"] = {}
+    return payload
+
+
+def _save_provider_state(state: Dict[str, Any]) -> None:
+    _atomic_write(PROVIDER_STATE_FILE, state)
+
+
+def _provider_state_entry(provider: str) -> Dict[str, Any]:
+    state = _load_provider_state()
+    providers = state.setdefault("providers", {})
+    entry = providers.get(provider)
+    return entry if isinstance(entry, dict) else {}
+
+
+def _provider_cooldown_remaining(provider: str) -> float:
+    entry = _provider_state_entry(provider)
+    cooldown_until = float(entry.get("cooldown_until") or 0.0)
+    return max(0.0, cooldown_until - time.time())
+
+
+def _set_provider_cooldown(provider: str, seconds: int, reason: str) -> None:
+    state = _load_provider_state()
+    providers = state.setdefault("providers", {})
+    providers[provider] = {
+        **(providers.get(provider) if isinstance(providers.get(provider), dict) else {}),
+        "cooldown_until": time.time() + max(0, int(seconds)),
+        "last_failure_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "last_failure_reason": str(reason or "unknown")[:200],
+    }
+    _save_provider_state(state)
+
+
+def _clear_provider_cooldown(provider: str) -> None:
+    state = _load_provider_state()
+    providers = state.setdefault("providers", {})
+    providers[provider] = {
+        **(providers.get(provider) if isinstance(providers.get(provider), dict) else {}),
+        "cooldown_until": 0.0,
+        "last_success_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    _save_provider_state(state)
+
+
 def _provider_api_key(provider: str) -> str:
     config = PROVIDERS.get(provider) or {}
     envs = config.get("api_key_envs") or []
@@ -264,6 +390,8 @@ def _candidate_providers(prompt_type: str) -> List[str]:
         if counts.get(name, 0) >= int(config["daily_limit"]):
             continue
         if not _provider_api_key(name):
+            continue
+        if _provider_cooldown_remaining(name) > 0:
             continue
         ordered.append(name)
     return ordered
@@ -349,6 +477,16 @@ def _provider_timeout(provider: str, prompt_type: str) -> float:
     return float(PROMPT_OLLAMA_TIMEOUT.get(prompt_type, OLLAMA_DEFAULT_TIMEOUT_SEC))
 
 
+def _ollama_keep_alive(prompt_type: str) -> Any:
+    return PROMPT_OLLAMA_KEEP_ALIVE.get(prompt_type, OLLAMA_DEFAULT_KEEP_ALIVE)
+
+
+def _ollama_options(prompt_type: str) -> Dict[str, Any]:
+    options = {"temperature": 0.2}
+    options.update(PROMPT_OLLAMA_OPTIONS.get(prompt_type, {}))
+    return options
+
+
 def _call_provider(provider: str, prompt: str, prompt_type: str = "") -> Optional[str]:
     config = PROVIDERS[provider]
     api_key = _provider_api_key(provider)
@@ -364,10 +502,8 @@ def _call_provider(provider: str, prompt: str, prompt_type: str = "") -> Optiona
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
                 "format": "json",
-                "keep_alive": os.getenv("KIBOT_OLLAMA_KEEP_ALIVE", "10m"),
-                "options": {
-                    "temperature": 0.2,
-                },
+                "keep_alive": _ollama_keep_alive(prompt_type),
+                "options": _ollama_options(prompt_type),
             }
             payload["think"] = _ollama_think_value()
             headers = {
@@ -405,17 +541,32 @@ def _call_provider(provider: str, prompt: str, prompt_type: str = "") -> Optiona
         with urllib.request.urlopen(request, timeout=timeout_sec) as response:
             data = json.loads(response.read())
             if provider == "ollama":
-                return data.get("message", {}).get("content")
+                content = data.get("message", {}).get("content")
+                _clear_provider_cooldown(provider)
+                return content
             if provider == "gemini":
+                _clear_provider_cooldown(provider)
                 return data["candidates"][0]["content"]["parts"][0]["text"]
             if provider == "cohere":
+                _clear_provider_cooldown(provider)
                 return data.get("text") or data.get("message", {}).get("content", [{}])[0].get("text")
+            _clear_provider_cooldown(provider)
             return data["choices"][0]["message"]["content"]
     except urllib.error.HTTPError as error:
-        if error.code in {401, 403, 404, 429}:
-            _mark_provider_unavailable(provider)
+        if error.code in {401, 403, 404}:
+            _set_provider_cooldown(provider, AI_AUTH_COOLDOWN_SEC, f"http_{error.code}")
+        elif error.code == 429:
+            _set_provider_cooldown(provider, AI_RATE_LIMIT_COOLDOWN_SEC, f"http_{error.code}")
+        elif provider == "ollama":
+            _set_provider_cooldown(provider, AI_OLLAMA_COOLDOWN_SEC, f"http_{error.code}")
+        else:
+            _set_provider_cooldown(provider, AI_NETWORK_COOLDOWN_SEC, f"http_{error.code}")
         return None
-    except Exception:
+    except Exception as error:
+        if provider == "ollama":
+            _set_provider_cooldown(provider, AI_OLLAMA_COOLDOWN_SEC, type(error).__name__)
+        else:
+            _set_provider_cooldown(provider, AI_NETWORK_COOLDOWN_SEC, type(error).__name__)
         return None
 
 
@@ -455,6 +606,9 @@ def query_ai(prompt_type: str, context: Dict[str, Any], cache_ttl_minutes: int =
         if isinstance(parsed, dict):
             parsed.setdefault("provider", provider)
             parsed.setdefault("model", _provider_model(provider, prompt_type))
+        if isinstance(parsed, dict) and not parsed:
+            _set_provider_cooldown(provider, AI_EMPTY_COOLDOWN_SEC, "empty_json")
+            continue
         _save_to_cache(cache_key, parsed)
         return parsed
     return None
@@ -462,11 +616,14 @@ def query_ai(prompt_type: str, context: Dict[str, Any], cache_ttl_minutes: int =
 
 def get_provider_status() -> Dict[str, Dict[str, Any]]:
     state = _load_rate_state()
+    provider_state = _load_provider_state().get("providers", {})
     counts = state.get("counts", {})
     summary: Dict[str, Dict[str, Any]] = {}
     for name, config in PROVIDERS.items():
         used = counts.get(name, 0)
         limit = config["daily_limit"]
+        runtime_state = provider_state.get(name) if isinstance(provider_state.get(name), dict) else {}
+        cooldown_remaining = max(0.0, float(runtime_state.get("cooldown_until") or 0.0) - time.time())
         summary[name] = {
             "configured": bool(_provider_api_key(name)),
             "model": str(config["model"]),
@@ -474,6 +631,11 @@ def get_provider_status() -> Dict[str, Dict[str, Any]]:
             "used": used,
             "remaining": max(0, limit - used),
             "pct_used": round((used / limit) * 100, 1),
+            "available": cooldown_remaining <= 0.0,
+            "cooldown_remaining_sec": int(round(cooldown_remaining)),
+            "last_failure_reason": str(runtime_state.get("last_failure_reason") or ""),
+            "last_failure_at": str(runtime_state.get("last_failure_at") or ""),
+            "last_success_at": str(runtime_state.get("last_success_at") or ""),
         }
         if name == "ollama":
             summary[name]["profiles"] = {
@@ -483,6 +645,9 @@ def get_provider_status() -> Dict[str, Dict[str, Any]]:
                 "fast_timeout_sec": OLLAMA_FAST_TIMEOUT_SEC,
                 "default_timeout_sec": OLLAMA_DEFAULT_TIMEOUT_SEC,
                 "deep_timeout_sec": OLLAMA_DEEP_TIMEOUT_SEC,
+                "fast_keep_alive": OLLAMA_FAST_KEEP_ALIVE,
+                "default_keep_alive": OLLAMA_DEFAULT_KEEP_ALIVE,
+                "deep_keep_alive": OLLAMA_DEEP_KEEP_ALIVE,
             }
     return summary
 
