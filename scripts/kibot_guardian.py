@@ -480,10 +480,15 @@ def _notify_ready() -> None:
 def _notify_watchdog(metrics: Dict[str, Any]) -> None:
     memory = metrics.get("memory") if isinstance(metrics.get("memory"), dict) else {}
     disk = metrics.get("disk") if isinstance(metrics.get("disk"), dict) else {}
+    services = metrics.get("services") if isinstance(metrics.get("services"), dict) else {}
+    service_status = ",".join(
+        f"{name}:{'up' if isinstance(data, dict) and data.get('active') else 'down'}"
+        for name, data in services.items()
+    )
     status = (
         f"ram={memory.get('ram_pct', 0)}% "
         f"disk={disk.get('used_pct', 0)}% "
-        f"services={','.join(f'{k}:{'up' if v.get('active') else 'down'}' for k, v in metrics.get('services', {}).items())}"
+        f"services={service_status}"
     )
     _systemd_notify(f"STATUS={status}", "WATCHDOG=1")
 
