@@ -94,6 +94,8 @@ jobs:
           script: |
             set -euo pipefail
             mkdir -p ${REMOTE_ROOT}/server ${REMOTE_ROOT}/scripts ${REMOTE_ROOT}/infra/systemd ${REMOTE_ROOT}/.tmp
+            rm -rf ${REMOTE_ROOT}/.deploy
+            mkdir -p ${REMOTE_ROOT}/.deploy/scripts ${REMOTE_ROOT}/.deploy/infra/systemd
             touch ${REMOTE_ROOT}/${ENV_FILE}
             touch ${REMOTE_ROOT}/.env.server
             touch ${REMOTE_ROOT}/.env.kibot_manager
@@ -108,7 +110,7 @@ jobs:
           echo "${{ env.DEPLOY_KEY }}" | tr -d '\r' > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -p ${{ env.DEPLOY_PORT }} ${{ env.DEPLOY_HOST }} >> ~/.ssh/known_hosts
-          rsync -avz -e "ssh -p ${{ env.DEPLOY_PORT }} -i ~/.ssh/id_rsa" .deploy/ ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.REMOTE_ROOT }}/
+          rsync -avz --delete -e "ssh -p ${{ env.DEPLOY_PORT }} -i ~/.ssh/id_rsa" .deploy/ ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.REMOTE_ROOT }}/.deploy/
           rm -f ~/.ssh/id_rsa
 
       - name: Install and Restart KiBot Indodax
@@ -155,7 +157,9 @@ jobs:
               sudo systemctl disable --now "${unit}" || true
             done
 
-            mv ${REMOTE_ROOT}/mac-engine-all.jar ${REMOTE_ROOT}/server/mac-engine-all.jar
+            sudo rsync -a --delete ${REMOTE_ROOT}/.deploy/scripts/ ${REMOTE_ROOT}/scripts/
+            sudo rsync -a ${REMOTE_ROOT}/.deploy/infra/systemd/ ${REMOTE_ROOT}/infra/systemd/
+            mv ${REMOTE_ROOT}/.deploy/mac-engine-all.jar ${REMOTE_ROOT}/server/mac-engine-all.jar
             sudo cp ${REMOTE_ROOT}/infra/systemd/kidax-engine.service /etc/systemd/system/${SERVICE_NAME}.service
             for svc_file in \
               kibot-manager.service \
