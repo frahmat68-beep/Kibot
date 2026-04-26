@@ -561,3 +561,131 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
     - Batam sehat sebagai Polymarket + Ollama AI hub
   - Scanner aktif, AI legion aktif, Polymarket terhubung, dan Telegram ops chat ke Ollama sudah jalan.
   - `antigravity_bot` tidak disentuh di putaran ini.
+
+## [2026-04-26 05:47 WIB] - World Model + Adaptive Exploration Hardening (Local Audit Pass)
+- Issue:
+  - `ki_brain.py` sudah punya external research, tapi belum merangkum konteks dunia luar menjadi `world_model` yang bisa dipakai lintas governor, learning gate, dan ops guard.
+  - Learning gate terlalu kaku untuk modal kecil: pair yang historinya belum cukup kaya data bisa terlalu cepat diblok walau ada peluang yang relatif bersih.
+  - Guardian belum aware ke kondisi `heuristic fallback` yang terlalu lama dan belum menganggap Batam (`ollama` / `kibot-ollama-gateway` / `kibot-polymarket`) sebagai subsistem yang perlu diawasi dengan role-aware.
+  - Audit env server menunjukkan SG1 dan SG2 memang sudah punya `FINNHUB_API_KEY`, `TAVILY_API_KEY`, `SERPER_API_KEY`, dan `KIBOT_POLYMARKET_STATE_URL`, tetapi belum punya `X`/`CoinGecko` key khusus.
+  - Audit lokal menunjukkan environment kerja lokal belum punya dependency runtime penuh (`requests`, `pytz`), jadi import penuh `kibot_manager.py` tidak bisa diverifikasi end-to-end dari interpreter lokal biasa.
+- Action:
+  - Tambah `world_model` terstruktur di `scripts/ki_brain.py`:
+    - `global_narratives`
+    - `external_events`
+    - `opportunity_register`
+    - `risk_register`
+    - `micro_capital_plan`
+    - `source_status`
+  - Sambungkan `world_model` ke:
+    - `BRAIN_CRITIC`
+    - sovereign governor context / fallback
+    - advisory sizing path
+    - learning gate exploration override yang tetap dibatasi rem statistik
+  - Perluas `scripts/kibot_guardian.py` agar:
+    - role-aware untuk SG/Tokyo/Batam
+    - monitor `kibot-ollama-gateway` dan `kibot-polymarket`
+    - mendeteksi governor yang terlalu lama jatuh ke `heuristic` / `local-fallback`
+  - Update `.env.example` dan `docs/architecture/KIBOT_SOVEREIGN_BRAIN.md` supaya arsitektur world model baru terdokumentasi.
+  - Tambah coverage test ringan di `scripts/test_brain_integration.py` dan `scripts/test_offline.py`.
+- Result:
+  - `python3 -m py_compile` untuk file yang disentuh lolos tanpa error.
+  - `python3 scripts/test_brain_integration.py` lolos dan snapshot brain sekarang sudah memuat `world_model`.
+  - Override learning eksploratif bekerja hanya untuk kondisi yang masih wajar; pair yang historinya benar-benar jelek tetap diblok.
+  - Setelah `GDELT` digeser jadi opt-in, latency local `brain.think()` turun dari sekitar `19.5s` ke sekitar `2.0s`.
+  - Belum deploy ke server pada putaran ini.
+- Notes:
+  - Putaran ini sengaja ditahan di local hardening dulu karena tujuan saat ini adalah menutup celah arsitektur sebelum masuk final audit + live deployment.
+  - Batam `ollama` masih tetap dianggap blocker utama untuk takeover AI penuh realtime sampai kita audit stabilitasnya lagi setelah fondasi world model ini siap naik.
+
+## [2026-04-26 21:10 WIB] - Sovereign Brain Live Hardening, Gateway Downshift, and Final Soak
+- Issue:
+  - SG1 dan SG2 masih menjalankan unit `systemd` lama yang menimpa env Ollama baru, sehingga beberapa jalur governor tetap mendorong `qwen3:1.7b/4b`.
+  - Batam `kibot-ollama-gateway` masih menerima request model berat dan memicu `POST /api/chat` `500` / timeout panjang.
+  - SG1 sempat jatuh ke `EXPIRED_SURVIVAL` walau refresh loop governor masih hidup, karena plan lama dipertahankan tanpa menggeser `plan_generated_at` / `expires_at`.
+  - SG1 juga beberapa kali fallback ke heuristic saat provider cloud/lokal kosong atau cooldown.
+- Action:
+  - Deploy ulang ke live:
+    - `scripts/kibot_ai_coordinator.py`
+    - `scripts/kibot_manager.py`
+    - `scripts/kibot_ollama_gateway.py`
+    - `infra/systemd/kibot-manager.service`
+    - `infra/systemd/ki-telegram-monitor.service`
+    - `infra/systemd/kibot-ollama-gateway.service`
+  - Samakan unit `systemd` live SG1/SG2 dengan setting baru:
+    - `KIBOT_OLLAMA_FAST_MODEL=qwen3:0.6b`
+    - `KIBOT_OLLAMA_MODEL=qwen3:1.7b`
+    - timeout/context/predict lebih ringan
+    - cooldown provider lebih pendek supaya node tidak terlalu lama membeku setelah `429`
+  - Ubah prioritas governor live menjadi `openrouter -> ollama -> groq/gemini/...` agar jalur executor tidak tertahan model lokal yang lambat.
+  - Kencangkan Batam gateway:
+    - `FORCE_MODEL=qwen3:0.6b`
+    - alias `1.7b/4b -> 0.6b`
+    - clamp `ctx/predict`
+    - keep-alive lebih disiplin
+  - Patch manager supaya missed AI refresh tidak membuat plan kedaluwarsa palsu; preserved plan sekarang digeser waktunya saat dipakai sebagai holdover.
+  - Backup file live sebelum overwrite di semua node.
+- Result:
+  - Batam:
+    - `ollama`, `kibot-ollama-gateway`, `kibot-polymarket` aktif.
+    - Setelah restart gateway, log tidak lagi menunjukkan load `Qwen3 1.7B` di jalur remote governor yang diamati; request yang lewat menjadi `Qwen3 0.6B`.
+    - Soak terakhir menunjukkan rangkaian `POST /api/chat` sukses `200` tanpa `500` baru setelah patch final gateway, walau latency masih sekitar `38s-58s`.
+    - `/health` gateway `ok=true`.
+  - SG2:
+    - `kibot-manager`, `kinance-engine`, `kibot-ollama-tunnel`, `kibot-polymarket-tunnel`, `kibot-notifier`, `kibot-auditor`, `kibot-orchestrator`, `kibot-security` aktif.
+    - `strategy_governor` kembali `ACTIVE` dengan `provider=openrouter`.
+    - State node tetap `HEALTHY`, pasif sesuai role radar.
+  - SG1:
+    - `kibot-manager`, `ki-telegram-monitor`, `kidax-engine`, `kibot-ollama-tunnel`, `kibot-polymarket-tunnel` aktif.
+    - Bug `EXPIRED_SURVIVAL` berhasil ditutup; governor tidak lagi kedaluwarsa palsu saat refresh miss.
+    - Node tetap `HEALTHY`, `tradingAllowed=true`, dan scanner feed masuk normal.
+    - Jalur governor SG1 masih sesekali jatuh ke `heuristic` fallback (`ai_governor_fallback:*:empty_governor_response`) walau provider `openrouter` bisa pulih di state provider. Artinya stabilitas executor sudah aman, tetapi AI plan utama di SG1 belum sekonsisten SG2.
+- Notes:
+  - Status akhir paling jujur:
+    - topologi 3 node sudah lebih rapi dan stabil
+    - Batam tidak lagi menunjukkan pola error lama di gateway
+    - SG2 sudah kembali memakai AI plan cloud
+    - SG1 aman berjalan live, namun masih punya residual fallback heuristic pada beberapa siklus governor
+  - Ini bukan kondisi crash, tetapi juga belum “Ollama/cloud governor 100% konsisten di semua siklus SG1”.
+
+## [2026-04-26 21:50 WIB] - Governor Stabilization, X/CoinGecko Audit, and Batam Input Guard
+- Issue:
+  - Audit final menunjukkan `X` dan `CoinGecko` sudah tersambung di kode `brain`, tetapi kredensial live `KIBOT_X_BEARER_TOKEN` / `COINGECKO_*_API_KEY` belum terpasang di node production sehingga source tersebut belum bisa diklaim aktif penuh.
+  - SG1 sempat tetap jatuh ke `heuristic` karena `query_ai()` menerima payload non-valid dari provider tanpa schema yang cukup kuat.
+  - `OPS_CHAT` / `OPS_CHAT_LOCAL` punya mismatch schema: prompt mengembalikan key `answer`, sedangkan validator menunggu `reply`.
+  - Batam `ollama` masih menerima prompt otomatis yang terlalu besar, lalu mentok `1m30s` dan menghasilkan `500`.
+- Action:
+  - Hardening `scripts/kibot_ai_coordinator.py`:
+    - governor / critic / daily review / what-if / post-mortem / weekly summary diarahkan dulu ke provider cloud yang lebih stabil
+    - `OPS_CHAT` schema diperbaiki supaya selaras dengan output `answer`
+    - coordinator cache fallback tetap dipertahankan
+  - Hardening `scripts/ki_brain.py`:
+    - provider capability sekarang eksplisit melaporkan `x_api` dan `coingecko`
+    - world model tetap memakai `Finnhub`, `Tavily`, `DDG`, `CoinGecko`, dan `X` bila kredensial tersedia
+  - Hardening `scripts/kibot_ollama_gateway.py` + `infra/systemd/kibot-ollama-gateway.service`:
+    - tambah input guard berbasis karakter untuk prompt besar
+    - request oversize sekarang ditolak cepat sebagai `413 input_too_large` daripada membebani `ollama` sampai timeout panjang
+    - timeout gateway dipotong jadi `60s`
+    - retain force-model `qwen3:0.6b`
+  - Deploy manual ke Batam:
+    - `scripts/kibot_ollama_gateway.py`
+    - `infra/systemd/kibot-ollama-gateway.service`
+    - compile + `daemon-reload` + restart service
+- Result:
+  - Local validation:
+    - `python3 -m py_compile scripts/kibot_ai_coordinator.py scripts/ki_brain.py scripts/kibot_ollama_gateway.py` lolos
+    - `python3 scripts/test_brain_integration.py` lolos
+  - Batam validation:
+    - `curl http://127.0.0.1:11435/health` kembali `ok=true`
+    - oversize request terverifikasi dibalas `413` dengan payload `input_too_large`
+    - artinya jalur error lama berubah dari `timeout 500` menjadi fail-fast yang bisa di-handle caller
+  - Residual truth:
+    - `X` dan `CoinGecko` sudah siap di kode, tetapi belum bisa diklaim live aktif penuh sebelum key production benar-benar diisi
+    - SG deploy untuk menyalakan perubahan coordinator/brain di node production masih perlu jalur deploy node SG yang bersih (SSH key lokal atau GitHub Actions)
+- Notes:
+  - Putaran ini menutup dua hal penting:
+    - false negative di validator AI ops chat
+    - timeout panjang Batam akibat prompt oversize
+  - Sistem makin dekat ke mode autonomous yang stabil, tapi belum boleh diklaim “tanpa masalah sama sekali” selama:
+    - kredensial `X` production belum ada
+    - node SG belum menarik patch coordinator/brain terbaru dari putaran ini

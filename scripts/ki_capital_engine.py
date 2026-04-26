@@ -37,7 +37,8 @@ class CapitalAllocator:
                     self.ratio.update(cap_cfg["ratio"])
                 if "max_per_trade" in cap_cfg:
                     self.MAX_PER_TRADE = float(cap_cfg["max_per_trade"])
-            except Exception: pass
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                print(f"[CAPITAL][WARN] directive refresh error: {e}", flush=True)
 
     def update_total(self, new_total: float):
         self.total = new_total
@@ -140,7 +141,8 @@ class ProfitLockManager:
             try:
                 data = json.loads(DIRECTIVES_FILE.read_text())
                 self.lock_ratio = float(data.get("risk", {}).get("lock_ratio", self.lock_ratio))
-            except Exception: pass
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                print(f"[PROFIT_LOCK][WARN] directive refresh error: {e}", flush=True)
 
     def lock(self, net_profit_idr: float, bucket: str) -> dict:
         if net_profit_idr <= 0:
@@ -222,7 +224,8 @@ class HardStopGuard:
             try:
                 data = json.loads(DIRECTIVES_FILE.read_text())
                 self.loss_limit_pct = float(data.get("risk", {}).get("daily_loss_limit_pct", self.loss_limit_pct))
-            except Exception: pass
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                print(f"[HARD_STOP][WARN] directive refresh error: {e}", flush=True)
 
     def update_pnl(self, realized_pnl_idr: float):
         self.daily_pnl += realized_pnl_idr

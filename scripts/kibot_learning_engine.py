@@ -94,17 +94,47 @@ class PairStats:
         half = full * mult
         return max(MIN_KELLY_FRACTION, min(MAX_KELLY_FRACTION, half))
 
-    def should_entry(self) -> Tuple[bool, str]:
+    def _allow_world_model_override(self, context: Optional[Dict[str, object]] = None) -> bool:
+        context = context or {}
+        if not bool(context.get("allow_exploration")):
+            return False
+        if bool(context.get("hard_block")):
+            return False
+        if not bool(context.get("pair_in_focus")):
+            return False
+        opportunity_score = float(context.get("opportunity_score") or 0.0)
+        brain_confidence = float(context.get("brain_confidence") or 0.0)
+        capital_mode = str(context.get("capital_mode") or "").upper()
+        if capital_mode not in {"MICRO", "BUILDUP", "NORMAL"}:
+            return False
+        if opportunity_score < 0.66 or brain_confidence < 0.58:
+            return False
+        if self.ema_pnl < -0.03:
+            return False
+        if self.trade_count >= 6 and self.profit_factor < 0.80:
+            return False
+        if self.trade_count >= 6 and self.win_probability < 0.35:
+            return False
+        return True
+
+    def should_entry(self, context: Optional[Dict[str, object]] = None) -> Tuple[bool, str]:
         now = time.time()
+        if context and bool(context.get("hard_block")):
+            return False, str(context.get("hard_block_reason") or "world_model_hard_block")
         if now < self.cooldown_until_ts:
             return False, f"cooldown {int(self.cooldown_until_ts - now)}s"
         if self.trade_count >= MIN_TRADES_FOR_KELLY:
+            reasons = []
             if self.profit_factor < MIN_PROFIT_FACTOR:
-                return False, f"profit_factor={self.profit_factor:.2f}<{MIN_PROFIT_FACTOR}"
+                reasons.append(f"profit_factor={self.profit_factor:.2f}<{MIN_PROFIT_FACTOR}")
             if self.ema_pnl < -ROUND_TRIP_TAKER:
-                return False, f"ema_pnl={self.ema_pnl:.4f} negative trend"
+                reasons.append(f"ema_pnl={self.ema_pnl:.4f} negative trend")
             if self.kelly_fraction() <= 0:
-                return False, "kelly=0 no edge detected"
+                reasons.append("kelly=0 no edge detected")
+            if reasons:
+                if self._allow_world_model_override(context):
+                    return True, "world_model_exploration_override"
+                return False, "; ".join(reasons[:2])
         return True, "ok"
 
     def record_trade(self, net_pnl_pct: float) -> None:
@@ -228,8 +258,8 @@ class LearningEngine:
     def kelly_size(self, pair: str) -> float:
         return self.get(pair).kelly_fraction()
 
-    def should_entry(self, pair: str) -> Tuple[bool, str]:
-        return self.get(pair).should_entry()
+    def should_entry(self, pair: str, context: Optional[Dict[str, object]] = None) -> Tuple[bool, str]:
+        return self.get(pair).should_entry(context=context)
 
     def score_penalty(self, pair: str) -> float:
         stats = self.get(pair)

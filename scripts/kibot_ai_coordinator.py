@@ -67,21 +67,21 @@ RATE_STATE_FILE = STATE_DIR / "ai_coordinator_rate.json"
 RESPONSE_CACHE = STATE_DIR / "ai_coordinator_cache.json"
 PROVIDER_STATE_FILE = STATE_DIR / "ai_coordinator_providers.json"
 REQUEST_TIMEOUT_SEC = float(os.getenv("KIBOT_AI_COORDINATOR_TIMEOUT_SEC", "12"))
-OLLAMA_FAST_MODEL = os.getenv("KIBOT_OLLAMA_FAST_MODEL", "qwen3:1.7b")
-OLLAMA_DEFAULT_MODEL = os.getenv("KIBOT_OLLAMA_MODEL", "qwen3:4b")
+OLLAMA_FAST_MODEL = os.getenv("KIBOT_OLLAMA_FAST_MODEL", "qwen3:0.6b")
+OLLAMA_DEFAULT_MODEL = os.getenv("KIBOT_OLLAMA_MODEL", "qwen3:1.7b")
 OLLAMA_DEEP_MODEL = os.getenv("KIBOT_OLLAMA_DEEP_MODEL", "qwen3:8b")
-OLLAMA_FAST_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_FAST_TIMEOUT_SEC", "25"))
-OLLAMA_DEFAULT_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_TIMEOUT_SEC", "45"))
+OLLAMA_FAST_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_FAST_TIMEOUT_SEC", "30"))
+OLLAMA_DEFAULT_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_TIMEOUT_SEC", "40"))
 OLLAMA_DEEP_TIMEOUT_SEC = float(os.getenv("KIBOT_OLLAMA_DEEP_TIMEOUT_SEC", "120"))
 OLLAMA_FAST_KEEP_ALIVE = os.getenv("KIBOT_OLLAMA_FAST_KEEP_ALIVE", "45s")
 OLLAMA_DEFAULT_KEEP_ALIVE = os.getenv("KIBOT_OLLAMA_KEEP_ALIVE", "90s")
 OLLAMA_DEEP_KEEP_ALIVE = os.getenv("KIBOT_OLLAMA_DEEP_KEEP_ALIVE", "3m")
-OLLAMA_FAST_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_FAST_NUM_CTX", "3072"))
-OLLAMA_DEFAULT_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_DEFAULT_NUM_CTX", "4096"))
-OLLAMA_DEEP_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_DEEP_NUM_CTX", "6144"))
-OLLAMA_FAST_NUM_PREDICT = int(os.getenv("KIBOT_OLLAMA_FAST_NUM_PREDICT", "320"))
-OLLAMA_DEFAULT_NUM_PREDICT = int(os.getenv("KIBOT_OLLAMA_DEFAULT_NUM_PREDICT", "480"))
-OLLAMA_DEEP_NUM_PREDICT = int(os.getenv("KIBOT_OLLAMA_DEEP_NUM_PREDICT", "768"))
+OLLAMA_FAST_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_FAST_NUM_CTX", "2048"))
+OLLAMA_DEFAULT_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_DEFAULT_NUM_CTX", "3072"))
+OLLAMA_DEEP_NUM_CTX = int(os.getenv("KIBOT_OLLAMA_DEEP_NUM_CTX", "4096"))
+OLLAMA_FAST_NUM_PREDICT = int(os.getenv("KIBOT_OLLAMA_FAST_NUM_PREDICT", "180"))
+OLLAMA_DEFAULT_NUM_PREDICT = int(os.getenv("KIBOT_OLLAMA_DEFAULT_NUM_PREDICT", "260"))
+OLLAMA_DEEP_NUM_PREDICT = int(os.getenv("KIBOT_OLLAMA_DEEP_NUM_PREDICT", "520"))
 AI_DEFAULT_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_DEFAULT_COOLDOWN_SEC", "900"))
 AI_NETWORK_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_NETWORK_COOLDOWN_SEC", "180"))
 AI_RATE_LIMIT_COOLDOWN_SEC = int(os.getenv("KIBOT_AI_PROVIDER_RATE_LIMIT_COOLDOWN_SEC", "3600"))
@@ -120,7 +120,7 @@ PROVIDERS = {
     },
     "openrouter": {
         "daily_limit": 200,
-        "model": "openrouter/free",
+        "model": os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct"),
         "api_key_envs": ["OPENROUTER_API_KEY"],
         "base_url": "https://openrouter.ai/api/v1/chat/completions",
         "priority": 5,
@@ -142,16 +142,16 @@ PROVIDERS = {
 }
 
 PROMPT_PROVIDER_ORDER = {
-    "BRAIN_CRITIC": ["groq", "openrouter", "gemini", "nvidia", "ollama", "cohere", "jina"],
-    "WHATIF_SIMULATION": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
-    "TRADE_POSTMORTEM": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
-    "VETO_ANALYSIS": ["groq", "openrouter", "gemini", "nvidia", "ollama", "cohere", "jina"],
-    "WEEKLY_SUMMARY": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
-    "NEWS_ANALYSIS": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
-    "STRATEGY_GOVERNOR": ["ollama", "openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
-    "STRATEGY_GOVERNOR_FAST": ["ollama", "openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
-    "STRATEGY_GOVERNOR_MEDIUM": ["ollama", "openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
-    "SOVEREIGN_DAILY_REVIEW": ["ollama", "openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
+    "BRAIN_CRITIC": ["openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
+    "WHATIF_SIMULATION": ["openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
+    "TRADE_POSTMORTEM": ["openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
+    "VETO_ANALYSIS": ["groq", "openrouter", "gemini", "nvidia", "cohere", "jina"],
+    "WEEKLY_SUMMARY": ["openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
+    "NEWS_ANALYSIS": ["openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
+    "STRATEGY_GOVERNOR": ["openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
+    "STRATEGY_GOVERNOR_FAST": ["openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
+    "STRATEGY_GOVERNOR_MEDIUM": ["openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
+    "SOVEREIGN_DAILY_REVIEW": ["openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
     "OPS_CHAT": ["openrouter", "groq", "gemini", "nvidia", "ollama", "cohere", "jina"],
     "OPS_CHAT_LOCAL": ["ollama", "openrouter", "groq", "gemini", "nvidia", "cohere", "jina"],
 }
@@ -161,6 +161,7 @@ PROMPT_TEMPLATES = {
         "You are KiBot's strategy critic.\n"
         "Watch symbols: {watch_symbols}\n"
         "Market pulse: {market_pulse}\n"
+        "World model: {world_model}\n"
         "Daily target: {daily_target}\n"
         "Capital profile: {capital_profile}\n"
         "Rules: keep risk controls strict, prefer survival on tiny accounts, and only turn opportunistic when both market pulse and local learning support it.\n"
@@ -202,6 +203,7 @@ PROMPT_TEMPLATES = {
         "capital={capital_profile}\n"
         "scanner_feed={scanner_feed}\n"
         "runtime={runtime}\n"
+        "world_model={world_model}\n"
         "memory={memory}\n"
         "pair_memory={pair_memory}\n"
         "polymarket={polymarket}\n"
@@ -223,6 +225,7 @@ PROMPT_TEMPLATES = {
         "capital={capital_profile}\n"
         "runtime={runtime}\n"
         "scanner_feed={scanner_feed}\n"
+        "world_model={world_model}\n"
         "polymarket={polymarket}\n"
         "gate={gate}\n"
         "Return strict compact JSON only with keys "
@@ -244,6 +247,7 @@ PROMPT_TEMPLATES = {
         "capital={capital_profile}\n"
         "runtime={runtime}\n"
         "scanner_feed={scanner_feed}\n"
+        "world_model={world_model}\n"
         "memory={memory}\n"
         "pair_memory={pair_memory}\n"
         "polymarket={polymarket}\n"
@@ -258,6 +262,7 @@ PROMPT_TEMPLATES = {
         "daily_report={daily_report}\n"
         "latest_learning={latest_learning}\n"
         "pair_memory={pair_memory}\n"
+        "world_model={world_model}\n"
         "polymarket={polymarket}\n"
         "Return strict compact JSON with keys "
         "{\"summary\":\"...\",\"root_causes\":[...],\"missed_opportunities\":[...],\"lessons\":[...],\"risks\":[...],\"parameter_recommendations\":[...],\"tomorrow_mode\":\"SURVIVAL|CONTROLLED|CONTROLLED_AGGRESSIVE|FULL_ATTACK\",\"tomorrow_focus\":[...]}\n"
@@ -304,7 +309,7 @@ PROMPT_OLLAMA_TIMEOUT = {
     "NEWS_ANALYSIS": OLLAMA_FAST_TIMEOUT_SEC,
     "STRATEGY_GOVERNOR": OLLAMA_FAST_TIMEOUT_SEC,
     "STRATEGY_GOVERNOR_FAST": OLLAMA_FAST_TIMEOUT_SEC,
-    "STRATEGY_GOVERNOR_MEDIUM": max(OLLAMA_FAST_TIMEOUT_SEC, min(OLLAMA_DEFAULT_TIMEOUT_SEC, 90.0)),
+    "STRATEGY_GOVERNOR_MEDIUM": OLLAMA_DEFAULT_TIMEOUT_SEC,
     "SOVEREIGN_DAILY_REVIEW": OLLAMA_DEEP_TIMEOUT_SEC,
     "OPS_CHAT": OLLAMA_FAST_TIMEOUT_SEC,
     "OPS_CHAT_LOCAL": OLLAMA_FAST_TIMEOUT_SEC,
@@ -503,6 +508,39 @@ def _save_to_cache(cache_key: str, data: Dict[str, Any]) -> None:
     _atomic_write(RESPONSE_CACHE, cache)
 
 
+def _latest_prompt_cache(prompt_type: str, max_age_minutes: int = 180) -> Optional[Dict[str, Any]]:
+    if not RESPONSE_CACHE.exists():
+        return None
+    try:
+        cache = json.loads(RESPONSE_CACHE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    prefix = f"{prompt_type}_"
+    now = time.time()
+    best_ts = 0.0
+    best_payload: Optional[Dict[str, Any]] = None
+    for key, entry in cache.items():
+        if not str(key).startswith(prefix):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        ts = float(entry.get("ts") or 0.0)
+        if ts <= 0 or ((now - ts) / 60.0) > max_age_minutes:
+            continue
+        data = entry.get("data")
+        if not isinstance(data, dict):
+            continue
+        if not _response_has_minimum_schema(prompt_type, data):
+            continue
+        if ts >= best_ts:
+            best_ts = ts
+            best_payload = dict(data)
+    if best_payload is not None:
+        best_payload.setdefault("cache_fallback", True)
+        best_payload.setdefault("cache_fallback_age_sec", round(max(0.0, now - best_ts), 2))
+    return best_payload
+
+
 def _render_prompt(template: str, context: Dict[str, Any]) -> str:
     prepared: Dict[str, Any] = {}
     for key, value in context.items():
@@ -581,14 +619,14 @@ def _call_provider(provider: str, prompt: str, prompt_type: str = "") -> Optiona
             url = config["base_url"]
             if provider == "cohere":
                 payload = {
-                    "model": config["model"],
+                    "model": model,
                     "message": prompt,
                     "temperature": 0.3,
                 }
                 headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
             else:
                 payload = {
-                    "model": config["model"],
+                    "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 800,
                     "temperature": 0.3,
@@ -633,6 +671,79 @@ def _call_provider(provider: str, prompt: str, prompt_type: str = "") -> Optiona
         return None
 
 
+def _extract_json_object(response: str) -> Optional[Dict[str, Any]]:
+    response = str(response or "").strip()
+    if not response:
+        return None
+    try:
+        parsed = json.loads(response)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+    start = response.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    end = -1
+    for index in range(start, len(response)):
+        char = response[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = index
+                break
+    if end == -1:
+        return None
+    candidate = response[start : end + 1]
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _response_has_minimum_schema(prompt_type: str, parsed: Dict[str, Any]) -> bool:
+    if not isinstance(parsed, dict) or not parsed:
+        return False
+    if "raw" in parsed and len(parsed) <= 3:
+        return False
+    required_by_prompt = {
+        "BRAIN_CRITIC": {"capital_posture", "risk_bias", "confidence"},
+        "VETO_ANALYSIS": {"approved", "reason", "confidence"},
+        "NEWS_ANALYSIS": {"summary"},
+        "STRATEGY_GOVERNOR": {"brain_mode", "strategy_mode", "confidence"},
+        "STRATEGY_GOVERNOR_FAST": {"brain_mode", "strategy_mode", "confidence"},
+        "STRATEGY_GOVERNOR_MEDIUM": {"brain_mode", "strategy_mode", "confidence"},
+        "SOVEREIGN_DAILY_REVIEW": {"summary", "root_causes", "lessons"},
+        "OPS_CHAT": {"answer"},
+        "OPS_CHAT_LOCAL": {"answer"},
+        "WHATIF_SIMULATION": {"scenarios"},
+        "TRADE_POSTMORTEM": {"summary"},
+        "WEEKLY_SUMMARY": {"summary"},
+    }
+    required = required_by_prompt.get(prompt_type, set())
+    if not required:
+        return True
+    present = {key for key in required if parsed.get(key) not in (None, "", [], {})}
+    if len(present) >= max(1, min(2, len(required))):
+        return True
+    return False
+
+
 def query_ai(prompt_type: str, context: Dict[str, Any], cache_ttl_minutes: int = 60, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
     template = PROMPT_TEMPLATES.get(prompt_type, "Analyze this context:\n{context}")
     prompt = _render_prompt(template, context)
@@ -660,21 +771,18 @@ def query_ai(prompt_type: str, context: Dict[str, Any], cache_ttl_minutes: int =
         if not response:
             continue
         _increment_usage(provider)
-        try:
-            parsed = json.loads(response)
-        except Exception:
-            start = response.find("{")
-            end = response.rfind("}")
-            parsed = json.loads(response[start : end + 1]) if start != -1 and end != -1 else {"raw": response}
-        if isinstance(parsed, dict):
-            parsed.setdefault("provider", provider)
-            parsed.setdefault("model", _provider_model(provider, prompt_type))
-        if isinstance(parsed, dict) and not parsed:
-            _set_provider_cooldown(provider, AI_EMPTY_COOLDOWN_SEC, "empty_json")
+        parsed = _extract_json_object(response)
+        if not isinstance(parsed, dict):
+            _set_provider_cooldown(provider, AI_EMPTY_COOLDOWN_SEC, "invalid_json")
+            continue
+        parsed.setdefault("provider", provider)
+        parsed.setdefault("model", _provider_model(provider, prompt_type))
+        if not _response_has_minimum_schema(prompt_type, parsed):
+            _set_provider_cooldown(provider, AI_EMPTY_COOLDOWN_SEC, "invalid_schema")
             continue
         _save_to_cache(cache_key, parsed)
         return parsed
-    return None
+    return _latest_prompt_cache(prompt_type)
 
 
 def get_provider_status() -> Dict[str, Dict[str, Any]]:

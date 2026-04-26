@@ -35,7 +35,7 @@ logger = logging.getLogger("kibot_v2")
 # ============================================================
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
-STATE_DIR    = Path(os.environ.get("KIBOT_STATE_DIR", "/Users/kiki/Documents/Web Develop/KiBot/state"))
+STATE_DIR    = Path(os.environ.get("KIBOT_STATE_DIR", str(Path(__file__).resolve().parent.parent / "state")))
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 TRADE_LOG_FILE    = STATE_DIR / "trade_log.jsonl"

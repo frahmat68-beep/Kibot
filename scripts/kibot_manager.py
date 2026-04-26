@@ -2919,7 +2919,7 @@ AI_PROVIDER_ORDER = [
     token.strip().lower()
     for token in os.getenv(
         "KIBOT_AI_PROVIDER_ORDER",
-        "groq,openrouter,ollama,cohere,gemini",
+        "openrouter,groq,gemini,cohere",
     ).split(",")
     if token.strip()
 ]
@@ -3831,11 +3831,38 @@ def _build_governor_context(profile: str = "fast") -> Dict[str, Any]:
         }
     sovereign_review = daily_summary.get("last_sovereign_review") if isinstance(daily_summary.get("last_sovereign_review"), dict) else {}
     market_pulse = brain_snapshot.get("market_pulse") if isinstance(brain_snapshot.get("market_pulse"), dict) else {}
+    world_model = brain_snapshot.get("world_model") if isinstance(brain_snapshot.get("world_model"), dict) else {}
     market_summary = {
         "risk_bias": str(market_pulse.get("risk_bias") or "UNKNOWN").upper(),
         "headline_count": int(market_pulse.get("headline_count") or 0),
         "summary": str(market_pulse.get("summary") or "")[:160],
         "watch_symbols": [str(item).upper() for item in list(market_pulse.get("watch_symbols") or [])[: (2 if profile == "fast" else 4)]],
+    }
+    world_summary = {
+        "market_regime": str(world_model.get("market_regime") or market_summary.get("risk_bias") or "UNKNOWN").upper(),
+        "confidence": round(float(_parse_numeric(world_model.get("confidence")) or 0.0), 4),
+        "summary": str(world_model.get("summary") or "")[:220],
+        "global_narratives": [str(item)[:120] for item in list(world_model.get("global_narratives") or [])[: (2 if profile == "fast" else 4)]],
+        "opportunities": [
+            {
+                "pair": str(item.get("pair") or ""),
+                "kind": str(item.get("kind") or ""),
+                "score": round(float(_parse_numeric(item.get("score")) or 0.0), 4),
+                "thesis": str(item.get("thesis") or "")[:100],
+            }
+            for item in list(world_model.get("opportunity_register") or [])[: (2 if profile == "fast" else 4)]
+            if isinstance(item, dict)
+        ],
+        "risks": [
+            {
+                "severity": str(item.get("severity") or ""),
+                "summary": str(item.get("summary") or "")[:120],
+            }
+            for item in list(world_model.get("risk_register") or [])[: (2 if profile == "fast" else 4)]
+            if isinstance(item, dict)
+        ],
+        "micro_capital_plan": world_model.get("micro_capital_plan") if isinstance(world_model.get("micro_capital_plan"), dict) else {},
+        "source_status": world_model.get("source_status") if isinstance(world_model.get("source_status"), dict) else {},
     }
     performance_summary = {
         "daily_pnl_pct": _daily_guard_state.get("daily_pnl_pct"),
@@ -3892,6 +3919,7 @@ def _build_governor_context(profile: str = "fast") -> Dict[str, Any]:
         "capital_profile": capital_summary,
         "trade_metrics": trade_metrics,
         "scanner_feed": remote_summary,
+        "world_model": world_summary,
         "polymarket": {
             "ready": polymarket.get("ready"),
             "analysis_ready": polymarket.get("analysis_ready"),
@@ -3945,12 +3973,15 @@ def _build_governor_context(profile: str = "fast") -> Dict[str, Any]:
 def _governor_event_fingerprint(context: Dict[str, Any]) -> str:
     payload = {
         "market_risk_bias": str(context.get("market", {}).get("risk_bias") or "UNKNOWN"),
+        "world_regime": str(context.get("world_model", {}).get("market_regime") or "UNKNOWN"),
+        "world_confidence": round(float(_parse_numeric(context.get("world_model", {}).get("confidence")) or 0.0), 3),
         "capital_mode": str(context.get("capital_profile", {}).get("mode") or "NORMAL"),
         "capital_allowed": bool(context.get("capital_profile", {}).get("trading_allowed")),
         "daily_pnl_bucket": round(float(_parse_numeric(context.get("performance", {}).get("daily_pnl_pct")) or 0.0), 3),
         "hard_stop": bool(context.get("performance", {}).get("hard_stop_active")),
         "entry_state": str(context.get("gate", {}).get("entry_state") or ""),
         "top_whatif": list(context.get("whatif_top_opportunities") or [])[:3],
+        "world_opps": [str(item.get("pair") or "") for item in list(context.get("world_model", {}).get("opportunities") or [])[:3] if isinstance(item, dict)],
         "remote_feed": str(context.get("scanner_feed", {}).get("last_feed_id") or ""),
         "runtime_connections": context.get("runtime", {}).get("connections") if isinstance(context.get("runtime"), dict) else {},
         "loss_blacklist": list(context.get("memory", {}).get("daily_summary", {}).get("loss_blacklist_pairs") or [])[:3],
@@ -3963,6 +3994,7 @@ def _fallback_governor_raw(context: Dict[str, Any], *, failure_reason: str, prof
     capital_profile = context.get("capital_profile") if isinstance(context.get("capital_profile"), dict) else {}
     gate = context.get("gate") if isinstance(context.get("gate"), dict) else {}
     market = context.get("market") if isinstance(context.get("market"), dict) else {}
+    world_model = context.get("world_model") if isinstance(context.get("world_model"), dict) else {}
     polymarket = context.get("polymarket") if isinstance(context.get("polymarket"), dict) else {}
     runtime = context.get("runtime") if isinstance(context.get("runtime"), dict) else {}
     memory = context.get("memory") if isinstance(context.get("memory"), dict) else {}
@@ -3973,11 +4005,21 @@ def _fallback_governor_raw(context: Dict[str, Any], *, failure_reason: str, prof
         if _normalize_pair_id(item)
     ][:6]
     risk_bias = str(market.get("risk_bias") or "UNKNOWN").upper()
+    world_regime = str(world_model.get("market_regime") or risk_bias or "UNKNOWN").upper()
     trading_allowed = bool(capital_profile.get("trading_allowed"))
     hard_stop = bool(context.get("performance", {}).get("hard_stop_active"))
     gate_healthy = bool(gate.get("control_plane_healthy", True)) and str(gate.get("entry_state") or "HEALTHY") == "HEALTHY"
     scanner_only = _is_scanner_only_node()
     daily_pnl_pct = float(_parse_numeric(context.get("performance", {}).get("daily_pnl_pct")) or 0.0)
+    world_opportunities = [
+        item for item in list(world_model.get("opportunities") or [])
+        if isinstance(item, dict) and str(item.get("pair") or "").strip()
+    ]
+    critical_risks = [
+        item for item in list(world_model.get("risks") or [])
+        if isinstance(item, dict) and str(item.get("severity") or "").upper() in {"CRITICAL", "HIGH"}
+    ]
+    micro_plan = world_model.get("micro_capital_plan") if isinstance(world_model.get("micro_capital_plan"), dict) else {}
 
     strategy_mode = "NEUTRAL"
     brain_mode = "CONTROLLED"
@@ -3995,11 +4037,17 @@ def _fallback_governor_raw(context: Dict[str, Any], *, failure_reason: str, prof
         capital_posture = "PRESERVE"
         confidence = 0.42
         why.append("capital or gate health requires defensive fallback")
-    elif risk_bias == "RISK_ON" and daily_pnl_pct >= -0.003 and top_whatif:
+    elif critical_risks:
+        strategy_mode = "DEFENSIVE"
+        brain_mode = "CONTROLLED"
+        capital_posture = "PRESERVE"
+        confidence = 0.46
+        why.append("world model carries high-severity risks")
+    elif world_regime == "RISK_ON" and daily_pnl_pct >= -0.003 and (world_opportunities or top_whatif):
         strategy_mode = "OPPORTUNISTIC"
         brain_mode = "CONTROLLED_AGGRESSIVE"
         capital_posture = "DEPLOY_70PCT"
-        confidence = 0.58
+        confidence = max(0.58, float(_parse_numeric(world_model.get("confidence")) or 0.0))
         why.append("risk-on market with actionable opportunities")
     else:
         why.append("AI unavailable, using heuristic sovereign fallback")
@@ -4016,10 +4064,16 @@ def _fallback_governor_raw(context: Dict[str, Any], *, failure_reason: str, prof
         and str(detail.get("direction") or "").upper() == "LONG"
         and float(_parse_numeric(detail.get("score")) or 0.0) >= 0.55
     ]
-    focus_pairs = [_normalize_pair_id(item) for item in top_whatif[:4] if _normalize_pair_id(item)]
+    focus_pairs = [
+        _normalize_pair_id(item.get("pair"))
+        for item in world_opportunities[:4]
+        if _normalize_pair_id(item.get("pair"))
+    ]
+    if not focus_pairs:
+        focus_pairs = [_normalize_pair_id(item) for item in top_whatif[:4] if _normalize_pair_id(item)]
     if bullish_assets and not focus_pairs:
         focus_pairs = [_normalize_pair_id(f"{asset.lower()}_idr") for asset in bullish_assets[:3]]
-    if not focus_pairs and risk_bias == "RISK_ON":
+    if not focus_pairs and world_regime == "RISK_ON":
         focus_pairs = [_normalize_pair_id(item) for item in ["btc_idr", "sol_idr"]]
     elif not focus_pairs:
         focus_pairs = [_normalize_pair_id(item) for item in ["btc_idr"]]
@@ -4061,7 +4115,11 @@ def _fallback_governor_raw(context: Dict[str, Any], *, failure_reason: str, prof
             "max_per_trade": 0.18 if strategy_mode == "DEFENSIVE" else 0.24,
             "risk_pct_multiplier": risk_multiplier,
             "free_cash_buffer_pct": free_cash_buffer_pct,
-            "micro_entry_floor_idr": float(capital_profile.get("min_position_idr") or ABSOLUTE_MIN_POSITION_SIZE_IDR),
+            "micro_entry_floor_idr": float(
+                _parse_numeric(micro_plan.get("exploration_budget_idr"))
+                or capital_profile.get("min_position_idr")
+                or ABSOLUTE_MIN_POSITION_SIZE_IDR
+            ),
         },
         "risk": {
             "lock_ratio": 0.36 if strategy_mode == "DEFENSIVE" else 0.30,
@@ -4083,7 +4141,7 @@ def _fallback_governor_raw(context: Dict[str, Any], *, failure_reason: str, prof
             "focus_boost": 1.03 if strategy_mode == "OPPORTUNISTIC" else 1.0,
         },
         "indodax": {
-            "allow_entries": allow_entries,
+            "allow_entries": allow_entries and (not critical_risks or strategy_mode != "DEFENSIVE"),
             "max_open_positions": 2 if strategy_mode == "DEFENSIVE" else 3,
             "budget_per_trade_idr": max_position_idr,
             "focus_pairs": focus_pairs,
@@ -4130,12 +4188,17 @@ def _refresh_governor_directives(*, force: bool = False, reason: str = "loop", p
         current_expired = bool(current_directives.get("plan_is_expired"))
         if current_directives and current_provider not in {"", "heuristic", "local-fallback"} and not current_expired:
             preserved = dict(current_directives)
+            preserved_at = _safe_isoformat(now)
+            preserved_ttl = int(_clamp_float(preserved.get("plan_ttl_sec"), 180, 21_600, 360 if profile == "fast" else 900))
             ops_alerts = [str(item) for item in list(preserved.get("ops_alerts") or []) if str(item).strip()]
             ops_alert = f"ai governor refresh missed ({profile})"
             if ops_alert not in ops_alerts:
                 ops_alerts.append(ops_alert)
             preserved["ops_alerts"] = ops_alerts[-4:]
             preserved["plan_state"] = "ACTIVE"
+            preserved["plan_generated_at"] = preserved_at
+            preserved["updated_at"] = preserved_at
+            preserved["expires_at"] = _safe_isoformat(now + preserved_ttl)
             preserved["reason"] = f"{str(preserved.get('reason') or 'ai_governor_plan')}+refresh_missed:{profile}"
             raw = preserved
         else:
@@ -5464,7 +5527,9 @@ def _build_sovereign_daily_review_fallback(report: Dict[str, Any]) -> Dict[str, 
 def _run_sovereign_daily_review(report: Dict[str, Any]) -> Dict[str, Any]:
     fallback = _build_sovereign_daily_review_fallback(report)
     result = dict(fallback)
-    polymarket_snapshot = _brain.snapshot().get("polymarket") if hasattr(_brain, "snapshot") else {}
+    brain_snapshot = _brain.snapshot() if hasattr(_brain, "snapshot") else {}
+    polymarket_snapshot = brain_snapshot.get("polymarket") if isinstance(brain_snapshot, dict) else {}
+    world_model_snapshot = brain_snapshot.get("world_model") if isinstance(brain_snapshot, dict) else {}
     if AI_ROUTER_ENABLED:
         try:
             ai_result = query_ai(
@@ -5474,6 +5539,13 @@ def _run_sovereign_daily_review(report: Dict[str, Any]) -> Dict[str, Any]:
                     "latest_learning": _load_json_file(LEARNING_REVIEW_PATH, {}),
                     "pair_memory": _pair_memory_brief(limit=6),
                     "polymarket": polymarket_snapshot if isinstance(polymarket_snapshot, dict) else {},
+                    "world_model": {
+                        "summary": str(world_model_snapshot.get("summary") or "")[:220],
+                        "market_regime": str(world_model_snapshot.get("market_regime") or ""),
+                        "confidence": round(float(_parse_numeric(world_model_snapshot.get("confidence")) or 0.0), 4),
+                        "opportunities": list(world_model_snapshot.get("opportunity_register") or [])[:4] if isinstance(world_model_snapshot, dict) else [],
+                        "risks": list(world_model_snapshot.get("risk_register") or [])[:4] if isinstance(world_model_snapshot, dict) else [],
+                    },
                 },
                 cache_ttl_minutes=30,
                 force_refresh=True,
@@ -7914,8 +7986,19 @@ def _process_signal(msg: Dict[str, Any]) -> None:
             else:
                 return
 
+    capital_profile = _adaptive_capital_profile() if msg_type in SAFE_ENTRY_MSG_TYPES else {}
     if msg_type in SAFE_ENTRY_MSG_TYPES and _learning_enabled and _learning_engine is not None:
-        allowed, reason = _learning_engine.should_entry(pair)
+        pair_world = _world_model_pair_state(pair, capital_profile=capital_profile)
+        learning_context = {
+            "allow_exploration": bool(pair_world.get("allow_exploration")),
+            "pair_in_focus": bool(pair_world.get("pair_in_focus")),
+            "opportunity_score": float(pair_world.get("opportunity_score") or 0.0),
+            "brain_confidence": float(pair_world.get("brain_confidence") or 0.0),
+            "capital_mode": str((capital_profile or {}).get("mode") or ""),
+            "hard_block": bool(pair_world.get("hard_block")),
+            "hard_block_reason": str(pair_world.get("hard_block_reason") or ""),
+        }
+        allowed, reason = _learning_engine.should_entry(pair, learning_context)
         if not allowed:
             _metric_inc("entries_blocked_learn_gate")
             print(f"[KIBOT][LEARN GATE] pair={pair} blocked reason={reason}", flush=True)
@@ -7930,7 +8013,6 @@ def _process_signal(msg: Dict[str, Any]) -> None:
         spread_pct = float(msg.get("spreadPct") or msg.get("spread_pct") or 0.0)
         slippage_pct = float(msg.get("slippagePct") or msg.get("slippage_pct") or 0.0)
         pair_cfg = _get_pair_config(pair)
-        capital_profile = _adaptive_capital_profile()
         adaptive_cap = float(capital_profile.get("max_position_idr") or 0.0)
         adaptive_floor = float(capital_profile.get("min_position_idr") or ABSOLUTE_MIN_POSITION_SIZE_IDR)
         if adaptive_cap > 0.0 and budget_idr > adaptive_cap:
@@ -9199,6 +9281,66 @@ def _brain_watch_symbols() -> List[str]:
     return symbols[:5]
 
 
+def _world_model_pair_state(
+    pair: str,
+    *,
+    capital_profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    pair_id = _normalize_pair_id(pair)
+    symbol = str(pair_id.split("_", 1)[0] if pair_id else "").upper()
+    snapshot = _brain.snapshot() if hasattr(_brain, "snapshot") else {}
+    world_model = snapshot.get("world_model") if isinstance(snapshot.get("world_model"), dict) else {}
+    directives = _governor_effective_directives()
+    execution_cfg = directives.get("execution") if isinstance(directives.get("execution"), dict) else {}
+    indodax_cfg = directives.get("indodax") if isinstance(directives.get("indodax"), dict) else {}
+    focus_pairs = {
+        _normalize_pair_id(item)
+        for item in list(indodax_cfg.get("focus_pairs") or execution_cfg.get("focus_pairs") or [])
+        if _normalize_pair_id(item)
+    }
+    opportunities = [
+        item for item in list(world_model.get("opportunity_register") or [])
+        if isinstance(item, dict) and _normalize_pair_id(item.get("pair")) == pair_id
+    ]
+    best_opportunity = max(
+        opportunities,
+        key=lambda item: float(_parse_numeric(item.get("score")) or 0.0),
+        default={},
+    )
+    risks = []
+    for item in list(world_model.get("risk_register") or []):
+        if not isinstance(item, dict):
+            continue
+        assets = {str(asset).upper().strip() for asset in list(item.get("assets") or []) if str(asset).strip()}
+        pairs = {_normalize_pair_id(row) for row in list(item.get("pairs") or []) if _normalize_pair_id(row)}
+        if not assets and not pairs:
+            continue
+        if symbol in assets or pair_id in pairs:
+            risks.append(item)
+    hard_block_reason = ""
+    for item in risks:
+        severity = str(item.get("severity") or "").upper()
+        if severity in {"CRITICAL", "HIGH"}:
+            hard_block_reason = str(item.get("summary") or "world_model_risk_block")
+            break
+    micro_plan = world_model.get("micro_capital_plan") if isinstance(world_model.get("micro_capital_plan"), dict) else {}
+    exploration_allowed = bool(micro_plan.get("allow_exploration"))
+    if capital_profile and not bool(capital_profile.get("trading_allowed", True)):
+        exploration_allowed = False
+    return {
+        "pair": pair_id,
+        "symbol": symbol,
+        "pair_in_focus": pair_id in focus_pairs,
+        "opportunity": best_opportunity,
+        "opportunity_score": float(_parse_numeric(best_opportunity.get("score")) or 0.0),
+        "allow_exploration": exploration_allowed and (pair_id in focus_pairs or bool(best_opportunity)),
+        "brain_confidence": float(_parse_numeric(world_model.get("confidence")) or 0.0),
+        "hard_block": bool(hard_block_reason),
+        "hard_block_reason": hard_block_reason,
+        "risk_hits": risks[:3],
+    }
+
+
 def _brain_signal_advisory(
     pair: str,
     msg: Dict[str, Any],
@@ -9236,6 +9378,7 @@ def _brain_signal_advisory(
     market_pulse = snapshot.get("market_pulse") if isinstance(snapshot.get("market_pulse"), dict) else {}
     daily_target = snapshot.get("daily_target") if isinstance(snapshot.get("daily_target"), dict) else {}
     ai_critic = snapshot.get("ai_critic") if isinstance(snapshot.get("ai_critic"), dict) else {}
+    world_pair = _world_model_pair_state(pair, capital_profile=capital_profile)
     risk_bias = str(market_pulse.get("risk_bias") or "UNKNOWN").upper()
     strategy_next = str(daily_target.get("strategy_next") or "").strip()
     top_focus = {str(item).lower() for item in list(_load_json_file(WHATIF_RESULTS_PATH, {}).get("topOpportunities") or [])[:5]}
@@ -9297,6 +9440,17 @@ def _brain_signal_advisory(
             "watch_review": review,
         }
 
+    if world_pair.get("hard_block"):
+        return {
+            "allow": False,
+            "budget_idr": budget_idr,
+            "reason": f"world_model:{str(world_pair.get('hard_block_reason') or 'risk_block')[:120]}",
+            "symbol": symbol,
+            "risk_bias": risk_bias,
+            "strategy_next": strategy_next,
+            "watch_review": review,
+        }
+
     budget_multiplier = 1.0
     if strategy_mode == "DEFENSIVE":
         budget_multiplier = min(budget_multiplier, 0.88)
@@ -9337,6 +9491,11 @@ def _brain_signal_advisory(
             budget_multiplier,
             float(_parse_numeric(execution_cfg.get("focus_boost")) or 1.05),
         )
+    if float(world_pair.get("opportunity_score") or 0.0) >= 0.66 and approved is not False and risk_bias != "RISK_OFF":
+        budget_multiplier = max(
+            budget_multiplier,
+            1.02 + min(0.10, float(world_pair.get("opportunity_score") or 0.0) * 0.08),
+        )
 
     if approved is False and review_reason in {
         "external_research_risk_off",
@@ -9353,7 +9512,7 @@ def _brain_signal_advisory(
             "watch_review": review,
         }
 
-    if risk_bias == "RISK_OFF" and pair.lower() not in top_focus and score < 0.8:
+    if risk_bias == "RISK_OFF" and pair.lower() not in top_focus and float(world_pair.get("opportunity_score") or 0.0) < 0.72 and score < 0.8:
         return {
             "allow": False,
             "budget_idr": budget_idr,

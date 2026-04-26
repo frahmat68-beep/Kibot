@@ -57,6 +57,25 @@ NEGATIVE_HEADLINE_KEYWORDS = {
     "selloff",
 }
 
+KNOWN_CRYPTO_ASSETS = {
+    "ADA",
+    "ARB",
+    "AVAX",
+    "BNB",
+    "BTC",
+    "DOGE",
+    "ETH",
+    "LTC",
+    "MATIC",
+    "ONDO",
+    "REQ",
+    "SOL",
+    "SUI",
+    "TRX",
+    "XLM",
+    "XRP",
+}
+
 
 def _load_dotenv_early() -> None:
     candidates = [
@@ -103,14 +122,14 @@ except Exception:
 
 class BrainManager:
     """
-    Advisory-only research helper.
+    World-aware research helper for sovereign planning.
 
     Design principles:
     - Never block the live entry hot path on external network calls.
     - Keep search/news usage bounded with short timeouts and long TTLs.
     - Prefer lightweight REST calls over heavy SDK dependencies on small servers.
-    - Provide a compact, operator-readable snapshot of market context and progress
-      toward the daily green target.
+    - Provide a compact, operator-readable snapshot of market context, world
+      state, and progress toward the daily green target.
     """
 
     def __init__(self) -> None:
@@ -129,13 +148,22 @@ class BrainManager:
         self.finnhub_ttl_sec = int(os.getenv("KIBOT_BRAIN_FINNHUB_TTL_SEC", "900"))
         self.gemini_ttl_sec = int(os.getenv("KIBOT_BRAIN_GEMINI_TTL_SEC", "7200"))
         self.polymarket_ttl_sec = int(os.getenv("KIBOT_BRAIN_POLYMARKET_TTL_SEC", "90"))
+        self.world_model_ttl_sec = int(os.getenv("KIBOT_BRAIN_WORLD_MODEL_TTL_SEC", "600"))
+        self.coingecko_ttl_sec = int(os.getenv("KIBOT_BRAIN_COINGECKO_TTL_SEC", "900"))
+        self.gdelt_ttl_sec = int(os.getenv("KIBOT_BRAIN_GDELT_TTL_SEC", "1800"))
+        self.x_ttl_sec = int(os.getenv("KIBOT_BRAIN_X_TTL_SEC", "600"))
         self.max_watch_symbols = max(1, int(os.getenv("KIBOT_BRAIN_MAX_WATCH_SYMBOLS", "5")))
         self.max_external_symbols = max(1, int(os.getenv("KIBOT_BRAIN_NEWS_MAX_SYMBOLS", "2")))
+        self.max_world_events = max(1, int(os.getenv("KIBOT_BRAIN_MAX_WORLD_EVENTS", "6")))
+        self.max_world_opportunities = max(1, int(os.getenv("KIBOT_BRAIN_MAX_WORLD_OPPORTUNITIES", "5")))
         self.green_target_daily_pct = float(os.getenv("KIBOT_GREEN_TARGET_DAILY_PCT", "0.003"))
         self.external_research_enabled = os.getenv("KIBOT_BRAIN_ENABLE_EXTERNAL_RESEARCH", "true").lower() == "true"
         self.ai_coordinator_enabled = os.getenv("KIBOT_BRAIN_ENABLE_AI_COORDINATOR", "true").lower() == "true"
+        self.world_model_enabled = os.getenv("KIBOT_BRAIN_ENABLE_WORLD_MODEL", "true").lower() == "true"
+        self.gdelt_enabled = os.getenv("KIBOT_BRAIN_ENABLE_GDELT", "false").lower() == "true"
         self.search_country = os.getenv("KIBOT_BRAIN_SEARCH_COUNTRY", "indonesia")
         self.search_lang = os.getenv("KIBOT_BRAIN_SEARCH_LANG", "id")
+        self.x_lang = os.getenv("KIBOT_BRAIN_X_LANG", "en")
         self.gemini_model = os.getenv("KIBOT_BRAIN_GEMINI_MODEL", os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite"))
         self.polymarket_state_url = os.getenv("KIBOT_POLYMARKET_STATE_URL", "").strip()
         self._pair_cache: Dict[str, Dict[str, Any]] = {}
@@ -163,15 +191,28 @@ class BrainManager:
             return dict(cached)
 
         pair = f"{symbol}USDT"
-        binance = self._get_json(
-            "https://api.binance.com/api/v3/ticker/24hr",
-            params={"symbol": pair},
-        )
-        indodax_pairs = self._get_json("https://indodax.com/api/pairs")
-        coingecko = self._get_json(
-            "https://api.coingecko.com/api/v3/search",
-            params={"query": symbol},
-        )
+        errors: List[str] = []
+        try:
+            binance = self._get_json(
+                "https://api.binance.com/api/v3/ticker/24hr",
+                params={"symbol": pair},
+            )
+        except Exception as error:
+            binance = {}
+            errors.append(f"binance:{type(error).__name__}")
+        try:
+            indodax_pairs = self._get_json("https://indodax.com/api/pairs")
+        except Exception as error:
+            indodax_pairs = []
+            errors.append(f"indodax:{type(error).__name__}")
+        try:
+            coingecko = self._get_json(
+                "https://api.coingecko.com/api/v3/search",
+                params={"query": symbol},
+            )
+        except Exception as error:
+            coingecko = {}
+            errors.append(f"coingecko:{type(error).__name__}")
         listed_on_indodax = self._listed_on_indodax(symbol, indodax_pairs)
         quote_volume = self._safe_float(binance.get("quoteVolume"))
         external_research = self._symbol_external_intel(symbol)
@@ -184,7 +225,8 @@ class BrainManager:
             "listed_on_indodax": listed_on_indodax,
             "quote_volume_usdt": quote_volume,
             "external_research": external_research,
-            "ok": True,
+            "ok": not errors,
+            "errors": errors,
             "ts": now,
         }
         self._pair_cache[symbol] = intel
@@ -225,12 +267,19 @@ class BrainManager:
         context = context or {}
         symbols = self._normalize_symbols(watch_symbols or self._default_watch_symbols())[: self.max_watch_symbols]
         market_pulse = self._get_market_pulse(symbols)
+        polymarket_snapshot = self._get_polymarket_snapshot()
+        world_model = self._build_world_model(symbols, market_pulse, polymarket_snapshot, context)
         snapshot = {
             "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "mode": "advisory_only",
+            "mode": "sovereign_support",
             "provider_status": self._provider_status(),
             "ai_legion": self._ai_legion_status(),
             "optional_modules": self._optional_modules(),
+            "brain_capabilities": {
+                "world_model_active": bool(world_model),
+                "external_research_enabled": self.external_research_enabled,
+                "ai_coordinator_enabled": self.ai_coordinator_enabled,
+            },
             "internet_checks": {
                 "binance": self._status_code("https://api.binance.com/api/v3/ping"),
                 "bybit": self._status_code("https://api.bybit.com/v5/market/tickers?category=spot"),
@@ -240,11 +289,12 @@ class BrainManager:
             },
             "daily_target": self._daily_target_snapshot(context),
             "market_pulse": market_pulse,
-            "polymarket": self._get_polymarket_snapshot(),
+            "polymarket": polymarket_snapshot,
+            "world_model": world_model,
             "watch_symbols": symbols,
             "watch_reviews": [],
         }
-        snapshot["ai_critic"] = self._get_ai_critic(symbols, market_pulse, context)
+        snapshot["ai_critic"] = self._get_ai_critic(symbols, market_pulse, world_model, context)
         for symbol in symbols[: self.max_external_symbols]:
             intel = self.get_market_intel(symbol)
             approved, reason = self.vet_signal(symbol, 0.70)
@@ -408,7 +458,13 @@ class BrainManager:
         except Exception:
             return {}
 
-    def _get_ai_critic(self, symbols: Sequence[str], market_pulse: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_ai_critic(
+        self,
+        symbols: Sequence[str],
+        market_pulse: Dict[str, Any],
+        world_model: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
         if not self.external_research_enabled:
             return {}
         risk_bias = str(market_pulse.get("risk_bias") or "UNKNOWN").upper()
@@ -475,6 +531,7 @@ class BrainManager:
                 "cross_market_bias": polymarket.get("cross_market_bias") if isinstance(polymarket.get("cross_market_bias"), dict) else {},
                 "ops_alerts": list(polymarket.get("ops_alerts") or [])[:3],
             },
+            "world_model": self._world_model_for_prompt(world_model),
         }
 
         def loader() -> Dict[str, Any]:
@@ -508,6 +565,7 @@ class BrainManager:
                                     f"- daily_target: {json.dumps(critic_context.get('daily_target'), ensure_ascii=False)}\n"
                                     f"- capital_profile: {json.dumps(critic_context.get('capital_profile'), ensure_ascii=False)}\n"
                                     f"- polymarket: {json.dumps(critic_context.get('polymarket'), ensure_ascii=False)}\n"
+                                    f"- world_model: {json.dumps(critic_context.get('world_model'), ensure_ascii=False)}\n"
                                     "Rules:\n"
                                     "- keep risk controls strict\n"
                                     "- favor tiny-account survival if capital is small\n"
@@ -629,6 +687,459 @@ class BrainManager:
             }
 
         return self._cached_payload(f"symbol_external:{symbol}", self.review_ttl_sec, loader)
+
+    def _x_bearer_token(self) -> str:
+        return (
+            os.getenv("KIBOT_X_BEARER_TOKEN")
+            or os.getenv("X_BEARER_TOKEN")
+            or os.getenv("TWITTER_BEARER_TOKEN")
+            or ""
+        ).strip()
+
+    def _coingecko_headers(self) -> Dict[str, str]:
+        headers: Dict[str, str] = {}
+        api_key = (
+            os.getenv("KIBOT_COINGECKO_API_KEY")
+            or os.getenv("COINGECKO_PRO_API_KEY")
+            or os.getenv("COINGECKO_API_KEY")
+            or ""
+        ).strip()
+        demo_key = os.getenv("COINGECKO_DEMO_API_KEY", "").strip()
+        if api_key:
+            headers["x-cg-pro-api-key"] = api_key
+        elif demo_key:
+            headers["x-cg-demo-api-key"] = demo_key
+        return headers
+
+    def _get_x_market_brief(self) -> Dict[str, Any]:
+        if not self.external_research_enabled or not self._x_bearer_token():
+            return {}
+
+        def loader() -> Dict[str, Any]:
+            query = os.getenv(
+                "KIBOT_BRAIN_X_QUERY",
+                "(bitcoin OR btc OR ethereum OR eth OR solana OR sol OR xrp OR doge OR altcoin OR memecoin) "
+                "(etf OR inflow OR outflow OR listing OR launch OR exploit OR hack OR regulation) "
+                "-is:retweet -is:reply",
+            )
+            payload = self._get_json(
+                "https://api.x.com/2/tweets/search/recent",
+                params={
+                    "query": query,
+                    "max_results": 10,
+                    "tweet.fields": "created_at,public_metrics,author_id",
+                },
+                headers={"Authorization": f"Bearer {self._x_bearer_token()}"},
+            )
+            rows = []
+            for item in list(payload.get("data") or [])[:10]:
+                if not isinstance(item, dict):
+                    continue
+                metrics = item.get("public_metrics") if isinstance(item.get("public_metrics"), dict) else {}
+                engagement = sum(
+                    int(metrics.get(name) or 0)
+                    for name in ("like_count", "retweet_count", "reply_count", "quote_count")
+                )
+                rows.append(
+                    {
+                        "text": str(item.get("text") or "").strip(),
+                        "created_at": str(item.get("created_at") or ""),
+                        "engagement": engagement,
+                    }
+                )
+            return {
+                "query": query,
+                "meta": payload.get("meta") if isinstance(payload.get("meta"), dict) else {},
+                "results": rows,
+            }
+
+        return self._cached_payload("x_market", self.x_ttl_sec, loader)
+
+    def _get_gdelt_market_brief(self) -> Dict[str, Any]:
+        if not self.external_research_enabled or not self.gdelt_enabled:
+            return {}
+
+        def loader() -> Dict[str, Any]:
+            payload = self._get_json(
+                "https://api.gdeltproject.org/api/v2/doc/doc",
+                params={
+                    "query": os.getenv(
+                        "KIBOT_BRAIN_GDELT_QUERY",
+                        '("bitcoin" OR "ethereum" OR "solana" OR "altcoin" OR "crypto") '
+                        '("etf" OR "listing" OR "regulation" OR "exploit" OR "hack" OR "treasury")',
+                    ),
+                    "mode": "ArtList",
+                    "format": "json",
+                    "maxrecords": 5,
+                    "sort": "datedesc",
+                    "timespan": os.getenv("KIBOT_BRAIN_GDELT_TIMESPAN", "3days"),
+                },
+                timeout=float(os.getenv("KIBOT_BRAIN_GDELT_TIMEOUT_SEC", "4")),
+            )
+            articles = payload.get("articles") if isinstance(payload, dict) else []
+            normalized = []
+            for item in list(articles or [])[:8]:
+                if not isinstance(item, dict):
+                    continue
+                normalized.append(
+                    {
+                        "title": str(item.get("title") or "").strip(),
+                        "domain": str(item.get("domain") or "").strip(),
+                        "language": str(item.get("language") or "").strip(),
+                        "sourcecountry": str(item.get("sourcecountry") or "").strip(),
+                        "seendate": str(item.get("seendate") or "").strip(),
+                    }
+                )
+            return {"articles": normalized}
+
+        return self._cached_payload("gdelt_market", self.gdelt_ttl_sec, loader)
+
+    def _get_coingecko_trending(self) -> Dict[str, Any]:
+        if not self.external_research_enabled:
+            return {}
+
+        def loader() -> Dict[str, Any]:
+            payload = self._get_json(
+                "https://api.coingecko.com/api/v3/search/trending",
+                headers=self._coingecko_headers(),
+                timeout=float(os.getenv("KIBOT_BRAIN_COINGECKO_TIMEOUT_SEC", "5")),
+            )
+            return payload if isinstance(payload, dict) else {}
+
+        return self._cached_payload("coingecko_trending", self.coingecko_ttl_sec, loader)
+
+    def _world_model_for_prompt(self, world_model: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(world_model, dict):
+            return {}
+        return {
+            "market_regime": str(world_model.get("market_regime") or ""),
+            "confidence": round(self._safe_float(world_model.get("confidence")), 4),
+            "summary": str(world_model.get("summary") or "")[:240],
+            "narratives": list(world_model.get("global_narratives") or [])[:3],
+            "opportunities": [
+                {
+                    "pair": item.get("pair"),
+                    "kind": item.get("kind"),
+                    "score": round(self._safe_float(item.get("score")), 4),
+                    "thesis": str(item.get("thesis") or "")[:120],
+                }
+                for item in list(world_model.get("opportunity_register") or [])[:3]
+                if isinstance(item, dict)
+            ],
+            "risks": [
+                {
+                    "severity": str(item.get("severity") or ""),
+                    "summary": str(item.get("summary") or "")[:120],
+                }
+                for item in list(world_model.get("risk_register") or [])[:3]
+                if isinstance(item, dict)
+            ],
+            "micro_capital_plan": world_model.get("micro_capital_plan") if isinstance(world_model.get("micro_capital_plan"), dict) else {},
+        }
+
+    def _extract_assets_from_text(
+        self,
+        text: str,
+        *,
+        extra_candidates: Optional[Iterable[str]] = None,
+    ) -> List[str]:
+        upper = str(text or "").upper()
+        if not upper:
+            return []
+        candidates = set(KNOWN_CRYPTO_ASSETS)
+        if extra_candidates:
+            candidates.update(str(item).upper().strip() for item in extra_candidates if str(item).strip())
+        out: List[str] = []
+        for asset in sorted(candidates, key=len, reverse=True):
+            if re.search(rf"\b{re.escape(asset)}\b", upper):
+                out.append(asset)
+        return out[:4]
+
+    def _asset_to_pair(self, asset: str) -> str:
+        cleaned = str(asset or "").strip().lower()
+        return f"{cleaned}_idr" if cleaned else ""
+
+    def _build_world_model(
+        self,
+        symbols: Sequence[str],
+        market_pulse: Dict[str, Any],
+        polymarket: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not self.world_model_enabled:
+            return {}
+        daily_target = self._daily_target_snapshot(context)
+        capital_profile = context.get("capital_profile") if isinstance(context.get("capital_profile"), dict) else {}
+        risk_bias = str(market_pulse.get("risk_bias") or "UNKNOWN").upper()
+        cache_key = (
+            f"world_model:{risk_bias}:{str(capital_profile.get('mode') or 'UNKNOWN').upper()}:"
+            f"{'-'.join(list(symbols)[:3])}"
+        )
+
+        def loader() -> Dict[str, Any]:
+            x_brief = self._get_x_market_brief()
+            gdelt_brief = self._get_gdelt_market_brief()
+            coingecko_trending = self._get_coingecko_trending()
+            provider_status = self._provider_status()
+
+            source_names = set(str(item) for item in list(market_pulse.get("providers_used") or []) if str(item).strip())
+            if x_brief:
+                source_names.add("x")
+            if gdelt_brief:
+                source_names.add("gdelt")
+            if coingecko_trending:
+                source_names.add("coingecko")
+
+            narratives = self._dedupe_texts(
+                list(market_pulse.get("top_headlines") or [])
+                + [str(item.get("text") or "") for item in list(x_brief.get("results") or [])[:2] if isinstance(item, dict)]
+                + [str(item.get("title") or "") for item in list(gdelt_brief.get("articles") or [])[:2] if isinstance(item, dict)]
+            )[:4]
+
+            event_rows: List[Dict[str, Any]] = []
+            for headline in list(market_pulse.get("top_headlines") or [])[:2]:
+                assets = self._extract_assets_from_text(headline, extra_candidates=symbols)
+                event_rows.append(
+                    {
+                        "source": "market_pulse",
+                        "headline": str(headline)[:160],
+                        "impact": "BULLISH" if risk_bias == "RISK_ON" else "MIXED" if risk_bias == "MIXED" else "BEARISH",
+                        "assets": assets,
+                    }
+                )
+            for item in list(x_brief.get("results") or [])[:2]:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text") or "").strip()
+                assets = self._extract_assets_from_text(text, extra_candidates=symbols)
+                pos_hits, neg_hits = self._sentiment_counts([text])
+                impact = "BULLISH" if pos_hits > neg_hits else "BEARISH" if neg_hits > pos_hits else "MIXED"
+                event_rows.append(
+                    {
+                        "source": "x",
+                        "headline": text[:160],
+                        "impact": impact,
+                        "assets": assets,
+                        "engagement": int(item.get("engagement") or 0),
+                    }
+                )
+            for item in list(gdelt_brief.get("articles") or [])[:2]:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or "").strip()
+                pos_hits, neg_hits = self._sentiment_counts([title])
+                impact = "BULLISH" if pos_hits > neg_hits else "BEARISH" if neg_hits > pos_hits else "MIXED"
+                event_rows.append(
+                    {
+                        "source": "gdelt",
+                        "headline": title[:160],
+                        "impact": impact,
+                        "assets": self._extract_assets_from_text(title, extra_candidates=symbols),
+                    }
+                )
+            event_rows = event_rows[: self.max_world_events]
+
+            opportunity_map: Dict[str, Dict[str, Any]] = {}
+
+            def register_opportunity(item: Dict[str, Any]) -> None:
+                pair = str(item.get("pair") or "").lower().strip()
+                if not pair:
+                    return
+                existing = opportunity_map.get(pair)
+                if existing is None or self._safe_float(item.get("score")) > self._safe_float(existing.get("score")):
+                    opportunity_map[pair] = item
+
+            for symbol in list(symbols)[: self.max_external_symbols]:
+                intel = self.get_market_intel(symbol)
+                research = intel.get("external_research") if isinstance(intel.get("external_research"), dict) else {}
+                if not bool(intel.get("listed_on_indodax")):
+                    continue
+                opportunity_score = 0.52
+                if risk_bias == "RISK_ON":
+                    opportunity_score += 0.10
+                if str(research.get("risk_bias") or "").upper() == "RISK_ON":
+                    opportunity_score += 0.08
+                if self._safe_float(intel.get("quote_volume_usdt")) >= 5_000_000:
+                    opportunity_score += 0.06
+                register_opportunity(
+                    {
+                        "pair": self._asset_to_pair(symbol),
+                        "symbol": symbol,
+                        "kind": "watch_symbol",
+                        "score": min(0.88, round(opportunity_score, 4)),
+                        "thesis": str(research.get("summary") or market_pulse.get("summary") or "watch symbol aligned")[:140],
+                        "budget_hint_idr": float(capital_profile.get("max_position_idr") or 0.0),
+                    }
+                )
+
+            trending_coins = []
+            for row in list(coingecko_trending.get("coins") or [])[:3]:
+                item = row.get("item") if isinstance(row, dict) and isinstance(row.get("item"), dict) else {}
+                if item:
+                    trending_coins.append(item)
+            for item in trending_coins:
+                symbol = str(item.get("symbol") or "").upper().strip()
+                if not symbol:
+                    continue
+                intel = self.get_market_intel(symbol)
+                if not bool(intel.get("listed_on_indodax")):
+                    continue
+                price_change = self._safe_float((((item.get("data") or {}).get("price_change_percentage_24h") or {}).get("usd")))
+                score = 0.55
+                if price_change > 0:
+                    score += 0.05
+                if risk_bias == "RISK_ON":
+                    score += 0.06
+                register_opportunity(
+                    {
+                        "pair": self._asset_to_pair(symbol),
+                        "symbol": symbol,
+                        "kind": "coingecko_trending",
+                        "score": min(0.87, round(score, 4)),
+                        "thesis": f"{symbol} trending on CoinGecko search with live interest",
+                        "budget_hint_idr": float(capital_profile.get("max_position_idr") or 0.0),
+                    }
+                )
+
+            for item in list(polymarket.get("alpha_candidates") or [])[:3]:
+                if not isinstance(item, dict):
+                    continue
+                pair = str(item.get("mapped_pair") or "").lower().strip()
+                if not pair:
+                    continue
+                score = 0.56 + (self._safe_float(item.get("alpha_score")) * 0.28) + (self._safe_float(item.get("signal_score")) * 0.12)
+                register_opportunity(
+                    {
+                        "pair": pair,
+                        "symbol": str(item.get("asset") or "").upper().strip(),
+                        "kind": "polymarket_alpha",
+                        "score": min(0.92, round(score, 4)),
+                        "thesis": f"Polymarket bias {str(item.get('direction') or 'mixed').lower()} feeding cross-market signal",
+                        "budget_hint_idr": float(capital_profile.get("max_position_idr") or 0.0),
+                    }
+                )
+
+            opportunities = sorted(
+                opportunity_map.values(),
+                key=lambda item: self._safe_float(item.get("score")),
+                reverse=True,
+            )[: self.max_world_opportunities]
+
+            risk_register: List[Dict[str, Any]] = []
+            if risk_bias == "RISK_OFF":
+                risk_register.append(
+                    {
+                        "severity": "HIGH",
+                        "summary": "world model sees external risk-off conditions",
+                        "assets": [],
+                    }
+                )
+            if not source_names:
+                risk_register.append(
+                    {
+                        "severity": "HIGH",
+                        "summary": "no external online source returned a usable payload",
+                        "assets": [],
+                    }
+                )
+            for alert in list(polymarket.get("ops_alerts") or [])[:3]:
+                text = str(alert or "").strip()
+                if not text:
+                    continue
+                risk_register.append(
+                    {
+                        "severity": "WARNING" if "low" in text.lower() else "INFO",
+                        "summary": text[:160],
+                        "assets": [],
+                    }
+                )
+            ollama_status = provider_status.get("ollama") if isinstance(provider_status.get("ollama"), dict) else {}
+            if ollama_status and not bool(ollama_status.get("available", True)):
+                risk_register.append(
+                    {
+                        "severity": "WARNING",
+                        "summary": f"ollama unavailable: {str(ollama_status.get('last_failure_reason') or 'cooldown')[:120]}",
+                        "assets": [],
+                    }
+                )
+            if not bool(capital_profile.get("trading_allowed", True)):
+                risk_register.append(
+                    {
+                        "severity": "CRITICAL",
+                        "summary": "capital profile currently blocks new entries",
+                        "assets": [],
+                    }
+                )
+            risk_register = risk_register[: self.max_world_events]
+
+            free_cash_idr = self._safe_float(context.get("free_cash_idr") or daily_target.get("free_cash_idr"))
+            max_position_idr = self._safe_float(capital_profile.get("max_position_idr"))
+            min_position_idr = max(
+                self._safe_float(capital_profile.get("min_position_idr")),
+                10_000.0,
+            )
+            small_account = str(capital_profile.get("mode") or "").upper() in {"MICRO", "BUILDUP"}
+            exploration_budget = max(
+                min_position_idr,
+                min(
+                    max_position_idr if max_position_idr > 0 else free_cash_idr,
+                    free_cash_idr * (0.22 if small_account else 0.28),
+                ),
+            ) if free_cash_idr > 0 else min_position_idr
+            allow_exploration = (
+                bool(capital_profile.get("trading_allowed", True))
+                and risk_bias != "RISK_OFF"
+                and free_cash_idr >= min_position_idr
+                and bool(opportunities)
+            )
+
+            confidence = min(0.90, 0.42 + (0.06 * min(5, len(source_names))) + (0.03 * min(3, len(opportunities))))
+            summary_parts = []
+            if narratives:
+                summary_parts.append(narratives[0][:120])
+            if opportunities:
+                summary_parts.append(f"{len(opportunities)} opportunity lane(s) active")
+            if risk_register:
+                summary_parts.append(f"{len(risk_register)} active risk(s)")
+
+            return {
+                "version": 1,
+                "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "market_regime": risk_bias if risk_bias in {"RISK_ON", "MIXED", "RISK_OFF"} else "UNKNOWN",
+                "confidence": round(confidence, 4),
+                "summary": " | ".join(summary_parts)[:320],
+                "global_narratives": narratives,
+                "external_events": event_rows,
+                "opportunity_register": opportunities,
+                "risk_register": risk_register,
+                "internal_state": {
+                    "capital_mode": str(capital_profile.get("mode") or "UNKNOWN"),
+                    "trading_allowed": bool(capital_profile.get("trading_allowed", True)),
+                    "free_cash_idr": round(free_cash_idr, 2),
+                    "provider_count": len(source_names),
+                    "polymarket_ready": bool(polymarket.get("ready")),
+                    "analysis_ready": bool(polymarket.get("analysis_ready")),
+                },
+                "micro_capital_plan": {
+                    "allow_exploration": allow_exploration,
+                    "exploration_budget_idr": round(exploration_budget, 2),
+                    "preferred_pairs": [str(item.get("pair") or "") for item in opportunities[:2]],
+                    "max_concurrent_explorations": 1 if small_account else 2,
+                    "notes": [
+                        "stay selective and keep position sizing small",
+                        "prefer liquid pairs with converging external and local signals",
+                    ][: (2 if allow_exploration else 1)],
+                },
+                "source_status": {
+                    "providers_used": sorted(source_names),
+                    "provider_count": len(source_names),
+                    "x_hits": len(list(x_brief.get("results") or [])),
+                    "gdelt_hits": len(list(gdelt_brief.get("articles") or [])),
+                    "coingecko_trending_hits": len(list(coingecko_trending.get("coins") or [])),
+                },
+            }
+
+        return self._cached_payload(cache_key, self.world_model_ttl_sec, loader)
 
     def _get_tavily_market_brief(self) -> Dict[str, Any]:
         if not self.external_research_enabled or not os.getenv("TAVILY_API_KEY"):
@@ -834,9 +1345,16 @@ class BrainManager:
             "strategy_next": strategy,
         }
 
-    def _get_json(self, url: str, *, params: Optional[Dict[str, Any]] = None) -> Any:
+    def _get_json(
+        self,
+        url: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: Optional[float] = None,
+    ) -> Any:
         request_url = f"{url}?{urlencode(params)}" if params else url
-        return self._request_json(request_url)
+        return self._request_json(request_url, headers=headers, timeout=timeout)
 
     def _post_json(self, url: str, *, body: Dict[str, Any], headers: Optional[Dict[str, str]] = None) -> Any:
         merged_headers = {
@@ -853,6 +1371,7 @@ class BrainManager:
         *,
         body: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
+        timeout: Optional[float] = None,
     ) -> Any:
         request_headers = {"User-Agent": "KiBot-Brain/1.0"}
         if headers:
@@ -860,7 +1379,7 @@ class BrainManager:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         try:
             request = Request(url, data=data, headers=request_headers)
-            with urlopen(request, timeout=max(self.request_timeout)) as response:
+            with urlopen(request, timeout=timeout or max(self.request_timeout)) as response:
                 return json.loads(response.read().decode("utf-8"))
         except Exception as error:
             logger.warning("Brain fetch failed url=%s reason=%s", url, error)
@@ -1023,6 +1542,14 @@ class BrainManager:
             "finnhub": {
                 "installed": has_module("finnhub"),
                 "api_key_present": bool(os.getenv("FINNHUB_API_KEY")),
+            },
+            "x_api": {
+                "installed": True,
+                "api_key_present": bool(self._x_bearer_token()),
+            },
+            "coingecko": {
+                "installed": True,
+                "api_key_present": bool(self._coingecko_headers()),
             },
             "numpy": {
                 "installed": has_module("numpy"),

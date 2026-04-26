@@ -37,6 +37,8 @@ DISK_CRITICAL_PCT = 90
 CPU_WARN_PCT = 90
 CPU_WARN_SUSTAINED_S = 300
 MAX_SERVICE_RESTARTS_PER_HOUR = 3
+HEURISTIC_FALLBACK_WARN_SEC = int(os.getenv("KIBOT_GUARDIAN_HEURISTIC_WARN_SEC", "900"))
+HEURISTIC_FALLBACK_RESTART_SEC = int(os.getenv("KIBOT_GUARDIAN_HEURISTIC_RESTART_SEC", "1800"))
 restart_counts: Dict[str, List[float]] = {}
 health_issue_since: Dict[str, float] = {}
 ENGINE_DEGRADED_RESTART_SEC = int(os.getenv("KIBOT_GUARDIAN_ENGINE_DEGRADED_RESTART_SEC", "600"))
@@ -45,6 +47,8 @@ SERVICE_HEALTH_URLS = {
     "kidax-engine": "http://127.0.0.1:8787/api/health",
     "kinance-engine": "http://127.0.0.1:8788/api/health",
     "kibot-manager": "http://127.0.0.1:9998/api/state",
+    "kibot-ollama-gateway": "http://127.0.0.1:11435/health",
+    "kibot-polymarket": "http://127.0.0.1:11600/health",
 }
 
 
@@ -83,20 +87,34 @@ def resolve_services_to_guard() -> List[str]:
     exchange_kind = (os.getenv("KIBOT_EXCHANGE_KIND") or file_identity.get("KIBOT_EXCHANGE_KIND") or "").strip().upper()
     bot_id = (os.getenv("BOT_ID") or file_identity.get("BOT_ID") or "").strip().lower()
     profile_key = (os.getenv("BOT_PROFILE_KEY") or file_identity.get("BOT_PROFILE_KEY") or "").strip().lower()
-    identity_hint = " ".join([exchange_kind.lower(), bot_id, profile_key])
+    identity_hint = " ".join([exchange_kind.lower(), bot_id, profile_key, socket.gethostname().lower()])
+    if any(token in identity_hint for token in ("batam", "polymarket", "ollama")):
+        return ["ollama", "kibot-ollama-gateway", "kibot-polymarket"]
     services = ["kibot-manager"]
     if exchange_kind == "INDODAX":
-        services.append("kidax-engine")
+        services.extend(["kidax-engine", "kibot-ollama-tunnel", "kibot-polymarket-tunnel", "ki-telegram-monitor"])
     elif exchange_kind in {"BINANCE", "BINANCE_SPOT"}:
-        services.append("kinance-engine")
+        services.extend([
+            "kinance-engine",
+            "kibot-ollama-tunnel",
+            "kibot-polymarket-tunnel",
+            "kibot-notifier",
+            "kibot-auditor",
+            "kibot-orchestrator",
+            "kibot-security",
+        ])
     elif any(token in identity_hint for token in ("kinance", "binance")):
-        services.append("kinance-engine")
+        services.extend(["kinance-engine", "kibot-ollama-tunnel", "kibot-polymarket-tunnel"])
     elif any(token in identity_hint for token in ("kidax", "indodax", "main")):
-        services.append("kidax-engine")
+        services.extend(["kidax-engine", "kibot-ollama-tunnel", "kibot-polymarket-tunnel"])
     else:
         # Safe fallback for legacy nodes with mixed runtime roles.
         services.extend(["kidax-engine", "kinance-engine"])
-    return services
+    deduped = []
+    for service in services:
+        if service not in deduped:
+            deduped.append(service)
+    return deduped
 
 
 SERVICES_TO_GUARD = resolve_services_to_guard()
@@ -179,9 +197,18 @@ def check_services() -> Dict[str, Dict[str, Any]]:
     results: Dict[str, Dict[str, Any]] = {}
     for service in SERVICES_TO_GUARD:
         try:
+            load_state = subprocess.run(
+                ["systemctl", "show", service, "--property=LoadState", "--value"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
+            if load_state == "not-found":
+                results[service] = {"active": False, "installed": False, "status": "not_found"}
+                continue
             proc = subprocess.run(["systemctl", "is-active", service], capture_output=True, text=True, timeout=5)
             is_active = proc.stdout.strip() == "active"
-            results[service] = {"active": is_active, "status": proc.stdout.strip()}
+            results[service] = {"active": is_active, "installed": True, "status": proc.stdout.strip()}
             if not is_active:
                 health_issue_since.pop(service, None)
                 _restart_service(service, reason="inactive", action="start")
@@ -271,6 +298,21 @@ def _check_service_health(service: str) -> Dict[str, Any]:
             return {"healthy": False, "reason": "math_review_recovery_impossible", "system_state": system_state}
         return {"healthy": False, "reason": f"manager_state_unhealthy:{system_state}:{degraded_reason}", "system_state": system_state}
 
+    if service == "kibot-ollama-gateway":
+        if bool(payload.get("ok")):
+            return {"healthy": True, "reason": "gateway_healthy"}
+        return {"healthy": False, "reason": "gateway_unhealthy"}
+
+    if service == "kibot-polymarket":
+        if bool(payload.get("ready")) and bool(payload.get("analysis_ready", True)):
+            return {"healthy": True, "reason": "polymarket_ready"}
+        return {
+            "healthy": False,
+            "reason": "polymarket_not_ready",
+            "ready": bool(payload.get("ready")),
+            "analysis_ready": bool(payload.get("analysis_ready")),
+        }
+
     return {"healthy": True, "reason": "unsupported_service"}
 
 
@@ -351,6 +393,66 @@ def check_network() -> Dict[str, Dict[str, Any]]:
     return results
 
 
+def _load_json(path: Path) -> Dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:
+        return {}
+
+
+def check_brain_control() -> Dict[str, Any]:
+    directives = _load_json(STATE_DIR / "governor_directives.json")
+    governor_state = _load_json(STATE_DIR / "governor_state.json")
+    result: Dict[str, Any] = {
+        "status": "UNKNOWN",
+        "provider": str(directives.get("provider") or governor_state.get("last_provider") or ""),
+        "plan_state": str(directives.get("plan_state") or governor_state.get("last_plan_state") or ""),
+        "last_refresh_at": str(governor_state.get("last_refresh_at") or ""),
+    }
+    if not directives and not governor_state:
+        result["status"] = "NOT_AVAILABLE"
+        return result
+    age_sec = 0.0
+    if result["last_refresh_at"]:
+        try:
+            age_sec = max(
+                0.0,
+                time.time() - datetime.fromisoformat(result["last_refresh_at"].replace("Z", "+00:00")).timestamp(),
+            )
+        except Exception:
+            age_sec = 0.0
+    result["age_sec"] = round(age_sec, 1)
+    provider = str(result.get("provider") or "").lower()
+    if str(result.get("plan_state") or "").upper() == "ACTIVE":
+        result["status"] = "OK"
+    else:
+        result["status"] = "WARNING"
+    if provider in {"heuristic", "local-fallback"}:
+        result["status"] = "WARNING"
+        if age_sec >= HEURISTIC_FALLBACK_WARN_SEC:
+            push_event(
+                "AI_FALLBACK_ACTIVE",
+                f"Governor fallback {provider} aktif selama {int(age_sec)}s",
+                "WARNING",
+                {"provider": provider, "age_sec": age_sec},
+            )
+        if age_sec >= HEURISTIC_FALLBACK_RESTART_SEC:
+            if "kibot-ollama-tunnel" in SERVICES_TO_GUARD:
+                _restart_service("kibot-ollama-tunnel", reason="heuristic_fallback_stuck", action="restart")
+            elif "kibot-ollama-gateway" in SERVICES_TO_GUARD:
+                _restart_service("kibot-ollama-gateway", reason="heuristic_fallback_stuck", action="restart")
+            result["status"] = "CRITICAL"
+    if str(result.get("plan_state") or "").upper() == "EXPIRED":
+        result["status"] = "CRITICAL"
+        push_event(
+            "GOVERNOR_PLAN_EXPIRED",
+            "Governor plan expired; control plane may be stale",
+            "CRITICAL",
+            {"provider": provider, "age_sec": age_sec},
+        )
+    return result
+
+
 def save_state(metrics: Dict[str, Any]) -> None:
     atomic_write(GUARDIAN_STATE, {"ts": now_iso(), **metrics})
 
@@ -397,6 +499,7 @@ def run_guardian_loop() -> None:
                 "disk": check_disk(),
                 "services": check_services(),
                 "network": check_network(),
+                "brain_control": check_brain_control(),
             }
             cpu_pct = float(psutil.cpu_percent(interval=5) if psutil else 0.0)
             metrics["cpu_pct"] = cpu_pct
