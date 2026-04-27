@@ -2762,6 +2762,7 @@ class MacEngineDaemon(
     ): com.kibot.core.ExitDecision? {
         if (config.exchangeKind != ExchangeKind.INDODAX) return null
         if (snapshots.isEmpty()) return null
+        val freeIdr = resolveAllocatableIdrFromBalances(balances)
         val scoredByPair = cycle.rankedPairs.associateBy { it.pairId }
         fun quantityForSnapshot(snapshot: LocalTrailingSnapshot): Double {
             val fromManaged = managedPositions
@@ -2780,7 +2781,7 @@ class MacEngineDaemon(
         fun notionalForSnapshot(snapshot: LocalTrailingSnapshot): Double {
             return snapshot.currentBid * quantityForSnapshot(snapshot).coerceAtLeast(0.0)
         }
-        val minimumNotional = minimumLiveNotionalForExchange()
+        val minimumNotional = minimumLiveNotionalForExchange(freeIdr)
         val snapshot = snapshots
             .asSequence()
             .filter { it.armed && it.currentBid <= it.floorPrice }
@@ -2903,8 +2904,18 @@ class MacEngineDaemon(
         )
     }
 
-    private fun minimumLiveNotionalForExchange(): Double = when (config.exchangeKind) {
-        ExchangeKind.INDODAX -> exchangeExecutionConfig(config.exchangeKind).minOrderNotionalIdr.coerceAtLeast(20_000.0)
+    private fun minimumLiveNotionalForExchange(freeIdr: Double? = null): Double = when (config.exchangeKind) {
+        ExchangeKind.INDODAX -> {
+            val base = exchangeExecutionConfig(config.exchangeKind).minOrderNotionalIdr.coerceAtLeast(10_000.0)
+            val free = freeIdr?.coerceAtLeast(0.0) ?: Double.POSITIVE_INFINITY
+            when {
+                free <= 15_000.0 -> 5_000.0
+                free <= 25_000.0 -> 7_500.0
+                free <= 50_000.0 -> base.coerceAtMost(10_000.0)
+                free <= 100_000.0 -> base.coerceAtMost(12_500.0)
+                else -> base
+            }
+        }
         ExchangeKind.BINANCE_SPOT -> 7.5
     }
 
@@ -2918,7 +2929,7 @@ class MacEngineDaemon(
         if (executionPlan.signal.marketRegime != MarketRegime.HIGH_VOLATILITY_MOMENTUM) return executionPlan
         val freeIdr = resolveAllocatableIdrFromBalances(balances)
         if (freeIdr <= 0.0) return executionPlan
-        val minimumNotional = minimumLiveNotionalForExchange()
+        val minimumNotional = minimumLiveNotionalForExchange(freeIdr)
         val capBudget = (freeIdr * 0.50).coerceAtLeast(minimumNotional)
         val currentBudget = executionPlan.quoteBudget?.toDoubleOrZero()
             ?: executionPlan.quantity.toDoubleOrZero() * (
@@ -7269,7 +7280,7 @@ class MacEngineDaemon(
         updateHyperAggressivePulseSnapshots(now = now, marketQuotes = marketQuotes)
         val hyperAggressiveTracker = evaluateHyperAggressiveTracker(now = now, dailyRisk = cycle.dailyRisk)
         val freeIdr = resolveIdrFreeBalance(balances)
-        val isCapitalFullyDeployed = freeIdr < minimumLiveNotionalForExchange().coerceAtLeast(dustHoldingsIgnoreMinValueIdr)
+        val isCapitalFullyDeployed = freeIdr < minimumLiveNotionalForExchange(freeIdr).coerceAtLeast(dustHoldingsIgnoreMinValueIdr)
         val stallState = tradingStallDetector.getState()
         val stallRecoveryActive = stallState.stallMinutes >= 120L
 
@@ -8026,10 +8037,10 @@ class MacEngineDaemon(
                 ?: 0.0
             val canBypassInControlledTrend = cycle.marketSnapshot.regime == MarketRegime.HEALTHY_UPTREND &&
                 confidenceFloor >= 0.86 &&
-                allocatableIdr >= minimumLiveNotionalForExchange().coerceAtLeast(dustHoldingsIgnoreMinValueIdr)
+                allocatableIdr >= minimumLiveNotionalForExchange(allocatableIdr).coerceAtLeast(dustHoldingsIgnoreMinValueIdr)
             if (
                 (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM &&
-                    allocatableIdr >= minimumLiveNotionalForExchange().coerceAtLeast(dustHoldingsIgnoreMinValueIdr)) ||
+                    allocatableIdr >= minimumLiveNotionalForExchange(allocatableIdr).coerceAtLeast(dustHoldingsIgnoreMinValueIdr)) ||
                     canBypassInControlledTrend
             ) {
                 logger.warn(
@@ -8083,9 +8094,10 @@ class MacEngineDaemon(
             lastRejectedReasonLabel = "EXECUTION_ABORT: Candidate lost during handoff!"
             lastRejectedReasonAt = now
         }
+        val allocatableIdr = resolveAllocatableIdr(cycle, balances)
         if (config.exchangeKind == ExchangeKind.INDODAX &&
             cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM &&
-            resolveAllocatableIdr(cycle, balances) >= minimumLiveNotionalForExchange().coerceAtLeast(dustHoldingsIgnoreMinValueIdr) &&
+            allocatableIdr >= minimumLiveNotionalForExchange(allocatableIdr).coerceAtLeast(dustHoldingsIgnoreMinValueIdr) &&
             baselineEntrySlots <= 0
         ) {
             logger.warn(
@@ -9238,7 +9250,7 @@ class MacEngineDaemon(
         val pairScore = cycle.rankedPairs.firstOrNull { it.pairId == targetQuote.pairId }?.rankingScore ?: 0.60
         val reservedFeeBuffer = maxOf(300.0, idrFree * 0.012)
         val spendableBudgetIdr = (idrFree - reservedFeeBuffer).coerceAtLeast(0.0)
-        val minLiveNotionalIdr = minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)
+        val minLiveNotionalIdr = minimumLiveNotionalForExchange(idrFree)
         val allInEligible = cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM
         if (spendableBudgetIdr < 10_500.0) {
             val reason = "SUBMISSION_ABORTED: insufficient_post_buffer_idr(${formatDecimal(spendableBudgetIdr, 0)})"
@@ -9506,7 +9518,7 @@ class MacEngineDaemon(
         }
 
         if (hasPerSymbolExecutionLease(targetQuote.pairId, now)) {
-            if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)) {
+            if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange(idrFree)) {
                 logger.warn("LEASE_OVERRIDE: per-symbol execution lease bypassed for {} in momentum regime", targetQuote.pairId.value)
             } else {
                 val reason = "SUBMISSION_ABORTED: per_symbol_execution_lease_active"
@@ -9530,7 +9542,7 @@ class MacEngineDaemon(
                 (submissionLease.currentHolder == null || submissionLease.currentHolder == config.device.deviceId)
             )
         if (!bypassLeaseForEmergency && !submissionLease.isHeldBy(config.device.deviceId, now)) {
-            if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)) {
+            if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange(idrFree)) {
                 logger.warn("LEASE_OVERRIDE: lease_not_held bypassed for {} in momentum regime", targetQuote.pairId.value)
             } else {
                 val reason = "SUBMISSION_ABORTED: lease_not_held_dynamic_vip"
@@ -9815,7 +9827,7 @@ class MacEngineDaemon(
                 logger.warn("SLOT_OVERRIDE: slotIndex={} -> forcing slot 1 for {}", slotIndex, targetQuote.pairId.value)
             }
             if (isHoldingLimitReached(balances = balances, marketQuotes = marketQuotes, maxHoldings = 10) &&
-                !(cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange().coerceAtLeast(20_000.0))
+                !(cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange(idrFree))
             ) {
                 logger.warn("[CAPITAL_BLOCKED] LIGHT_SCALPING holdings limit reached (max=10)")
                 val reason = "SUBMISSION_ABORTED: slot_full"
@@ -9882,7 +9894,7 @@ class MacEngineDaemon(
         }
 
         if (hasPerSymbolExecutionLease(targetQuote.pairId, now)) {
-            if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)) {
+            if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange(idrFree)) {
                 logger.warn("LEASE_OVERRIDE: per-symbol execution lease bypassed for {} in momentum regime", targetQuote.pairId.value)
             } else {
                 val reason = "SUBMISSION_ABORTED: per_symbol_execution_lease_active"
@@ -9896,7 +9908,7 @@ class MacEngineDaemon(
         val submissionLease = ensureLeaseLockdownOwnership(now, lease) ?: lease
         val bypassLeaseForEmergency = forceEmergencyBypass || allocationBucket4 == "MICRO_POOL" || pairScopedParallelEntry
         if (!bypassLeaseForEmergency && !submissionLease.isHeldBy(config.device.deviceId, now)) {
-            if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)) {
+            if (cycle.marketSnapshot.regime == MarketRegime.HIGH_VOLATILITY_MOMENTUM && idrFree >= minimumLiveNotionalForExchange(idrFree)) {
                 logger.warn("LEASE_OVERRIDE: lease_not_held bypassed for {} in momentum regime", targetQuote.pairId.value)
             } else {
                 val reason = "SUBMISSION_ABORTED: lease_not_held_light_scalping"
@@ -13487,7 +13499,7 @@ class MacEngineDaemon(
             return null
         }
         val freeIdr = resolveAllocatableIdr(cycle, balances)
-        val minLiveNotionalIdr = minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)
+        val minLiveNotionalIdr = minimumLiveNotionalForExchange(freeIdr)
         if (freeIdr < minLiveNotionalIdr) {
             logWhyNotBuy(now, preferredPair.value, "parallel_momentum_insufficient_idr(${formatDecimal(freeIdr, 0)})")
             return null
@@ -13571,7 +13583,7 @@ class MacEngineDaemon(
 	        if (quote.bidDepthTop5Idr.toDoubleOrZero() <= 0.0 || quote.askDepthTop5Idr.toDoubleOrZero() <= 0.0) return null
 
 	        val freeIdr = resolveAllocatableIdr(cycle, balances)
-	        val minLiveNotionalIdr = minimumLiveNotionalForExchange().coerceAtLeast(20_000.0)
+        val minLiveNotionalIdr = minimumLiveNotionalForExchange(freeIdr)
 	        if (freeIdr < minLiveNotionalIdr) return null
 
 	        val bestBid = quote.bestBid.toDoubleOrZero().takeIf { it > 0.0 }
@@ -13634,7 +13646,7 @@ class MacEngineDaemon(
         if (config.exchangeKind != ExchangeKind.INDODAX) return false
         if (cycle.marketSnapshot.regime != MarketRegime.HIGH_VOLATILITY_MOMENTUM) return false
         val freeIdr = resolveAllocatableIdr(cycle, balances)
-        if (freeIdr < minimumLiveNotionalForExchange()) return false
+        if (freeIdr < minimumLiveNotionalForExchange(freeIdr)) return false
         val bypassPair = preferredParallelMomentumPair(
             cycle = cycle,
             managedPositions = managedPositions,
@@ -13665,7 +13677,7 @@ class MacEngineDaemon(
             return false
         }
         val allocatedIdr = minOf(freeIdr * 0.5, freeIdr)
-            .coerceAtLeast(minimumLiveNotionalForExchange().coerceAtLeast(20_000.0))
+            .coerceAtLeast(minimumLiveNotionalForExchange(freeIdr))
         if (allocatedIdr > freeIdr) {
             logWhyNotBuy(now, bypassPair.value, "emergency_bypass_allocated_exceeds_cash(${formatDecimal(allocatedIdr, 0)}>${formatDecimal(freeIdr, 0)})")
             return false
@@ -13816,7 +13828,7 @@ class MacEngineDaemon(
         val freeIdr = resolveAllocatableIdrFromBalances(balances)
         if (config.antiKoinMahalUseBudgetCheck) {
             val budgetIdr = executionPlan.quoteBudget?.toDoubleOrZero() ?: freeIdr
-            val minOrderIdr = minimumLiveNotionalForExchange()
+            val minOrderIdr = minimumLiveNotionalForExchange(freeIdr)
             if (budgetIdr < minOrderIdr && freeIdr < minOrderIdr) {
                 return "Anti-Koin Mahal block ${pair.value}: budget Rp${formatDecimal(budgetIdr, 0)} dan saldo Rp${formatDecimal(freeIdr, 0)} < minimum order Rp${formatDecimal(minOrderIdr, 0)}."
             }

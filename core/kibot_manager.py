@@ -104,8 +104,8 @@ from kibot_engine_v2 import (
 )
 
 TRADING_CAPITAL_PCT = 0.50
-MIN_POSITION_IDR = 50_000
-MAX_POSITION_IDR = 1_000_000
+MIN_POSITION_IDR = float(os.environ.get("KIBOT_MIN_POSITION_IDR", "10000"))
+MAX_POSITION_IDR = float(os.environ.get("KIBOT_MAX_POSITION_IDR", "1000000"))
 
 # Use defusedxml to prevent XXE attacks
 try:
@@ -400,6 +400,25 @@ def _get_effective_mode() -> str:
     if level == "LEVEL_3":
         return "EXIT_ONLY"
     return "NORMAL"
+
+
+def _adaptive_min_position_idr(free_cash_idr: float, budget_idr: float) -> float:
+    """
+    Allow tiny accounts to keep moving while still avoiding dust trades.
+    The minimum order floor scales down when free cash is small, but never
+    drops below a safety floor that would be dominated by fees.
+    """
+    free_cash = max(0.0, float(free_cash_idr))
+    budget = max(0.0, float(budget_idr))
+    if budget <= 0.0:
+        return MIN_POSITION_IDR
+    if free_cash <= 25_000:
+        return max(5_000.0, min(budget, 10_000.0))
+    if free_cash <= 50_000:
+        return max(7_500.0, min(budget, 12_500.0))
+    if free_cash <= 100_000:
+        return max(10_000.0, min(budget, 20_000.0))
+    return MIN_POSITION_IDR
 
 def _is_signal_stale(signal: dict) -> bool:
     """Drops signals older than STALE_SIGNAL_ABORT_MS (Fix #1)."""
@@ -2679,11 +2698,24 @@ def smart_entry(pair_id: str, analysis: PumpAnalysis, budget_idr: float, trace_i
         except Exception as e:
             print(f"[KIBOT][SMART_ENTRY] Analysis error: {e}", flush=True)
 
+    free_cash_idr = _get_free_cash_idr()
+    adaptive_min_position = _adaptive_min_position_idr(free_cash_idr, budget_idr)
+
     # Sizing constraints
-    if budget_idr < MIN_POSITION_IDR:
-        print(f"[KIBOT][SMART_ENTRY] Budget {budget_idr} below min position {MIN_POSITION_IDR}. Aborting.", flush=True)
-        return
-    budget_idr = min(budget_idr, MAX_POSITION_IDR)
+    if budget_idr < adaptive_min_position:
+        if budget_idr >= 5_000 and free_cash_idr >= budget_idr:
+            print(
+                f"[KIBOT][SMART_ENTRY] Budget {budget_idr:.0f} below min position {adaptive_min_position:.0f}, "
+                f"but saldo kecil aktif. Proceeding with micro-cap sizing.",
+                flush=True,
+            )
+        else:
+            print(
+                f"[KIBOT][SMART_ENTRY] Budget {budget_idr:.0f} below min position {adaptive_min_position:.0f}. Aborting.",
+                flush=True,
+            )
+            return
+    budget_idr = min(budget_idr, MAX_POSITION_IDR, max(free_cash_idr, budget_idr))
     use_market = False
     if analysis.legitimacy_score >= 85 and analysis.pump_phase == "EARLY":
         use_market = True

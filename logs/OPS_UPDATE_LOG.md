@@ -748,3 +748,11 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
   - Repo lebih bersih dan miss persepsi berkurang.
 - **Claim**:
   - Cleanup final selesai; `ToDo_Now.md` retired, dan jejak operasional berikutnya cukup dilanjutkan di `logs/OPS_UPDATE_LOG.md`.
+# 2026-04-27  Balance-aware micro-cap tuning
+- Hard minimum position in `core/kibot_manager.py` was reduced from a static Rp50k gate to an adaptive floor that scales with free cash.
+- Kotlin execution/runtime paths now use a lower live notional baseline for Indodax and micro-account contexts.
+- `RiskConfig`, `StrategyExecutionConfig`, and `MicroAccountConfig` defaults were aligned to Rp10k-style micro-cap behavior.
+- `.env.example` now exposes `KIBOT_MIN_POSITION_IDR` and `KIBOT_MAX_POSITION_IDR`.
+- Validation passed after the change:
+  - `python3 -m py_compile core/kibot_manager.py`
+  - `./gradlew -q :packages:core:compileKotlinJvm :apps:mac-engine:compileKotlin`

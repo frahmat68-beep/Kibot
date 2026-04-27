@@ -93,10 +93,15 @@ class CapitalDeploymentEngine(
         } else {
             0.0
         }
+        val microMinPositionBudget = if (currentEquity < 150_000.0) {
+            config.targetMinPositionBudgetIdr.coerceAtMost(10_000.0)
+        } else {
+            config.targetMinPositionBudgetIdr
+        }
         val affordableSlotCap = when {
             currentEquity <= 0.0 -> 1
             else -> kotlin.math.floor(
-                ((currentEquity * (1.0 - reservePct)).coerceAtLeast(0.0)) / config.targetMinPositionBudgetIdr,
+                ((currentEquity * (1.0 - reservePct)).coerceAtLeast(0.0)) / microMinPositionBudget.coerceAtLeast(1.0),
             ).toInt().coerceAtLeast(1)
         }.coerceAtMost(config.maxConcurrentPositions)
         val baseTotalCap = max(

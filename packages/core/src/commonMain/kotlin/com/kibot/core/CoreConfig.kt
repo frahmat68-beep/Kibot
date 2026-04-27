@@ -100,7 +100,7 @@ data class RiskConfig(
     val attackCashReservePct: Double = 0.02,
     val maxPerPositionBudgetPct: Double = 0.98,
     // MICRO-CAP: Lower minimum position sizes
-    val targetMinPositionBudgetIdr: Double = 20_000.0,
+    val targetMinPositionBudgetIdr: Double = 10_000.0,
     val minSecondSlotRankingScore: Double = 0.66,
     val minSecondSlotOpportunityScore: Double = 0.56,
     val singlePositionBudgetBoostMultiplier: Double = 1.55,
@@ -167,7 +167,7 @@ data class WeeklyLearningConfig(
 
 data class StrategyExecutionConfig(
     val referenceQuoteAsset: String = "idr",
-    val minOrderNotionalIdr: Double = 20_000.0,
+    val minOrderNotionalIdr: Double = 10_000.0,
     val entrySpendBufferPct: Double = 0.002,
     // ANTI-PENAKUT FIX: Turunkan threshold entry agar bot lebih berani masuk
     val growthMinRankingScore: Double = 0.50,      // Was 0.63 - terlalu tinggi, banyak peluang terlewat
@@ -259,7 +259,7 @@ data class MicroAccountConfig(
     val microAccountThresholdIdr: Double = 500_000.0,
     
     /** Indodax minimum order size */
-    val minOrderIndodaxIdr: Double = 20_000.0,
+    val minOrderIndodaxIdr: Double = 10_000.0,
     
     /** Percentage of capital to deploy (keep 10% for fees) */
     val deployableCapitalPct: Double = 0.90,
