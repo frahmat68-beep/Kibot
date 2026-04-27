@@ -183,7 +183,12 @@ jobs:
             sudo systemctl stop ${SERVICE_NAME} || true
             sudo systemctl reset-failed ${SERVICE_NAME} || true
             sudo systemctl daemon-reload
-            sudo systemctl start ${SERVICE_NAME}
+            if ! timeout 45s sudo systemctl start ${SERVICE_NAME}; then
+              echo "❌ ${SERVICE_NAME} start failed or timed out"
+              sudo systemctl status ${SERVICE_NAME} --no-pager || true
+              sudo journalctl -u ${SERVICE_NAME} -n 80 --no-pager || true
+              exit 1
+            fi
             sudo systemctl is-active ${SERVICE_NAME}
 
             echo "Waiting for health check on port ${RUNTIME_PORT}..."
