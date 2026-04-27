@@ -193,7 +193,6 @@ jobs:
               exit 1
             fi
             for svc in ${BULKHEAD_SERVICES}; do
-              sudo systemctl enable ${svc} || true
               sudo systemctl restart ${svc}
               sudo systemctl is-active ${svc}
             done
