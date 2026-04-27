@@ -177,8 +177,10 @@ jobs:
               sudo cp ${REMOTE_ROOT}/infra/systemd/${svc_file} /etc/systemd/system/${svc_file}
             done
             
+            sudo systemctl kill ${SERVICE_NAME} || true
+            sudo fuser -k ${RUNTIME_PORT}/tcp || true
+            sleep 1
             sudo systemctl stop ${SERVICE_NAME} || true
-            sleep 2
             sudo systemctl reset-failed ${SERVICE_NAME} || true
             sudo systemctl daemon-reload
             sudo systemctl restart ${SERVICE_NAME}
