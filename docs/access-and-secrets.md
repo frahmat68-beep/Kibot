@@ -23,10 +23,10 @@ Masih ada 4 hal yang perlu Anda isi di lokal:
 Kalau Anda tidak mau setup manual, jalankan script ini dari root project:
 
 ```bash
-scripts/bootstrap_local.sh
-scripts/setup_android_sdk.sh
-scripts/generate_release_keystore.sh
-scripts/check_local_setup.sh
+infra/config/bootstrap_local.sh
+infra/config/setup_android_sdk.sh
+infra/config/generate_release_keystore.sh
+tools/check_local_setup.sh
 ```
 
 Script di atas akan membuat file lokal yang di-ignore repo dan mengurangi setup manual ke titik minimum.
@@ -34,7 +34,7 @@ Script di atas akan membuat file lokal yang di-ignore repo dan mengurangi setup 
 Untuk cek status auth owner Supabase secara eksplisit:
 
 ```bash
-python3 scripts/check_supabase_auth.py
+python3 tools/check_supabase_auth.py
 ```
 
 Output penting:
@@ -46,7 +46,7 @@ Output penting:
 Untuk cek tabel control-plane yang masih kurang:
 
 ```bash
-python3 scripts/check_supabase_control_plane.py
+python3 tools/check_supabase_control_plane.py
 ```
 
 Kalau Anda sudah punya password database Supabase, isi juga:
@@ -58,7 +58,7 @@ SUPABASE_DB_URL=postgresql://postgres:[PASSWORD-DB]@db.<project-ref>.supabase.co
 Lalu apply migration langsung dari terminal:
 
 ```bash
-scripts/apply_supabase_migrations.sh
+infra/config/apply_supabase_migrations.sh
 ```
 
 Tambahan opsional tapi sangat disarankan:
@@ -110,7 +110,7 @@ SUPABASE_USER_PASSWORD=password-random-panjang
 Kalau Anda ingin dibantu otomatis dari terminal setelah `.env` lokal dibuat, gunakan:
 
 ```bash
-python3 scripts/setup_supabase_owner.py alamat-email-anda@example.com
+python3 infra/config/setup_supabase_owner.py alamat-email-anda@example.com
 ```
 
 Script ini akan mencoba signup owner ke Supabase memakai password yang sudah tersimpan di `.env`, lalu memberi tahu apakah email confirmation masih diperlukan.
@@ -216,7 +216,7 @@ Semua simpan di password manager / folder private, jangan commit.
 Atau biarkan script yang mengurus:
 
 ```bash
-scripts/generate_release_keystore.sh
+infra/config/generate_release_keystore.sh
 ```
 
 ## 9. Supabase Storage Untuk APK Update
@@ -236,24 +236,24 @@ Sumber: [Storage Quickstart](https://supabase.com/docs/guides/storage/quickstart
 Paling gampang lewat USB:
 
 ```bash
-scripts/build_android_release.sh
-scripts/install_android_release.sh
+infra/config/build_android_release.sh
+infra/config/install_android_release.sh
 ```
 
 Kalau mau tanpa kabel setelah pairing awal:
 
 ```bash
-scripts/connect_android_wifi.sh <IP-HP>
-scripts/install_android_release.sh
+infra/config/connect_android_wifi.sh <IP-HP>
+infra/config/install_android_release.sh
 ```
 
 ## 11. Checklist Yang Perlu Anda Isi Sekarang
 
 Paling minimum supaya saya bisa lanjut tanpa nunggu data lain:
 
-1. jalankan `scripts/bootstrap_local.sh`
+1. jalankan `infra/config/bootstrap_local.sh`
 2. buat atau daftarkan user email/password Supabase private
-3. jalankan `scripts/setup_android_sdk.sh`
-4. jalankan `scripts/generate_release_keystore.sh`
+3. jalankan `infra/config/setup_android_sdk.sh`
+4. jalankan `infra/config/generate_release_keystore.sh`
 
 Sisanya bisa saya lanjutkan dengan default yang aman.

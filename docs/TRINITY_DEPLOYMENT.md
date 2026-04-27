@@ -67,9 +67,9 @@ ssh -i "SSH_SINGAPORE/SSH_SG2/ssh-key-2026-03-27.key" ubuntu@152.69.218.198 \
 
 ```bash
 rsync -avz -e "ssh -i SSH_BATAM/ssh-key-batam-active.pem" \
-  scripts/kibot_ollama_gateway.py \
-  scripts/kibot_polymarket.py \
-  ubuntu@168.110.201.228:/home/ubuntu/KiBot/scripts/
+  core/kibot_ollama_gateway.py \
+  core/kibot_polymarket.py \
+  ubuntu@168.110.201.228:/home/ubuntu/KiBot/core/
 
 scp -i "SSH_BATAM/ssh-key-batam-active.pem" \
   infra/systemd/kibot-ollama-gateway.service \

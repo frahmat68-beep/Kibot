@@ -103,7 +103,7 @@ Symptoms:
 - heartbeat flood or frequent service restarts
 
 Actions:
-1. Validate `scripts/kibot_manager.py` is full runtime file (not placeholder).
+1. Validate `core/kibot_manager.py` is full runtime file (not placeholder).
 2. Verify heartbeat interval env is sane for low-resource nodes.
 3. Restart `kibot-manager`, then monitor 2-3 minutes.
 

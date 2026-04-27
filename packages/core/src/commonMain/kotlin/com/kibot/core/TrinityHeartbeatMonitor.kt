@@ -145,17 +145,17 @@ class TrinityHeartbeatMonitor {
     fun generateRestartCommand(botName: String, serverHost: String): String {
         return when (botName) {
             "kinance" -> """
-                ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@$serverHost \
+                ssh -i "SSH_SINGAPORE/SSH_SG2/ssh-key-2026-03-27.key" ubuntu@$serverHost \
                   'sudo systemctl restart kinance-engine'
             """.trimIndent()
             
             "kidax" -> """
-                ssh -i "SSH_INDODAX/ssh-key-2026-03-22.key" ubuntu@$serverHost \
+                ssh -i "SSH_SINGAPORE/SSH_SG1/ssh-key-2026-03-22.key" ubuntu@$serverHost \
                   'sudo systemctl restart kidax-engine'
             """.trimIndent()
             
             "kibot" -> """
-                ssh -i "SSH_BINANCE/ssh-key-2026-03-27.key" ubuntu@$serverHost \
+                ssh -i "SSH_SINGAPORE/SSH_SG2/ssh-key-2026-03-27.key" ubuntu@$serverHost \
                   'sudo systemctl restart kibot-engine'
             """.trimIndent()
             

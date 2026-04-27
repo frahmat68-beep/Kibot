@@ -4,7 +4,7 @@ Dokumen ini dipakai untuk setup rotasi multi-account Bud berdasarkan label GitHu
 
 ## Arsitektur
 
-- Node A menjalankan `scripts/ki_issue_reporter.py` tiap 6 jam.
+- Node A menjalankan `tools/ki_issue_reporter.py` tiap 6 jam.
 - Script membuat issue dengan label rotasi `bud-1`, `bud-2`, ..., `bud-N`.
 - Tiap account Bud hanya menangani label miliknya.
 

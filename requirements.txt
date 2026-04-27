@@ -1,0 +1,14 @@
+# KiBot Trinity — Python Dependencies
+# Pin versions for deployment stability
+
+# Core HTTP
+requests>=2.31.0,<3.0
+
+# Timezone handling
+pytz>=2024.1
+
+# Security: XML parser protection
+defusedxml>=0.7.1
+
+# Already in stdlib but listing for documentation:
+# json, socket, threading, time, datetime, pathlib, urllib, hashlib, signal, logging

@@ -11,8 +11,8 @@ EnvironmentFile=-/home/ubuntu/KiBot/.env.server
 EnvironmentFile=-/home/ubuntu/KiBot/.env.kibot
 EnvironmentFile=-/home/ubuntu/KiBot/.env.kibot_manager
 Environment=PYTHONUNBUFFERED=1
-ExecStartPre=/usr/bin/python3 scripts/kibot_auditor.py --fix-symlinks-only
-ExecStart=/usr/bin/python3 scripts/kibot_auditor.py
+ExecStartPre=/usr/bin/python3 core/kibot_auditor.py --fix-symlinks-only
+ExecStart=/usr/bin/python3 core/kibot_auditor.py
 Restart=on-failure
 RestartSec=60
 MemoryMax=40M

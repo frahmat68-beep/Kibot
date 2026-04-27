@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BINANCE_HOST="${BINANCE_HOST:-152.69.218.198}"
 BINANCE_USER="${BINANCE_USER:-ubuntu}"
 BINANCE_PORT="${BINANCE_PORT:-22}"
-BINANCE_KEY="${BINANCE_KEY:-${ROOT_DIR}/SSH_BINANCE/ssh-key-2026-03-27.key}"
+BINANCE_KEY="${BINANCE_KEY:-${ROOT_DIR}/SSH_SINGAPORE/SSH_SG2/ssh-key-2026-03-27.key}"
 GRADLEW="${ROOT_DIR}/gradlew"
 TEMP_DIR="$(mktemp -d)"
 REMOTE_TMP_DIR="/tmp/kibot-deploy-$$"
@@ -227,7 +227,7 @@ KIBOT_DASHBOARD_PORT="${KIBOT_PORT}" \
 KIBOT_ENV_FILE="${KIBOT_ROOT}/.env.kibot" \
 KIBOT_RECOVERY_SCRIPT_PATH="${KIBOT_ROOT}/engine-recovery.sh" \
 KIBOT_SERVICE_FILE_PATH="${KIBOT_ROOT}/infra/systemd/kibot-engine.service" \
-KIBOT_AI_SCRIPT_PATH="${KIBOT_ROOT}/scripts/ai_learning_cycle.sh" \
+KIBOT_AI_SCRIPT_PATH="${KIBOT_ROOT}/tools/ai_learning_cycle.sh" \
 bash "${KIBOT_ROOT}/setup-autorecover.sh"
 
 if [[ "${ENABLE_BINANCE_KIDAX_SERVICE}" == "true" ]]; then
@@ -243,7 +243,7 @@ if [[ "${ENABLE_BINANCE_KIDAX_SERVICE}" == "true" ]]; then
   KIBOT_ENV_FILE="${KIDAX_ROOT}/.env.kidax" \
   KIBOT_RECOVERY_SCRIPT_PATH="${KIDAX_ROOT}/engine-recovery.sh" \
   KIBOT_SERVICE_FILE_PATH="${KIDAX_ROOT}/infra/systemd/kidax-engine.service" \
-  KIBOT_AI_SCRIPT_PATH="${KIDAX_ROOT}/scripts/ai_learning_cycle.sh" \
+  KIBOT_AI_SCRIPT_PATH="${KIDAX_ROOT}/tools/ai_learning_cycle.sh" \
   bash "${KIDAX_ROOT}/setup-autorecover.sh"
   sudo systemctl restart kidax-engine
 else

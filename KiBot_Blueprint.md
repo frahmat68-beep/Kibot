@@ -1,53 +1,46 @@
-# KiBot Blueprint v7.3.1 - Trinity Autonomous System
+# KiBot Blueprint - Trinity Autonomous System
 
 ## Canonical Architecture Note
-- Detailed runtime documentation is maintained at:
-  - `docs/architecture/TWO_SERVER_SYSTEM_GUIDE.md`
-- Current production overlay now consists of 3 nodes:
-  - `Node A / SG` = executor + control plane
-  - `Node B / Tokyo` = radar + scanner mesh
-  - `Node C / Batam` = AI brain hub (`Ollama` + gateway)
-- If any statement in this blueprint conflicts with live runtime or `logs/OPS_UPDATE_LOG.md`, follow the latest ops log.
+- Detailed, always-updated runtime documentation is maintained at:
+  - `docs/architecture/KIBOT_SOVEREIGN_BRAIN.md`
+  - `docs/architecture/three-node-topology.md`
+- If any statement in this blueprint conflicts with live architecture behavior, follow the live architecture docs above.
 
 ## 1. Vision & Mindset
 **Philosophy**: "Low Profile, High Profit".
-**Goal**: Completely autonomous trading with zero manual intervention unless critical.
-**Profit Orientation**: "Green PnL" mindset. Bayesian learning loop prioritizes capital preservation and statistical probability.
+**Goal**: One sovereign agentic framework named `KiBot` with multiple AI models and subsystem support, operating autonomously unless critical intervention is required.
+**Profit Orientation**: "Green PnL" mindset. Bayesian learning loop prioritizes capital preservation, statistical probability, and adaptive capital posture.
 
 ## 2. Infrastructure & Distributed Logic
-**Nodes**:
-- `Node A / SG`: 1GB Oracle VPS executor/control-plane.
-- `Node B / Tokyo`: 1GB Oracle VPS radar/scanner.
-- `Node C / Batam`: 4 OCPU / 24 GB / 190 GB Oracle Ampere AI brain node.
-**Keep-Alive**: `stress-ng` active to prevent VPS suspension. `systemd` handles auto-recovery.
+**Nodes**: three-node runtime with placement optimized by role, not legacy geography.
+**Keep-Alive**: `systemd` handles auto-recovery. Any keep-alive service must be justified by production need, not habit.
 **Live Node Identity**:
-- `Node A` = primary runtime node (`kidax-engine` + `kibot-*` services).
-- `Node B` = market radar node (`kinance-engine` + `kibot-*` services).
-- `Node C` = AI reasoning node (`ollama` + `kibot-ollama-gateway`).
-- Physical placement may change; config and service identity must stay aligned with logical node responsibility, not legacy location labels.
+- `SG1` = executor / Indodax control plane
+- `SG2` = radar / scanner / orchestration plane
+- `Batam` = sovereign brain / Ollama / Polymarket / research plane
+- Physical placement may change; config and service identity must stay aligned with logical node responsibility.
 
 | **Bucket A** | Lead-Lag (Arb/Breakout) | Global Market Alpha | 50% |
 | **Bucket B** | Local Math (Anomaly/Scanners) | Indodax Local Alpha | 50% |
 
-## 4. SSH Operational Manual (Catatan v7.3.1)
-**Node A (Indodax Engine & Manager / SG)**
+## 4. SSH Operational Manual
+**SG1 (Executor / Indodax)**
 - **IP**: `213.35.118.26`
+- **User**: `ubuntu`
 - **Key**: `SSH_SINGAPORE/SSH_SG1/ssh-key-2026-03-22.key`
 - **Command**: `ssh -i SSH_SINGAPORE/SSH_SG1/ssh-key-2026-03-22.key ubuntu@213.35.118.26`
 
-**Node B (Binance Radar / Tokyo)**
+**SG2 (Radar / Scanner)**
 - **IP**: `152.69.218.198`
+- **User**: `ubuntu`
 - **Key**: `SSH_SINGAPORE/SSH_SG2/ssh-key-2026-03-27.key`
 - **Command**: `ssh -i SSH_SINGAPORE/SSH_SG2/ssh-key-2026-03-27.key ubuntu@152.69.218.198`
 
-**Node C (AI Brain Hub / Batam)**
+**Batam (AI Brain & Fallback)**
 - **IP**: `168.110.201.228`
+- **User**: `ubuntu`
 - **Key**: `SSH_BATAM/ssh-key-batam-active.pem`
 - **Command**: `ssh -i SSH_BATAM/ssh-key-batam-active.pem ubuntu@168.110.201.228`
-- **Role**:
-  - menjalankan `ollama`
-  - menyimpan model `qwen3:4b` untuk advisory live dan `qwen3:8b` untuk review berat
-  - melayani SG dan Tokyo via gateway lokal + tunnel SSH persisten
 
 **Quick Debug Commands**:
 - Monitor Log: `journalctl -u kidax-engine -f`
@@ -60,13 +53,11 @@
 - Telegram alerts ONLY trigger on: `PREPARE_STOP`, `DEFENSIVE`, `HARD_STOP`.
 - Daily Performance Report at **00:00 WIB**.
 
-### Rotation Engine (Fixed v7.3.1)
-- Resolves "Ghost Position" bug.
+### Rotation Engine
 - Any memory position removal **MUST** broadcast a `SMART_EXIT` to the exchange first.
+- Prioritize pairs with proven legitimacy scores > 62.
 
-- Prioritizes pairs with proven legitimacy scores > 62.
-
-## 6. Technical Spec Hardening (v7.3.1)
+## 5. Technical Spec Hardening
 - **Order Type**: Force **LIMIT** (Maker) to ensure minimal fees.
 - **Partial TP**: Trigger @ **1.2%** (Profit safety net).
 - **Micro-cap Trailing**: **7%** for coins priced `< 50 IDR`.
@@ -74,5 +65,5 @@
 - **Shadow Mode**: **DISABLED** (All systems are LIVE).
 
 ---
-*Blueprint Version: v7.3.1*
-*Status: Verified & Deployed*
+*Blueprint Status: current*
+*Status: aligned with live architecture docs*

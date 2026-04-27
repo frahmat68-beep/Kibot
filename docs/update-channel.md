@@ -101,14 +101,14 @@ V1 target:
 Untuk menyiapkan artifact release private dari laptop:
 
 ```bash
-scripts/generate_release_keystore.sh
-scripts/build_android_release.sh
+infra/config/generate_release_keystore.sh
+infra/config/build_android_release.sh
 ```
 
 Untuk memasang build terbaru ke HP yang sudah terhubung via USB atau ADB over Wi-Fi:
 
 ```bash
-scripts/install_android_release.sh
+infra/config/install_android_release.sh
 ```
 
 Output default:

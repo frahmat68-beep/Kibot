@@ -14,13 +14,13 @@ KiCryp sekarang punya jalur advisory terpisah dari safety core:
 Jalankan:
 
 ```bash
-python3 scripts/check_update.py
+python3 tools/check_update.py
 ```
 
 Atau JSON:
 
 ```bash
-python3 scripts/check_update.py --json
+python3 tools/check_update.py --json
 ```
 
 ## Prinsip

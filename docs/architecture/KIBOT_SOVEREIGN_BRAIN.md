@@ -8,7 +8,7 @@ KiBot sekarang didesain sebagai satu kepala sistem untuk tiga node:
 - `SG2` radar/scanner global
 - `Batam` brain + Ollama + Polymarket
 
-Tidak ada lagi daemon governor terpisah. Otoritas strategi hidup di `kibot_manager.py`, dengan Ollama Batam sebagai model utama dan fallback heuristik jika AI sedang gagal.
+Tidak ada lagi daemon governor terpisah. Otoritas strategi hidup di `core/kibot_manager.py`, dengan Ollama Batam sebagai model utama dan fallback heuristik jika AI sedang gagal.
 
 ## Prinsip
 
@@ -22,7 +22,7 @@ Tidak ada lagi daemon governor terpisah. Otoritas strategi hidup di `kibot_manag
 
 - target: setiap `30s`
 - prompt: `STRATEGY_GOVERNOR_FAST`
-- model live: `qwen3:1.7b`
+- model live: `qwen3:0.6b`
 - tujuan:
   - cek health live
   - cek active pairs
@@ -34,13 +34,19 @@ Tidak ada lagi daemon governor terpisah. Otoritas strategi hidup di `kibot_manag
 
 - target: setiap `5m`
 - prompt: `STRATEGY_GOVERNOR_MEDIUM`
-- model live: `qwen3:4b`
+- model live: `qwen3:1.7b`
 - tujuan:
   - update posture strategi
   - update aggression mode
   - update focus pairs / focus markets
   - evaluasi memory ringkas
 - output: plan yang lebih matang dan tahan lebih lama
+
+Catatan runtime:
+
+- fast loop sengaja dipindah ke model paling ringan supaya node SG tidak lama menunggu Batam
+- medium loop tetap lokal-Ollama, tetapi dibatasi `num_ctx` dan `num_predict`
+- gateway Batam juga melakukan request shaping agar prompt cepat tidak diam-diam naik jadi terlalu berat
 
 ### Slow Loop
 
@@ -94,6 +100,32 @@ Compact history:
 - `pattern_library.json`
 - `pair_memory.json`
 - `decision_ledger.jsonl`
+
+## World Model
+
+World model sekarang dibangun di `core/ki_brain.py` dan dirangkum ke `state/brain_status.json`.
+
+Komponen aktif:
+
+- `market_pulse` dari Finnhub, Tavily, Serper, dan DuckDuckGo bila tersedia
+- `world_model` yang merangkum:
+  - `global_narratives`
+  - `external_events`
+  - `opportunity_register`
+  - `risk_register`
+  - `micro_capital_plan`
+  - `source_status`
+- sumber tambahan opsional:
+  - `X recent search`
+  - `GDELT DOC` (aktif by default via `KIBOT_BRAIN_ENABLE_GDELT=true`; masih tetap bounded oleh TTL dan timeout pendek)
+  - `CoinGecko trending`
+
+Prinsipnya:
+
+- sumber online boleh memperkaya context, tapi tidak boleh memblok hot path
+- semua source online harus bounded oleh TTL dan timeout pendek
+- output yang dikirim ke governor adalah ringkasan kecil, bukan dump mentah
+- tiny account tetap dijaga lewat `micro_capital_plan`
 
 ## Guardrail
 

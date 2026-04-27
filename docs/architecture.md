@@ -50,7 +50,7 @@ Memory:
 
 Decision:
 
-- fast/medium/slow sovereign loop di `kibot_manager.py`
+- fast/medium/slow sovereign loop di `core/kibot_manager.py`
 
 Execution:
 

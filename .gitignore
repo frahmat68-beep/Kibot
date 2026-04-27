@@ -1,3 +1,4 @@
+# ── Build & IDE ──────────────────────────────────────────────
 .gradle/
 build/
 **/build/
@@ -15,51 +16,92 @@ captures/
 *.db
 *.db-shm
 *.db-wal
+
+# ── Secrets & Credentials (NEVER commit) ────────────────────
 .env
+.env.*
+!.env.example
 .secrets/
+*.credentials.md
+*.pem
+*.key
+!gradlew
+
+# ── SSH Keys (block all patterns) ───────────────────────────
+SSH_BINANCE/
+SSH_INDODAX/
+SSH_BATAM/*.pem
+SSH_BATAM/*.pub
+SSH_BATAM/*.key
+!SSH_BATAM/README.md
+SSH_SINGAPORE/**/*.key
+SSH_SINGAPORE/**/*.key.pub
+!SSH_SINGAPORE/README.md
+SSH_MANAGEMENT/
+SSH_EXECUTOR*/
+SSH_SCANNER/
+
+# ── Virtual Environments (NEVER commit) ─────────────────────
+.venv/
+.venv-*/
+venv/
+.brain-venv/
+.deploy-venv/
+.tmp-venv/
+.codex-venv/
+*-venv/
+
+# ── Node.js (NEVER commit) ─────────────────────────────────
+node_modules/
+npm-cache/
+
+# ── Build Artifacts & Logs ──────────────────────────────────
+*.jar
+*.tar.gz
+build_log.txt
+build-output.txt
+logs.zip
+.tmp-kidax-last6m.log
+
+# ── Deploy & Tooling ────────────────────────────────────────
+.deploy/
 .dist/
 .tooling/
 .continue/
 .wrapper-bootstrap/
-.venv-kicryp/
-.venv/
-venv/
-.brain-venv/
+**/bin/
+
+# ── State & Runtime ─────────────────────────────────────────
 .state/
+state/
+!state/.gitkeep
+simulation_report.json
+*.tmp.*
+
+# ── App-specific ────────────────────────────────────────────
 apps/mac-engine/.env
 apps/mac-engine/bin/
 infra/supabase/.temp/
 infra/supabase/.branches/
 infra/supabase/.generated/
 .tmp/
-SSH_BINANCE/
-SSH_INDODAX/
-SSH_BATAM/*.pem
-SSH_BATAM/*.pub
-!SSH_BATAM/README.md
-SSH_SINGAPORE/**/*.key
-SSH_SINGAPORE/**/*.key.pub
-!SSH_SINGAPORE/README.md
-**/bin/
+
+# ── Docs with generated/sensitive content ───────────────────
 SUPABASE_MIGRATION_GUIDE.md
-*.credentials.md
 *_GUIDE.md
-.env*
-.tmp-kidax-last6m.log
-logs.zip
-push_fix.sh
+
+# ── Gradle ──────────────────────────────────────────────────
 gradle_home/
 .gradle_home/
-build_log.txt
-state/
-simulation_report.json
+.gradle-local/
+
+# ── Logs (allow OPS_UPDATE_LOG.md only) ─────────────────────
 logs/
 !logs/
 !logs/OPS_UPDATE_LOG.md
-state/trade_log.jsonl
-state/*.tmp
-*.tmp.*
-state/backups/
-state/learning_state.json
-*.jar
-npm-cache/_logs/
+
+# ── OCI / Cloud ─────────────────────────────────────────────
+.oci/
+
+# ── Legacy scripts (already committed, mark for cleanup) ────
+push_fix.sh

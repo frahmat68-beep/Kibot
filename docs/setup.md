@@ -23,19 +23,19 @@ Do not commit:
 2. Build one SQL bundle if you want a single file for SQL Editor / terminal:
 
 ```bash
-scripts/build_supabase_sql_bundle.sh
+infra/config/build_supabase_sql_bundle.sh
 ```
 
 3. Apply migrations in `infra/supabase/migrations` in order, or use:
 
 ```bash
-scripts/apply_supabase_migrations.sh
+infra/config/apply_supabase_migrations.sh
 ```
 
 4. Verify the control-plane tables:
 
 ```bash
-python3 scripts/check_supabase_control_plane.py
+python3 tools/check_supabase_control_plane.py
 ```
 
 5. Verify the auth trigger created:
@@ -55,19 +55,19 @@ python3 scripts/check_supabase_control_plane.py
 6. Build the private APK:
 
 ```bash
-scripts/build_android_release.sh
+infra/config/build_android_release.sh
 ```
 
 7. Install to a connected phone:
 
 ```bash
-scripts/install_android_release.sh
+infra/config/install_android_release.sh
 ```
 
 8. Or connect ADB over Wi-Fi after one USB pairing:
 
 ```bash
-scripts/connect_android_wifi.sh <IP-HP>
+infra/config/connect_android_wifi.sh <IP-HP>
 ```
 
 ## 5. Mac Engine
@@ -75,7 +75,7 @@ scripts/connect_android_wifi.sh <IP-HP>
 1. Run the mac engine from the repo root:
 
 ```bash
-scripts/run_mac_engine.sh
+core/run_mac_engine.sh
 ```
 
 2. Open `http://localhost:8787`.

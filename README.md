@@ -90,7 +90,7 @@ V7.2 reinforces the infrastructure with specialized background guards in "Revive
 ## ✅ Operational Readiness Checklist
 
 1. **Thread Health**: Run `grep "started" logs/kibot_manager.log` and verify all threads initiated.
-2. **AI Connectivity**: Run `python3 scripts/verify_integration.py` to confirm Nvidia/Gemini/Groq keys.
+2. **AI Connectivity**: Run `python3 tools/verify_integration.py` to confirm Nvidia/Gemini/Groq keys.
 3. **Storage/RAM Guard**: Check `df -h /` and `free -m`. Ensure InfluxDB/Telegraf/Grafana are purged.
 4. **Revive Check**: Run `sudo systemctl status kibot-*` to ensure all services are in "active (running)" state.
 
@@ -105,10 +105,10 @@ The system uses a fallback chain of AI providers for non-trading decision suppor
 ## ⚙️ Operational Commands & Files
 
 ### Core Files
-- `scripts/kibot_manager.py`: The "Brain". Handles UDP signals, Watchdogs, and AI routing.
-- `scripts/kibot_engine_v2.py`: The "Engine". Mathematical consensus and trade execution.
-- `scripts/kibot_ai_coordinator.py`: The "Coordinator". Persistent daemon for AI API management.
-- `scripts/kibot_rotation_engine.py`: The "Rotation". Agility logic for stagnant positions.
+- `core/kibot_manager.py`: The "Brain". Handles UDP signals, Watchdogs, and AI routing.
+- `core/kibot_engine_v2.py`: The "Engine". Mathematical consensus and trade execution.
+- `core/kibot_ai_coordinator.py`: The "Coordinator". Persistent daemon for AI API management.
+- `core/kibot_rotation_engine.py`: The "Rotation". Agility logic for stagnant positions.
 
 ### Service Management
 ```bash
@@ -126,9 +126,9 @@ sudo systemctl restart kibot-manager kidax-engine kinance-engine
 | Service | Mode | Note |
 | :--- | :--- | :--- |
 | **AI Providers** | AUDITOR / LEARNING | Simpan token hanya di file env server, jangan pernah commit ke repo. |
-| **Indodax Node** | SGP | Oracle Singapore executor + control-plane node. |
-| **Binance Node** | TYO | Oracle Tokyo radar/scanner node. |
-| **AI Brain Node** | BAT | Oracle Batam Ampere node for `Ollama`, local reasoning, and AI fallback. |
+| **Indodax Node** | SG | Oracle Singapore executor + control-plane node. |
+| **Binance Node** | Tokyo | Oracle Tokyo radar/scanner node. |
+| **AI Brain Node** | Batam | Oracle Batam Ampere node for `Ollama`, local reasoning, and AI fallback. |
 | **Database** | CLOUD | Supabase control-plane untuk sinkronisasi state. |
 
 ---
@@ -177,7 +177,7 @@ Daftar komponen sistem yang telah diaudit dan diperkeras untuk produksi 100%:
 - **Log tag**: `[PARTIAL_TP]`
 
 ### [KiScannerBase] — ✅ Production
-- **File**: `scripts/ki_scanner_base.py`
+- **File**: `scanners/ki_scanner_base.py`
 - **Fungsi**: Base scanner global lintas exchange dengan pemetaan pair Indodax dinamis.
 - **Dipanggil oleh**: `ki_binance_scanner.py`, `ki_bybit_scanner.py`, `ki_kucoin_scanner.py`, `ki_cryptocom_scanner.py`, `ki_mexc_scanner.py` saat loop radar berjalan.
 - **Log tag**: `[INDODAX_PAIRS]`, `[BINANCE]`, `[BYBIT]`, `[KUCOIN]`, `[CRYPTOCOM]`, `[MEXC]`
@@ -185,31 +185,31 @@ Daftar komponen sistem yang telah diaudit dan diperkeras untuk produksi 100%:
 - **Diubah**: 2026-04-19
 
 ### [MultiScannerEngine] — ✅ Production
-- **File**: `scripts/multi_scanner_engine.py`
+- **File**: `core/multi_scanner_engine.py`
 - **Fungsi**: Menggabungkan sinyal multi-scanner menjadi MSC lalu meneruskan entry ke executor.
-- **Dipanggil oleh**: `scripts/kibot_manager.py` saat menerima `MULTI_SCANNER_SIGNAL` atau `DETECTOR_HIT`.
+- **Dipanggil oleh**: `core/kibot_manager.py` saat menerima `MULTI_SCANNER_SIGNAL` atau `DETECTOR_HIT`.
 - **Log tag**: `[MSC_RECV]`, `[MSC]`, `[MSC_BLOCK]`
 - **Server**: SG
 - **Diubah**: 2026-04-19
 
 ### [KiCapitalEngine] — ✅ Production
-- **File**: `scripts/ki_capital_engine.py`
+- **File**: `core/ki_capital_engine.py`
 - **Fungsi**: Alokasi modal bucket, partial TP, profit lock, trailing stop, dan hard stop guard.
-- **Dipanggil oleh**: `scripts/kibot_manager.py` saat posisi/update fill diproses.
+- **Dipanggil oleh**: `core/kibot_manager.py` saat posisi/update fill diproses.
 - **Log tag**: `[v7][PARTIAL_TP]`, `[v7][TRAILING_STOP]`, `[v7][PROFIT_LOCK]`, `[v7][HARD_STOP]`
 - **Server**: SG
 - **Diubah**: 2026-04-19
 
 ### [BrainAssist] — ✅ Production
-- **File**: `scripts/ki_brain.py`
+- **File**: `core/ki_brain.py`
 - **Fungsi**: Riset internet advisory-only untuk health check, market pulse, target hijau harian, dan review simbol via Finnhub/Tavily/Serper tanpa mengunci jalur order live.
-- **Dipanggil oleh**: `scripts/kibot_manager.py` dari thread `kibot-brain-thinking` untuk update status `brain_assist`.
+- **Dipanggil oleh**: `core/kibot_manager.py` dari thread `kibot-brain-thinking` untuk update status `brain_assist`.
 - **Log tag**: `[KIBOT][BRAIN]`
 - **Server**: Keduanya
 - **Diubah**: 2026-04-20
 
 ### [GlobalScannerMesh] — ✅ Production
-- **File**: `scripts/ki_global_scanner_mesh.py`
+- **File**: `scanners/ki_global_scanner_mesh.py`
 - **Fungsi**: Menjalankan 4 scanner tambahan (Bybit, KuCoin, Crypto.com, MEXC) secara berurutan dalam satu proses hemat memori untuk melengkapi radar 5+1.
 - **Dipanggil oleh**: `infra/systemd/ki-global-scanner-mesh.service` saat node Tokyo butuh coverage global penuh tanpa 4 daemon terpisah.
 - **Log tag**: `[GLOBAL_SCANNER_MESH]`
@@ -217,9 +217,9 @@ Daftar komponen sistem yang telah diaudit dan diperkeras untuk produksi 100%:
 - **Diubah**: 2026-04-20
 
 ### [KiStats] — ✅ Production
-- **File**: `scripts/ki_stats.py`
+- **File**: `core/ki_stats.py`
 - **Fungsi**: Utility statistik ringan berbasis stdlib untuk sanity check z-score tanpa dependency berat.
-- **Dipanggil oleh**: `scripts/kibot_manager.py` saat discipline gate mengecek spike statistik lokal.
+- **Dipanggil oleh**: `core/kibot_manager.py` saat discipline gate mengecek spike statistik lokal.
 - **Log tag**: `STATS_REJECT`
 - **Server**: SG
 - **Diubah**: 2026-04-19

@@ -19,7 +19,7 @@ Environment=KIBOT_OLLAMA_GATEWAY_FAST_MAX_PREDICT=220
 Environment=KIBOT_OLLAMA_GATEWAY_FAST_MAX_INPUT_CHARS=5000
 Environment=KIBOT_OLLAMA_GATEWAY_DEFAULT_MAX_INPUT_CHARS=8000
 Environment=KIBOT_OLLAMA_GATEWAY_FAST_KEEP_ALIVE=4m
-ExecStart=/usr/bin/python3 -u /home/ubuntu/KiBot/scripts/kibot_ollama_gateway.py
+ExecStart=/usr/bin/python3 -u /home/ubuntu/KiBot/core/kibot_ollama_gateway.py
 Restart=always
 RestartSec=5
 MemoryMax=128M

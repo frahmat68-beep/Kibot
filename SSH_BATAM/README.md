@@ -1,6 +1,6 @@
 # SSH Batam
 
-Folder ini dipakai untuk menyimpan key aktif node Batam secara lokal.
+Folder ini menyimpan catatan akses untuk node Batam aktif.
 File private/public key sengaja tidak ikut di-commit.
 
 Target yang sudah terverifikasi:
@@ -23,5 +23,5 @@ ssh -i SSH_BATAM/ssh-key-batam-active.pem ubuntu@168.110.201.228
 
 Catatan:
 
-- Instance Batam ini memakai pasangan key yang sebelumnya tertukar label sebagai `singapore.pem`.
-- `batam.pem` lama bukan pasangan yang benar untuk instance ini.
+- Gunakan key yang berlabel `ssh-key-batam-active.pem` untuk node ini.
+- Jangan pakai pasangan key lama yang sudah tidak cocok dengan host ini.

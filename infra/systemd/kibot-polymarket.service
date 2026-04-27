@@ -11,7 +11,7 @@ EnvironmentFile=-/home/ubuntu/KiBot/.env.polymarket
 EnvironmentFile=-/home/ubuntu/KiBot/.env.server
 Environment=PYTHONUNBUFFERED=1
 Environment=KIBOT_RUNTIME_ROOT=/home/ubuntu/KiBot
-ExecStart=/home/ubuntu/KiBot/.polymarket-venv/bin/python -u /home/ubuntu/KiBot/scripts/kibot_polymarket.py
+ExecStart=/home/ubuntu/KiBot/.polymarket-venv/bin/python -u /home/ubuntu/KiBot/core/kibot_polymarket.py
 Restart=always
 RestartSec=5
 MemoryMax=220M

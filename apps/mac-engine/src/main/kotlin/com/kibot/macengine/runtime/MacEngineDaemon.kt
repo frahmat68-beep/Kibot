@@ -5998,7 +5998,7 @@ class MacEngineDaemon(
                     // or directly trigger the entry logic
                     val callout = ActiveLeadLagCallout(
                         traceId = "v7-${pairId.value}-${now.toEpochMilliseconds()}",
-                        senderBotId = "kibot_manager_v7",
+                        senderBotId = "kibot_manager",
                         pairId = pairId,
                         trend = "BULLISH",
                         msgType = "VETO_APPROVED",
@@ -6036,7 +6036,7 @@ class MacEngineDaemon(
                     )
                     activeLeadLagCallout = ActiveLeadLagCallout(
                         traceId = "v7-force-${pairId.lowercase()}-${now.toEpochMilliseconds()}",
-                        senderBotId = "kibot_manager_v7",
+                        senderBotId = "kibot_manager",
                         pairId = PairId(pairId),
                         trend = "REVERSAL",
                         msgType = "EMERGENCY_VETO_SELL",

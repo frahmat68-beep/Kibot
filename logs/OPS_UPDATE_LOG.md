@@ -689,3 +689,62 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
   - Sistem makin dekat ke mode autonomous yang stabil, tapi belum boleh diklaim “tanpa masalah sama sekali” selama:
     - kredensial `X` production belum ada
     - node SG belum menarik patch coordinator/brain terbaru dari putaran ini
+
+## [2026-04-26 22:08 WIB] - Workflow Repair, Batam Fail-Fast, and Final Soak Evidence
+- Issue:
+  - Workflow deploy SG awalnya gagal bukan karena kode runtime rusak, tetapi karena:
+    - syntax error lama di `scripts/kibot_guardian.py`
+    - workflow `rsync` menulis langsung ke root runtime yang banyak file `root-owned`
+    - workflow Indodax masih punya false negative di install step walau node live kembali naik
+  - Batam masih sempat memberi `500` setelah input guard pertama, artinya limit `7000` karakter masih terlalu longgar untuk `qwen3:0.6b`.
+- Action:
+  - Perbaiki syntax `guardian` lalu rerun workflow.
+  - Ubah workflow `deploy-kidax.yml` dan `deploy-kinance.yml` agar sync bundle ke `${REMOTE_ROOT}/.deploy/` dulu, lalu promote ke runtime dengan `sudo rsync`.
+  - Deploy `Batam` ulang dengan guard lebih ketat:
+    - `FAST_MAX_INPUT_CHARS=5000`
+    - `DEFAULT_MAX_INPUT_CHARS=8000`
+  - Rerun deploy:
+    - `Deploy KiBot Binance` sukses penuh
+    - `Deploy KiBot Indodax` tetap false negative di install step, tetapi bundle sudah tersalin dan node live merespons setelah restart
+- Result:
+  - Batam soak setelah restart `14:53 UTC`:
+    - tidak ada `500` baru
+    - request oversize berubah menjadi `413 input_too_large`
+    - contoh reject live: `chars=6672`, `7976`, `7059`, `9009`
+  - SG2 / Tokyo:
+    - workflow `Deploy KiBot Binance` run `24959537907` sukses
+    - health check internal workflow lolos dan service bulkhead di-restart ulang
+  - SG1 / Indodax:
+    - workflow tetap merah karena install-step false negative (`ssh-action` / `systemctl` interaction), bukan karena endpoint mati
+    - endpoint publik `http://213.35.118.26:8787/api/state` tetap hidup setelah putaran deploy
+    - `tradingAllowed=true`
+    - `hardStopActive=false`
+    - `botMode=ATTACK`
+    - `connections.kidax=online`
+    - `connections.kinance=online`
+    - `lastUpdate` terus bergerak
+- Notes:
+  - Status paling jujur di akhir putaran ini:
+    - runtime 3 node jauh lebih sehat daripada sebelumnya
+    - Batam tidak lagi macet pada pola `500` lama
+    - SG2 deploy clean
+  - SG1 runtime hidup, tetapi workflow deploy Indodax masih punya false negative yang perlu dirapikan lagi jika ingin jalur CI/CD benar-benar bersih 100%
+
+---
+## [2026-04-27 11:44 WIB] - Final Cleanup Pass: Dead Docs, Legacy Paths, and Audit Backlog Closure
+- **Issue**:
+  - `docs/architecture/ToDo_Now.md` masih tersisa sebagai backlog audit terpisah padahal sebagian besar isinya sudah diserap ke code, docs, dan runtime.
+  - Ada sisa path SSH legacy di helper lama yang bikin istilah SG1/SG2 belum sepenuhnya seragam.
+  - Verifikator produksi masih menandai env threshold sebagai missing padahal runtime sudah punya default.
+- **Action**:
+  - Hapus `docs/architecture/ToDo_Now.md` setelah backlog inti dipindahkan ke code dan docs lain.
+  - Seragamkan helper SSH ke struktur live `SSH_SINGAPORE/SSH_SG1` dan `SSH_SINGAPORE/SSH_SG2`.
+  - Sinkronkan `.env.example` dengan default threshold runtime.
+  - Update `tools/verify_production_v7.sh` agar menampilkan code default, bukan false warning.
+  - Buang legacy recovery/deploy helper dan audit report lama yang sudah tidak dipakai.
+- **Result**:
+  - Tidak ada lagi dokumen backlog audit hidup yang perlu dipertahankan.
+  - Audit trail tetap tersedia di log operasional kanonik.
+  - Repo lebih bersih dan miss persepsi berkurang.
+- **Claim**:
+  - Cleanup final selesai; `ToDo_Now.md` retired, dan jejak operasional berikutnya cukup dilanjutkan di `logs/OPS_UPDATE_LOG.md`.
