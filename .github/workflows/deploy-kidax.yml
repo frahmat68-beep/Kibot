@@ -183,7 +183,7 @@ jobs:
             sudo systemctl stop ${SERVICE_NAME} || true
             sudo systemctl reset-failed ${SERVICE_NAME} || true
             sudo systemctl daemon-reload
-            sudo systemctl restart ${SERVICE_NAME}
+            sudo systemctl start ${SERVICE_NAME}
             sudo systemctl is-active ${SERVICE_NAME}
 
             echo "Waiting for health check on port ${RUNTIME_PORT}..."
