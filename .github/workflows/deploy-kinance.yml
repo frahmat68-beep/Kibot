@@ -192,7 +192,6 @@ jobs:
             sudo systemctl stop "${SERVICE_NAME}" || true
             sudo systemctl reset-failed "${SERVICE_NAME}" || true
             sudo systemctl daemon-reload
-            sudo systemctl enable "${SERVICE_NAME}" || true
             sudo systemctl restart "${SERVICE_NAME}"
             sudo systemctl is-active "${SERVICE_NAME}"
 
