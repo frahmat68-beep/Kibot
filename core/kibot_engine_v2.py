@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 """
-KiBot Trinity v7.0 — Dual Bucket Engine
+KiBot Trinity v7.3 — Dual Bucket Engine
 Filosofi: Profit sedikit demi sedikit lama lama jadi bukit
 Motto: Minimalisir kerugian, maksimalkan probabilitas keuntungan
 
 ARSITEKTUR:
   Bucket A (50%): Global Lead-Lag — KiNance (Binance) + KiCom (Crypto.com) AND gate
   Bucket B (50%): Local Indodax-Only — ConvictionScore >= 0.85 murni matematis
+
+RELATIONSHIP WITH kibot_manager.py:
+  This module PROVIDES singleton instances:
+    - trade_logger   → TradeLogger()
+    - cascade_state  → CascadeState()
+    - position_manager → PositionManager()
+  These are imported & used by kibot_manager.py at runtime.
+  PAIR UNIVERSE: Canonical source is kibot_manager.py.
+  Both files are kept in sync via coin_universe_overlay.py.
 
 BLIND SPOT YANG SUDAH DIPERBAIKI:
   - Order fill verification (bukan assume filled)
@@ -27,6 +36,8 @@ from typing import Optional, Union, Any, Dict, List, Tuple
 import urllib.request
 import urllib.error
 import logging
+
+from coin_universe_overlay import apply_overlay_to_runtime
 
 logger = logging.getLogger("kibot_v2")
 
@@ -87,7 +98,8 @@ def _rate_limited_fetch(url: str, rate_key: str, timeout: int = 8) -> Optional[b
         time.sleep(wait)
     _last_api_call[rate_key] = time.time()
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.read()
     except Exception as e:
         logger.debug(f"[FETCH] {rate_key}: {e}")
@@ -134,7 +146,15 @@ def get_min_order(pair_id: str) -> float:
     return INDODAX_PAIR_SPECS.get(pair_id, {}).get("min_idr", MIN_ORDER_IDR)
 
 # ============================================================
-# PAIR UNIVERSE
+# PAIR UNIVERSE — Canonical source: kibot_manager.py
+# engine_v2 uses its own copy as a FALLBACK only; the manager's
+# apply_overlay_to_runtime() call merges both at startup.
+# ============================================================
+# NOTE (v7.3): These are kept as the *baseline* set.  The manager
+# has a SUPERSET that includes Tier-2/3 pairs.  At runtime the
+# overlay mechanism in coin_universe_overlay.py ensures both sides
+# see the same universe.  DO NOT ADD new pairs here — add them
+# to kibot_manager.py LEAD_LAG_PAIRS instead.
 # ============================================================
 LEAD_LAG_PAIRS = {
     "btc_idr":"BTCUSDT",  "eth_idr":"ETHUSDT",   "xrp_idr":"XRPUSDT",
@@ -147,6 +167,13 @@ LEAD_LAG_PAIRS = {
     "fun_idr":"FUNUSDT",  "atom_idr":"ATOMUSDT",  "uni_idr":"UNIUSDT",
     "pol_idr":"POLUSDT",  "matic_idr":"MATICUSDT","ltc_idr":"LTCUSDT",
     "hbar_idr":"HBARUSDT","arb_idr":"ARBUSDT",
+    # ── v7.3 sync: pairs previously only in manager ──
+    "pengu_idr":"PENGUUSDT", "fet_idr":"FETUSDT",  "render_idr":"RENDERUSDT",
+    "anime_idr":"ANIMEUSDT", "trump_idr":"TRUMPUSDT","zen_idr":"ZENUSDT",
+    "iotx_idr":"IOTXUSDT",  "moodeng_idr":"MOODENGUSDT","mon_idr":"MONUSDT",
+    "vanry_idr":"VANRYUSDT", "mog_idr":"MOGUSDT",  "spx_idr":"SPXUSDT",
+    "op_idr":"OPUSDT",       "paxg_idr":"PAXGUSDT","bch_idr":"BCHUSDT",
+    "etc_idr":"ETCUSDT",     "pixel_idr":"PIXELUSDT","islm_idr":"ISLAMUSDT",
 }
 
 CRYPTOCOM_PAIR_MAP = {
@@ -162,11 +189,14 @@ CRYPTOCOM_PAIR_MAP = {
 }
 
 INDODAX_ONLY_PAIRS = [
-    "whitewhale_idr","br_idr","drx_idr","bio_idr","pippin_idr",
-    "myx_idr","jellyjelly_idr","aster_idr","hype_idr","gravity_idr",
-    "trollsol_idr","mubarak_idr","xpl_idr","fanc_idr","nova_idr",
-    "mrs_idr","islm_idr","vanry_idr",
+    "pippin_idr","myx_idr","jellyjelly_idr","aster_idr","hype_idr",
+    "gravity_idr","trollsol_idr","mubarak_idr","xpl_idr","fanc_idr",
+    "nova_idr","mrs_idr","zerebro_idr",
+    # engine_v2 legacy (kept for backward compat — overlay merges both)
+    "whitewhale_idr","br_idr","drx_idr","bio_idr","wealth_idr",
 ]
+
+_coin_universe_overlay_state = apply_overlay_to_runtime(LEAD_LAG_PAIRS, INDODAX_ONLY_PAIRS)
 
 # ============================================================
 # CASCADE LOSS INTELLIGENCE
@@ -185,6 +215,7 @@ class CascadeState:
     def __init__(self):
         self.mode = "GROWTH"
         self.consecutive_losses = 0
+        self.consecutive_wins = 0
         self.wins_today = 0
         self.losses_today = 0
         self.daily_pnl_pct = 0.0
@@ -196,6 +227,7 @@ class CascadeState:
                 d = json.loads(CASCADE_FILE.read_text())
                 self.mode = d.get("mode","GROWTH")
                 self.consecutive_losses = d.get("consecutive_losses",0)
+                self.consecutive_wins = d.get("consecutive_wins",0)
                 self.wins_today = d.get("wins_today",0)
                 self.losses_today = d.get("losses_today",0)
                 self.daily_pnl_pct = d.get("daily_pnl_pct",0.0)
@@ -205,6 +237,7 @@ class CascadeState:
     def save(self):
         CASCADE_FILE.write_text(json.dumps({
             "mode":self.mode,"consecutive_losses":self.consecutive_losses,
+            "consecutive_wins":self.consecutive_wins,
             "wins_today":self.wins_today,"losses_today":self.losses_today,
             "daily_pnl_pct":self.daily_pnl_pct,
             "updated":datetime.utcnow().isoformat()
@@ -217,18 +250,30 @@ class CascadeState:
         with self._lock:
             self.wins_today += 1
             self.consecutive_losses = 0
+            self.consecutive_wins += 1
             prev = self.mode
             if self.mode == "CAUTION":      self.mode = "GROWTH"
             elif self.mode == "DEFENSIVE" and self.wins_today >= 2: self.mode = "CAUTION"
             elif self.mode == "RESTRICTED" and self.wins_today >= 3: self.mode = "DEFENSIVE"
             if prev != self.mode:
                 logger.info(f"[CASCADE] {prev} → {self.mode} (win)")
+            if self.consecutive_wins >= 3:
+                logger.info(f"[CASCADE] 🔥 Win streak x{self.consecutive_wins} — momentum active")
             self.save()
+
+    def kelly_momentum_multiplier(self) -> float:
+        """Bonus sizing multiplier during win streaks (max 1.2x)."""
+        if self.consecutive_wins >= 5:
+            return 1.20
+        if self.consecutive_wins >= 3:
+            return 1.10
+        return 1.0
 
     def on_loss(self, daily_pnl_pct: float):
         with self._lock:
             self.losses_today += 1
             self.consecutive_losses += 1
+            self.consecutive_wins = 0  # reset win streak on loss
             self.daily_pnl_pct = daily_pnl_pct
             prev = self.mode
             if daily_pnl_pct <= -0.02:        self.mode = "HARD_STOP"
@@ -535,6 +580,10 @@ def fetch_candles(pair_id: str, tf: int = 15, count: int = 30) -> list[dict]:
         return []
     try:
         data = json.loads(raw)
+        if isinstance(data, list):
+            return []
+        if not isinstance(data, dict):
+            return []
         t  = data.get("t", [])
         c  = data.get("c", data.get("Close", []))
         h  = data.get("h", data.get("High",  []))

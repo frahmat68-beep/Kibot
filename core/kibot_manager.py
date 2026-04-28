@@ -74,6 +74,7 @@ from ki_capital_engine import (
 import kibot_engine_v2 as engine
 from dashboard_template import DASHBOARD_HTML
 from ki_brain import BrainManager
+from coin_universe_overlay import apply_overlay_to_runtime, group_to_sector, load_overlay_state, save_overlay_state
 from ki_stats import calculate_z_score
 try:
     from kibot_ai_coordinator import query_ai
@@ -348,15 +349,22 @@ def _can_enter(pair: str, msg_type: str) -> Tuple[bool, str]:
 
     # 4. Quarantine Guard
     if pair:
-        # 4.1 Cooldown (45m)
+        # 4.1 Escalating Cooldown — more losses = longer quarantine
+        loss_count = _entry_loss_count.get(pair, 0)
         last_t = _last_entry.get(pair, 0.0)
-        cooldown_s = int(os.environ.get("KIBOT_QUARANTINE_SECONDS", "2700"))
-        if (time.time() - last_t) < cooldown_s:
-            return False, f"QUARANTINE: {pair} cooldown"
+        base_cooldown_s = int(os.environ.get("KIBOT_QUARANTINE_SECONDS", "2700"))
+        # Escalate: 0 losses=45m, 1 loss=2h, 2+ losses=blocked for day
+        cooldown_s = base_cooldown_s * max(1, (loss_count + 1) ** 2)
+        cooldown_s = min(cooldown_s, 86400)  # cap at 24h
+        elapsed = time.time() - last_t
+        if elapsed < cooldown_s:
+            remaining_m = int((cooldown_s - elapsed) / 60)
+            return False, f"QUARANTINE: {pair} cooldown {remaining_m}m (losses={loss_count})"
 
-        # 4.2 Blacklist (Max 2 losses)
-        if _entry_loss_count.get(pair, 0) >= int(os.environ.get("KIBOT_MAX_PAIR_LOSS", "2")):
-            return False, f"BLACKLIST: {pair} too many losses"
+        # 4.2 Blacklist (Max losses per day — default 2)
+        max_pair_loss = int(os.environ.get("KIBOT_MAX_PAIR_LOSS", "2"))
+        if loss_count >= max_pair_loss:
+            return False, f"BLACKLIST: {pair} {loss_count}/{max_pair_loss} losses today"
 
     # 5. Statistical sanity check.
     # Brain/AI research stays advisory-only in background loops so the live
@@ -1092,6 +1100,8 @@ def get_binance_symbol(pair_id: str) -> str | None:
 def get_pair_sector(pair_id: str) -> str:
     return PAIR_SECTORS.get(pair_id, "unknown")
 
+_coin_universe_overlay_state = apply_overlay_to_runtime(LEAD_LAG_PAIRS, INDODAX_ONLY_PAIRS, PAIR_SECTORS)
+
 # === PORTFOLIO CONFIGURATION ===
 PORTFOLIO_CONFIG = {
     "max_concurrent_positions": 5,
@@ -1218,8 +1228,13 @@ def fetch_candles(pair_id: str, tf: int = 15, count: int = 25) -> list[dict]:
     from_ts = now - (tf * 60 * count)
     url = f"{INDODAX_OHLCV_URL}?symbol={symbol}&tf={tf}&from={from_ts}&to={now}"
     try:
-        with urllib.request.urlopen(url, timeout=8) as r:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
             data = json.loads(r.read())
+        if isinstance(data, list):
+            return []
+        if not isinstance(data, dict):
+            return []
         times  = data.get("t", [])
         opens  = data.get("o", data.get("Open", []))
         highs  = data.get("h", data.get("High", []))
@@ -1244,7 +1259,8 @@ def fetch_order_book_depth(pair_id: str) -> dict | None:
     import urllib.request
     url = f"https://indodax.com/api/depth/{pair_id}"
     try:
-        with urllib.request.urlopen(url, timeout=5) as r:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as r:
             return json.loads(r.read())
     except Exception:
         return None
@@ -1441,7 +1457,17 @@ class ConvictionScoreCalculator:
             blocks.append("RSI > 80")
         if vol_24h < 500_000_000:
             blocks.append("Vol < 500M IDR")
-        # BTC Regime Guard check will be in main logic
+
+        # === ORDERBOOK DEPTH GUARD (v7.3) ===
+        # Block if total bid depth < 3x typical budget to avoid slippage
+        min_depth_idr = float(os.environ.get("KIBOT_MIN_OB_DEPTH_IDR", "30000000"))  # 30M IDR
+        if depth and "buy" in depth:
+            try:
+                total_bid_idr = sum(float(b[0]) * float(b[1]) for b in depth["buy"][:20])
+                if total_bid_idr < min_depth_idr:
+                    blocks.append(f"OB depth thin: Rp{total_bid_idr/1e6:.0f}M < {min_depth_idr/1e6:.0f}M")
+            except Exception:
+                pass
 
         return {
             "score": round(final_score, 3),
@@ -1894,7 +1920,30 @@ def _process_signal_multipos(msg: dict):
 
     # === GATE 2: PORTFOLIO & CAPACITY ===
     can_open, reason = portfolio_manager.can_open(pair_id, category)
-    if not can_open: return
+    if not can_open:
+        # ── Rotation Gate: evaluate if a stagnant position should be rotated ──
+        if reason and "Max" in reason:
+            try:
+                _rotation_result = _evaluate_rotation_opportunity(pair_id, msg, raw_score)
+                if _rotation_result and _rotation_result.get("approved"):
+                    rotated_pair = _rotation_result.get("rotated_pair")
+                    print(
+                        f"[KIBOT][ROTATION] Rotating {rotated_pair} → {pair_id} "
+                        f"score={_rotation_result.get('rotation_score', 0):.1f} "
+                        f"reason={_rotation_result.get('reason', '')}",
+                        flush=True,
+                    )
+                    # Rotation approved — close stagnant position, continue to open new one
+                    _force_exit_for_rotation(rotated_pair, _rotation_result.get("reason", "ROTATION"))
+                    # Small yield to let exit process
+                    time.sleep(0.2)
+                else:
+                    return
+            except Exception as rot_err:
+                print(f"[KIBOT][ROTATION][WARN] eval error: {rot_err}", flush=True)
+                return
+        else:
+            return
 
     # === GATE 3: CONVICTION SCORE (BUCKET B) ===
     if category == "INDODAX_ONLY":
@@ -1934,8 +1983,9 @@ def _process_signal_multipos(msg: dict):
         _metric_inc("whatif_skips_today")
         return
 
-    # Kelly Sizing
-    budget_idr = min(available_budget, current_equity * sim["kelly_f"])
+    # Kelly Sizing + Win Streak Momentum (v7.3)
+    momentum_mult = cascade_state.kelly_momentum_multiplier() if hasattr(cascade_state, "kelly_momentum_multiplier") else 1.0
+    budget_idr = min(available_budget, current_equity * sim["kelly_f"] * momentum_mult)
 
     if budget_idr < PORTFOLIO_CONFIG["min_budget_idr"]:
         return
@@ -2056,13 +2106,14 @@ def _check_portfolio_pnl():
 
 
 def run_discovery_loop():
-    """AI-CMS discovery every 6 hours."""
+    """AI-CMS discovery setiap beberapa menit dengan throttle state."""
     while not _shutdown_event.is_set():
         try:
             asyncio.run(run_ai_coin_discovery())
         except Exception as e:
             print(f"[KIBOT][AI-CMS] Discovery loop error: {e}", flush=True)
-        if _shutdown_event.wait(timeout=21600): break
+        if _shutdown_event.wait(timeout=max(300, PAIR_DISCOVERY_MIN_INTERVAL_SEC)):
+            break
 
 def run_portfolio_monitor_loop():
     """Real-time portfolio monitoring every 30s."""
@@ -2444,96 +2495,16 @@ Batasan:
 
 async def run_ai_coin_discovery():
     """
-    Jalankan AI untuk cari koin baru/sedang ramai.
-    Math sistem yang decide apakah worth masuk.
+    Jalankan discovery review sekali.
+    Wrapper async ini dipertahankan supaya loop lama tetap jalan.
     """
-    import json
-
-    # Coba semua AI provider (fallback chain)
-    discovery_result = None
-    for provider in ["groq", "openrouter", "cohere", "gemini"]:
-        try:
-            # Note: call_ai_provider must be defined in this script
-            raw = await call_ai_provider(provider, DISCOVERY_PROMPT)
-            # Parse JSON dari response
-            # Strip markdown kalau ada
-            clean = raw.strip()
-            if "```json" in clean:
-                clean = clean.split("```json")[1].split("```")[0].strip()
-            elif "```" in clean:
-                clean = clean.split("```")[1].split("```")[0].strip()
-
-            coins = json.loads(clean)
-            if isinstance(coins, list) and len(coins) > 0:
-                discovery_result = coins
-                print(f"[AI-CMS] {provider} found {len(coins)} new candidates", flush=True)
-                break
-        except Exception as e:
-            # print(f"[AI-CMS] {provider} failed: {e}")
-            continue
-
-    if not discovery_result:
-        print("[AI-CMS] No discovery result — using existing pair list", flush=True)
-        return
-
-    # Validasi setiap koin yang ditemukan AI
-    validated_new = []
-    for coin in discovery_result:
-        pair_id = coin.get("indodax_pair", "")
-        if not pair_id or not pair_id.endswith("_idr"):
-            continue
-
-        # Cek apakah ada di Indodax live
-        # Note: fetch_indodax_ticker must be defined
-        ticker = await fetch_indodax_ticker(pair_id)
-        if not ticker:
-            continue
-
-        vol_24h = float(ticker.get("vol_idr", 0))
-        if vol_24h < 50_000_000:
-            continue
-
-        category = coin.get("category", "INDODAX_ONLY")
-        binance_pair = coin.get("binance_pair")
-
-        # Update pair mapping jika kategori lead-lag
-        if category == "LEAD_LAG" and binance_pair:
-            if pair_id not in LEAD_LAG_PAIRS:
-                LEAD_LAG_PAIRS[pair_id] = binance_pair
-                print(f"[AI-CMS] NEW lead-lag pair: {pair_id} → {binance_pair}", flush=True)
-
-        # Update local pairs
-        if category == "INDODAX_ONLY":
-            if pair_id not in INDODAX_ONLY_PAIRS:
-                INDODAX_ONLY_PAIRS.append(pair_id)
-                print(f"[AI-CMS] NEW local pair: {pair_id}", flush=True)
-
-        validated_new.append({
-            "pair_id": pair_id,
-            "category": category,
-            "reason": coin.get("reason", "AI discovered"),
-            "urgency": coin.get("urgency", "WATCH"),
-            "vol_24h": vol_24h,
-        })
-
-    if validated_new:
-        # Telegram report
-        msg = f"🤖 [AI-CMS] {len(validated_new)} koin baru ditemukan:\n"
-        for c in validated_new[:5]:
-            urgency_emoji = "🔥" if c["urgency"] == "NOW" else "👀"
-            msg += (f"{urgency_emoji} {c['pair_id'].replace('_idr','').upper()}: "
-                    f"{c['reason']}\n")
-        _telegram_send(msg)
-
-        # Jika ada koin dengan urgency NOW → langsung masuk queue screening
-        # Note: _priority_scan_queue must exist or be handled
-        urgent = [c for c in validated_new if c["urgency"] == "NOW"]
-        if urgent:
-            print(f"[AI-CMS] {len(urgent)} URGENT coins → priority queue", flush=True)
-            for c in urgent:
-                # Fallback to simple set if queue doesn't exist
-                if 'priority_scan_queue' in globals():
-                    priority_scan_queue.add(c["pair_id"])
+    try:
+        return _pair_discovery_review(trigger="legacy_discovery")
+    except Exception as error:
+        _pair_discovery_state["last_error"] = str(error)[:200]
+        _save_pair_discovery_state()
+        print(f"[AI-CMS] discovery error: {error}", flush=True)
+        return {"ok": False, "error": str(error)}
 
 
 _bb_cache = {}
@@ -3125,6 +3096,12 @@ TRADE_LOG_RUNTIME_PATH = Path(os.getenv("KIBOT_MANAGER_TRADE_LOG_FILE", str(Path
 TRADE_SUMMARY_RUNTIME_PATH = Path(os.getenv("KIBOT_MANAGER_TRADE_SUMMARY_FILE", str(Path.cwd() / "state/trade_summary.json")))
 PAIR_MEMORY_PATH = Path(os.getenv("KIBOT_MANAGER_PAIR_MEMORY_FILE", str(STATE_ROOT / "pair_memory.json")))
 WHATIF_RESULTS_PATH = Path(os.getenv("KIBOT_MANAGER_WHATIF_RESULTS_FILE", str(STATE_ROOT / "whatif_results.json")))
+PAIR_DISCOVERY_STATE_PATH = Path(
+    os.getenv("KIBOT_MANAGER_PAIR_DISCOVERY_STATE_FILE", str(STATE_ROOT / "pair_discovery_state.json"))
+)
+INDODAX_TICKER_SNAPSHOT_FILE = Path(
+    os.getenv("KIBOT_MANAGER_INDODAX_TICKER_SNAPSHOT_FILE", str(STATE_ROOT / "indodax_ticker_snapshot.json"))
+)
 SCANNER_FEED_LOCAL_PATH = Path(
     os.getenv(
         "KIBOT_MANAGER_SCANNER_FEED_FILE",
@@ -3247,6 +3224,7 @@ _seen_news_ids_timestamps: Dict[str, float] = {}  # Track when IDs were added fo
 _indodax_ticker_cache: set[str] = set()
 _indodax_ticker_snapshot: Dict[str, Dict[str, Any]] = {}
 _indodax_ticker_cache_at: float = 0.0
+_indodax_ticker_cooldown_until: float = 0.0
 _coingecko_trending_cache: Dict[str, Any] = {"coins": [], "fetched_at_epoch_ms": 0}
 _last_sector_map: Dict[str, list[str]] = {}
 _active_positions_cache: Dict[str, Dict[str, Any]] = {}
@@ -3303,9 +3281,33 @@ _daily_cycle_state: Dict[str, Any] = _load_json_file(
     },
 )
 _pair_memory: Dict[str, Dict[str, Any]] = _load_json_file(PAIR_MEMORY_PATH, {})
+_pair_discovery_state: Dict[str, Any] = _load_json_file(
+    PAIR_DISCOVERY_STATE_PATH,
+    {
+        "version": 1,
+        "last_review_at_epoch": 0.0,
+        "last_review_reason": "",
+        "last_batch_fingerprint": "",
+        "last_batch_size": 0,
+        "last_promoted_pair": "",
+        "last_error": "",
+        "probation_seen": {},
+    },
+)
 _local_runtime_state_cache: Dict[str, Any] = {}
 _local_runtime_state_cache_at: float = 0.0
 _local_runtime_state_cache_ttl_sec = float(os.getenv("KIBOT_MANAGER_RUNTIME_CACHE_TTL_SEC", "2.5"))
+PAIR_DISCOVERY_MIN_INTERVAL_SEC = int(os.getenv("KIBOT_PAIR_DISCOVERY_MIN_INTERVAL_SEC", "300"))
+PAIR_DISCOVERY_MAX_CANDIDATES = int(os.getenv("KIBOT_PAIR_DISCOVERY_MAX_CANDIDATES", "5"))
+PAIR_DISCOVERY_PROMOTE_CONFIDENCE = float(os.getenv("KIBOT_PAIR_DISCOVERY_PROMOTE_CONFIDENCE", "0.78"))
+PAIR_DISCOVERY_PROBATION_CONFIDENCE = float(os.getenv("KIBOT_PAIR_DISCOVERY_PROBATION_CONFIDENCE", "0.60"))
+PAIR_DISCOVERY_PROMOTE_CONFIRMATIONS = int(os.getenv("KIBOT_PAIR_DISCOVERY_PROMOTE_CONFIRMATIONS", "2"))
+PAIR_DISCOVERY_MIN_VOLUME_IDR = float(os.getenv("KIBOT_PAIR_DISCOVERY_MIN_VOLUME_IDR", "50000000"))
+PAIR_DISCOVERY_MIN_PUMP_15M_PCT = float(os.getenv("KIBOT_PAIR_DISCOVERY_MIN_PUMP_15M_PCT", "5.0"))
+PAIR_DISCOVERY_MIN_LEGITIMACY_SCORE = float(os.getenv("KIBOT_PAIR_DISCOVERY_MIN_LEGITIMACY_SCORE", "55"))
+PAIR_DISCOVERY_MIN_COMPOSITE_SCORE = float(os.getenv("KIBOT_PAIR_DISCOVERY_MIN_COMPOSITE_SCORE", "55"))
+PAIR_DISCOVERY_STRONG_DISCOVERY_SCORE = float(os.getenv("KIBOT_PAIR_DISCOVERY_STRONG_DISCOVERY_SCORE", "180"))
+PAIR_DISCOVERY_PERMANENT_DISCOVERY_SCORE = float(os.getenv("KIBOT_PAIR_DISCOVERY_PERMANENT_DISCOVERY_SCORE", "500"))
 
 
 def _clean_pair_memory() -> None:
@@ -6989,8 +6991,14 @@ def _ensure_env() -> None:
     if not SUPABASE_KEY:
         missing.append("SUPABASE_SERVICE_ROLE_KEY/SUPABASE_ANON_KEY")
     # KIDAX_UDP_HOST has a default. No need to crash if missing.
-    if missing:
+    require_supabase = os.getenv("KIBOT_REQUIRE_SUPABASE", "false").strip().lower() in {"1", "true", "yes", "on"}
+    if missing and require_supabase:
         raise RuntimeError(f"Missing env: {', '.join(missing)}")
+    if missing:
+        print(
+            f"[KIBOT][ENV][WARN] Supabase env missing ({', '.join(missing)}); running in no-supabase mode.",
+            flush=True,
+        )
 
 
 def _broadcast_udp(payload: Dict[str, Any]) -> None:
@@ -7655,9 +7663,9 @@ def screen_all_pairs() -> list[dict[str, Any]]:
             high_24h = float(row.get("high") or price_now)
             low_24h = float(row.get("low") or price_now)
             open_24h = float(row.get("open") or price_now)
-            price_15m_ago = float(row.get("last_15m") or row.get("price_15m") or open_24h)
-            price_1h_ago = float(row.get("last_1h") or row.get("price_1h") or open_24h)
             price_24h_ago = float(row.get("open") or row.get("price_24h") or open_24h)
+            price_15m_ago = float(row.get("last_15m") or row.get("price_15m") or price_24h_ago)
+            price_1h_ago = float(row.get("last_1h") or row.get("price_1h") or price_24h_ago)
             pump_pct_24h = ((price_now - price_24h_ago) / max(price_24h_ago, 0.000001)) * 100.0
             if pump_pct_24h > 80.0:
                 continue
@@ -7692,14 +7700,621 @@ def screen_all_pairs() -> list[dict[str, Any]]:
                     "analysis": analysis,
                     "price_now": price_now,
                     "pump_pct_24h": pump_pct_24h,
+                    "pump_pct_15m": pump_pct_15m,
+                    "pump_pct_1h": ((price_now - price_1h_ago) / max(price_1h_ago, 0.000001)) * 100.0,
                     "volume_24h_idr": vol_24h,
+                    "volume_1h_idr": volume_1h,
+                    "has_binance_pair": has_binance,
+                    "binance_price_change_pct": binance_change,
+                    "sector": get_pair_sector(pair_id),
+                    "group_hint": get_pair_sector(pair_id).upper(),
                     "composite_score": analysis.legitimacy_score * 0.6 + analysis.risk_reward * 10.0,
                 }
             )
         except Exception:
             continue
     candidates.sort(key=lambda item: item["composite_score"], reverse=True)
-    return candidates[:10]
+    return candidates[:30]
+
+
+def _save_pair_discovery_state() -> None:
+    _write_json_file(PAIR_DISCOVERY_STATE_PATH, _pair_discovery_state)
+
+
+def _pair_discovery_known_pairs() -> set[str]:
+    return {
+        *[str(pair_id).strip().lower() for pair_id in LEAD_LAG_PAIRS.keys()],
+        *[str(pair_id).strip().lower() for pair_id in INDODAX_ONLY_PAIRS],
+        *[str(pair_id).strip().lower() for pair_id in FUTURES_PROXY_PAIRS.keys()],
+    }
+
+
+def _pair_discovery_batch_fingerprint(candidates: list[dict[str, Any]]) -> str:
+    payload = []
+    for item in candidates[:PAIR_DISCOVERY_MAX_CANDIDATES]:
+        analysis = item.get("analysis")
+        payload.append(
+            {
+                "pair_id": str(item.get("pair_id") or "").lower().strip(),
+                "score": round(float(getattr(analysis, "legitimacy_score", 0.0) or 0.0), 2),
+                "pump_15m": round(float(item.get("pump_pct_15m") or 0.0), 3),
+                "vol_24h": round(float(item.get("volume_24h_idr") or 0.0), 0),
+                "orderbook_ratio": round(float(item.get("orderbook_ratio") or 0.0), 3),
+            }
+        )
+    return hashlib.md5(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+
+
+def _pair_discovery_select_candidates() -> list[dict[str, Any]]:
+    known_pairs = _pair_discovery_known_pairs()
+    snapshot = _load_indodax_ticker_snapshot()
+    eligible: list[dict[str, Any]] = []
+    for pair_id, row in snapshot.items():
+        pair_id = str(pair_id or "").strip().lower()
+        if not pair_id or pair_id in known_pairs:
+            continue
+        try:
+            vol_24h = float(row.get("vol_idr") or row.get("volume_idr") or 0.0)
+            if vol_24h < PAIR_DISCOVERY_MIN_VOLUME_IDR:
+                continue
+            price_now = float(row.get("last") or row.get("close") or 0.0)
+            if price_now <= 0.0:
+                continue
+            high_24h = float(row.get("high") or price_now)
+            low_24h = float(row.get("low") or price_now)
+            open_24h = float(row.get("open") or row.get("price_24h") or low_24h)
+            price_24h_ago = open_24h
+            pump_pct_24h = ((price_now - price_24h_ago) / max(price_24h_ago, 0.000001)) * 100.0
+            if pump_pct_24h < PAIR_DISCOVERY_MIN_PUMP_15M_PCT and vol_24h < 500_000_000:
+                continue
+            candles = fetch_candles(pair_id, tf=15, count=8)
+            closes = [float(c.get("c") or 0.0) for c in candles if isinstance(c, dict) and float(c.get("c") or 0.0) > 0.0]
+            volumes = [float(c.get("v") or 0.0) for c in candles if isinstance(c, dict)]
+            price_15m_ago = closes[-2] if len(closes) >= 2 else price_24h_ago
+            price_1h_ago = closes[-5] if len(closes) >= 5 else price_24h_ago
+            volume_1h = volumes[-1] if volumes else float(row.get("vol_1h_idr") or vol_24h / 24.0 * 1.5)
+            bb_upper, bb_middle, bb_lower = _estimate_bollinger(price_now, low_24h, high_24h)
+            has_binance = bool(row.get("binance_pair") or row.get("binance") or False)
+            binance_change = float(row.get("binance_price_change_pct") or 0.0)
+            analysis = analyze_pump_legitimacy(
+                pair_id=pair_id,
+                price_now=price_now,
+                price_24h_ago=price_24h_ago,
+                price_1h_ago=price_1h_ago,
+                price_15m_ago=price_15m_ago,
+                volume_24h_idr=vol_24h,
+                volume_1h_idr=volume_1h,
+                high_24h=high_24h,
+                low_24h=low_24h,
+                bollinger_upper=bb_upper,
+                bollinger_middle=bb_middle,
+                bollinger_lower=bb_lower,
+                has_binance_pair=has_binance,
+                binance_price_change_pct=binance_change,
+            )
+            depth = fetch_order_book_depth(pair_id)
+            ob_ratio = check_order_book_imbalance(depth)
+            if ob_ratio < 0.8:
+                continue
+            composite = analysis.legitimacy_score * 0.6 + analysis.risk_reward * 10.0
+            discovery_score = (
+                pump_pct_24h * 2.5
+                + math.log10(max(vol_24h, 1.0)) * 12.0
+                + ob_ratio * 8.0
+                + max(0.0, analysis.legitimacy_score) * 0.2
+            )
+            if composite < PAIR_DISCOVERY_MIN_COMPOSITE_SCORE and pump_pct_24h < 5.0:
+                continue
+            eligible.append(
+                {
+                    "pair_id": pair_id,
+                    "analysis": analysis,
+                    "price_now": price_now,
+                    "pump_pct_24h": pump_pct_24h,
+                    "pump_pct_15m": ((price_now - price_15m_ago) / max(price_15m_ago, 0.000001)) * 100.0,
+                    "pump_pct_1h": ((price_now - price_1h_ago) / max(price_1h_ago, 0.000001)) * 100.0,
+                    "volume_24h_idr": vol_24h,
+                    "volume_1h_idr": volume_1h,
+                    "has_binance_pair": has_binance,
+                    "binance_price_change_pct": binance_change,
+                    "orderbook_ratio": ob_ratio,
+                    "sector": get_pair_sector(pair_id),
+                    "group_hint": get_pair_sector(pair_id).upper(),
+                    "composite_score": composite,
+                    "discovery_score": discovery_score,
+                }
+            )
+        except Exception:
+            continue
+    eligible.sort(
+        key=lambda item: (
+            float(item.get("discovery_score") or 0.0),
+            float(item.get("pump_pct_24h") or 0.0),
+            float(item.get("pump_pct_15m") or 0.0),
+            float(item.get("volume_24h_idr") or 0.0),
+        ),
+        reverse=True,
+    )
+    return eligible[:PAIR_DISCOVERY_MAX_CANDIDATES]
+
+
+def _compact_market_intel(intel: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(intel, dict):
+        return {}
+    binance = intel.get("binance") if isinstance(intel.get("binance"), dict) else {}
+    external = intel.get("external_research") if isinstance(intel.get("external_research"), dict) else {}
+    coingecko = intel.get("coingecko_search") if isinstance(intel.get("coingecko_search"), dict) else {}
+    return {
+        "symbol": str(intel.get("symbol") or "").upper(),
+        "listed_on_indodax": bool(intel.get("listed_on_indodax")),
+        "quote_volume_usdt": float(intel.get("quote_volume_usdt") or 0.0),
+        "binance": {
+            "symbol": str(binance.get("symbol") or ""),
+            "price_change_pct": float(binance.get("priceChangePercent") or binance.get("price_change_pct") or 0.0),
+            "quote_volume": float(binance.get("quoteVolume") or 0.0),
+        },
+        "external": {
+            "provider": str(external.get("provider") or ""),
+            "risk_bias": str(external.get("risk_bias") or "MIXED"),
+            "summary": str(external.get("summary") or "")[:240],
+            "headlines": [str(item).strip() for item in list(external.get("headlines") or [])[:3] if str(item).strip()],
+            "news_hit_count": int(external.get("news_hit_count") or 0),
+        },
+        "coingecko": {
+            "coins": [
+                {
+                    "id": str(item.get("id") or ""),
+                    "symbol": str(item.get("symbol") or ""),
+                }
+                for item in list(coingecko.get("coins") or [])[:3]
+                if isinstance(item, dict)
+            ]
+        },
+        "errors": [str(item) for item in list(intel.get("errors") or [])[:3]],
+    }
+
+
+def _pair_discovery_group_hint(pair_id: str, item: Dict[str, Any]) -> str:
+    def _map_group(raw: str) -> str:
+        key = str(raw or "").strip().upper()
+        mapping = {
+            "BTC_FAMILY": "BTC_FAMILY",
+            "ETH_FAMILY": "ETH_FAMILY",
+            "SOL_FAMILY": "SOL_FAMILY",
+            "MEME_COIN": "MEME_COIN",
+            "AI_TOKEN": "AI_TOKEN",
+            "DEFI_TOKEN": "DEFI_TOKEN",
+            "GAMING": "GAMING",
+            "MICRO_CAP": "MICRO_CAP",
+            "STABLECOIN": "STABLECOIN",
+            "LEAD_LAG": "BTC_FAMILY",
+            "LAYER1": "BTC_FAMILY",
+            "LAYER2": "DEFI_TOKEN",
+            "MEME": "MEME_COIN",
+            "DEFI": "DEFI_TOKEN",
+            "EXCHANGE": "BTC_FAMILY",
+            "PAYMENT": "BTC_FAMILY",
+            "ORACLE": "AI_TOKEN",
+            "AI_TOKEN": "AI_TOKEN",
+            "NFT": "MEME_COIN",
+            "LOCAL_IDR": "MICRO_CAP",
+            "UNKNOWN": "UNKNOWN",
+        }
+        return mapping.get(key, key or "UNKNOWN")
+
+    hint = str(item.get("group_hint") or "").strip()
+    if hint and hint.upper() != "UNKNOWN":
+        mapped = _map_group(hint)
+        if mapped != "UNKNOWN":
+            return mapped
+    sector = str(get_pair_sector(pair_id) or "").strip().lower()
+    if sector and sector != "unknown":
+        mapped = _map_group(sector)
+        if mapped != "UNKNOWN":
+            return mapped
+    base = str(pair_id or "").replace("_idr", "").lower()
+    if base in {"btc", "bch", "bsv", "ltc"}:
+        return "BTC_FAMILY"
+    if base in {"eth", "etc", "arb"}:
+        return "ETH_FAMILY"
+    if base in {"sol", "trollsol"}:
+        return "SOL_FAMILY"
+    if base in {"doge", "shib", "pepe", "bonk", "floki", "pippin", "moodeng", "fartcoin", "jellyjelly", "mubarak"}:
+        return "MEME_COIN"
+    if base in {"fet", "render", "hbar", "near"}:
+        return "AI_TOKEN"
+    if base in {"uni", "aave", "comp", "sui", "hype", "myx"}:
+        return "DEFI_TOKEN"
+    if base in {"fun", "enj", "game", "gaming"}:
+        return "GAMING"
+    return "MICRO_CAP"
+
+
+def _pair_discovery_context_for_ai(candidates: list[dict[str, Any]]) -> Dict[str, Any]:
+    enriched: list[dict[str, Any]] = []
+    for item in candidates:
+        pair_id = str(item.get("pair_id") or "").strip().lower()
+        symbol = pair_id.replace("_idr", "").upper()
+        depth = fetch_order_book_depth(pair_id)
+        orderbook_ratio = round(check_order_book_imbalance(depth), 3) if depth else 1.0
+        market_intel = _brain.get_market_intel(symbol) if hasattr(_brain, "get_market_intel") else {}
+        enriched.append(
+            {
+                "pair_id": pair_id,
+                "symbol": symbol,
+                "category_hint": get_pair_category(pair_id),
+                "group_hint": _pair_discovery_group_hint(pair_id, item),
+                "sector": get_pair_sector(pair_id),
+                "analysis": {
+                    "legitimacy_score": float(getattr(item.get("analysis"), "legitimacy_score", 0.0) or 0.0),
+                    "pump_phase": str(getattr(item.get("analysis"), "pump_phase", "") or ""),
+                    "entry_recommendation": str(getattr(item.get("analysis"), "entry_recommendation", "") or ""),
+                    "risk_reward": float(getattr(item.get("analysis"), "risk_reward", 0.0) or 0.0),
+                    "reasoning": str(getattr(item.get("analysis"), "reasoning", "") or ""),
+                },
+                "technical": {
+                    "price_now": float(item.get("price_now") or 0.0),
+                    "pump_pct_15m": float(item.get("pump_pct_15m") or 0.0),
+                    "pump_pct_1h": float(item.get("pump_pct_1h") or 0.0),
+                    "pump_pct_24h": float(item.get("pump_pct_24h") or 0.0),
+                    "volume_24h_idr": float(item.get("volume_24h_idr") or 0.0),
+                    "volume_1h_idr": float(item.get("volume_1h_idr") or 0.0),
+                    "composite_score": float(item.get("composite_score") or 0.0),
+                },
+                "orderbook": {
+                    "ratio": orderbook_ratio,
+                    "healthy": orderbook_ratio >= 1.2,
+                },
+                "market_intel": _compact_market_intel(market_intel),
+                "has_binance_pair": bool(item.get("has_binance_pair")),
+                "binance_price_change_pct": float(item.get("binance_price_change_pct") or 0.0),
+            }
+        )
+    return {
+        "trigger": "PAIR_DISCOVERY",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "screened_count": len(candidates),
+        "candidate_count": len(enriched),
+        "thresholds": {
+            "min_volume_idr": PAIR_DISCOVERY_MIN_VOLUME_IDR,
+            "min_legitimacy_score": PAIR_DISCOVERY_MIN_LEGITIMACY_SCORE,
+            "min_pump_15m_pct": PAIR_DISCOVERY_MIN_PUMP_15M_PCT,
+            "min_composite_score": PAIR_DISCOVERY_MIN_COMPOSITE_SCORE,
+            "promote_confidence": PAIR_DISCOVERY_PROMOTE_CONFIDENCE,
+            "probation_confidence": PAIR_DISCOVERY_PROBATION_CONFIDENCE,
+            "promote_confirmations": PAIR_DISCOVERY_PROMOTE_CONFIRMATIONS,
+        },
+        "candidates": enriched,
+        "universe_summary": {
+            "lead_lag_count": len(LEAD_LAG_PAIRS),
+            "indodax_only_count": len(INDODAX_ONLY_PAIRS),
+            "sector_count": len(PAIR_SECTORS),
+        },
+    }
+
+
+def _pair_discovery_apply_progress(
+    *,
+    candidate: Dict[str, Any],
+    ai_item: Dict[str, Any],
+) -> Dict[str, Any]:
+    pair_id = str(candidate.get("pair_id") or "").strip().lower()
+    if not pair_id:
+        return {"pair_id": "", "promotion": "REJECT", "reason": "empty_pair"}
+
+    ai_promotion = str(ai_item.get("promotion") or "REJECT").strip().upper()
+    ai_category = str(ai_item.get("category") or candidate.get("category_hint") or "INDODAX_ONLY").strip().upper()
+    ai_group = str(ai_item.get("group") or candidate.get("group_hint") or "MICRO_CAP").strip().upper()
+    ai_urgency = str(ai_item.get("urgency") or "MONITOR").strip().upper()
+    ai_conf = float(ai_item.get("confidence") or 0.0)
+    ai_binance = str(ai_item.get("binance_pair") or "").strip().upper()
+
+    analysis = candidate.get("analysis")
+    technical = candidate.get("technical") if isinstance(candidate.get("technical"), dict) else {}
+    orderbook = candidate.get("orderbook") if isinstance(candidate.get("orderbook"), dict) else {}
+    market_intel = candidate.get("market_intel") if isinstance(candidate.get("market_intel"), dict) else {}
+    volume_24h = float(technical.get("volume_24h_idr") or candidate.get("volume_24h_idr") or 0.0)
+    pump_15m = float(technical.get("pump_pct_15m") or candidate.get("pump_pct_15m") or 0.0)
+    legitimacy = float(getattr(analysis, "legitimacy_score", 0.0) or 0.0)
+    composite = float(technical.get("composite_score") or candidate.get("composite_score") or 0.0)
+    orderbook_ratio = float(orderbook.get("ratio") or candidate.get("orderbook_ratio") or 1.0)
+    binance_volume = float(market_intel.get("quote_volume_usdt") or 0.0)
+    discovery_score = float(candidate.get("discovery_score") or 0.0)
+    strong_discovery = (
+        volume_24h >= PAIR_DISCOVERY_MIN_VOLUME_IDR
+        and orderbook_ratio >= 0.95
+        and discovery_score >= PAIR_DISCOVERY_STRONG_DISCOVERY_SCORE
+    )
+    breakout_permanent = strong_discovery and (
+        discovery_score >= PAIR_DISCOVERY_PERMANENT_DISCOVERY_SCORE
+        or pump_15m >= max(PAIR_DISCOVERY_MIN_PUMP_15M_PCT * 10.0, 100.0)
+    )
+    ai_reason = str(ai_item.get("reason") or getattr(analysis, "reasoning", "") or "heuristic").strip()
+
+    final_promotion = ai_promotion if ai_promotion in {"PERMANENT", "PROBATION", "REJECT"} else "REJECT"
+    if volume_24h < PAIR_DISCOVERY_MIN_VOLUME_IDR:
+        final_promotion = "REJECT"
+    elif orderbook_ratio < 0.9 and not strong_discovery:
+        final_promotion = "REJECT"
+    elif legitimacy < PAIR_DISCOVERY_MIN_LEGITIMACY_SCORE and not strong_discovery:
+        final_promotion = "REJECT"
+    elif pump_15m < PAIR_DISCOVERY_MIN_PUMP_15M_PCT and composite < PAIR_DISCOVERY_MIN_COMPOSITE_SCORE and not strong_discovery:
+        final_promotion = "REJECT"
+    elif ai_conf < PAIR_DISCOVERY_PROBATION_CONFIDENCE and not strong_discovery:
+        final_promotion = "REJECT"
+    elif breakout_permanent:
+        final_promotion = "PERMANENT"
+    elif strong_discovery:
+        final_promotion = "PERMANENT" if ai_promotion == "PERMANENT" and ai_conf >= PAIR_DISCOVERY_PROMOTE_CONFIDENCE else "PROBATION"
+    elif ai_conf < PAIR_DISCOVERY_PROMOTE_CONFIDENCE or ai_promotion == "PROBATION":
+        final_promotion = "PROBATION"
+
+    if ai_category not in {"LEAD_LAG", "INDODAX_ONLY", "FUTURES_PROXY"}:
+        ai_category = "INDODAX_ONLY"
+    if ai_category == "LEAD_LAG" and not ai_binance and binance_volume > 0.0:
+        ai_binance = f"{pair_id.replace('_idr', '').upper()}USDT"
+    if ai_category == "LEAD_LAG" and not ai_binance and binance_volume <= 0.0:
+        ai_category = "INDODAX_ONLY"
+    if ai_category == "FUTURES_PROXY":
+        ai_category = "INDODAX_ONLY"
+
+    ai_group_sector = group_to_sector(ai_group)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    overlay_state = load_overlay_state()
+    overlay_state.setdefault("permanent", {}).setdefault("lead_lag", {})
+    overlay_state.setdefault("permanent", {}).setdefault("indodax_only", {})
+    overlay_state.setdefault("permanent", {}).setdefault("pair_sectors", {})
+    overlay_state.setdefault("probation", {})
+
+    result = {
+        "pair_id": pair_id,
+        "symbol": str(candidate.get("symbol") or pair_id.replace("_idr", "").upper()),
+        "category": ai_category,
+        "group": ai_group,
+        "sector": ai_group_sector,
+        "promotion": final_promotion,
+        "confidence": round(ai_conf, 4),
+        "reason": ai_reason[:180],
+        "urgency": ai_urgency,
+        "binance_pair": ai_binance or None,
+        "technical": {
+            "legitimacy_score": round(legitimacy, 1),
+            "composite_score": round(composite, 2),
+            "pump_pct_15m": round(pump_15m, 2),
+            "orderbook_ratio": round(orderbook_ratio, 3),
+        },
+    }
+
+    probation_entry = overlay_state["probation"].get(pair_id, {})
+    seen_count = int(probation_entry.get("seen_count") or 0)
+
+    if final_promotion == "PERMANENT":
+        entry = {
+            "pair_id": pair_id,
+            "symbol": result["symbol"],
+            "category": ai_category,
+            "group": ai_group,
+            "sector": ai_group_sector,
+            "reason": result["reason"],
+            "confidence": result["confidence"],
+            "urgency": result["urgency"],
+            "binance_pair": result["binance_pair"],
+            "added_at": now_iso,
+            "last_seen_at": now_iso,
+            "source": "PAIR_DISCOVERY",
+            "seen_count": max(1, seen_count + 1),
+            "technical": result["technical"],
+        }
+        if ai_category == "LEAD_LAG" and result["binance_pair"]:
+            LEAD_LAG_PAIRS[pair_id] = result["binance_pair"]
+            overlay_state["permanent"]["lead_lag"][pair_id] = entry
+        else:
+            if pair_id not in INDODAX_ONLY_PAIRS:
+                INDODAX_ONLY_PAIRS.append(pair_id)
+            overlay_state["permanent"]["indodax_only"][pair_id] = entry
+        PAIR_SECTORS[pair_id] = ai_group_sector
+        overlay_state["permanent"]["pair_sectors"][pair_id] = ai_group_sector
+        overlay_state["probation"].pop(pair_id, None)
+        _pair_discovery_state["last_promoted_pair"] = pair_id
+    elif final_promotion == "PROBATION":
+        probation_seen = {
+            "pair_id": pair_id,
+            "symbol": result["symbol"],
+            "category": ai_category,
+            "group": ai_group,
+            "sector": ai_group_sector,
+            "reason": result["reason"],
+            "confidence": result["confidence"],
+            "urgency": result["urgency"],
+            "binance_pair": result["binance_pair"],
+            "first_seen_at": probation_entry.get("first_seen_at") or now_iso,
+            "last_seen_at": now_iso,
+            "source": "PAIR_DISCOVERY",
+            "seen_count": seen_count + 1,
+            "technical": result["technical"],
+        }
+        overlay_state["probation"][pair_id] = probation_seen
+        if probation_seen["seen_count"] >= PAIR_DISCOVERY_PROMOTE_CONFIRMATIONS and result["confidence"] >= PAIR_DISCOVERY_PROMOTE_CONFIDENCE:
+            save_overlay_state(overlay_state)
+            result["promotion"] = "PERMANENT"
+            return _pair_discovery_apply_progress(candidate=candidate, ai_item={**ai_item, "promotion": "PERMANENT"})
+    else:
+        overlay_state["probation"].pop(pair_id, None)
+
+    save_overlay_state(overlay_state)
+    return result
+
+
+def _pair_discovery_review(trigger: str = "loop") -> Dict[str, Any]:
+    now = time.time()
+    candidates = _pair_discovery_select_candidates()
+    if not candidates:
+        _pair_discovery_state.update(
+            {
+                "last_review_at_epoch": now,
+                "last_review_reason": "no_eligible_candidates",
+                "last_batch_fingerprint": "",
+                "last_batch_size": 0,
+                "last_error": "",
+            }
+        )
+        _save_pair_discovery_state()
+        return {"ok": True, "reason": "no_eligible_candidates", "promoted": [], "probation": []}
+
+    batch_fingerprint = _pair_discovery_batch_fingerprint(candidates)
+    last_review_at = float(_pair_discovery_state.get("last_review_at_epoch") or 0.0)
+    last_fingerprint = str(_pair_discovery_state.get("last_batch_fingerprint") or "")
+    if batch_fingerprint == last_fingerprint and (now - last_review_at) < PAIR_DISCOVERY_MIN_INTERVAL_SEC:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "batch_unchanged",
+            "batch_fingerprint": batch_fingerprint,
+            "candidate_count": len(candidates),
+        }
+
+    context = _pair_discovery_context_for_ai(candidates)
+    context["trigger"] = trigger
+    ai_result = query_ai(
+        "PAIR_DISCOVERY",
+        context,
+        cache_ttl_minutes=max(5, int(PAIR_DISCOVERY_MIN_INTERVAL_SEC / 60)),
+        force_refresh=True,
+    )
+    if not isinstance(ai_result, dict) or not ai_result:
+        fallback_candidates: list[dict[str, Any]] = []
+        for item in candidates:
+            analysis = item.get("analysis")
+            discovery_score = float(item.get("discovery_score") or 0.0)
+            pump_15m = float(item.get("pump_pct_15m") or 0.0)
+            volume_24h = float(item.get("volume_24h_idr") or 0.0)
+            orderbook_ratio = float(item.get("orderbook_ratio") or 1.0)
+            legitimacy = float(getattr(analysis, "legitimacy_score", 0.0) or 0.0)
+            risk_reward = float(getattr(analysis, "risk_reward", 0.0) or 0.0)
+            strong_discovery = (
+                volume_24h >= PAIR_DISCOVERY_MIN_VOLUME_IDR
+                and orderbook_ratio >= 0.95
+                and discovery_score >= PAIR_DISCOVERY_STRONG_DISCOVERY_SCORE
+            )
+            breakout_permanent = strong_discovery and (
+                discovery_score >= PAIR_DISCOVERY_PERMANENT_DISCOVERY_SCORE
+                or pump_15m >= max(PAIR_DISCOVERY_MIN_PUMP_15M_PCT * 10.0, 100.0)
+            )
+            if breakout_permanent:
+                promotion = "PERMANENT"
+            elif strong_discovery or (legitimacy >= 70.0 and risk_reward >= 1.5 and pump_15m >= PAIR_DISCOVERY_MIN_PUMP_15M_PCT):
+                promotion = "PROBATION"
+            else:
+                promotion = "REJECT"
+            confidence = round(
+                min(
+                    0.96,
+                    max(
+                        0.0,
+                        0.25
+                        + min(0.45, discovery_score / 1000.0)
+                        + min(0.15, pump_15m / 200.0)
+                        + min(0.10, risk_reward / 10.0)
+                        + min(0.05, volume_24h / 20_000_000_000.0),
+                    ),
+                ),
+                3,
+            )
+            fallback_candidates.append(
+                {
+                    "indodax_pair": item.get("pair_id"),
+                    "symbol": item.get("symbol"),
+                    "category": "LEAD_LAG" if bool(item.get("has_binance_pair")) else "INDODAX_ONLY",
+                    "group": _pair_discovery_group_hint(str(item.get("pair_id") or ""), item),
+                    "promotion": promotion,
+                    "urgency": "NOW" if promotion == "PERMANENT" else "WATCH" if promotion == "PROBATION" else "MONITOR",
+                    "confidence": confidence,
+                    "binance_pair": f"{str(item.get('symbol') or '').upper()}USDT" if bool(item.get("has_binance_pair")) else None,
+                    "reason": str(getattr(item.get("analysis"), "reasoning", "") or "heuristic fallback")[:80],
+                }
+            )
+        ai_result = {
+            "summary": "heuristic fallback",
+            "candidates": fallback_candidates,
+            "provider": "heuristic",
+            "model": "local-fallback",
+        }
+
+    returned_candidates = ai_result.get("candidates") if isinstance(ai_result.get("candidates"), list) else []
+    candidate_map = {str(item.get("pair_id") or "").strip().lower(): item for item in candidates}
+    if not candidate_map:
+        candidate_map = {str(item.get("indodax_pair") or "").strip().lower(): item for item in candidates}
+
+    promoted: list[dict[str, Any]] = []
+    probation: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for ai_item in returned_candidates[:PAIR_DISCOVERY_MAX_CANDIDATES]:
+        pair_id = str(ai_item.get("indodax_pair") or ai_item.get("pair_id") or "").strip().lower()
+        candidate = candidate_map.get(pair_id)
+        if not candidate:
+            continue
+        try:
+            result = _pair_discovery_apply_progress(candidate=candidate, ai_item=ai_item if isinstance(ai_item, dict) else {})
+        except Exception as error:
+            rejected.append(
+                {
+                    "pair_id": pair_id,
+                    "promotion": "REJECT",
+                    "reason": f"apply_progress_error:{type(error).__name__}",
+                    "confidence": 0.0,
+                }
+            )
+            print(f"[KIBOT][WARN] pair discovery apply failed for {pair_id}: {error}", flush=True)
+            continue
+        if result["promotion"] == "PERMANENT":
+            promoted.append(result)
+        elif result["promotion"] == "PROBATION":
+            probation.append(result)
+        else:
+            rejected.append(result)
+
+    _pair_discovery_state.update(
+        {
+            "last_review_at_epoch": now,
+            "last_review_reason": trigger,
+            "last_batch_fingerprint": batch_fingerprint,
+            "last_batch_size": len(candidates),
+            "last_error": "",
+        }
+    )
+    _save_pair_discovery_state()
+
+    if promoted:
+        lines = ["KiBot discovery promoted:"]
+        for item in promoted[:5]:
+            lines.append(
+                f"- {item['pair_id']} [{item['category']}/{item['group']}] conf={item['confidence']:.2f} {item['reason'][:70]}"
+            )
+        _telegram_send("\n".join(lines), category="pair_discovery", force=True)
+    if promoted or probation:
+        _append_runtime_event(
+            "pair_discovery_update",
+            {
+                "trigger": trigger,
+                "batch_fingerprint": batch_fingerprint,
+                "promoted": [item["pair_id"] for item in promoted[:5]],
+                "probation": [item["pair_id"] for item in probation[:5]],
+                "rejected": [item["pair_id"] for item in rejected[:5]],
+            },
+        )
+        _write_runtime_note()
+
+    return {
+        "ok": True,
+        "trigger": trigger,
+        "candidate_count": len(candidates),
+        "promoted": promoted,
+        "probation": probation,
+        "rejected": rejected,
+        "provider": str(ai_result.get("provider") or ""),
+        "model": str(ai_result.get("model") or ""),
+        "summary": str(ai_result.get("summary") or "")[:240],
+    }
 
 
 _screen_cache: list[dict[str, Any]] = []
@@ -7884,6 +8499,27 @@ def _book_entry_from_execution(msg: Dict[str, Any]) -> None:
         f"[KIBOT][LEARNING] pair_memory updated pair={pair_id} pnl_pct={pnl_pct:.4f} slippage_pct={slippage_pct:.4f}",
         flush=True,
     )
+    # ── Analyst Bridge (v7.3): real-time trade event feed ──
+    try:
+        import kibot_analyst as _analyst_mod
+        _analyst_mod.record_trade(
+            pair=pair_id,
+            side="SELL",
+            order_type=str(msg.get("order_type") or msg.get("orderType") or "LIMIT").upper(),
+            requested_price=float(msg.get("entry_price") or 0),
+            filled_price=float(msg.get("exit_price") or msg.get("filled_price") or 0),
+            filled_idr=float(msg.get("filled_idr") or abs(gross)),
+            fee_idr=est_cost,
+            net_pnl_pct=pnl_pct,
+            net_pnl_idr=net,
+            holding_ms=int(float(msg.get("hold_seconds") or 0) * 1000),
+            exit_reason=str(msg.get("exit_reason") or msg.get("exitReason") or ""),
+            signal_source=str(msg.get("source") or "MANAGER"),
+            bucket=str(msg.get("bucket") or "BUCKET_A"),
+            conviction_score=float(msg.get("conviction") or msg.get("score") or 0),
+        )
+    except Exception as _analyst_err:
+        print(f"[KIBOT][ANALYST_BRIDGE][WARN] {_analyst_err}", flush=True)
     try:
         _upsert_trade_history(
             {
@@ -8667,13 +9303,46 @@ def _normalize_sector_map(raw_obj: Any) -> Dict[str, list[str]]:
 
 
 def _load_indodax_ticker_snapshot() -> Dict[str, Dict[str, Any]]:
-    global _indodax_ticker_cache, _indodax_ticker_snapshot, _indodax_ticker_cache_at
+    global _indodax_ticker_cache, _indodax_ticker_snapshot, _indodax_ticker_cache_at, _indodax_ticker_cooldown_until
     now = time.time()
     if _indodax_ticker_cache and (now - _indodax_ticker_cache_at) < max(60, INDODAX_TICKER_CACHE_TTL_SEC):
         return _indodax_ticker_snapshot
+    if now < _indodax_ticker_cooldown_until:
+        if not _indodax_ticker_snapshot:
+            return _hydrate_from_disk()
+        return _indodax_ticker_snapshot
+
+    def _hydrate_from_disk() -> Dict[str, Dict[str, Any]]:
+        global _indodax_ticker_cache, _indodax_ticker_snapshot, _indodax_ticker_cache_at
+        disk_payload = _load_json_file(INDODAX_TICKER_SNAPSHOT_FILE, {})
+        if not isinstance(disk_payload, dict):
+            return _indodax_ticker_snapshot
+        disk_tickers = disk_payload.get("tickers")
+        if not isinstance(disk_tickers, dict):
+            return _indodax_ticker_snapshot
+        snapshot: Dict[str, Dict[str, Any]] = {}
+        pairs: set[str] = set()
+        for pair_key, row in disk_tickers.items():
+            if not isinstance(pair_key, str):
+                continue
+            norm = pair_key.strip().lower()
+            if not norm:
+                continue
+            pairs.add(norm)
+            snapshot[norm] = row if isinstance(row, dict) else {}
+        if pairs:
+            _indodax_ticker_cache = pairs
+            _indodax_ticker_snapshot = snapshot
+            _indodax_ticker_cache_at = now
+        return _indodax_ticker_snapshot
+
     try:
         response = requests.get(INDODAX_SUMMARIES_URL, timeout=TIMEOUT)
         if response.status_code >= 300:
+            if response.status_code == 429:
+                _indodax_ticker_cooldown_until = now + 900.0
+            if not _indodax_ticker_snapshot:
+                return _hydrate_from_disk()
             return _indodax_ticker_snapshot
         body = response.json()
         tickers = ((body or {}).get("tickers") or {})
@@ -8691,8 +9360,21 @@ def _load_indodax_ticker_snapshot() -> Dict[str, Dict[str, Any]]:
             _indodax_ticker_cache = pairs
             _indodax_ticker_snapshot = snapshot
             _indodax_ticker_cache_at = now
+            try:
+                _write_json_file(
+                    INDODAX_TICKER_SNAPSHOT_FILE,
+                    {
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "tickers": snapshot,
+                    },
+                )
+            except Exception:
+                pass
         return _indodax_ticker_snapshot
     except Exception:
+        _indodax_ticker_cooldown_until = now + 900.0
+        if not _indodax_ticker_snapshot:
+            return _hydrate_from_disk()
         return _indodax_ticker_snapshot
 
 
@@ -9195,6 +9877,9 @@ def _http_state_payload() -> Dict[str, Any]:
         }
 
 
+_DASHBOARD_AUTH_TOKEN = os.environ.get("KIBOT_DASHBOARD_TOKEN", "").strip()
+
+
 class _ManagerStateHandler(BaseHTTPRequestHandler):
     def _safe_write(self, raw: bytes) -> None:
         try:
@@ -9204,8 +9889,33 @@ class _ManagerStateHandler(BaseHTTPRequestHandler):
         except ConnectionResetError:
             print("[KIBOT][HTTP] client reset response stream", flush=True)
 
+    def _check_auth(self) -> bool:
+        """Dashboard auth gate. Set KIBOT_DASHBOARD_TOKEN env to enable."""
+        if not _DASHBOARD_AUTH_TOKEN:
+            return True  # no token configured = open (backward compat)
+        # Accept via Authorization: Bearer <token> or ?token=<token>
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer ") and auth_header[7:].strip() == _DASHBOARD_AUTH_TOKEN:
+            return True
+        # Query param fallback for browser bookmark access
+        from urllib.parse import urlparse, parse_qs
+        query = parse_qs(urlparse(self.path).query)
+        if query.get("token", [""])[0] == _DASHBOARD_AUTH_TOKEN:
+            return True
+        return False
+
+    def _send_401(self) -> None:
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self._safe_write(json.dumps({"error": "unauthorized", "hint": "Set Authorization: Bearer <KIBOT_DASHBOARD_TOKEN> or ?token=<token>"}).encode())
+
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/" or self.path == "/dashboard":
+        if not self._check_auth():
+            self._send_401()
+            return
+
+        if self.path == "/" or self.path.startswith("/dashboard"):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -9236,6 +9946,13 @@ class _ManagerStateHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self._safe_write(raw)
+            return
+        if self.path.startswith("/api/health"):
+            raw = json.dumps({"ok": True, "ts": time.time()}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
             self._safe_write(raw)
             return
@@ -9463,6 +10180,74 @@ def _save_daily_state():
         _write_json_file(path, data)
     except Exception as e:
         print(f"[v7][STATE_ERR] {e}", flush=True)
+
+
+# ═══════════════════════════════════════════════════════════
+# ROTATION ENGINE INTEGRATION (v7.3)
+# Unlocks trapped capital in stagnant positions.
+# ═══════════════════════════════════════════════════════════
+try:
+    from kibot_rotation_engine import RotationEngine
+    _rotation_engine = RotationEngine()
+except Exception as _rot_import_err:
+    _rotation_engine = None
+    print(f"[KIBOT][ROTATION][WARN] import failed: {_rot_import_err}", flush=True)
+
+
+def _evaluate_rotation_opportunity(new_pair: str, msg: dict, new_score: float) -> Optional[Dict[str, Any]]:
+    """
+    Evaluate if any active position should be rotated for a higher-confidence signal.
+    Returns rotation result dict with 'approved', 'rotated_pair', 'rotation_score'.
+    """
+    if not _rotation_engine:
+        return None
+    positions = portfolio_manager.positions if hasattr(portfolio_manager, "positions") else {}
+    if not positions:
+        return None
+
+    best_result = None
+    best_pair = None
+    for pair_id, pos in positions.items():
+        if pair_id == new_pair:
+            continue
+        active_pos = {
+            "symbol": pair_id,
+            "pnl_pct": pos.profit_pct * 100 if hasattr(pos, "profit_pct") else 0.0,
+            "confidence": getattr(pos, "entry_score", 50.0) if hasattr(pos, "entry_score") else 50.0,
+            "entry_time": pos.entry_time if hasattr(pos, "entry_time") else time.time(),
+        }
+        new_signal = {
+            "symbol": new_pair,
+            "confidence": new_score,
+        }
+        result = _rotation_engine.evaluate_rotation(active_pos, new_signal, {})
+        if result.get("approved"):
+            if best_result is None or result.get("rotation_score", 0) > best_result.get("rotation_score", 0):
+                best_result = dict(result)
+                best_pair = pair_id
+
+    if best_result and best_pair:
+        best_result["rotated_pair"] = best_pair
+        return best_result
+    return None
+
+
+def _force_exit_for_rotation(pair_id: str, reason: str) -> None:
+    """Close a position to free up a slot for a rotation opportunity."""
+    try:
+        pos = portfolio_manager.positions.get(pair_id) if hasattr(portfolio_manager, "positions") else None
+        if not pos:
+            return
+        snapshot = _load_indodax_ticker_snapshot()
+        ticker = snapshot.get(pair_id, {})
+        exit_price = float(ticker.get("last") or ticker.get("sell") or 0)
+        if exit_price <= 0:
+            return
+        portfolio_manager.close_position(pair_id, exit_price, f"ROTATION:{reason}")
+        trade_logger.record_exit(pair_id, exit_price, f"ROTATION:{reason}", "LIMIT")
+        print(f"[KIBOT][ROTATION] Force exited {pair_id} @ {exit_price:.6f} for rotation", flush=True)
+    except Exception as e:
+        print(f"[KIBOT][ROTATION][WARN] force exit {pair_id} failed: {e}", flush=True)
 
 
 def _brain_watch_symbols() -> List[str]:
@@ -9774,6 +10559,10 @@ def _brain_thinking_loop():
                         "equity_idr": _current_balance_snapshot().get("equity_idr"),
                         "free_cash_idr": _current_balance_snapshot().get("free_cash_idr"),
                         "capital_profile": _adaptive_capital_profile(),
+                        "cascade_mode": cascade_state.mode if cascade_state else "UNKNOWN",
+                        "cascade_consecutive_losses": cascade_state.consecutive_losses if cascade_state else 0,
+                        "active_positions_count": len(position_manager.all()) if position_manager else 0,
+                        "hard_stopped": bool(_hard_stop.hard_stopped) if _hard_stop else False,
                     },
                 )
                 last_think = time.time()

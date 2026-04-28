@@ -150,6 +150,9 @@ class BrainManager:
         self.coingecko_ttl_sec = int(os.getenv("KIBOT_BRAIN_COINGECKO_TTL_SEC", "900"))
         self.gdelt_ttl_sec = int(os.getenv("KIBOT_BRAIN_GDELT_TTL_SEC", "1800"))
         self.x_ttl_sec = int(os.getenv("KIBOT_BRAIN_X_TTL_SEC", "600"))
+        self.fear_greed_ttl_sec = int(os.getenv("KIBOT_BRAIN_FEAR_GREED_TTL_SEC", "900"))
+        self.funding_rate_ttl_sec = int(os.getenv("KIBOT_BRAIN_FUNDING_RATE_TTL_SEC", "300"))
+        self.stablecoin_flow_ttl_sec = int(os.getenv("KIBOT_BRAIN_STABLECOIN_FLOW_TTL_SEC", "1800"))
         self.max_watch_symbols = max(1, int(os.getenv("KIBOT_BRAIN_MAX_WATCH_SYMBOLS", "5")))
         self.max_external_symbols = max(1, int(os.getenv("KIBOT_BRAIN_NEWS_MAX_SYMBOLS", "2")))
         self.max_world_events = max(1, int(os.getenv("KIBOT_BRAIN_MAX_WORLD_EVENTS", "6")))
@@ -166,6 +169,11 @@ class BrainManager:
         self.polymarket_state_url = os.getenv("KIBOT_POLYMARKET_STATE_URL", "").strip()
         self._pair_cache: Dict[str, Dict[str, Any]] = {}
         self._provider_cache: Dict[str, Dict[str, Any]] = {}
+        self._indodax_pairs_cache: Dict[str, str] = {}
+        self._indodax_pairs_cache_at: float = 0.0
+        self._indodax_pairs_cooldown_until: float = 0.0
+        self._indodax_pairs_cache_file = state_root / "brain_indodax_pairs.json"
+        self._indodax_pairs_cache = self._load_indodax_pairs_cache()
         self._last_snapshot: Dict[str, Any] = self._load_snapshot()
         self._refresh_lock = threading.Lock()
         self._refresh_in_flight = False
@@ -177,6 +185,72 @@ class BrainManager:
             or os.getenv("GEMINI_SUPPORT_API_KEY")
             or ""
         )
+
+    def _load_indodax_pairs_cache(self) -> Dict[str, str]:
+        try:
+            if self._indodax_pairs_cache_file.exists():
+                payload = json.loads(self._indodax_pairs_cache_file.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    pairs = payload.get("pairs")
+                    if isinstance(pairs, dict):
+                        clean: Dict[str, str] = {}
+                        for base, pair_id in pairs.items():
+                            base_key = str(base or "").strip().upper()
+                            pair_key = str(pair_id or "").strip().lower()
+                            if base_key and pair_key:
+                                clean[base_key] = pair_key
+                        if clean:
+                            self._indodax_pairs_cache = clean
+                            self._indodax_pairs_cache_at = float(payload.get("updated_at_epoch") or time.time())
+                            return dict(self._indodax_pairs_cache)
+        except Exception:
+            pass
+        return dict(self._indodax_pairs_cache)
+
+    def _get_indodax_pairs(self) -> List[Dict[str, Any]]:
+        now = time.time()
+        if now < self._indodax_pairs_cooldown_until:
+            if self._indodax_pairs_cache:
+                return [{"base_currency": base, "ticker_id": pair_id} for base, pair_id in self._indodax_pairs_cache.items()]
+            return self._load_indodax_pairs_cache()
+        if self._indodax_pairs_cache and (now - self._indodax_pairs_cache_at) < max(900, self.review_ttl_sec):
+            return [{"base_currency": base, "ticker_id": pair_id} for base, pair_id in self._indodax_pairs_cache.items()]
+        try:
+            indodax_pairs = self._get_json("https://indodax.com/api/pairs")
+        except Exception as error:
+            self._indodax_pairs_cooldown_until = now + 900
+            if self._indodax_pairs_cache:
+                return [{"base_currency": base, "ticker_id": pair_id} for base, pair_id in self._indodax_pairs_cache.items()]
+            logger.debug("[KiBrain] indodax pairs fetch failed: %s", error)
+            return []
+        if isinstance(indodax_pairs, list) and indodax_pairs:
+            cleaned: Dict[str, str] = {}
+            for item in indodax_pairs:
+                if not isinstance(item, dict):
+                    continue
+                pair_id = item.get("ticker_id") or item.get("id") or ""
+                base = item.get("traded_currency") or item.get("base_currency") or ""
+                quote = item.get("base_currency") or item.get("quote_currency") or item.get("quote") or ""
+                if pair_id and base and str(quote).lower() == "idr":
+                    if "_" not in str(pair_id) and str(pair_id).lower().endswith("idr"):
+                        pair_id = f"{str(base).lower()}_idr"
+                    cleaned[str(base).upper()] = str(pair_id).lower()
+            if cleaned:
+                self._indodax_pairs_cache = cleaned
+                self._indodax_pairs_cache_at = now
+                self._indodax_pairs_cooldown_until = 0.0
+                try:
+                    self._indodax_pairs_cache_file.write_text(
+                        json.dumps({"updated_at_epoch": now, "pairs": cleaned}, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+                return [{"base_currency": base, "ticker_id": pair_id} for base, pair_id in cleaned.items()]
+        self._indodax_pairs_cooldown_until = now + 900
+        if self._indodax_pairs_cache:
+            return [{"base_currency": base, "ticker_id": pair_id} for base, pair_id in self._indodax_pairs_cache.items()]
+        return []
 
     def get_market_intel(self, symbol: str) -> Dict[str, Any]:
         symbol = (symbol or "").strip().upper()
@@ -198,11 +272,9 @@ class BrainManager:
         except Exception as error:
             binance = {}
             errors.append(f"binance:{type(error).__name__}")
-        try:
-            indodax_pairs = self._get_json("https://indodax.com/api/pairs")
-        except Exception as error:
-            indodax_pairs = []
-            errors.append(f"indodax:{type(error).__name__}")
+        indodax_pairs = self._get_indodax_pairs()
+        if not indodax_pairs:
+            errors.append("indodax:empty")
         try:
             coingecko = self._get_json(
                 "https://api.coingecko.com/api/v3/search",
@@ -288,6 +360,9 @@ class BrainManager:
             "daily_target": self._daily_target_snapshot(context),
             "market_pulse": market_pulse,
             "polymarket": polymarket_snapshot,
+            "fear_greed": self._get_fear_greed_index(),
+            "funding_rate": self._get_binance_funding_rate(),
+            "stablecoin_flow": self._get_stablecoin_flow(),
             "world_model": world_model,
             "watch_symbols": symbols,
             "watch_reviews": [],
@@ -833,6 +908,15 @@ class BrainManager:
                 if isinstance(item, dict)
             ],
             "micro_capital_plan": world_model.get("micro_capital_plan") if isinstance(world_model.get("micro_capital_plan"), dict) else {},
+            "fear_greed": world_model.get("fear_greed") if isinstance(world_model.get("fear_greed"), dict) else {},
+            "funding_rate": {
+                "aggregate_signal": (world_model.get("funding_rate") or {}).get("aggregate_signal"),
+                "overleveraged_long_count": (world_model.get("funding_rate") or {}).get("overleveraged_long_count"),
+            } if isinstance(world_model.get("funding_rate"), dict) else {},
+            "stablecoin_flow": {
+                "flow_signal": (world_model.get("stablecoin_flow") or {}).get("flow_signal"),
+                "market_cap_change_24h_pct": (world_model.get("stablecoin_flow") or {}).get("market_cap_change_24h_pct"),
+            } if isinstance(world_model.get("stablecoin_flow"), dict) else {},
             "source_status": world_model.get("source_status") if isinstance(world_model.get("source_status"), dict) else {},
             "source_weighting": world_model.get("source_weighting") if isinstance(world_model.get("source_weighting"), dict) else {},
         }
@@ -880,6 +964,9 @@ class BrainManager:
             x_brief = self._get_x_market_brief()
             gdelt_brief = self._get_gdelt_market_brief()
             coingecko_trending = self._get_coingecko_trending()
+            fear_greed = self._get_fear_greed_index()
+            funding_rate = self._get_binance_funding_rate()
+            stablecoin_flow = self._get_stablecoin_flow()
             provider_status = self._provider_status()
 
             source_names = set(str(item) for item in list(market_pulse.get("providers_used") or []) if str(item).strip())
@@ -889,16 +976,25 @@ class BrainManager:
                 source_names.add("gdelt")
             if coingecko_trending:
                 source_names.add("coingecko")
+            if fear_greed:
+                source_names.add("fear_greed")
+            if funding_rate:
+                source_names.add("funding_rate")
+            if stablecoin_flow:
+                source_names.add("stablecoin_flow")
 
             source_weight_map = {
-                "polymarket": 0.30,
-                "finnhub": 0.22,
-                "coingecko": 0.18,
-                "x": 0.14,
-                "gdelt": 0.10,
-                "tavily": 0.08,
-                "serper": 0.06,
-                "ddg": 0.04,
+                "polymarket": 0.24,
+                "finnhub": 0.18,
+                "coingecko": 0.14,
+                "funding_rate": 0.12,
+                "fear_greed": 0.10,
+                "x": 0.10,
+                "stablecoin_flow": 0.06,
+                "gdelt": 0.06,
+                "tavily": 0.05,
+                "serper": 0.04,
+                "ddg": 0.03,
             }
             source_weights = {
                 name: round(float(source_weight_map.get(name, 0.03)), 4)
@@ -1060,6 +1156,52 @@ class BrainManager:
                         "assets": [],
                     }
                 )
+            # Fear & Greed risk signals
+            fg_value = int(fear_greed.get("value") or 50)
+            if fg_value >= 80:
+                risk_register.append(
+                    {
+                        "severity": "HIGH",
+                        "summary": f"extreme greed ({fg_value}) — market overheated, reduce exposure",
+                        "assets": [],
+                    }
+                )
+            elif fg_value <= 20:
+                risk_register.append(
+                    {
+                        "severity": "INFO",
+                        "summary": f"extreme fear ({fg_value}) — contrarian opportunity window",
+                        "assets": [],
+                    }
+                )
+            # Funding rate risk signals
+            fr_aggregate = str(funding_rate.get("aggregate_signal") or "")
+            if fr_aggregate == "LIQUIDATION_RISK_LONG":
+                risk_register.append(
+                    {
+                        "severity": "HIGH",
+                        "summary": "overleveraged longs detected — liquidation cascade risk",
+                        "assets": ["BTC", "ETH"],
+                    }
+                )
+            elif fr_aggregate == "SHORT_SQUEEZE_POTENTIAL":
+                risk_register.append(
+                    {
+                        "severity": "INFO",
+                        "summary": "overleveraged shorts — short squeeze potential",
+                        "assets": ["BTC", "ETH"],
+                    }
+                )
+            # Stablecoin flow risk signals
+            sc_flow = str(stablecoin_flow.get("flow_signal") or "")
+            if sc_flow == "STRONG_OUTFLOW":
+                risk_register.append(
+                    {
+                        "severity": "WARNING",
+                        "summary": f"strong capital outflow ({stablecoin_flow.get('market_cap_change_24h_pct', 0):.1f}% 24h) — macro bearish",
+                        "assets": [],
+                    }
+                )
             if not source_names:
                 risk_register.append(
                     {
@@ -1162,12 +1304,18 @@ class BrainManager:
                         "prefer liquid pairs with converging external and local signals",
                     ][: (2 if allow_exploration else 1)],
                 },
+                "fear_greed": fear_greed,
+                "funding_rate": funding_rate,
+                "stablecoin_flow": stablecoin_flow,
                 "source_status": {
                     "providers_used": sorted(source_names),
                     "provider_count": len(source_names),
                     "x_hits": len(list(x_brief.get("results") or [])),
                     "gdelt_hits": len(list(gdelt_brief.get("articles") or [])),
                     "coingecko_trending_hits": len(list(coingecko_trending.get("coins") or [])),
+                    "fear_greed_value": int(fear_greed.get("value") or 0),
+                    "funding_rate_signal": str(funding_rate.get("aggregate_signal") or ""),
+                    "stablecoin_flow_signal": str(stablecoin_flow.get("flow_signal") or ""),
                 },
                 "source_weighting": {
                     "weights": source_weights,
@@ -1284,6 +1432,148 @@ class BrainManager:
         )
         return payload if isinstance(payload, list) else []
 
+    def _get_fear_greed_index(self) -> Dict[str, Any]:
+        """Alternative.me Fear & Greed Index — free, no key needed."""
+        if not self.external_research_enabled:
+            return {}
+
+        def loader() -> Dict[str, Any]:
+            payload = self._get_json(
+                "https://api.alternative.me/fng/",
+                params={"limit": "1", "format": "json"},
+                timeout=4.0,
+            )
+            if not isinstance(payload, dict):
+                return {}
+            data = list(payload.get("data") or [])
+            if not data or not isinstance(data[0], dict):
+                return {}
+            entry = data[0]
+            value = int(entry.get("value") or 0)
+            classification = str(entry.get("value_classification") or "")
+            # Map to capital posture hint
+            if value <= 25:
+                posture_hint = "OPPORTUNISTIC_BUY"
+            elif value <= 40:
+                posture_hint = "CAUTIOUS"
+            elif value <= 60:
+                posture_hint = "NEUTRAL"
+            elif value <= 75:
+                posture_hint = "TAKE_PROFIT"
+            else:
+                posture_hint = "EXTREME_GREED_DEFENSIVE"
+            return {
+                "value": value,
+                "classification": classification,
+                "posture_hint": posture_hint,
+                "timestamp": str(entry.get("timestamp") or ""),
+            }
+
+        return self._cached_payload("fear_greed", self.fear_greed_ttl_sec, loader)
+
+    def _get_binance_funding_rate(self) -> Dict[str, Any]:
+        """Binance Futures funding rate + OI for BTC/ETH — free public API."""
+        if not self.external_research_enabled:
+            return {}
+
+        def loader() -> Dict[str, Any]:
+            symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+            results: Dict[str, Any] = {}
+            for symbol in symbols:
+                try:
+                    fr_data = self._get_json(
+                        "https://fapi.binance.com/fapi/v1/fundingRate",
+                        params={"symbol": symbol, "limit": "1"},
+                        timeout=4.0,
+                    )
+                    oi_data = self._get_json(
+                        "https://fapi.binance.com/fapi/v1/openInterest",
+                        params={"symbol": symbol},
+                        timeout=4.0,
+                    )
+                    funding_rate = 0.0
+                    if isinstance(fr_data, list) and fr_data:
+                        funding_rate = self._safe_float(fr_data[0].get("fundingRate"))
+                    open_interest = self._safe_float(
+                        oi_data.get("openInterest") if isinstance(oi_data, dict) else 0.0
+                    )
+                    # Interpretation
+                    if funding_rate > 0.001:  # > 0.1% per 8h
+                        leverage_bias = "OVERLEVERAGED_LONG"
+                    elif funding_rate < -0.001:
+                        leverage_bias = "OVERLEVERAGED_SHORT"
+                    else:
+                        leverage_bias = "NEUTRAL"
+                    results[symbol] = {
+                        "funding_rate": round(funding_rate, 6),
+                        "funding_rate_pct_8h": round(funding_rate * 100, 4),
+                        "open_interest": round(open_interest, 2),
+                        "leverage_bias": leverage_bias,
+                    }
+                except Exception:
+                    pass
+            # Aggregate signal
+            overleveraged_long = sum(
+                1 for item in results.values()
+                if item.get("leverage_bias") == "OVERLEVERAGED_LONG"
+            )
+            overleveraged_short = sum(
+                1 for item in results.values()
+                if item.get("leverage_bias") == "OVERLEVERAGED_SHORT"
+            )
+            if overleveraged_long >= 2:
+                aggregate = "LIQUIDATION_RISK_LONG"
+            elif overleveraged_short >= 2:
+                aggregate = "SHORT_SQUEEZE_POTENTIAL"
+            else:
+                aggregate = "BALANCED"
+            return {
+                "symbols": results,
+                "aggregate_signal": aggregate,
+                "overleveraged_long_count": overleveraged_long,
+                "overleveraged_short_count": overleveraged_short,
+            }
+
+        return self._cached_payload("funding_rate", self.funding_rate_ttl_sec, loader)
+
+    def _get_stablecoin_flow(self) -> Dict[str, Any]:
+        """Stablecoin market cap delta via CoinGecko — uses existing key."""
+        if not self.external_research_enabled:
+            return {}
+
+        def loader() -> Dict[str, Any]:
+            payload = self._get_json(
+                "https://api.coingecko.com/api/v3/global",
+                headers=self._coingecko_headers(),
+                timeout=5.0,
+            )
+            if not isinstance(payload, dict):
+                return {}
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            total_mcap = self._safe_float(data.get("total_market_cap", {}).get("usd"))
+            total_volume = self._safe_float(data.get("total_volume", {}).get("usd"))
+            mcap_change_24h = self._safe_float(data.get("market_cap_change_percentage_24h_usd"))
+            # Liquidity signal interpretation
+            if mcap_change_24h > 2.0:
+                flow_signal = "STRONG_INFLOW"
+            elif mcap_change_24h > 0.5:
+                flow_signal = "MILD_INFLOW"
+            elif mcap_change_24h > -0.5:
+                flow_signal = "STABLE"
+            elif mcap_change_24h > -2.0:
+                flow_signal = "MILD_OUTFLOW"
+            else:
+                flow_signal = "STRONG_OUTFLOW"
+            return {
+                "total_market_cap_usd": round(total_mcap, 0),
+                "total_volume_24h_usd": round(total_volume, 0),
+                "market_cap_change_24h_pct": round(mcap_change_24h, 2),
+                "flow_signal": flow_signal,
+                "active_cryptocurrencies": int(data.get("active_cryptocurrencies") or 0),
+            }
+
+        return self._cached_payload("stablecoin_flow", self.stablecoin_flow_ttl_sec, loader)
+
     def _get_polymarket_snapshot(self) -> Dict[str, Any]:
         if not self.polymarket_state_url:
             return {}
@@ -1381,6 +1671,10 @@ class BrainManager:
             "free_cash_idr": self._safe_float(context.get("free_cash_idr")),
             "capital_profile": capital_profile,
             "strategy_next": strategy,
+            "cascade_mode": str(context.get("cascade_mode") or "UNKNOWN"),
+            "cascade_consecutive_losses": int(context.get("cascade_consecutive_losses") or 0),
+            "hard_stopped": bool(context.get("hard_stopped")),
+            "active_positions_count": int(context.get("active_positions_count") or 0),
         }
 
     def _get_json(
