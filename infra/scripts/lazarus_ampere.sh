@@ -6,29 +6,31 @@ set -Eeuo pipefail
 # PROJECT LAZARUS V2 - THE AMPERE INVASION
 ###############################################################################
 
-# Isi dari script lama / Oracle console nanti.
 COMPARTMENT_ID="${COMPARTMENT_ID:-}"
 SUBNET_ID="${SUBNET_ID:-}"
 AVAILABILITY_DOMAIN="${AVAILABILITY_DOMAIN:-}"
-SSH_KEY_FILE="${SSH_KEY_FILE:-${HOME}/.ssh/id_rsa.pub}" # wajib file public key (.pub), bukan private key
+SSH_KEY_FILE="${SSH_KEY_FILE:-${HOME}/.ssh/lazarus_ampere.pub}"
 
-# Opsional tapi aman buat dibikin eksplisit.
 OCI_CONFIG_FILE="${OCI_CONFIG_FILE:-${HOME}/.oci/config}"
+OCI_PROFILE="${OCI_PROFILE:-SINGAPORE}"
 REGION="ap-singapore-1"
 SHAPE="VM.Standard.A1.Flex"
-SHAPE_CONFIG='{"ocpus": 4, "memoryInGBs": 24}'
+SHAPE_CONFIG='{"ocpus": 1, "memoryInGBs": 6}'
 BOOT_VOLUME_SIZE_GB=50
 INSTANCE_NAME_PREFIX="lazarus-ampere"
 CAPACITY_RETRY_SECONDS=40
 CAPACITY_RETRY_JITTER_MAX=12
+CAPACITY_REPORT_RETRY_SECONDS=50
 TIMEOUT_RETRY_SECONDS=45
 TIMEOUT_RETRY_JITTER_MAX=15
-RATE_LIMIT_BACKOFF_SEQUENCE=(90 180 300)
+RATE_LIMIT_BACKOFF_SEQUENCE=(70 140 210)
 NORMAL_RETRY_SECONDS=45
 COOLDOWN_SECONDS=60
 IMAGE_CACHE_TTL_SECONDS=$((6 * 60 * 60))
 STATE_DIR="${HOME}/ampere-hunt/state"
 IMAGE_CACHE_FILE="${STATE_DIR}/arm_image_id.cache"
+SHAPE_CONFIG_FILE="${STATE_DIR}/shape_config.json"
+CAPACITY_AVAILABILITIES_FILE="${STATE_DIR}/capacity_shape_availabilities.json"
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 # Opsional: kalau diisi, script kirim notif Telegram saat sukses saja.
@@ -88,6 +90,44 @@ require_non_empty() {
   [[ -n "${value}" ]] || fatal "Variabel ${name} belum diisi."
 }
 
+resolve_ssh_key_file() {
+  if [[ -f "${SSH_KEY_FILE}" ]]; then
+    return 0
+  fi
+
+  if [[ -f "${HOME}/.ssh/authorized_keys" ]]; then
+    local candidate
+    candidate="$(head -n 1 "${HOME}/.ssh/authorized_keys" | tr -d '\r')"
+    if [[ -n "${candidate}" ]]; then
+      mkdir -p "$(dirname "${SSH_KEY_FILE}")"
+      printf '%s\n' "${candidate}" > "${SSH_KEY_FILE}"
+      chmod 600 "${SSH_KEY_FILE}" || true
+      log "Pakai SSH key dari authorized_keys: ${SSH_KEY_FILE}"
+      return 0
+    fi
+  fi
+
+  fatal "SSH public key tidak ditemukan: ${SSH_KEY_FILE}"
+}
+
+resolve_availability_domain() {
+  if [[ -n "${AVAILABILITY_DOMAIN}" ]]; then
+    printf '%s\n' "${AVAILABILITY_DOMAIN}"
+    return 0
+  fi
+
+  local ad
+  ad="$(
+    oci --config-file "${OCI_CONFIG_FILE}" iam availability-domain list \
+      --profile "${OCI_PROFILE}" \
+      --compartment-id "${COMPARTMENT_ID}" \
+      --output json | jq -r '.data[].name' | awk 'NF' | shuf -n 1
+  )"
+
+  [[ -n "${ad}" ]] || fatal "Gagal memilih availability domain."
+  printf '%s\n' "${ad}"
+}
+
 main() {
   require_cmd oci
   require_cmd jq
@@ -95,17 +135,33 @@ main() {
 
   require_non_empty "COMPARTMENT_ID" "${COMPARTMENT_ID}"
   require_non_empty "SUBNET_ID" "${SUBNET_ID}"
-  require_non_empty "AVAILABILITY_DOMAIN" "${AVAILABILITY_DOMAIN}"
 
-  [[ -f "${SSH_KEY_FILE}" ]] || fatal "SSH public key tidak ditemukan: ${SSH_KEY_FILE}"
+  resolve_ssh_key_file
+  AVAILABILITY_DOMAIN="$(resolve_availability_domain)"
 
   export OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING=true
   export SUPPRESS_LABEL_WARNING=True
 
   mkdir -p "${STATE_DIR}"
+  cat > "${SHAPE_CONFIG_FILE}" <<'EOF'
+{"ocpus": 1, "memoryInGBs": 6}
+EOF
+  cat > "${CAPACITY_AVAILABILITIES_FILE}" <<'EOF'
+[
+  {
+    "instanceShape": "VM.Standard.A1.Flex",
+    "instanceShapeConfig": {
+      "baselineOcpuUtilization": "BASELINE_1_1",
+      "memoryInGBs": 6,
+      "ocpus": 1
+    }
+  }
+]
+EOF
 
   fetch_arm_image_id() {
     oci --config-file "${OCI_CONFIG_FILE}" compute image list \
+      --profile "${OCI_PROFILE}" \
       --compartment-id "${COMPARTMENT_ID}" \
       --operating-system "Canonical Ubuntu" \
       --operating-system-version "24.04" \
@@ -114,6 +170,35 @@ main() {
       --sort-order DESC \
       --query 'data[0].id' \
       --raw-output 2>/tmp/lazarus_ampere_image.err || true
+  }
+
+  check_capacity_status() {
+    local capacity_json status
+    capacity_json="$(
+      oci --config-file "${OCI_CONFIG_FILE}" compute compute-capacity-report create \
+        --profile "${OCI_PROFILE}" \
+        --availability-domain "${AVAILABILITY_DOMAIN}" \
+        --compartment-id "${COMPARTMENT_ID}" \
+        --shape-availabilities "file://${CAPACITY_AVAILABILITIES_FILE}" \
+        --output json 2>/tmp/lazarus_ampere_capacity.err || true
+    )"
+
+    status="$(printf '%s\n' "${capacity_json}" | jq -r '.data["shape-availabilities"][0]["availability-status"] // empty' 2>/dev/null || true)"
+    if [[ -z "${status}" ]]; then
+      CAPACITY_ERR="$(cat /tmp/lazarus_ampere_capacity.err 2>/dev/null || true)"
+      log "Capacity report belum bisa dibaca, retry pelan. ${CAPACITY_ERR}"
+      sleep_cooldown
+      return 1
+    fi
+
+    if [[ "${status}" == "OUT_OF_HOST_CAPACITY" ]]; then
+      log "Capacity report: OUT_OF_HOST_CAPACITY di ${AVAILABILITY_DOMAIN}. Tunggu ${CAPACITY_REPORT_RETRY_SECONDS} detik."
+      sleep "${CAPACITY_REPORT_RETRY_SECONDS}"
+      return 1
+    fi
+
+    log "Capacity report: ${status} di ${AVAILABILITY_DOMAIN}."
+    return 0
   }
 
   load_cached_arm_image_id() {
@@ -156,90 +241,93 @@ main() {
   rate_limit_level=0
 
   while true; do
-  now_epoch="$(date +%s)"
-  if [[ -f "${IMAGE_CACHE_FILE}" ]]; then
-    cached_epoch="$(sed -n '2p' "${IMAGE_CACHE_FILE}" 2>/dev/null || true)"
-    if [[ -n "${cached_epoch}" ]] && (( now_epoch - cached_epoch > IMAGE_CACHE_TTL_SECONDS )); then
-      ARM_IMAGE_ID="$(refresh_arm_image_id)"
+    now_epoch="$(date +%s)"
+    if [[ -f "${IMAGE_CACHE_FILE}" ]]; then
+      cached_epoch="$(sed -n '2p' "${IMAGE_CACHE_FILE}" 2>/dev/null || true)"
+      if [[ -n "${cached_epoch}" ]] && (( now_epoch - cached_epoch > IMAGE_CACHE_TTL_SECONDS )); then
+        ARM_IMAGE_ID="$(refresh_arm_image_id)"
+      fi
     fi
-  fi
 
-  INSTANCE_NAME="${INSTANCE_NAME_PREFIX}-$(date +%Y%m%d-%H%M%S)"
-  log "Mencoba membuat instance Ampere: ${INSTANCE_NAME}"
-
-  set +e
-  LAUNCH_OUTPUT="$(oci --config-file "${OCI_CONFIG_FILE}" compute instance launch \
-    --region "${REGION}" \
-    --compartment-id "${COMPARTMENT_ID}" \
-    --availability-domain "${AVAILABILITY_DOMAIN}" \
-    --display-name "${INSTANCE_NAME}" \
-    --shape "${SHAPE}" \
-    --shape-config "${SHAPE_CONFIG}" \
-    --image-id "${ARM_IMAGE_ID}" \
-    --boot-volume-size-in-gbs "${BOOT_VOLUME_SIZE_GB}" \
-    --subnet-id "${SUBNET_ID}" \
-    --assign-public-ip true \
-    --metadata "{\"ssh_authorized_keys\":\"$(cat "${SSH_KEY_FILE}")\"}" \
-    2>&1)"
-  LAUNCH_EXIT=$?
-  set -e
-
-  if grep -Eqi "TooManyRequests|429" <<<"${LAUNCH_OUTPUT}"; then
-    rate_limit_level=$(( rate_limit_level + 1 ))
-    if (( rate_limit_level > ${#RATE_LIMIT_BACKOFF_SEQUENCE[@]} )); then
-      rate_limit_level=${#RATE_LIMIT_BACKOFF_SEQUENCE[@]}
+    if ! check_capacity_status; then
+      continue
     fi
-    cooldown_seconds="${RATE_LIMIT_BACKOFF_SEQUENCE[$(( rate_limit_level - 1 ))]}"
-    log "Kena Rate Limit OCI (429)! Cooling down ${cooldown_seconds} detik..."
-    sleep_cooldown
-    continue
-  fi
 
-  if grep -Eqi "Internal Server Error|HTTP 500|500" <<<"${LAUNCH_OUTPUT}"; then
+    INSTANCE_NAME="${INSTANCE_NAME_PREFIX}-$(date +%Y%m%d-%H%M%S)"
+    log "Mencoba membuat instance Ampere: ${INSTANCE_NAME} di ${AVAILABILITY_DOMAIN}"
+
+    set +e
+    LAUNCH_OUTPUT="$(oci --config-file "${OCI_CONFIG_FILE}" compute instance launch \
+      --profile "${OCI_PROFILE}" \
+      --region "${REGION}" \
+      --compartment-id "${COMPARTMENT_ID}" \
+      --availability-domain "${AVAILABILITY_DOMAIN}" \
+      --display-name "${INSTANCE_NAME}" \
+      --shape "${SHAPE}" \
+      --shape-config "file://${SHAPE_CONFIG_FILE}" \
+      --image-id "${ARM_IMAGE_ID}" \
+      --boot-volume-size-in-gbs "${BOOT_VOLUME_SIZE_GB}" \
+      --subnet-id "${SUBNET_ID}" \
+      --assign-public-ip true \
+      --ssh-authorized-keys-file "${SSH_KEY_FILE}" \
+      2>&1)"
+    LAUNCH_EXIT=$?
+    set -e
+
+    if grep -Eqi "TooManyRequests|429" <<<"${LAUNCH_OUTPUT}"; then
+      rate_limit_level=$(( rate_limit_level + 1 ))
+      if (( rate_limit_level > ${#RATE_LIMIT_BACKOFF_SEQUENCE[@]} )); then
+        rate_limit_level=${#RATE_LIMIT_BACKOFF_SEQUENCE[@]}
+      fi
+      cooldown_seconds="${RATE_LIMIT_BACKOFF_SEQUENCE[$(( rate_limit_level - 1 ))]}"
+      log "Kena Rate Limit OCI (429)! Cooling down ${cooldown_seconds} detik..."
+      sleep_cooldown
+      continue
+    fi
+
+    if grep -Eqi "Internal Server Error|HTTP 500|500" <<<"${LAUNCH_OUTPUT}"; then
+      rate_limit_level=0
+      log "OCI Internal Error (500), masuk cooldown..."
+      sleep_cooldown
+      continue
+    fi
+
+    if grep -qi "Out of host capacity" <<<"${LAUNCH_OUTPUT}"; then
+      rate_limit_level=0
+      log "Kapasitas penuh, mencoba lagi sekitar ${CAPACITY_RETRY_SECONDS} detik..."
+      jitter_sleep "${CAPACITY_RETRY_SECONDS}" "${CAPACITY_RETRY_JITTER_MAX}"
+      continue
+    fi
+
+    if grep -Eqi "timed out|RequestException|connection to endpoint timed out" <<<"${LAUNCH_OUTPUT}"; then
+      rate_limit_level=0
+      log "OCI timeout, mencoba lagi sekitar ${TIMEOUT_RETRY_SECONDS} detik..."
+      sleep_cooldown
+      continue
+    fi
+
+    if grep -Eqi "Limit Exceeded|Invalid|NotAuthorizedOrNotFound|404|400" <<<"${LAUNCH_OUTPUT}"; then
+      fatal "Parameter / limit bermasalah. Output OCI: ${LAUNCH_OUTPUT}"
+    fi
+
+    if [[ ${LAUNCH_EXIT} -eq 0 ]] && grep -Eq '"lifecycle-state"[[:space:]]*:[[:space:]]*"PROVISIONING"|"lifecycleState"[[:space:]]*:[[:space:]]*"PROVISIONING"' <<<"${LAUNCH_OUTPUT}"; then
+      rate_limit_level=0
+      log "ALHAMDULILLAH! INSTANCE AMPERE BERHASIL DIBUAT!"
+      notify_telegram "Ampere OK: ${INSTANCE_NAME}"
+      break
+    fi
+
+    if [[ ${LAUNCH_EXIT} -eq 0 ]] && ! grep -Eqi '"code"|ServiceError|Exception|Error:' <<<"${LAUNCH_OUTPUT}"; then
+      rate_limit_level=0
+      log "ALHAMDULILLAH! INSTANCE AMPERE BERHASIL DIBUAT!"
+      notify_telegram "Ampere OK: ${INSTANCE_NAME}"
+      break
+    fi
+
     rate_limit_level=0
-    log "OCI Internal Error (500), masuk cooldown..."
-    sleep_cooldown
-    continue
-  fi
-
-  if grep -qi "Out of host capacity" <<<"${LAUNCH_OUTPUT}"; then
-    rate_limit_level=0
-    log "Kapasitas penuh, mencoba lagi sekitar ${CAPACITY_RETRY_SECONDS} detik..."
-    jitter_sleep "${CAPACITY_RETRY_SECONDS}" "${CAPACITY_RETRY_JITTER_MAX}"
-    continue
-  fi
-
-  if grep -Eqi "timed out|RequestException|connection to endpoint timed out" <<<"${LAUNCH_OUTPUT}"; then
-    rate_limit_level=0
-    log "OCI timeout, mencoba lagi sekitar ${TIMEOUT_RETRY_SECONDS} detik..."
-    sleep_cooldown
-    continue
-  fi
-
-  if grep -Eqi "Limit Exceeded|Invalid|NotAuthorizedOrNotFound|404|400" <<<"${LAUNCH_OUTPUT}"; then
-    fatal "Parameter / limit bermasalah. Output OCI: ${LAUNCH_OUTPUT}"
-  fi
-
-  if [[ ${LAUNCH_EXIT} -eq 0 ]] && grep -Eq '"lifecycle-state"[[:space:]]*:[[:space:]]*"PROVISIONING"|"lifecycleState"[[:space:]]*:[[:space:]]*"PROVISIONING"' <<<"${LAUNCH_OUTPUT}"; then
-    rate_limit_level=0
-    log "ALHAMDULILLAH! INSTANCE AMPERE BERHASIL DIBUAT!"
-    printf '\a'
-    notify_telegram "Ampere OK: ${INSTANCE_NAME}"
-    break
-  fi
-
-  if [[ ${LAUNCH_EXIT} -eq 0 ]] && ! grep -Eqi '"code"|ServiceError|Exception|Error:' <<<"${LAUNCH_OUTPUT}"; then
-    rate_limit_level=0
-    log "ALHAMDULILLAH! INSTANCE AMPERE BERHASIL DIBUAT!"
-    printf '\a'
-    notify_telegram "Ampere OK: ${INSTANCE_NAME}"
-    break
-  fi
-
-  rate_limit_level=0
-  log "Respons belum sukses penuh. Output OCI:"
-  printf '%s\n' "${LAUNCH_OUTPUT}"
-  sleep_normal_retry
+    log "Respons belum sukses penuh. Output OCI:"
+    printf '%s\n' "${LAUNCH_OUTPUT}"
+    sleep_normal_retry
   done
 }
 

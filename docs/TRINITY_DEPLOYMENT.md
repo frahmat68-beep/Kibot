@@ -87,6 +87,19 @@ ssh -i "SSH_BATAM/ssh-key-batam-active.pem" ubuntu@168.110.201.228 '
 '
 ```
 
+## Deploy Ampere Runner
+
+- Jalankan launcher `lazarus_ampere.sh` dari Batam saja.
+- SG1 tidak dipakai untuk runner ini.
+- Target launch tetap `ap-singapore-1` dengan `VM.Standard.A1.Flex` `1 OCPU / 6 GB`.
+
+Jika file runner sudah ada di Batam:
+
+```bash
+ssh -i "SSH_BATAM/ssh-key-batam-active.pem" ubuntu@168.110.201.228 \
+  'cd /home/ubuntu/ampere-hunt && ./lazarus_ampere.sh'
+```
+
 ## Health Checks
 
 SG1:

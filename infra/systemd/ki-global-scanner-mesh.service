@@ -17,7 +17,7 @@ Environment=KIBOT_SCANNER_STATE_DIR=/home/ubuntu/KiBot/state/scanners
 Environment=KIBOT_MANAGER_HOST=213.35.118.26
 Environment=KIBOT_MANAGER_UDP_PORT=9998
 Environment=SCAN_INTERVAL_S=30
-ExecStart=/usr/bin/python3 /home/ubuntu/KiBot/core/ki_global_scanner_mesh.py
+ExecStart=/usr/bin/python3 /home/ubuntu/KiBot/scanners/ki_global_scanner_mesh.py
 Restart=on-failure
 RestartSec=15
 MemoryMax=96M

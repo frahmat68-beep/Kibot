@@ -42,6 +42,14 @@
 - **Key**: `SSH_BATAM/ssh-key-batam-active.pem`
 - **Command**: `ssh -i SSH_BATAM/ssh-key-batam-active.pem ubuntu@168.110.201.228`
 
+**Singapore Ampere Launcher**
+- Runtime script: `infra/scripts/lazarus_ampere.sh`
+- Target: `ap-singapore-1`
+- Shape: `VM.Standard.A1.Flex` `1 OCPU / 6 GB`
+- SSH key: auto-take from `~/.ssh/lazarus_ampere.pub` or first entry in `~/.ssh/authorized_keys`
+- Runner: Batam only
+- SG1 tidak dipakai untuk launcher ini
+
 **Quick Debug Commands**:
 - Monitor Log: `journalctl -u kidax-engine -f`
 - Cek Service: `systemctl list-units --type=service | grep kibot`

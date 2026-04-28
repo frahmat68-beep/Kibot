@@ -36,10 +36,12 @@ TELEGRAM_CHAT_ID = (
 ).strip()
 
 MAX_MSGS_PER_MINUTE = 5
+DEDUP_WINDOW_SEC = int(os.getenv("KIBOT_NOTIFIER_DEDUP_WINDOW_SEC", "600"))
 WIB_UTC_OFFSET_HOURS = int(os.getenv("KIBOT_WIB_UTC_OFFSET_HOURS", "7"))
 DAILY_REPORTS_ENABLED = os.getenv("KIBOT_NOTIFIER_DAILY_REPORTS", "false").lower() in {"1", "true", "yes", "on"}
 message_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
 last_send_times: List[float] = []
+recent_fingerprints: Dict[str, float] = {}
 
 
 def atomic_write(path: Path, data: Dict[str, Any]) -> None:
@@ -54,6 +56,39 @@ def atomic_write(path: Path, data: Dict[str, Any]) -> None:
     finally:
         if tmp.exists():
             tmp.unlink()
+
+
+def _load_state() -> None:
+    global recent_fingerprints
+    try:
+        if NOTIFY_STATE.exists():
+            payload = json.loads(NOTIFY_STATE.read_text(encoding="utf-8"))
+            cached = payload.get("recent_fingerprints", {})
+            if isinstance(cached, dict):
+                recent_fingerprints = {
+                    str(key): float(value)
+                    for key, value in cached.items()
+                    if isinstance(value, (int, float))
+                }
+    except Exception:
+        recent_fingerprints = {}
+
+
+def _dedupe_key(message: str) -> str:
+    return f"{len(message)}:{message[:160]}"
+
+
+def _should_send(message: str) -> bool:
+    now = time.time()
+    global recent_fingerprints
+    recent_fingerprints = {
+        key: ts for key, ts in recent_fingerprints.items() if now - ts < DEDUP_WINDOW_SEC
+    }
+    key = _dedupe_key(message)
+    if key in recent_fingerprints:
+        return False
+    recent_fingerprints[key] = now
+    return True
 
 
 def send_telegram(message: str, parse_mode: str = "Markdown") -> bool:
@@ -82,7 +117,7 @@ def _can_send_now() -> bool:
 
 def notify(message: str, severity: str = "INFO", bypass_rate: bool = False) -> None:
     if severity == "CRITICAL" or bypass_rate:
-        if _can_send_now() or bypass_rate:
+        if _should_send(message) and (_can_send_now() or bypass_rate):
             if send_telegram(message):
                 last_send_times.append(time.time())
         return
@@ -125,7 +160,7 @@ def process_events() -> None:
         try:
             event = json.loads(event_file.read_text(encoding="utf-8"))
             message = _format_event_message(event)
-            if message:
+            if message and event.get("severity") == "CRITICAL":
                 notify(message, severity=event.get("severity", "INFO"), bypass_rate=event.get("severity") == "CRITICAL")
             event_file.unlink()
         except Exception as error:
@@ -180,6 +215,7 @@ def _send_weekly_report() -> None:
 
 def run_notifier_loop() -> None:
     print("[NOTIFIER] KiBot Notifier started")
+    _load_state()
     last_daily_report = 0.0
     while True:
         try:
@@ -190,7 +226,15 @@ def run_notifier_loop() -> None:
             if DAILY_REPORTS_ENABLED and day_seconds <= 60 and time.time() - last_daily_report > 3600:
                 _send_daily_report()
                 last_daily_report = time.time()
-            atomic_write(NOTIFY_STATE, {"ts": now.isoformat(), "queued": message_queue.qsize(), "last_send_count_1m": len(last_send_times)})
+            atomic_write(
+                NOTIFY_STATE,
+                {
+                    "ts": now.isoformat(),
+                    "queued": message_queue.qsize(),
+                    "last_send_count_1m": len(last_send_times),
+                    "recent_fingerprints": recent_fingerprints,
+                },
+            )
             time.sleep(5)
         except Exception as error:
             print(f"[NOTIFIER] Loop error: {error}")

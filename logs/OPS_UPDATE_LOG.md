@@ -756,3 +756,48 @@ Dokumen ini wajib di-update setiap ada temuan, perubahan, deploy, rollback, atau
 - Validation passed after the change:
   - `python3 -m py_compile core/kibot_manager.py`
   - `./gradlew -q :packages:core:compileKotlinJvm :apps:mac-engine:compileKotlin`
+
+---
+## [2026-04-27 14:30 WIB] - Manual Deploy Pass and 3-Node Stability Audit
+- **Issue**:
+  - User requested manual deploy instead of relying on GitHub Actions.
+  - `ki-global-scanner-mesh.service` on SG2 pointed to the wrong path: `/home/ubuntu/KiBot/core/ki_global_scanner_mesh.py` while the file lives in `/home/ubuntu/KiBot/scanners/ki_global_scanner_mesh.py`.
+  - SG1 and SG2 both showed intermittent Java dashboard-health stalls after restart; SG1 recovered after `kidax-engine` restart, SG2 required a longer cold-start window before `8788/api/health` responded again.
+  - During soak attempts, SG1 occasionally reported internal `kibot` / `kinance` status as `offline` even while OS services stayed `active`.
+- **Action**:
+  - Built fresh artifact locally with `./gradlew :apps:mac-engine:shadowJar`.
+  - Backed up live runtime files on SG1, SG2, and Batam before sync.
+  - Manually synced:
+    - `core/`
+    - `scanners/`
+    - `tools/`
+    - `apps/mac-engine/build/libs/mac-engine-0.1.0-all.jar` -> `/home/ubuntu/KiBot/server/mac-engine-all.jar`
+  - Restarted live services manually over SSH:
+    - SG1: `kibot-manager`, `kidax-engine`, `ki-telegram-monitor`
+    - SG2: `kibot-manager`, `kinance-engine`, `ki-global-scanner-mesh`
+    - Batam: `kibot-ollama-gateway`, `kibot-polymarket`
+  - Fixed local unit file bug in `infra/systemd/ki-global-scanner-mesh.service` so future deploys use the correct `scanners/` path.
+  - Performed repeated live health probes across SG1, SG2, and Batam.
+- **Result**:
+  - Batam stayed healthy throughout:
+    - `ollama`, `kibot-ollama-gateway`, `kibot-polymarket` stayed `active`
+    - gateway `/health` stayed `ok`
+    - polymarket remained `ready=true`, `analysis_ready=true`
+  - SG1 recovered to:
+    - `kidax-engine active`
+    - `/api/health status=ok`
+    - `effectiveState=RUNNING`
+    - `syncHealth=HEALTHY`
+    - `tradingAllowed=true`
+  - SG2 recovered to:
+    - `kinance-engine active`
+    - `ki-global-scanner-mesh active`
+    - `/api/health status=ok`
+    - `effectiveState=RUNNING`
+    - `syncHealth=HEALTHY`
+  - However, repeated soak attempts still showed intermittent internal-health wobble:
+    - SG2 `api/health` stalled or timed out in some cycles before recovering
+    - SG1 occasionally reported internal `kibot` / `kinance` status as `offline` for a cycle, then recovered
+- **Claim**:
+  - Manual deploy itself succeeded and latest code is on all 3 nodes.
+  - Full 19-minute “no problems at all” stability claim is **not yet justified** from this pass because SG1/SG2 still showed intermittent internal-health flaps during soak.
