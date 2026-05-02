@@ -1,0 +1,29 @@
+[Unit]
+Description=KiBot Global Scanner (%i)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/KiBot/scripts
+EnvironmentFile=-/home/ubuntu/KiBot/.env.server
+EnvironmentFile=-/home/ubuntu/KiBot/.env.kibot
+Environment=PYTHONUNBUFFERED=1
+Environment=KIBOT_RUNTIME_ROOT=/home/ubuntu/KiBot
+Environment=KIBOT_SCANNER_STATE_DIR=/home/ubuntu/KiBot/state/scanners
+Environment=KIBOT_MANAGER_HOST=168.110.201.228
+Environment=KIBOT_MANAGER_UDP_PORT=9998
+Environment=SCAN_INTERVAL_S=30
+ExecStart=/usr/bin/python3 /home/ubuntu/KiBot/scripts/ki_%i_scanner.py
+Restart=on-failure
+RestartSec=15
+MemoryMax=64M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ki-%i
+
+[Install]
+WantedBy=multi-user.target

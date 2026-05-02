@@ -1,0 +1,9 @@
+{
+  "mode": "CONSERVATIVE",
+  "entry_state": "SUSPENDED",
+  "reason": "API health fail streak",
+  "updated_at": "2026-05-02T17:00:29.554006+00:00",
+  "daily_hard_stop": false,
+  "daily_hard_stop_reset_at": "",
+  "daily_hard_stop_reason": ""
+}

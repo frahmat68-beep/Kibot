@@ -1,0 +1,822 @@
+{
+  "updated_at": "2026-05-02T17:34:50.011140+00:00",
+  "service": "kibot_manager",
+  "operational_wib_date": "2026-05-03",
+  "actual_wib_date": "2026-05-03",
+  "midnight_reset_pending": false,
+  "daily_cycle_state": {
+    "active_wib_date": "2026-05-03",
+    "pending_new_date": "",
+    "pending_previous_date": "",
+    "pending_started_at": "",
+    "last_liquidation_emit_at": "",
+    "last_daily_report_date": "2026-05-02",
+    "last_reset_completed_date": "2026-05-03",
+    "alert_sent_for_pending_cycle": false
+  },
+  "host_bind": "0.0.0.0:9998",
+  "kidax_target": "213.35.118.26:9999",
+  "kinance_target": "152.69.218.198:9999",
+  "system_state": "SUSPENDED",
+  "trading_mode": "CONSERVATIVE",
+  "api_fail_streak": 590,
+  "control_plane_healthy": false,
+  "daily_hard_stop": false,
+  "daily_pnl_pct": 0.0,
+  "external_cashflow_idr": 0.0,
+  "daily_hard_stop_reset_at": "",
+  "ai_router_enabled": true,
+  "ai_provider_order": [
+    "groq",
+    "ollama",
+    "cohere",
+    "gemini",
+    "openrouter"
+  ],
+  "ai_provider_last_status": {
+    "provider": "",
+    "task": "learning_review",
+    "at_epoch_ms": 1777742747392,
+    "ok": false
+  },
+  "provider_runtime_state": {
+    "openrouter": {
+      "task": "correlation_matrix",
+      "last_failure_epoch": 1777742703.159323,
+      "cooldown_until_epoch": 1777743303.159323,
+      "reason": "generic_failure",
+      "last_error": "openrouter status=401 body={\"error\":{\"message\":\"User not found.\",\"code\":401}}",
+      "failure_count": 113
+    },
+    "gemini": {
+      "task": "correlation_matrix",
+      "last_failure_epoch": 1777740894.312039,
+      "cooldown_until_epoch": 1777744494.312039,
+      "reason": "rate_limited",
+      "last_error": "gemini status=429 body={\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your cur",
+      "failure_count": 61
+    }
+  },
+  "tracked_active_positions": [],
+  "pair_memory_preview": {},
+  "pair_cooldowns": {},
+  "remote_scanner_feed": {
+    "last_created_at": "",
+    "last_feed_id": "",
+    "last_success_at": "",
+    "last_poll_at": "",
+    "last_error": "",
+    "cycles_seen": 0,
+    "signals_ingested": 0,
+    "recent_signal_ids": []
+  },
+  "capital_profile": {
+    "enabled": true,
+    "equity_idr": 70000.0,
+    "free_cash_idr": 70000.0,
+    "daily_pnl_pct": 0.0,
+    "mode": "MICRO",
+    "reason": "micro_balance_preservation:min_order_override",
+    "risk_pct_per_trade": 0.1358,
+    "min_position_idr": 10000.0,
+    "max_position_idr": 10000.0,
+    "daily_loss_limit_pct": 0.02,
+    "trading_allowed": true,
+    "strategy_mode": "DEFENSIVE"
+  },
+  "strategy_governor": {
+    "directives": {
+      "plan_id": "fallback-1777743176",
+      "plan_generated_at": "2026-05-02T17:32:56.241011Z",
+      "expires_at": "2026-05-02T17:47:56.241011Z",
+      "plan_ttl_sec": 900,
+      "plan_state": "ACTIVE",
+      "strategy_mode": "DEFENSIVE",
+      "brain_mode": "SURVIVAL",
+      "market_regime": "MIXED",
+      "capital_posture": "PRESERVE",
+      "reason": "ai_governor_fallback:medium:empty_governor_response",
+      "why": [
+        "capital or gate health requires defensive fallback"
+      ],
+      "updated_at": "2026-05-02T17:32:56.241087Z",
+      "provider": "heuristic",
+      "model": "local-fallback",
+      "confidence": 0.42,
+      "effective_confidence": 0.4181,
+      "confidence_decay_per_hour": 0.06,
+      "fallback_if_expired": "SURVIVAL_MODE",
+      "what_could_make_this_wrong": [
+        "scanner signal quality degrades",
+        "control plane or API state becomes stale",
+        "market correlation shifts abruptly"
+      ],
+      "ops_alerts": [
+        "ai governor fallback active on node"
+      ],
+      "scanner": {
+        "weights": {
+          "BINANCE": 0.32,
+          "BYBIT": 0.24,
+          "KUCOIN": 0.2,
+          "CRYPTOCOM": 0.14,
+          "MEXC": 0.1
+        },
+        "msc_min": 0.68
+      },
+      "capital": {
+        "ratio": {
+          "LEAD_LAG": 0.55,
+          "LOCAL_PUMP": 0.45
+        },
+        "max_per_trade": 0.18,
+        "risk_pct_multiplier": 0.82,
+        "free_cash_buffer_pct": 0.55,
+        "micro_entry_floor_idr": 10000.0
+      },
+      "risk": {
+        "lock_ratio": 0.36,
+        "daily_loss_limit_pct": 2.0,
+        "pair_cooldown_minutes": 60,
+        "trailing_tightness": "TIGHTER"
+      },
+      "survival": {
+        "equity_threshold_idr": 200000.0,
+        "allowed_tiers": [
+          "A",
+          "B"
+        ],
+        "min_target_profit_pct": 0.025,
+        "max_spread_pct": 0.008,
+        "max_slippage_pct": 0.01
+      },
+      "execution": {
+        "focus_pairs": [
+          "btc_idr"
+        ],
+        "avoid_pairs": [],
+        "budget_boost": 0.9,
+        "focus_boost": 1.0
+      },
+      "indodax": {
+        "allow_entries": false,
+        "max_open_positions": 2,
+        "budget_per_trade_idr": 10000.0,
+        "focus_pairs": [
+          "btc_idr"
+        ],
+        "avoid_pairs": [],
+        "preferred_style": "FALLBACK_DISCIPLINED_SPOT"
+      },
+      "polymarket": {
+        "allow_execution": false,
+        "max_risk_pct": 0.5,
+        "focus_markets": []
+      },
+      "plan_age_sec": 113.77,
+      "plan_is_expired": false
+    },
+    "state": {
+      "last_refresh_at": "2026-05-02T17:32:56.241087Z",
+      "last_reason": "medium_cycle",
+      "last_profile": "MEDIUM",
+      "last_provider": "heuristic",
+      "last_plan_id": "fallback-1777743176",
+      "last_plan_state": "ACTIVE",
+      "last_fingerprint": "0f90648e00ad81d935cf4be52a36cc77",
+      "last_event_fingerprint": "5eb98304f699fe3e61425d5420b4cefb",
+      "refresh_count": 67,
+      "last_error": ""
+    },
+    "loop_targets": {
+      "fast_sec": 30,
+      "medium_sec": 300
+    }
+  },
+  "veto_metrics": {
+    "approved": 0,
+    "rejected": 0,
+    "sell_confirmed": 0,
+    "emergency_sell": 0
+  },
+  "sector_count": 0,
+  "sector_preview": {},
+  "latest_learning_review": {
+    "at": "2026-05-02T17:25:41.462158+00:00",
+    "wib_date": "2026-05-03",
+    "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+    "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+    "lessons": [
+      "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+    ],
+    "risks": [
+      "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+    ],
+    "source": "heuristic_fallback"
+  },
+  "pattern_library": {
+    "updated_at": "2026-05-02T17:00:14.494826+00:00",
+    "weekly_patterns": [
+      {
+        "at": "2026-05-02T17:00:14.494826+00:00",
+        "summary": "Hari ini hampir tidak ada trade tutup, sehingga stagnasi perlu dijelaskan dari sisi gate, modal, atau kualitas sinyal.",
+        "report_date": "2026-05-02"
+      }
+    ],
+    "pair_bias": {
+      "btc_idr": {
+        "last_focus_at": "2026-05-02T17:00:14.494826+00:00",
+        "last_mode": "CONTROLLED"
+      }
+    },
+    "ops_incidents": [
+      {
+        "at": "2026-05-02T17:00:14.494826+00:00",
+        "risk": "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat.",
+        "report_date": "2026-05-02"
+      }
+    ],
+    "daily_reviews": [
+      {
+        "summary": "Hari ini hampir tidak ada trade tutup, sehingga stagnasi perlu dijelaskan dari sisi gate, modal, atau kualitas sinyal.",
+        "root_causes": [
+          "Hari ini hampir tidak ada trade tutup, sehingga stagnasi perlu dijelaskan dari sisi gate, modal, atau kualitas sinyal."
+        ],
+        "missed_opportunities": [
+          "Periksa peluang yang lolos scan tetapi tertahan gate terlalu lama."
+        ],
+        "lessons": [
+          "Gunakan fokus pair dari brain plan sebagai shortlist utama, bukan menebar entry ke pair abu-abu."
+        ],
+        "risks": [
+          "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+        ],
+        "parameter_recommendations": [],
+        "tomorrow_mode": "CONTROLLED",
+        "tomorrow_focus": [
+          "btc_idr"
+        ],
+        "source": "heuristic_fallback",
+        "at": "2026-05-02T17:00:14.494826+00:00",
+        "report_date": "2026-05-02"
+      }
+    ]
+  },
+  "brain_assist": {
+    "checked_at": "2026-05-02T17:27:57Z",
+    "mode": "sovereign_support",
+    "provider_status": {
+      "tavily": {
+        "configured": false,
+        "last_ok": null,
+        "last_checked_at": null,
+        "last_error": ""
+      },
+      "serper": {
+        "configured": false,
+        "last_ok": null,
+        "last_checked_at": null,
+        "last_error": ""
+      },
+      "finnhub": {
+        "configured": false,
+        "last_ok": null,
+        "last_checked_at": null,
+        "last_error": ""
+      },
+      "ddg": {
+        "configured": false,
+        "last_ok": null,
+        "last_checked_at": null,
+        "last_error": ""
+      },
+      "ollama": {
+        "configured": false,
+        "model": "qwen3:1.7b",
+        "priority": 1,
+        "used": 0,
+        "remaining": 100000,
+        "pct_used": 0.0,
+        "last_ok": null,
+        "last_checked_at": null,
+        "last_error": ""
+      },
+      "groq": {
+        "configured": false,
+        "model": "llama-3.1-8b-instant",
+        "priority": 2,
+        "used": 0,
+        "remaining": 14400,
+        "pct_used": 0.0,
+        "last_ok": null,
+        "last_checked_at": null,
+        "last_error": ""
+      },
+      "gemini": {
+        "configured": true,
+        "model": "gemini-2.0-flash-lite",
+        "priority": 3,
+        "used": 0,
+        "remaining": 1500,
+        "pct_used": 0.0,
+        "last_ok": null,
+        "last_checked_at": null,
+        "last_error": ""
+      },
+      "nvidia": {
+        "configured": false,
+        "model": "meta/llama-3.1-70b-instruct",
+        "priority": 4,
+        "used": 0,
+        "remaining": 1000,
+        "pct_used": 0.0,
+        "last_ok": null,
+        "last_checked_at": null,
+        "last_error": ""
+      },
+      "openrouter": {
+        "configured": true,
+        "model": "meta-llama/llama-3.1-8b-instruct",
+        "priority": 5,
+        "used": 0,
+        "remaining": 200,
+        "pct_used": 0.0,
+        "last_ok": null,
+        "last_checked_at": null,
+        "last_error": ""
+      },
+      "cohere": {
+        "configured": false,
+        "model": "command-a-03-2025",
+        "priority": 6,
+        "used": 0,
+        "remaining": 100,
+        "pct_used": 0.0,
+        "last_ok": null,
+        "last_checked_at": null,
+        "last_error": ""
+      },
+      "jina": {
+        "configured": false,
+        "model": "jina-3-8b-instruct",
+        "priority": 7,
+        "used": 0,
+        "remaining": 50,
+        "pct_used": 0.0,
+        "last_ok": null,
+        "last_checked_at": null,
+        "last_error": ""
+      }
+    },
+    "ai_legion": {
+      "configured_count": 2,
+      "configured_names": [
+        "gemini",
+        "openrouter"
+      ],
+      "llm_providers": {
+        "ollama": {
+          "configured": false,
+          "model": "qwen3:1.7b",
+          "priority": 1,
+          "used": 0,
+          "remaining": 100000,
+          "pct_used": 0.0,
+          "last_ok": null,
+          "last_checked_at": null,
+          "last_error": ""
+        },
+        "groq": {
+          "configured": false,
+          "model": "llama-3.1-8b-instant",
+          "priority": 2,
+          "used": 0,
+          "remaining": 14400,
+          "pct_used": 0.0,
+          "last_ok": null,
+          "last_checked_at": null,
+          "last_error": ""
+        },
+        "gemini": {
+          "configured": true,
+          "model": "gemini-2.0-flash-lite",
+          "priority": 3,
+          "used": 0,
+          "remaining": 1500,
+          "pct_used": 0.0,
+          "last_ok": null,
+          "last_checked_at": null,
+          "last_error": ""
+        },
+        "nvidia": {
+          "configured": false,
+          "model": "meta/llama-3.1-70b-instruct",
+          "priority": 4,
+          "used": 0,
+          "remaining": 1000,
+          "pct_used": 0.0,
+          "last_ok": null,
+          "last_checked_at": null,
+          "last_error": ""
+        },
+        "openrouter": {
+          "configured": true,
+          "model": "meta-llama/llama-3.1-8b-instruct",
+          "priority": 5,
+          "used": 0,
+          "remaining": 200,
+          "pct_used": 0.0,
+          "last_ok": null,
+          "last_checked_at": null,
+          "last_error": ""
+        },
+        "cohere": {
+          "configured": false,
+          "model": "command-a-03-2025",
+          "priority": 6,
+          "used": 0,
+          "remaining": 100,
+          "pct_used": 0.0,
+          "last_ok": null,
+          "last_checked_at": null,
+          "last_error": ""
+        },
+        "jina": {
+          "configured": false,
+          "model": "jina-3-8b-instruct",
+          "priority": 7,
+          "used": 0,
+          "remaining": 50,
+          "pct_used": 0.0,
+          "last_ok": null,
+          "last_checked_at": null,
+          "last_error": ""
+        }
+      },
+      "search_providers": {
+        "tavily": {
+          "configured": false,
+          "last_ok": null,
+          "last_checked_at": null,
+          "last_error": ""
+        },
+        "serper": {
+          "configured": false,
+          "last_ok": null,
+          "last_checked_at": null,
+          "last_error": ""
+        },
+        "finnhub": {
+          "configured": false,
+          "last_ok": null,
+          "last_checked_at": null,
+          "last_error": ""
+        },
+        "ddg": {
+          "configured": false,
+          "last_ok": null,
+          "last_checked_at": null,
+          "last_error": ""
+        }
+      },
+      "coordinator_enabled": true
+    },
+    "optional_modules": {
+      "ddgs": {
+        "installed": false,
+        "api_key_present": false
+      },
+      "google.genai": {
+        "installed": false,
+        "api_key_present": true
+      },
+      "google.generativeai": {
+        "installed": false,
+        "api_key_present": true,
+        "legacy_sdk": true
+      },
+      "tavily": {
+        "installed": false,
+        "api_key_present": false
+      },
+      "duckduckgo_search": {
+        "installed": false,
+        "api_key_present": false
+      },
+      "finnhub": {
+        "installed": false,
+        "api_key_present": false
+      },
+      "x_api": {
+        "installed": true,
+        "api_key_present": false
+      },
+      "coingecko": {
+        "installed": true,
+        "api_key_present": false
+      },
+      "numpy": {
+        "installed": false,
+        "api_key_present": false
+      },
+      "pandas": {
+        "installed": false,
+        "api_key_present": false
+      },
+      "talib": {
+        "installed": false,
+        "api_key_present": false
+      }
+    },
+    "brain_capabilities": {
+      "world_model_active": true,
+      "external_research_enabled": true,
+      "ai_coordinator_enabled": true
+    },
+    "internet_checks": {
+      "binance": 0,
+      "bybit": 0,
+      "kucoin": 0,
+      "mexc": 0,
+      "indodax": 200
+    },
+    "daily_target": {
+      "daily_pnl_pct": 0.0,
+      "target_pct": 0.003,
+      "gap_pct": 0.003,
+      "status": "CHASING_GREEN",
+      "equity_idr": 70000.0,
+      "free_cash_idr": 0.0,
+      "capital_profile": {
+        "enabled": true,
+        "equity_idr": 70000.0,
+        "free_cash_idr": 70000.0,
+        "daily_pnl_pct": 0.0,
+        "mode": "MICRO",
+        "reason": "micro_balance_preservation:min_order_override",
+        "risk_pct_per_trade": 0.1358,
+        "min_position_idr": 10000.0,
+        "max_position_idr": 10000.0,
+        "daily_loss_limit_pct": 0.02,
+        "trading_allowed": true,
+        "strategy_mode": "DEFENSIVE"
+      },
+      "strategy_next": "Trade smaller, favor liquid high-trust pairs, and require cleaner scanner confirmation.",
+      "cascade_mode": "UNKNOWN",
+      "cascade_consecutive_losses": 0,
+      "hard_stopped": false,
+      "active_positions_count": 0
+    },
+    "market_pulse": {
+      "risk_bias": "MIXED",
+      "headline_count": 0,
+      "top_headlines": [],
+      "summary": "",
+      "providers_used": [],
+      "watch_symbols": [
+        "BTC",
+        "ETH"
+      ]
+    },
+    "polymarket": {},
+    "fear_greed": {
+      "value": 39,
+      "classification": "Fear",
+      "posture_hint": "CAUTIOUS",
+      "timestamp": "1777680000"
+    },
+    "funding_rate": {
+      "symbols": {},
+      "aggregate_signal": "BALANCED",
+      "overleveraged_long_count": 0,
+      "overleveraged_short_count": 0
+    },
+    "stablecoin_flow": {
+      "total_market_cap_usd": 2686047631243.0,
+      "total_volume_24h_usd": 53992427040.0,
+      "market_cap_change_24h_pct": -0.08,
+      "flow_signal": "STABLE",
+      "active_cryptocurrencies": 17486
+    },
+    "world_model": {
+      "version": 1,
+      "built_at": "2026-05-02T17:27:57Z",
+      "market_regime": "MIXED",
+      "confidence": 0.5904,
+      "summary": "",
+      "global_narratives": [],
+      "external_events": [],
+      "opportunity_register": [],
+      "risk_register": [],
+      "internal_state": {
+        "capital_mode": "MICRO",
+        "trading_allowed": true,
+        "free_cash_idr": 0.0,
+        "provider_count": 4,
+        "polymarket_ready": false,
+        "analysis_ready": false
+      },
+      "micro_capital_plan": {
+        "allow_exploration": false,
+        "exploration_budget_idr": 10000.0,
+        "preferred_pairs": [],
+        "max_concurrent_explorations": 1,
+        "notes": [
+          "stay selective and keep position sizing small"
+        ]
+      },
+      "fear_greed": {
+        "value": 39,
+        "classification": "Fear",
+        "posture_hint": "CAUTIOUS",
+        "timestamp": "1777680000"
+      },
+      "funding_rate": {
+        "symbols": {},
+        "aggregate_signal": "BALANCED",
+        "overleveraged_long_count": 0,
+        "overleveraged_short_count": 0
+      },
+      "stablecoin_flow": {
+        "total_market_cap_usd": 2686047631243.0,
+        "total_volume_24h_usd": 53992427040.0,
+        "market_cap_change_24h_pct": -0.08,
+        "flow_signal": "STABLE",
+        "active_cryptocurrencies": 17486
+      },
+      "source_status": {
+        "providers_used": [
+          "coingecko",
+          "fear_greed",
+          "funding_rate",
+          "stablecoin_flow"
+        ],
+        "provider_count": 4,
+        "x_hits": 0,
+        "gdelt_hits": 0,
+        "coingecko_trending_hits": 15,
+        "fear_greed_value": 39,
+        "funding_rate_signal": "BALANCED",
+        "stablecoin_flow_signal": "STABLE"
+      },
+      "source_weighting": {
+        "weights": {
+          "coingecko": 0.14,
+          "fear_greed": 0.1,
+          "funding_rate": 0.12,
+          "stablecoin_flow": 0.06
+        },
+        "score": 0.42,
+        "category_scores": {
+          "market_execution": 0.14,
+          "news_research": 0.0
+        },
+        "priority": [
+          "coingecko",
+          "funding_rate",
+          "fear_greed",
+          "stablecoin_flow"
+        ]
+      }
+    },
+    "watch_symbols": [
+      "BTC",
+      "ETH",
+      "SOL"
+    ],
+    "watch_reviews": [
+      {
+        "symbol": "BTC",
+        "approved": false,
+        "reason": "symbol_not_listed_on_indodax",
+        "listed_on_indodax": false,
+        "quote_volume_usdt": 0.0,
+        "risk_bias": "MIXED",
+        "research_provider": "finnhub",
+        "research_summary": "",
+        "headline_count": 0,
+        "top_headlines": []
+      },
+      {
+        "symbol": "ETH",
+        "approved": false,
+        "reason": "symbol_not_listed_on_indodax",
+        "listed_on_indodax": false,
+        "quote_volume_usdt": 0.0,
+        "risk_bias": "MIXED",
+        "research_provider": "finnhub",
+        "research_summary": "",
+        "headline_count": 0,
+        "top_headlines": []
+      }
+    ],
+    "ai_critic": {}
+  },
+  "recent_events": [
+    {
+      "at": "2026-05-02T17:34:35.310135+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:36.315796+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:37.319781+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:38.324962+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:39.327773+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:40.331389+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:41.336279+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:42.340872+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:43.345420+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:44.349826+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:45.354896+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:46.359256+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:47.362901+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:48.366633+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    },
+    {
+      "at": "2026-05-02T17:34:49.371436+00:00",
+      "kind": "trinity_heartbeat_emit",
+      "detail": {
+        "sender": "kibot"
+      }
+    }
+  ]
+}

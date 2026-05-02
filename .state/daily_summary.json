@@ -1,0 +1,61 @@
+{
+  "date": "2026-05-03",
+  "ai_success": {},
+  "ai_failure": {
+    "openrouter": 1
+  },
+  "veto_metrics": {},
+  "loss_blacklist_pairs": [],
+  "coins_bought_today": [],
+  "coins_sold_today": [],
+  "recent_notes": [
+    {
+      "at": "2026-05-02T17:25:03.159848+00:00",
+      "kind": "ai_failure",
+      "detail": {
+        "provider": "openrouter",
+        "task": "correlation_matrix",
+        "reason": "generic_failure"
+      }
+    },
+    {
+      "at": "2026-05-02T17:25:47.398761+00:00",
+      "kind": "learning_review",
+      "detail": {
+        "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+        "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+        "lessons": [
+          "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+        ],
+        "risks": [
+          "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+        ]
+      }
+    }
+  ],
+  "learning_reviews": [
+    {
+      "at": "2026-05-02T17:25:47.398732+00:00",
+      "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+      "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+      "lessons": [
+        "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+      ],
+      "risks": [
+        "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+      ]
+    }
+  ],
+  "last_learning_review": {
+    "at": "2026-05-02T17:25:47.398732+00:00",
+    "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+    "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+    "lessons": [
+      "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+    ],
+    "risks": [
+      "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+    ]
+  },
+  "last_sovereign_review": {}
+}

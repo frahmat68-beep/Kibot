@@ -1,0 +1,12 @@
+{
+  "last_refresh_at": "2026-05-02T17:32:56.241087Z",
+  "last_reason": "medium_cycle",
+  "last_profile": "MEDIUM",
+  "last_provider": "heuristic",
+  "last_plan_id": "fallback-1777743176",
+  "last_plan_state": "ACTIVE",
+  "last_fingerprint": "0f90648e00ad81d935cf4be52a36cc77",
+  "last_event_fingerprint": "5eb98304f699fe3e61425d5420b4cefb",
+  "refresh_count": 67,
+  "last_error": ""
+}

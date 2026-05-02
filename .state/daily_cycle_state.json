@@ -1,0 +1,10 @@
+{
+  "active_wib_date": "2026-05-03",
+  "pending_new_date": "",
+  "pending_previous_date": "",
+  "pending_started_at": "",
+  "last_liquidation_emit_at": "",
+  "last_daily_report_date": "2026-05-02",
+  "last_reset_completed_date": "2026-05-03",
+  "alert_sent_for_pending_cycle": false
+}

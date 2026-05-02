@@ -1,0 +1,14 @@
+.env*
+*.pem
+*.key
+Batam/SSH/
+Shared/Ops/
+**/build/
+**/.gradle/
+gradle_home/
+state/
+logs/
+*.log
+__pycache__/
+*.pyc
+.tmp/

@@ -1,0 +1,23 @@
+[Unit]
+Description=KiBot Indodax Dashboard Reverse Proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/KiBot
+EnvironmentFile=-/home/ubuntu/KiBot/.env.indodax
+EnvironmentFile=-/home/ubuntu/KiBot/.env.server
+Environment=KIBOT_PROXY_UPSTREAM=http://127.0.0.1:9998
+Environment=KIBOT_PROXY_LISTEN_HOST=0.0.0.0
+Environment=KIBOT_PROXY_LISTEN_PORT=8787
+ExecStart=/usr/bin/python3 /home/ubuntu/KiBot/infra/scripts/indodax_dashboard_proxy.py
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=indodax-dashboard-proxy
+
+[Install]
+WantedBy=multi-user.target
