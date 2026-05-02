@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-05-02T18:09:45.554756+00:00",
+  "updated_at": "2026-05-02T20:38:20.053832+00:00",
   "service": "kibot_manager",
   "operational_wib_date": "2026-05-03",
   "actual_wib_date": "2026-05-03",
@@ -19,7 +19,7 @@
   "kinance_target": "152.69.218.198:9999",
   "system_state": "SUSPENDED",
   "trading_mode": "CONSERVATIVE",
-  "api_fail_streak": 727,
+  "api_fail_streak": 1308,
   "control_plane_healthy": false,
   "daily_hard_stop": false,
   "daily_pnl_pct": 0.0,
@@ -36,25 +36,25 @@
   "ai_provider_last_status": {
     "provider": "",
     "task": "learning_review",
-    "at_epoch_ms": 1777744549329,
+    "at_epoch_ms": 1777753557867,
     "ok": false
   },
   "provider_runtime_state": {
     "openrouter": {
       "task": "correlation_matrix",
-      "last_failure_epoch": 1777744505.3377438,
-      "cooldown_until_epoch": 1777745105.3377438,
+      "last_failure_epoch": 1777753515.4923048,
+      "cooldown_until_epoch": 1777754115.4923048,
       "reason": "generic_failure",
       "last_error": "openrouter status=401 body={\"error\":{\"message\":\"User not found.\",\"code\":401}}",
-      "failure_count": 114
+      "failure_count": 119
     },
     "gemini": {
       "task": "correlation_matrix",
-      "last_failure_epoch": 1777744504.9801831,
-      "cooldown_until_epoch": 1777748104.9801831,
+      "last_failure_epoch": 1777751713.0674272,
+      "cooldown_until_epoch": 1777755313.0674272,
       "reason": "rate_limited",
       "last_error": "gemini status=429 body={\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your cur",
-      "failure_count": 62
+      "failure_count": 64
     }
   },
   "tracked_active_positions": [],
@@ -86,9 +86,9 @@
   },
   "strategy_governor": {
     "directives": {
-      "plan_id": "fallback-1777745312",
-      "plan_generated_at": "2026-05-02T18:08:32.050020Z",
-      "expires_at": "2026-05-02T18:23:32.050020Z",
+      "plan_id": "fallback-1777754209",
+      "plan_generated_at": "2026-05-02T20:36:49.530306Z",
+      "expires_at": "2026-05-02T20:51:49.530306Z",
       "plan_ttl_sec": 900,
       "plan_state": "ACTIVE",
       "strategy_mode": "DEFENSIVE",
@@ -99,11 +99,11 @@
       "why": [
         "capital or gate health requires defensive fallback"
       ],
-      "updated_at": "2026-05-02T18:08:32.050115Z",
+      "updated_at": "2026-05-02T20:36:49.530471Z",
       "provider": "heuristic",
       "model": "local-fallback",
       "confidence": 0.42,
-      "effective_confidence": 0.4188,
+      "effective_confidence": 0.4185,
       "confidence_decay_per_hour": 0.06,
       "fallback_if_expired": "SURVIVAL_MODE",
       "what_could_make_this_wrong": [
@@ -173,19 +173,19 @@
         "max_risk_pct": 0.5,
         "focus_markets": []
       },
-      "plan_age_sec": 73.51,
+      "plan_age_sec": 90.52,
       "plan_is_expired": false
     },
     "state": {
-      "last_refresh_at": "2026-05-02T18:08:32.050115Z",
+      "last_refresh_at": "2026-05-02T20:36:49.530471Z",
       "last_reason": "medium_cycle",
       "last_profile": "MEDIUM",
       "last_provider": "heuristic",
-      "last_plan_id": "fallback-1777745312",
+      "last_plan_id": "fallback-1777754209",
       "last_plan_state": "ACTIVE",
-      "last_fingerprint": "0c49e32d6fccd71776330f58da92eae2",
+      "last_fingerprint": "327cf115b4317eba696b3f16eca4b03d",
       "last_event_fingerprint": "5eb98304f699fe3e61425d5420b4cefb",
-      "refresh_count": 81,
+      "refresh_count": 139,
       "last_error": ""
     },
     "loop_targets": {
@@ -202,7 +202,7 @@
   "sector_count": 0,
   "sector_preview": {},
   "latest_learning_review": {
-    "at": "2026-05-02T17:55:47.625577+00:00",
+    "at": "2026-05-02T20:25:57.866941+00:00",
     "wib_date": "2026-05-03",
     "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
     "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
@@ -263,7 +263,7 @@
     ]
   },
   "brain_assist": {
-    "checked_at": "2026-05-02T17:58:13Z",
+    "checked_at": "2026-05-02T20:29:50Z",
     "mode": "sovereign_support",
     "provider_status": {
       "tavily": {
@@ -535,9 +535,9 @@
     },
     "internet_checks": {
       "binance": 0,
-      "bybit": 0,
-      "kucoin": 0,
-      "mexc": 0,
+      "bybit": 200,
+      "kucoin": 200,
+      "mexc": 200,
       "indodax": 200
     },
     "daily_target": {
@@ -592,15 +592,15 @@
       "overleveraged_short_count": 0
     },
     "stablecoin_flow": {
-      "total_market_cap_usd": 2684961078001.0,
-      "total_volume_24h_usd": 53622105300.0,
-      "market_cap_change_24h_pct": -0.12,
-      "flow_signal": "STABLE",
+      "total_market_cap_usd": 2687161110483.0,
+      "total_volume_24h_usd": 50182565906.0,
+      "market_cap_change_24h_pct": 0.72,
+      "flow_signal": "MILD_INFLOW",
       "active_cryptocurrencies": 17486
     },
     "world_model": {
       "version": 1,
-      "built_at": "2026-05-02T17:58:13Z",
+      "built_at": "2026-05-02T20:29:50Z",
       "market_regime": "MIXED",
       "confidence": 0.5904,
       "summary": "",
@@ -638,10 +638,10 @@
         "overleveraged_short_count": 0
       },
       "stablecoin_flow": {
-        "total_market_cap_usd": 2684961078001.0,
-        "total_volume_24h_usd": 53622105300.0,
-        "market_cap_change_24h_pct": -0.12,
-        "flow_signal": "STABLE",
+        "total_market_cap_usd": 2687161110483.0,
+        "total_volume_24h_usd": 50182565906.0,
+        "market_cap_change_24h_pct": 0.72,
+        "flow_signal": "MILD_INFLOW",
         "active_cryptocurrencies": 17486
       },
       "source_status": {
@@ -657,7 +657,7 @@
         "coingecko_trending_hits": 15,
         "fear_greed_value": 39,
         "funding_rate_signal": "BALANCED",
-        "stablecoin_flow_signal": "STABLE"
+        "stablecoin_flow_signal": "MILD_INFLOW"
       },
       "source_weighting": {
         "weights": {
@@ -714,105 +714,105 @@
   },
   "recent_events": [
     {
-      "at": "2026-05-02T18:09:31.124430+00:00",
+      "at": "2026-05-02T20:38:05.643721+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:32.129182+00:00",
+      "at": "2026-05-02T20:38:06.650049+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:33.132199+00:00",
+      "at": "2026-05-02T20:38:07.653091+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:34.138363+00:00",
+      "at": "2026-05-02T20:38:08.657458+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:35.140865+00:00",
+      "at": "2026-05-02T20:38:09.662001+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:36.148503+00:00",
+      "at": "2026-05-02T20:38:10.664948+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:37.151871+00:00",
+      "at": "2026-05-02T20:38:11.670893+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:38.156544+00:00",
+      "at": "2026-05-02T20:38:12.675817+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:39.161933+00:00",
+      "at": "2026-05-02T20:38:13.680509+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:40.168092+00:00",
+      "at": "2026-05-02T20:38:14.684942+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:41.171976+00:00",
+      "at": "2026-05-02T20:38:15.688252+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:42.175282+00:00",
+      "at": "2026-05-02T20:38:16.692064+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:43.179862+00:00",
+      "at": "2026-05-02T20:38:17.693553+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:44.186059+00:00",
+      "at": "2026-05-02T20:38:18.699936+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"
       }
     },
     {
-      "at": "2026-05-02T18:09:45.191013+00:00",
+      "at": "2026-05-02T20:38:19.703383+00:00",
       "kind": "trinity_heartbeat_emit",
       "detail": {
         "sender": "kibot"

@@ -2,8 +2,8 @@
   "date": "2026-05-03",
   "ai_success": {},
   "ai_failure": {
-    "openrouter": 2,
-    "gemini": 1
+    "openrouter": 7,
+    "gemini": 3
   },
   "veto_metrics": {},
   "loss_blacklist_pairs": [],
@@ -64,6 +64,139 @@
           "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
         ]
       }
+    },
+    {
+      "at": "2026-05-02T18:25:05.790282+00:00",
+      "kind": "ai_failure",
+      "detail": {
+        "provider": "openrouter",
+        "task": "correlation_matrix",
+        "reason": "generic_failure"
+      }
+    },
+    {
+      "at": "2026-05-02T18:25:51.327519+00:00",
+      "kind": "learning_review",
+      "detail": {
+        "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+        "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+        "lessons": [
+          "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+        ],
+        "risks": [
+          "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+        ]
+      }
+    },
+    {
+      "at": "2026-05-02T18:55:07.696271+00:00",
+      "kind": "ai_failure",
+      "detail": {
+        "provider": "gemini",
+        "task": "correlation_matrix",
+        "reason": "rate_limited"
+      }
+    },
+    {
+      "at": "2026-05-02T18:55:08.050401+00:00",
+      "kind": "ai_failure",
+      "detail": {
+        "provider": "openrouter",
+        "task": "correlation_matrix",
+        "reason": "generic_failure"
+      }
+    },
+    {
+      "at": "2026-05-02T18:55:53.332810+00:00",
+      "kind": "learning_review",
+      "detail": {
+        "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+        "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+        "lessons": [
+          "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+        ],
+        "risks": [
+          "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+        ]
+      }
+    },
+    {
+      "at": "2026-05-02T19:25:10.240030+00:00",
+      "kind": "ai_failure",
+      "detail": {
+        "provider": "openrouter",
+        "task": "correlation_matrix",
+        "reason": "generic_failure"
+      }
+    },
+    {
+      "at": "2026-05-02T19:25:55.283813+00:00",
+      "kind": "learning_review",
+      "detail": {
+        "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+        "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+        "lessons": [
+          "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+        ],
+        "risks": [
+          "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+        ]
+      }
+    },
+    {
+      "at": "2026-05-02T19:55:13.069356+00:00",
+      "kind": "ai_failure",
+      "detail": {
+        "provider": "gemini",
+        "task": "correlation_matrix",
+        "reason": "rate_limited"
+      }
+    },
+    {
+      "at": "2026-05-02T19:55:13.391797+00:00",
+      "kind": "ai_failure",
+      "detail": {
+        "provider": "openrouter",
+        "task": "correlation_matrix",
+        "reason": "generic_failure"
+      }
+    },
+    {
+      "at": "2026-05-02T19:55:57.461384+00:00",
+      "kind": "learning_review",
+      "detail": {
+        "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+        "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+        "lessons": [
+          "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+        ],
+        "risks": [
+          "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+        ]
+      }
+    },
+    {
+      "at": "2026-05-02T20:25:15.493440+00:00",
+      "kind": "ai_failure",
+      "detail": {
+        "provider": "openrouter",
+        "task": "correlation_matrix",
+        "reason": "generic_failure"
+      }
+    },
+    {
+      "at": "2026-05-02T20:25:57.872894+00:00",
+      "kind": "learning_review",
+      "detail": {
+        "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+        "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+        "lessons": [
+          "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+        ],
+        "risks": [
+          "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+        ]
+      }
     }
   ],
   "learning_reviews": [
@@ -88,10 +221,65 @@
       "risks": [
         "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
       ]
+    },
+    {
+      "at": "2026-05-02T18:25:51.327480+00:00",
+      "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+      "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+      "lessons": [
+        "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+      ],
+      "risks": [
+        "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+      ]
+    },
+    {
+      "at": "2026-05-02T18:55:53.332774+00:00",
+      "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+      "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+      "lessons": [
+        "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+      ],
+      "risks": [
+        "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+      ]
+    },
+    {
+      "at": "2026-05-02T19:25:55.283796+00:00",
+      "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+      "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+      "lessons": [
+        "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+      ],
+      "risks": [
+        "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+      ]
+    },
+    {
+      "at": "2026-05-02T19:55:57.461258+00:00",
+      "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+      "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+      "lessons": [
+        "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+      ],
+      "risks": [
+        "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+      ]
+    },
+    {
+      "at": "2026-05-02T20:25:57.872872+00:00",
+      "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
+      "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
+      "lessons": [
+        "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih."
+      ],
+      "risks": [
+        "Waspadai whipsaw pada pair momentum pendek dan fee bleed dari exit terlalu cepat."
+      ]
     }
   ],
   "last_learning_review": {
-    "at": "2026-05-02T17:55:49.332919+00:00",
+    "at": "2026-05-02T20:25:57.872872+00:00",
     "summary": "Data 30 menit terakhir belum kuat; pertahankan filter saat ini dan kumpulkan sample yang lebih bersih.",
     "strategy": "kejar target hijau dengan gap 0.30% tanpa longgarkan guardrail",
     "lessons": [

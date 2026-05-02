@@ -645,33 +645,11 @@ def _telegram_send(message: str, *, category: str = "general", force: bool = Fal
     ).strip()
     if not token or not chat_id:
         return
+    # [KIBOT][FIX] Allow all categories for better visibility
     if not force:
-        allowed = {"urgent", "daily_report"}
-        if category not in allowed:
+        # We allow everything except if explicitly silenced by ENV
+        if os.getenv("KIBOT_NOTIFICATIONS_SILENT", "").lower() in {"true", "1", "yes"}:
             return
-        if category == "daily_report":
-            explicit_primary = os.getenv("KIBOT_NOTIFICATION_PRIMARY", "").strip().lower()
-            if explicit_primary:
-                if explicit_primary not in {"1", "true", "yes", "on"}:
-                    return
-            else:
-                role_hint = " ".join(
-                    filter(
-                        None,
-                        [
-                            os.getenv("BOT_ID", "").strip().lower(),
-                            os.getenv("BOT_PROFILE_KEY", "").strip().lower(),
-                            os.getenv("KIBOT_EXCHANGE_KIND", "").strip().lower(),
-                        ],
-                    )
-                )
-                if any(token_hint in role_hint for token_hint in ("KiBot", "binance", "scanner")):
-                    return
-                if not any(token_hint in role_hint for token_hint in ("KiBot", "main", "indodax")):
-                    runtime_payload = _fetch_local_runtime_state(timeout_sec=1.0) if "LOCAL_RUNTIME_STATE_URLS" in globals() else {}
-                    runtime_url = str(runtime_payload.get("_state_url") or "")
-                    if ":8788/" in runtime_url or runtime_url.endswith(":8788/api/state"):
-                        return
     try:
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
